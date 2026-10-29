@@ -1,0 +1,138 @@
+# SPDX-License-Identifier: MIT
+
+# Push vX.Y.Z to publish a release. The tag must match the version in CMakeLists.txt. The release notes come from
+# docs/release-notes/X.Y.Z.md. The release holds two zips:
+#
+# - hokuto-X.Y.Z-win-x64.zip: hokuto.exe, hok.exe, README.md, LICENSE and THIRD-PARTY-NOTICES.md.
+# - hokuto-X.Y.Z-macos-arm64.zip: Hokuto.app, hok and the same documents.
+#
+# A run started by hand (Actions > Release > Run workflow) uploads the same zips as an artifact without publishing a
+# release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Read the project's version, check the tag if there is one, and require the release notes.
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - id: version
+        uses: ./externals/xsflib/ci/release-version
+        with:
+          project: hokuto
+
+  windows:
+    needs: version
+    name: Windows x64
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: ./externals/xsflib/ci/release-windows
+        with:
+          version: ${{ needs.version.outputs.version }}
+          cmake: -A x64 -T ClangCL -DBUILD_TESTING=OFF
+          targets: hokuto hok
+          programs: hok
+          files: build/Release/hokuto.exe build/Release/hok.exe
+          artifact: win-x64
+
+  # The app and hok go into the zip on the Mac. An artifact keeps neither the files' permissions nor the app's
+  # signature.
+  macos:
+    needs: version
+    name: macOS ARM64
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build --config Release --parallel --target hokuto hok
+
+      # hok reports the version, and the app's Info.plist holds it. The build signs the app ad hoc.
+      - name: Check the version and the signature
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          said=$(build/hok --version)
+          if [ "$said" != "hok $VERSION" ]; then
+            echo "::error::hok --version says '$said', not 'hok $VERSION'"
+            exit 1
+          fi
+          plist=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' build/Hokuto.app/Contents/Info.plist)
+          if [ "$plist" != "$VERSION" ]; then
+            echo "::error::Hokuto.app's Info.plist says '$plist', not $VERSION"
+            exit 1
+          fi
+          codesign --verify --deep --strict build/Hokuto.app
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p stage dist
+          ditto build/Hokuto.app stage/Hokuto.app
+          cp build/hok README.md LICENSE THIRD-PARTY-NOTICES.md stage/
+          ditto -c -k --norsrc stage "dist/hokuto-$VERSION-macos-arm64.zip"
+          unzip -l "dist/hokuto-$VERSION-macos-arm64.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-arm64
+          path: dist/
+
+  package:
+    needs: [version, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: win-x64
+          path: artifacts/win-x64
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: macos-arm64
+          path: dist
+
+      - name: Package the Windows files
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mkdir -p stage
+          cp artifacts/win-x64/hokuto.exe artifacts/win-x64/hok.exe README.md LICENSE THIRD-PARTY-NOTICES.md stage/
+          (cd stage && zip -q -X "../dist/hokuto-$VERSION-win-x64.zip" *)
+          unzip -l "dist/hokuto-$VERSION-win-x64.zip"
+
+      - uses: ./externals/xsflib/ci/release-publish
+        with:
+          title: Hokuto
+          version: ${{ needs.version.outputs.version }}
+          artifact: hokuto-${{ needs.version.outputs.version }}

@@ -1,0 +1,9 @@
+# Normalize text line endings. Keep scripts usable on Unix after a Windows checkout.
+* text=auto
+*.py text eol=lf
+*.sh text eol=lf
+
+# The icons are binary.
+*.icns binary
+*.ico binary
+*.png binary

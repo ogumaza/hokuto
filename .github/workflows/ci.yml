@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+
+# Builds Hokuto on Windows x64 with clang-cl whenever main changes, and runs ctest, the conformance suite included.
+# Changes to documentation alone don't start a run. The release workflow builds the macOS app.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64 (clang-cl)
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: ./externals/xsflib/ci/build-and-test
+        with:
+          cmake: -A x64 -T ClangCL
