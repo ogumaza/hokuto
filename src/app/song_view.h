@@ -16,27 +16,34 @@
 #include <string>
 #include <vector>
 
+#include "format/engine.h"
+
 namespace hokuto::app
 {
 
-// A note of a part: its start and length in ticks, and its key.
+// A note of a part: its start and length in ticks, its key, and whether a later note cut it short on the GBA or the DS.
 struct NoteView
 {
     int32_t start = 0; // from the part's start
     int32_t length = 0;
     int key = 60;
+    bool cut = false;
 };
 
 // A part of a track. A call's part shows the name of the subroutine that the call ran. It's linked when other calls
 // play the same subroutine, in this sound or in others. An edit of a linked part's notes changes what every call plays.
+// On the GBA and the DS, `unstarted` contains the part's notes that the driver never started (song::Track::unstarted).
 struct PartView
 {
     int32_t start = 0;
     int32_t length = 0;
     std::vector<NoteView> notes;
-    std::size_t first = 0; // the part's first note among the track's notes (song::Track::notes)
-    std::string name;      // the subroutine's name, or empty for a part outside calls
+    std::vector<NoteView> unstarted;
+    std::size_t first = 0;           // the part's first note among the track's notes (song::Track::notes)
+    std::size_t unstarted_first = 0; // the part's first among the notes that the driver never started
+    std::string name;                // the subroutine's name, or empty for a part outside calls
     bool linked = false;
+    bool psg = false; // on the GBA and the DS, a note of the part plays a PSG voice
 };
 
 // A control of a track's channel that a song sets: its volume, its pan, or its send to FX A, FX B or FX C.
@@ -84,8 +91,21 @@ struct TrackView
     std::string name;
     std::string bank; // the instrument's bank, or empty
     int program = -1; // the instrument's program, or -1
-    int slot = -1;    // the slot of the instrument's bank, or -1
+    int slot = -1;    // the slot of the instrument's bank, or -1. A track without notes has a slot before a program.
+
+    // The programs that the menu of the inspector offers in the place of those of the slot, where the channel of the
+    // track uses others: a PSG track of another driver of the GBA, such as Konami's driver.
+    std::vector<uint32_t> programs;
+
     ImU32 colour = 0; // the colour that the zones show
+
+    // On the GBA and the DS: bit c - 1 for each PSG channel c that the track's notes play (song::Note::psg), and the
+    // notes that a later note cut short or that the driver never started (song::Note::cut and song::Track::unstarted).
+    // `ds` is set for a track of NITRO-Composer or DSE.
+    uint8_t psg_channels = 0;
+    bool ds = false;
+    std::size_t cut_notes = 0;
+    std::size_t unstarted_notes = 0;
 
     // The track's colour while the tracks' colours are Rainbow. While they are Custom, a track that the user hasn't
     // given a colour shows it too.
@@ -286,6 +306,7 @@ struct SongView
     std::string name;
     int ticks_per_quarter = 48;
     double tempo = 120.0;
+    double starting_tempo = 120.0; // the tempo that the console uses before a command sets one
     int beats_per_bar = 4;
     int32_t length = 0;      // ticks
     int32_t loop_start = -1; // ticks, or -1 for a song without a loop
@@ -309,24 +330,33 @@ struct SongView
     std::string enhanced_refused;
     std::optional<bool> mixing_request;
 
-    // The engines of the mixer's switch, in the order of format::Engine: the Switch's, the Wii U's, the 3DS's and the
-    // Wii's. `engine` is the shown sound's, and `file_engine` the file's. `engine_refused` says why the sound can't
-    // play on each engine, and is empty where it can. `engine_notes` lists what changed in the conversion for the
-    // sound's engine. `engine_error` says why the last conversion for engine `failed_engine` failed. The sound then
-    // plays on the file's engine. A click on the switch sets `engine_request`. The program then gives the sound that
-    // engine, and clears it. The made-up song shows no switch.
+    // The engines, numbered as format::Engine numbers them. The switch of the mixer shows the engines of the Switch,
+    // the Wii U, the 3DS and the Wii, NITRO-Composer, and the engine of the file where it's another: the GBA engine,
+    // DSE or another driver of the GBA (SwitchEngines in mixer.cpp). `engine` is the shown sound's, and `file_engine`
+    // the file's. `engine_refused` says why the sound can't play on each engine, and is empty where it can.
+    // `engine_notes` lists what changed in the conversion for the sound's engine. `engine_error` says why the last
+    // conversion for engine `failed_engine` failed. The sound then plays on the file's engine. A click on the switch
+    // sets `engine_request`. The program then gives the sound that engine, and clears it. The made-up song shows no
+    // switch.
     bool engines = false;
     int engine = 0;
     int file_engine = 0;
-    std::array<std::string, 4> engine_refused;
+    std::array<std::string, format::kEngineCount> engine_refused;
     std::vector<std::string> engine_notes;
     std::string engine_error;
     int failed_engine = -1;
     std::optional<int> engine_request;
 
     // The FX channels that the console's tracks send to, from FX A. The 3DS's tracks send to FX A and FX B only. The
-    // mixer leaves the other sends' slots empty.
+    // mixer leaves the other sends' slots empty, with the reason as a tooltip. The tracks of the drivers of the GBA and
+    // the DS have no sends, and their strips leave the space of the slots empty.
     std::size_t sends = kSendCount;
+    std::string sends_missing = "3DS tracks send only to FX A and FX B.";
+
+    // The level in dB where a track's fader stops below the top of its travel. A track's volume shows 0 dB at the
+    // highest value that the driver of the file accepts: 127 on the GBA, the DS and DSE, and the track's most volume on
+    // Konami's driver. Nothing on the later consoles, where the fader reaches the top.
+    std::optional<float> volume_highest;
 
     std::vector<TrackView> tracks;
     std::vector<SlotView> slots; // the sound's bank slots, empty where they aren't known

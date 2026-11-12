@@ -6,25 +6,38 @@
 
 #include "app/list_edits.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
+#include "ntdlib/dse/formats.h"
+#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
+#include "app/time_text.h"
 #include "app/transport.h"
+#include "cart_bytes.h"
+#include "edit/bytecode.h"
+#include "edit/subroutines.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "song/archive.h"
+#include "song/driver.h"
+#include "song/gba.h"
 #include "song/sequence.h"
+#include "song/ubimilan.h"
 
 using hokuto::app::CallsOfRuns;
 using hokuto::app::CallsText;
@@ -32,7 +45,9 @@ using hokuto::app::CallsTooltip;
 using hokuto::app::CellText;
 using hokuto::app::ConditionEdit;
 using hokuto::app::DissolveEdit;
+using hokuto::app::IgnoredOn;
 using hokuto::app::InsertEdit;
+using hokuto::app::InsertKindOn;
 using hokuto::app::IsLabel;
 using hokuto::app::KindName;
 using hokuto::app::LabelEdit;
@@ -46,13 +61,17 @@ using hokuto::app::ListSubroutine;
 using hokuto::app::ListTrack;
 using hokuto::app::MakeListTrack;
 using hokuto::app::NamesTarget;
+using hokuto::app::OffsetText;
+using hokuto::app::PartLabels;
 using hokuto::app::RealCopyEdit;
 using hokuto::app::RemovalEdit;
 using hokuto::app::RowOfPart;
 using hokuto::app::RunOfCall;
+using hokuto::app::SharedLabelStart;
 using hokuto::app::Skipped;
 using hokuto::app::SkippingEngine;
 using hokuto::app::SubroutineEdit;
+using hokuto::app::SubroutineName;
 using hokuto::app::SubroutineRuns;
 using hokuto::app::TargetEdit;
 using hokuto::app::Typable;
@@ -257,14 +276,42 @@ void TestTypedValues()
     XSFLIB_CHECK((variable && variable->value == Argument{Source::kVariable, 4, 0}));
     XSFLIB_CHECK(lower && lower->value.value == -200 * kOne && slower && slower->value.value == 90 * kOne);
     XSFLIB_CHECK(on && on->value.value == kOne);
-    XSFLIB_CHECK(Refused(track, kVolume, ListColumn::kData1, "300") == "Volume runs from 0 to 255.");
+    XSFLIB_CHECK(Refused(track, kVolume, ListColumn::kData1, "300") == "Volume must be between 0 and 255.");
     XSFLIB_CHECK(Refused(track, kVolume, ListColumn::kData1, "variable 300") ==
-                 "A variable's number runs from 0 to 255.");
+                 "The variable number must be between 0 and 255.");
     XSFLIB_CHECK(Refused(track, kVolume, ListColumn::kData1, "loud") ==
-                 "Hokuto can't read \"loud\" there. A value is a number, with or without its unit, or \"random 0 to "
-                 "127\" or \"variable 3\".");
+                 "Can't read \"loud\". A value is a number (with or without its unit), \"random 0 to 127\" or "
+                 "\"variable 3\".");
     XSFLIB_CHECK(!TypedListEdit(track, kVolume, ListColumn::kData1, " 100 "));
     XSFLIB_CHECK(!TypedListEdit(track, kVolume, ListColumn::kType, "Pan"));
+}
+
+// On the builds of Konami's driver that store a volume in a byte, a PSG channel starts at the low 4 bits of the volume
+// of its track. A volume typed on a PSG track (0 to 3) ends at 15, and on a sampled track at 127.
+void TestTypedKonamiVolumes()
+{
+    ListTrack psg = HandMade();
+    psg.console = hokuto::song::Console{.engine = hokuto::format::Engine::kKonami,
+                                        .driver = &hokuto::song::RulesOf(hokuto::format::Engine::kKonami, 0)};
+    psg.number = 0;
+    ListTrack sampled = psg;
+    sampled.number = 4;
+
+    const std::optional<Command> most = Typed(psg, kVolume, ListColumn::kData1, "15");
+    const std::optional<Command> loud = Typed(sampled, kVolume, ListColumn::kData1, "127");
+    XSFLIB_CHECK((most && most->value == Argument{Source::kValue, 15 * kOne, 0}));
+    XSFLIB_CHECK((loud && loud->value == Argument{Source::kValue, 127 * kOne, 0}));
+    XSFLIB_CHECK(Refused(psg, kVolume, ListColumn::kData1, "16") == "Volume must be between 0 and 15.");
+    XSFLIB_CHECK(Refused(psg, kVolume, ListColumn::kData1, "99") == "Volume must be between 0 and 15.");
+    XSFLIB_CHECK(Refused(sampled, kVolume, ListColumn::kData1, "128") == "Volume must be between 0 and 127.");
+
+    // The Key Editor types a point's value the same way, with the number of its track.
+    const Command volume = psg.rows[kVolume].command;
+    const std::optional<hokuto::app::TypedArgument> on_psg = hokuto::app::TypedValueOf(psg.console, 0, volume, "16");
+    const std::optional<hokuto::app::TypedArgument> on_sampled =
+        hokuto::app::TypedValueOf(psg.console, 4, volume, "127");
+    XSFLIB_CHECK(on_psg && on_psg->refused == "Volume must be between 0 and 15.");
+    XSFLIB_CHECK(on_sampled && on_sampled->refused.empty() && on_sampled->command.value.value == 127 * kOne);
 }
 
 // A note's pitch, velocity, start and length, a wait's length, and a setting's start and time. A setting that reads or
@@ -288,16 +335,21 @@ void TestTypedNotesAndLengths()
     XSFLIB_CHECK(higher && higher->key == 62 && TypedName(track, kNote, ListColumn::kData1, "D3") == "Transpose");
     XSFLIB_CHECK(Typed(track, kNote, ListColumn::kData1, "62") == higher);
     XSFLIB_CHECK(softer && softer->velocity == 90 * kOne &&
-                 Refused(track, kNote, ListColumn::kData2, "128") == "A velocity runs from 0 to 127.");
-    XSFLIB_CHECK(Refused(track, kNote, ListColumn::kData1, "200") == "A key runs from 0 to 127, C-2 to G8.");
+                 Refused(track, kNote, ListColumn::kData2, "128") == "Velocity must be between 0 and 127.");
+    XSFLIB_CHECK(Refused(track, kNote, ListColumn::kData1, "200") == "The key must be between 0 and 127 (C-2 to G8).");
     XSFLIB_CHECK(Refused(track, kNote, ListColumn::kData1, "H3") ==
-                 "Hokuto can't read \"H3\" there. A key is a number from 0 to 127 or a name, such as C3 for middle C.");
+                 "Can't read \"H3\". A key is a number from 0 to 127 or a name, such as C3 for middle C.");
     XSFLIB_CHECK(Refused(track, kNote, ListColumn::kStart, "2.1.1.0") ==
-                 "Hokuto can't read \"2.1.1.0\" there. A start is a position, such as 2. 1. 0.");
+                 "Can't read \"2.1.1.0\". A start is a position, such as 2. 1. 0.");
     XSFLIB_CHECK(Refused(track, kNote, ListColumn::kLength, "0.1.0.0") ==
-                 "Hokuto can't read \"0.1.0.0\" there. A length is a number of beats, sixteenths and ticks, such as "
+                 "Can't read \"0.1.0.0\". A length is a number of beats, sixteenths and ticks, such as "
                  "0. 1. 0. It can also be \"random 0 to 48\" or \"variable 3\".");
     XSFLIB_CHECK(moved && moved->action == ListEdit::Action::kMove && moved->shift == 48 && moved->name == "Move");
+
+    // A field that closes on the value that it opened with makes no edit and no message.
+    XSFLIB_CHECK(!TypedListEdit(track, kNote, ListColumn::kStart, "1. 1. 0"));
+    XSFLIB_CHECK(!TypedListEdit(track, kVolume, ListColumn::kLength, ""));
+
     XSFLIB_CHECK(volume && volume->action == ListEdit::Action::kMove && volume->shift == 48);
     XSFLIB_CHECK(!TypedListEdit(track, kVariableVolume, ListColumn::kStart, "3"));
     XSFLIB_CHECK(!TypedListEdit(track, kSet, ListColumn::kStart, "3"));
@@ -329,13 +381,12 @@ void TestTypedIndices()
     const std::optional<Command> opened = Typed(track, kOpen, ListColumn::kData1, "Track 2");
 
     XSFLIB_CHECK(bus && bus->index == 1 && fx && fx->index == 2 &&
-                 Refused(track, kSend, ListColumn::kData1, "D") ==
-                     "Hokuto can't read \"D\" there. A bus is A, B or C.");
-    XSFLIB_CHECK(Refused(track, kLfo, ListColumn::kData1, "LFO 5") == "An LFO runs from 0 to 3.");
+                 Refused(track, kSend, ListColumn::kData1, "D") == "Can't read \"D\". A bus is A, B or C.");
+    XSFLIB_CHECK(Refused(track, kLfo, ListColumn::kData1, "LFO 5") == "The LFO number must be between 0 and 3.");
     XSFLIB_CHECK(variable && variable->index == 7);
     XSFLIB_CHECK(tracks && tracks->value.value == 9 * kOne);
     XSFLIB_CHECK(opened && opened->index == 2);
-    XSFLIB_CHECK(Refused(track, kOpen, ListColumn::kData1, "16") == "A track runs from 0 to 15.");
+    XSFLIB_CHECK(Refused(track, kOpen, ListColumn::kData1, "16") == "The track number must be between 0 and 15.");
 }
 
 // A target comes from the labels, and the condition switches on and off. A new command goes before a row, and a
@@ -591,9 +642,9 @@ void TestLabelsAndSubroutines()
     const ListSubroutine one{"Sub", 15, runs, 0, 1, 1};
     const ListSubroutine more{"Sub", 15, runs, 0, 63, 1};
     XSFLIB_CHECK(CallsText(one) == "1 call in this sound" &&
-                 CallsTooltip(one).starts_with("The shown sound runs every"));
+                 CallsTooltip(one).starts_with("All calls to this subroutine"));
     XSFLIB_CHECK(CallsText(more) == "1 call in this sound, 62 elsewhere in the sequence");
-    XSFLIB_CHECK(CallsTooltip(more).find("The other 62 lie in the commands of other sounds") != std::string::npos);
+    XSFLIB_CHECK(CallsTooltip(more).find("The other 62 are in other sounds") != std::string::npos);
 
     // A part outside calls starts at its first note's row. A part without its note starts at the first row at its start
     // or later: the return at tick 12.
@@ -615,7 +666,7 @@ void TestSkipped()
     track.engine_name = "3DS";
     track.file_engine_name = "Switch";
     XSFLIB_CHECK(!Skipped(track, track.rows[kLfo]) && !Skipped(track, track.rows[kVolume]));
-    track.engine = hokuto::song::Console{.flavor = ntdlib::sar::Flavor::kCtr};
+    track.engine = hokuto::song::Console{.engine = hokuto::format::Engine::k3ds};
     XSFLIB_CHECK(Skipped(track, track.rows[kLfo]) && SkippingEngine(track, track.rows[kLfo]) == "3DS");
     XSFLIB_CHECK(!Skipped(track, track.rows[kVolume]) && !Skipped(track, track.rows[kSend]));
     ListRow label = track.rows[kLfo];
@@ -623,29 +674,194 @@ void TestSkipped()
     XSFLIB_CHECK(!Skipped(track, label));
 
     ListTrack ctr = HandMade();
-    ctr.console = hokuto::song::Console{.flavor = ntdlib::sar::Flavor::kCtr};
+    ctr.console = hokuto::song::Console{.engine = hokuto::format::Engine::k3ds};
     ctr.engine_name = "Switch";
     ctr.file_engine_name = "3DS";
     XSFLIB_CHECK(Skipped(ctr, ctr.rows[kLfo]) && SkippingEngine(ctr, ctr.rows[kLfo]) == "3DS");
-    ctr.engine = hokuto::song::Console{.flavor = ntdlib::sar::Flavor::kNx};
+    ctr.engine = hokuto::song::Console{.engine = hokuto::format::Engine::kSwitch};
     XSFLIB_CHECK(Skipped(ctr, ctr.rows[kLfo]) && SkippingEngine(ctr, ctr.rows[kLfo]) == "3DS");
     XSFLIB_CHECK(!Skipped(ctr, ctr.rows[kVolume]));
+
+    // Like the rest of the program, the tooltip names a console with its article. A driver follows "by".
+    XSFLIB_CHECK(IgnoredOn("GBA") == " on the GBA" && IgnoredOn("3DS") == " on the 3DS");
+    XSFLIB_CHECK(IgnoredOn("Wii U") == " on the Wii U" && IgnoredOn("DS") == " on the DS");
+    XSFLIB_CHECK(IgnoredOn("DSE") == " by DSE" && IgnoredOn("Konami's driver") == " by Konami's driver");
+    XSFLIB_CHECK(IgnoredOn("Krawall") == " by Krawall" && IgnoredOn("Rare's driver") == " by Rare's driver");
+}
+
+// On DSE, a command of kOther is any code that the common form has no kind for. The driver runs the bank selects, the
+// loop point, the key bend and the octave. It skips the arguments of 0xAB, 0xCB and 0xF8 and does nothing else. Only
+// those rows show grey.
+void TestSkippedOnDse()
+{
+    namespace dse = ntdlib::dse;
+    const auto other = [](uint8_t code, std::vector<uint8_t> arguments)
+    {
+        ListRow row;
+        row.command.kind = Kind::kOther;
+        row.command.encoding.opcode = code;
+        row.command.bytes = std::move(arguments);
+        return row;
+    };
+
+    ListTrack track;
+    track.console = hokuto::song::Console{.engine = hokuto::format::Engine::kDse};
+    track.file_engine_name = "DSE";
+    for (const ListRow& row : {other(dse::kBank, {0, 1}), other(dse::kBankHigh, {0}), other(dse::kBankLow, {1}),
+                               other(dse::kLoopPoint, {}), other(dse::kKeyBend, {0, 0x10}), other(dse::kOctave, {4})})
+    {
+        XSFLIB_CHECK(!Skipped(track, row));
+    }
+    for (const ListRow& row :
+         {other(dse::kSkipByte, {0}), other(dse::kSkipTwo, {0, 0}), other(dse::kSkipTwoAgain, {0, 0})})
+    {
+        XSFLIB_CHECK(Skipped(track, row) && SkippingEngine(track, row) == "DSE");
+    }
+
+    ListRow volume;
+    volume.command = Valued(Kind::kVolume, Plain(100));
+    XSFLIB_CHECK(!Skipped(track, volume));
+}
+
+// The menu of the toolbar's Insert keeps a kind that the console runs. The volume replaces a kind that it skips.
+// Ubisoft Milan's driver has no volume. There the menu uses the first kind that the driver runs: a note.
+void TestInsertKind()
+{
+    const hokuto::song::Console ctr{.engine = hokuto::format::Engine::k3ds};
+    hokuto::song::Console ubi_milan;
+    ubi_milan.driver = &hokuto::song::UbiMilanRules();
+
+    XSFLIB_CHECK(InsertKindOn(ctr, Kind::kPan) == Kind::kPan);
+    XSFLIB_CHECK(InsertKindOn(ctr, Kind::kLfoCurve) == Kind::kVolume);
+    XSFLIB_CHECK(InsertKindOn(ubi_milan, Kind::kProgram) == Kind::kProgram);
+    XSFLIB_CHECK(InsertKindOn(ubi_milan, Kind::kVolume) == Kind::kNote);
+}
+
+// MusicPlayer2000's LFO speed counts in 256ths of a cycle each tick, and its delay in ticks: neither has a unit of
+// time.
+void TestUnits()
+{
+    const hokuto::song::Console gba{.engine = hokuto::format::Engine::kGba};
+    const hokuto::song::Console switch_console;
+    const ntdlib::commands::Fixed value = 44 * ntdlib::commands::kOne;
+    XSFLIB_CHECK(hokuto::app::ValueText(gba, ntdlib::commands::Kind::kLfoSpeed, value) == "44");
+    XSFLIB_CHECK(hokuto::app::ValueText(gba, ntdlib::commands::Kind::kLfoDelay, value) == "44");
+    XSFLIB_CHECK(hokuto::app::ValueText(switch_console, ntdlib::commands::Kind::kLfoSpeed, value) == "44 Hz");
+    XSFLIB_CHECK(hokuto::app::ValueText(switch_console, ntdlib::commands::Kind::kLfoDelay, value) == "44 ms");
+    XSFLIB_CHECK(hokuto::app::ValueText(gba, ntdlib::commands::Kind::kTempo, value) == "44 BPM");
+}
+
+// A part of the arrangement uses the label of its subroutine without the start that the labels share. A pattern of the
+// GBA has no label. The part of such a pattern uses the offset. The List Editor also shows a target without a label by
+// its offset. Two such parts differ.
+void TestSubroutineNames()
+{
+    const std::map<uint32_t, std::string> labels = {{0x10, "SMF_BGM_TITLE_Track_1_0"}, {0x40, "SMF_BGM_TITLE_Start"}};
+    const std::size_t shared = SharedLabelStart(labels);
+    XSFLIB_CHECK(shared == 14);
+    XSFLIB_CHECK(SubroutineName(labels, shared, 0x10) == "Track_1_0");
+    XSFLIB_CHECK(SubroutineName(labels, shared, 0x40) == "Start");
+    XSFLIB_CHECK(SubroutineName(labels, shared, 0x1A4) == "0x1A4");
+    XSFLIB_CHECK(SubroutineName({}, 0, 0x1A4) == "0x1A4" && SubroutineName({}, 0, 0x2C0) == "0x2C0");
+    XSFLIB_CHECK(SharedLabelStart({{0x10, "Loop"}}) == 0 && OffsetText(0) == "0x0");
+}
+
+// A GBA ROM of one song. Its track plays key 60, calls a pattern and plays key 62, each a quarter note after the last.
+// The pattern plays key 67 and returns. The ROM has free space for a song that grows.
+std::vector<uint8_t> GbaPatternRom()
+{
+    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+    using enum ntdlib::mp2k::Command;
+
+    // The pattern's place is known once the track before it is.
+    const auto track = [](std::size_t pattern)
+    {
+        mp2k_cart::Track built;
+        built.Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100).Note(24, 60, 100).Wait(24).Patt(pattern);
+        built.Note(24, 62, 100).Wait(24).Fine();
+        const std::size_t here = built.Here();
+        built.Note(24, 67).Wait(24).Raw({kCmdPend});
+        return std::pair(built, here);
+    };
+
+    mp2k_cart::Cart cart;
+    const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
+    cart.Song({track(track(0).second).first}, voices);
+    for (uint32_t a = 0x38000; a < 0x40000; a++)
+    {
+        cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
+    }
+
+    const ntdlib::agb::Rom rom = cart.ToRom();
+    return hokuto::testing::RomBytes(rom);
+}
+
+// The subroutine of the call's part of track 0 of song 0, and the song. ntdlib's performer plays the song from the ROM
+// of `file`.
+std::pair<std::optional<uint32_t>, hokuto::song::Sequence> GbaCallOf(const hokuto::format::File& file)
+{
+    hokuto::song::Sequence song =
+        hokuto::song::ReadSequence(*hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(file)), 0);
+    std::optional<uint32_t> call;
+    for (const hokuto::song::Part& part : hokuto::song::SplitParts(song, song.tracks.at(0), 1, 8))
+    {
+        call = part.call ? part.call : call;
+    }
+
+    return {call, std::move(song)};
+}
+
+// A GBA song reads no labels from the ROM. A label that the List Editor gives the pattern stays in the .hok file, and
+// names the call's part by the offset of the pattern's first command. Without it, the part shows the offset. A song
+// that reads labels keeps them, and so does a sequence that is missing from the file.
+void TestGbaPartLabels()
+{
+    const hokuto::format::File file = hokuto::format::ImportGbaRom(GbaPatternRom());
+    const ntdlib::commands::Sequence& commands = *file.sequences.at(0);
+    const std::vector<uint32_t> offsets = hokuto::edit::Offsets(commands, hokuto::edit::ConsoleOf(file));
+    const auto call = std::ranges::find(commands.items, Kind::kCall, &Command::kind);
+    SEQLIB_REQUIRE(call != commands.items.end() && call->target < offsets.size());
+    const uint32_t pattern = offsets[call->target];
+
+    const auto [unlabeled, song] = GbaCallOf(file);
+    XSFLIB_CHECK(unlabeled == pattern && song.labels.empty() && PartLabels(song, file, 0).empty());
+    XSFLIB_CHECK(SubroutineName(PartLabels(song, file, 0), 0, pattern) == OffsetText(pattern));
+
+    const hokuto::format::File labeled = hokuto::edit::AddLabel(file, 0, pattern, "Riff").file;
+    const auto [named, labeled_song] = GbaCallOf(labeled);
+    const std::map<uint32_t, std::string> labels = PartLabels(labeled_song, labeled, 0);
+    XSFLIB_CHECK(named == pattern && labeled_song.labels.empty());
+    XSFLIB_CHECK(labels == (std::map<uint32_t, std::string>{{pattern, "Riff"}}));
+    XSFLIB_CHECK(SubroutineName(labels, SharedLabelStart(labels), pattern) == "Riff");
+
+    hokuto::song::Sequence read = labeled_song;
+    read.labels = {{4, "Track_1_0"}};
+    XSFLIB_CHECK(PartLabels(read, labeled, 0) == read.labels);
+    XSFLIB_CHECK(PartLabels(labeled_song, labeled, 9).empty());
 }
 
 } // namespace
 
 int main()
 {
-    TestText();
-    TestTypedValues();
-    TestTypedNotesAndLengths();
-    TestTypedIndices();
-    TestTargetsInsertsAndRemovals();
-    TestTrackOfArchive();
-    TestDepthOfLoops();
-    TestLabelsAndSubroutines();
-    TestRunsOfALoopedCall();
-    TestSkipped();
-
-    return xsflib::testing::Summary("list_edits");
+    return xsflib::testing::RunTest("list_edits",
+                                    []
+                                    {
+                                        TestText();
+                                        TestTypedValues();
+                                        TestTypedKonamiVolumes();
+                                        TestTypedNotesAndLengths();
+                                        TestTypedIndices();
+                                        TestTargetsInsertsAndRemovals();
+                                        TestTrackOfArchive();
+                                        TestDepthOfLoops();
+                                        TestLabelsAndSubroutines();
+                                        TestRunsOfALoopedCall();
+                                        TestSkipped();
+                                        TestSkippedOnDse();
+                                        TestInsertKind();
+                                        TestUnits();
+                                        TestSubroutineNames();
+                                        TestGbaPartLabels();
+                                    });
 }

@@ -2,6 +2,7 @@
 
 #include "app/menus.h"
 
+#include "app/time_text.h"
 #include "app/transport.h"
 #include "app/views.h"
 
@@ -25,9 +26,9 @@ std::span<const Menu> Menus()
     // Hokuto's songs are the sounds of one file, and a track goes from one to another through Copy Track and Paste
     // Track. Tempo Track, with Ctrl+T, shows or hides the arrangement's tempo row. Project Setup, with Shift+S, shows
     // the file's engine, gives every sound a mixing mode, and edits the file's tags. New Project, with Ctrl+N, starts
-    // an empty file for the Switch, the Wii U or the 3DS. Add Sequence Sound… adds a sound with an empty song to the
-    // file. Recent Projects lists the files opened or saved last, at the end of the File menu. On the Mac, Quit is in
-    // the application menu.
+    // an empty file for the Switch, the Wii U, the 3DS, the Wii or the DS. Add Sequence Sound… adds a sound with an
+    // empty song to the file. Recent Projects lists the files opened or saved last, at the end of the File menu. On the
+    // Mac, Quit is in the application menu.
     static const std::vector<Menu> kMenus = {
         {"File",
          {

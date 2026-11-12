@@ -7,7 +7,9 @@
 // these models too (song/sequence_model.h). A wave sound and a stream sound play on the same model. The game plays them
 // the same way. The Wii's stream sounds play on ntdlib's model of NW4R SND's stream player. A sequence plays its notes
 // on the same model. The Key Editor plays a note of a sequence sound's instrument the same way. The model mixes in the
-// mixing mode of the sound that the item belongs to. The Wii mixes only strictly.
+// mixing mode of the sound that the item belongs to. The Wii mixes only strictly. A note of a voice of a GBA ROM plays
+// on ntdlib's models of the MP2K driver and the GBA sound hardware. A note of an instrument of a DS bank plays on
+// ntdlib's models of NITRO-Composer and the DS sound unit.
 
 #pragma once
 
@@ -20,6 +22,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/snd/engine.h"
+#include "ntdlib/mp2k/archive_player.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/engine.h"
@@ -29,6 +32,10 @@
 
 #include "audio/renderer.h"
 #include "song/ctr_model.h"
+#include "song/driver.h"
+#include "song/ds.h"
+#include "song/dse.h"
+#include "song/gba.h"
 #include "song/sequence_model.h"
 
 namespace hokuto::song
@@ -214,6 +221,177 @@ private:
     // The flag that lets the note go, or nothing for a note that holds for 1 s, and whether the note-off has come.
     std::shared_ptr<const std::atomic<bool>> release_;
     bool released_ = false;
+};
+
+// A note of a voice of a GBA ROM, on ntdlib's models of the MP2K driver and the GBA sound hardware
+// (ntdlib::mp2k::ArchivePlayer). A copy of the ROM contains a song that plays the note (GbaAuditionRom). The note plays
+// with the song's voice group, music player, priority and reverb, at full volume and in the centre. The preview ends
+// once nothing sounds, or after 10 s. The last frame then fades out.
+class GbaNotePreview final : public audio::Renderer
+{
+public:
+    // Plays a note of voice `program` of the voice group of song `song` of `rom`, in `mixing`, at NotePreview::kKey or
+    // the nearest key whose voice plays something, at NotePreview::kVelocity. The note holds for 1 s, and the track
+    // then releases it. Plays nothing if the song's header can't be read. Throws std::runtime_error if the model can't
+    // start.
+    GbaNotePreview(const std::shared_ptr<const GbaRom>& rom, int song, int program, Mixing mixing = Mixing::kStrict);
+
+    // Plays `key` at `velocity` on the same voice. The note holds until `release` is set, and the track then releases
+    // it. The Key Editor's Acoustic Feedback plays its notes this way.
+    GbaNotePreview(const std::shared_ptr<const GbaRom>& rom, int song, int program, int key, int velocity,
+                   std::shared_ptr<const std::atomic<bool>> release, Mixing mixing = Mixing::kStrict);
+
+    // The key that a preview of voice `program` of the voice group at `voices` plays: NotePreview::kKey, or the nearest
+    // key whose voice plays a PSG channel or a sample that ntdlib reads. A key split or a drum kit plays the voice of
+    // each key. Of two keys equally near, the lower one plays. -1 when no key plays anything.
+    static int KeyOf(const GbaRom& rom, uint32_t voices, int program);
+
+    // The console's frames that the browser's note holds for, and the most that a preview lasts.
+    static uint64_t HoldFrames();
+    static uint64_t LongestFrames();
+
+    int SampleRate() const override;
+    std::size_t Render(float* out, std::size_t frames) override;
+
+private:
+    // Runs the next of the console's frames into frame_. Returns false at the end of the preview.
+    bool NextFrame();
+
+    std::shared_ptr<const GbaRom> rom_; // the copy with the note's song
+    std::unique_ptr<ntdlib::mp2k::ArchivePlayer> player_;
+    std::shared_ptr<const std::atomic<bool>> release_;
+    bool released_ = false;
+    bool ended_ = false;
+    std::vector<int16_t> samples_;
+    std::vector<float> enhanced_samples_;
+    std::vector<float> frame_;
+    std::size_t frame_read_ = 0;
+};
+
+// A note of one of the GBA's other drivers (song/driver.h), on ntdlib's models of the driver and the GBA's sound
+// hardware. A copy of the ROM contains a song that plays the note (DriverRom::AuditionRom). The preview ends once
+// nothing sounds, or after 10 s. The commands of the driver can't wait for the program. A note that the user lets go
+// therefore ends with a fade over a frame of the console in place of the driver's rest.
+class DriverNotePreview final : public audio::Renderer
+{
+public:
+    // Plays `audition` in `mixing`. The note holds for 1 s without `release`, and until `release` is set with it.
+    // Throws std::runtime_error if the driver's bytes can't hold the note, and if the model can't start.
+    DriverNotePreview(const std::shared_ptr<const DriverRom>& rom, const DriverAudition& audition,
+                      std::shared_ptr<const std::atomic<bool>> release, Mixing mixing = Mixing::kStrict);
+
+    int SampleRate() const override;
+    std::size_t Render(float* out, std::size_t frames) override;
+
+private:
+    // Runs the next of the console's frames into frame_. Returns false at the end of the preview.
+    bool NextFrame();
+
+    std::shared_ptr<const DriverRom> rom_; // the copy with the note's song
+    std::unique_ptr<DriverPlayer> player_;
+    std::shared_ptr<const std::atomic<bool>> release_;
+    bool ended_ = false;
+    std::vector<int16_t> samples_;
+    std::vector<float> enhanced_samples_;
+    std::vector<float> frame_;
+    std::size_t frame_read_ = 0;
+};
+
+// A note of an instrument of a DS bank, on ntdlib's models of NITRO-Composer and the DS's sound unit
+// (ntdlib::ntr::ArchivePlayer). An archive contains the bank, its wave archives and a sequence that plays the note
+// (DsAuditionArchive), at full volume and in the centre. The note plays with what the archive's game sets for every
+// sequence, such as the output effect that it starts at boot (DsGameSettingsOf). The preview ends once nothing sounds,
+// or after 10 s. The last frame then fades out.
+class DsNotePreview final : public audio::Renderer
+{
+public:
+    // Plays a note of program `program` of bank `bank` of `archive`, in `mixing`, at NotePreview::kKey or the nearest
+    // key whose region plays something, at NotePreview::kVelocity. The note holds for 1 s, and the track then releases
+    // it. Throws std::runtime_error for a bank that is missing from the archive.
+    DsNotePreview(const DsArchive& archive, uint32_t bank, int program, Mixing mixing = Mixing::kStrict);
+
+    // Plays `key` at `velocity` on the same instrument. The note holds until `release` is set, and the track then
+    // releases it. The Key Editor's Acoustic Feedback plays its notes this way.
+    DsNotePreview(const DsArchive& archive, uint32_t bank, int program, int key, int velocity,
+                  std::shared_ptr<const std::atomic<bool>> release, Mixing mixing = Mixing::kStrict);
+
+    // The key that a preview of program `program` of bank `bank` plays: NotePreview::kKey, or the nearest key whose
+    // region plays a wave that the wave archives of the bank contain, a PSG channel or the noise. A drum set or a key
+    // split plays the region that NITRO-Composer finds for each key. Of two keys equally near, the lower one plays. -1
+    // when no key plays anything, or when the bank's file can't be read.
+    static int KeyOf(const DsArchive& archive, uint32_t bank, int program);
+
+    // The driver's frames that the browser's note holds for, and the most that a preview lasts.
+    static uint64_t HoldFrames();
+    static uint64_t LongestFrames();
+
+    int SampleRate() const override;
+    std::size_t Render(float* out, std::size_t frames) override;
+
+private:
+    // Runs the driver's next frame into frame_. Returns false at the end of the preview.
+    bool NextFrame();
+
+    std::shared_ptr<const DsArchive> archive_; // the audition's archive
+    std::unique_ptr<ntdlib::ntr::ArchivePlayer> player_;
+    std::shared_ptr<const std::atomic<bool>> release_;
+    bool enhanced_ = false;
+    bool released_ = false;
+    bool ended_ = false;
+    uint64_t frames_ = 0; // the driver's frames since the start
+    std::vector<ntdlib::ntr::SoundOutput> output_;
+    std::vector<int16_t> samples_;
+    std::vector<float> frame_;
+    std::size_t frame_read_ = 0;
+};
+
+// A note of a program of a DSE bank, on ntdlib's models of the driver and the DS's sound unit (ntdlib::dse::Player). A
+// song of one track contains the bank's select, the program, a volume of 127 and the note, and then waits. The preview
+// ends once the note's voices have ended, or after 10 s. The last frame then fades out.
+class DseNotePreview final : public audio::Renderer
+{
+public:
+    // Plays a note of program `program` of `bank`, in `mixing`, at NotePreview::kKey or the nearest key that a split
+    // plays at NotePreview::kVelocity. The note holds for 1 s, and the host then lets it go.
+    DseNotePreview(const DseBank& bank, int program, ntdlib::dse::Build build, Mixing mixing = Mixing::kStrict);
+
+    // Plays `key` at `velocity` on the same program. The note holds until `release` is set. The Key Editor's Acoustic
+    // Feedback plays its notes this way.
+    DseNotePreview(const DseBank& bank, int program, int key, int velocity,
+                   std::shared_ptr<const std::atomic<bool>> release, ntdlib::dse::Build build,
+                   Mixing mixing = Mixing::kStrict);
+
+    // The key that a preview of program `program` of `bank` plays: NotePreview::kKey, or the nearest key that a split
+    // plays at NotePreview::kVelocity. Of two keys equally near, the lower one plays. -1 when no key plays anything.
+    static int KeyOf(const DseBank& bank, int program);
+
+    // The song that plays the note. The track of the song contains a note of the longest length, and a host releases
+    // it.
+    static ntdlib::dse::Song NoteSong(const ntdlib::dse::WaveBank& bank, int program, int key, int velocity);
+
+    // The model's frames that the browser's note holds for, and the most that a preview lasts.
+    static uint64_t HoldFrames();
+    static uint64_t LongestFrames();
+
+    int SampleRate() const override;
+    std::size_t Render(float* out, std::size_t frames) override;
+
+private:
+    // Runs the model's next frame into frame_. Returns false at the end of the preview.
+    bool NextFrame();
+
+    DseBank bank_;
+    ntdlib::dse::Song song_;
+    std::unique_ptr<ntdlib::dse::Player> player_;
+    std::shared_ptr<const std::atomic<bool>> release_;
+    bool enhanced_ = false;
+    bool started_ = false; // a voice has sounded
+    bool ended_ = false;
+    uint64_t frames_ = 0; // the model's frames since the start
+    std::vector<ntdlib::ntr::SoundOutput> output_;
+    std::vector<int16_t> samples_;
+    std::vector<float> frame_;
+    std::size_t frame_read_ = 0;
 };
 
 class SoundPreview final : public ModelPreview

@@ -31,6 +31,7 @@ enum class SoundValue
     kTracks,
     kChannelPriority,
     kReleasePriorityFix,
+    kReverb,
 };
 
 // A new value of a sound: a player's item ID, a bank's item ID or 0xFFFFFFFF for an empty bank slot, a number, the
@@ -46,21 +47,27 @@ struct SoundChange
 // The values of its sounds that an archive's tables hold. An archive of the Wii holds one bank slot and no actor player
 // that ntdlib reads. It holds the pan mode and the pan curve from version 1.2 on, and the release priority fix from
 // version 1.3 on. The other consoles' archives hold every value: a value without a place in a sound's entry takes one
-// at the export.
+// at the export. A DS sound contains what edit::DsHeldValues returns, and a GBA song what edit::GbaHeldValues returns.
 struct HeldValues
 {
     int bank_slots = 4;
     bool actor_player = true;
     bool pan = true;
     bool release_priority_fix = true;
+    bool tracks = true;
+    uint32_t highest_volume = 255;
+    uint32_t highest_priority = 127;
 };
 
 // The values that the archive of `file` holds.
 HeldValues HeldValuesOf(const format::File& file);
 
+// Whether only a sequence sound has `value`.
+bool OfSequenceSounds(SoundValue value);
+
 // The highest number that `value` takes: 255 for the volume, 1 for the pan mode and the release priority fix, 8 for the
-// pan curve, 127 for the priorities, 3 for the actor player and 0xFFFF for the tracks' flags. A player and a bank take
-// item IDs instead.
+// pan curve, 127 for the priorities and the level of a GBA song's reverb, 3 for the actor player and 0xFFFF for the
+// tracks' flags. A player and a bank take item IDs instead.
 uint32_t HighestOf(SoundValue value);
 
 // The value of `sound` that `value` names, in a SoundChange's terms. A bank slot past the sound's list of banks holds

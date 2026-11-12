@@ -9,13 +9,14 @@
 #include <span>
 #include <utility>
 
+#include "song/preview_parts.h"
+
 namespace hokuto::song
 {
 
-SequencePreview::SequencePreview(std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                                 std::shared_ptr<const Sequence> sequence, AuxEffects effects,
-                                 const AuxVolumes& volumes, Mixing mixing)
-    : model_(std::move(archive), std::move(sequence), std::move(effects), mixing),
+SequencePreview::SequencePreview(Played played, std::shared_ptr<const Sequence> sequence, ModelOptions options,
+                                 const AuxVolumes& volumes)
+    : model_(std::move(played), std::move(sequence), std::move(options)),
       frame_(model_.FrameSamples() * 2),
       frame_read_(frame_.size())
 {
@@ -34,21 +35,7 @@ int SequencePreview::SampleRate() const
 
 std::size_t SequencePreview::Render(float* out, std::size_t frames)
 {
-    std::size_t done = 0;
-    while (done < frames)
-    {
-        if (frame_read_ == frame_.size() && !NextFrame())
-        {
-            break;
-        }
-
-        const std::size_t count = std::min((frames - done) * 2, frame_.size() - frame_read_);
-        std::copy_n(frame_.data() + frame_read_, count, out + done * 2);
-        frame_read_ += count;
-        done += count / 2;
-    }
-
-    return done;
+    return preview_parts::RenderFrames(out, frames, frame_, frame_read_, [this] { return NextFrame(); });
 }
 
 bool SequencePreview::NextFrame()
@@ -67,12 +54,14 @@ bool SequencePreview::NextFrame()
     // The last frame of a preview that runs to the limit fades out.
     const std::span<const float> samples = model_.FloatOutput();
     ended_ = frames_ == LongestFrames();
-    for (std::size_t i = 0; i < frame_.size(); i++)
+    const std::size_t copied = std::min(samples.size(), frame_.size());
+    std::copy_n(samples.begin(), copied, frame_.begin());
+    std::fill(frame_.begin() + static_cast<std::ptrdiff_t>(copied), frame_.end(), 0.0f);
+    if (ended_)
     {
-        const float sample = i < samples.size() ? samples[i] : 0.0f;
-        const float through = static_cast<float>(i / 2) / static_cast<float>(frame_.size() / 2);
-        frame_[i] = ended_ ? sample * (1.0f - through) : sample;
+        preview_parts::FadeOut(frame_);
     }
+
     frame_read_ = 0;
 
     return true;

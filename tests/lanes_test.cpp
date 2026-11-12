@@ -26,8 +26,10 @@
 #include "app/key_editor.h"
 #include "edit/notes.h"
 #include "format/archive.h"
+#include "format/engine.h"
 #include "format/file.h"
 #include "song/archive.h"
+#include "song/driver.h"
 #include "song/sequence.h"
 
 using hokuto::app::ControlsOf;
@@ -163,6 +165,33 @@ void TestLines()
     XSFLIB_CHECK((tempo.line == std::vector<LanePiece>{{0.0, 96.0, 120 * kOne, 120 * kOne}}));
 }
 
+// On the GBA's other drivers, the volume leads in from the volume at which the driver starts a track. The tempo leads
+// in from the driver's starting tempo where the rules give one, and has no line before the first point where they
+// don't.
+void TestDriverStarts()
+{
+    KeyTrack krawall = TrackOf({Point(Valued(Kind::kVolume, Plain(100)), 0, 48)});
+    krawall.console.driver = &hokuto::song::RulesOf(hokuto::format::Engine::kKrawall, 0);
+    KeyTrack rd2 = TrackOf({});
+    rd2.console.driver = &hokuto::song::RulesOf(hokuto::format::Engine::kRd2, 0);
+    KeyTrack konami = TrackOf({});
+    konami.console.driver = &hokuto::song::RulesOf(hokuto::format::Engine::kKonami, 0);
+
+    const Lane krawall_volume = LaneOf(krawall, {Kind::kVolume});
+    const Lane rd2_tempo = LaneOf(rd2, {Kind::kTempo});
+    const Lane konami_volume = LaneOf(konami, {Kind::kVolume});
+    const Lane konami_tempo = LaneOf(konami, {Kind::kTempo});
+
+    const std::vector<LanePiece> kKrawallLine = {{0.0, 48.0, 64 * kOne, 64 * kOne},
+                                                 {48.0, 96.0, 100 * kOne, 100 * kOne}};
+    XSFLIB_CHECK(krawall_volume.line == kKrawallLine);
+    const auto rd2_start = rd2.console.driver->TempoValue(*rd2.console.driver->StartTempoBpm());
+    XSFLIB_CHECK((rd2_tempo.line == std::vector<LanePiece>{{0.0, 96.0, rd2_start, rd2_start}}));
+    XSFLIB_CHECK(rd2_start != 120 * kOne);
+    XSFLIB_CHECK((konami_volume.line == std::vector<LanePiece>{{0.0, 96.0, 0, 0}}));
+    XSFLIB_CHECK(konami_tempo.line.empty() && konami_tempo.points.empty());
+}
+
 // A lane spans the setting's usual values, widened to hold the track's values and kept within the console's bytes. A
 // value at a height takes the nearest value that the console holds, within the lane.
 void TestRanges()
@@ -180,12 +209,12 @@ void TestRanges()
     XSFLIB_CHECK((LaneRange(plain, {Kind::kPitchBend}).highest < kOne));
     XSFLIB_CHECK((LaneRange(plain, {Kind::kTie}) == ValueRange{0, kOne}));
     const ValueRange kVolumeRange{0, 127 * kOne};
-    XSFLIB_CHECK(NearestValue(hokuto::song::Console{.flavor = sar::Flavor::kNx}, {Kind::kVolume}, 100 * kOne + kOne / 3,
-                              kVolumeRange) == 100 * kOne);
-    XSFLIB_CHECK(NearestValue(hokuto::song::Console{.flavor = sar::Flavor::kNx}, {Kind::kVolume}, 140 * kOne,
-                              kVolumeRange) == 127 * kOne);
-    XSFLIB_CHECK(
-        NearestValue(hokuto::song::Console{.flavor = sar::Flavor::kNx}, {Kind::kVolume}, -kOne, kVolumeRange) == 0);
+    XSFLIB_CHECK(NearestValue(hokuto::song::Console{.engine = hokuto::format::Engine::kSwitch}, {Kind::kVolume},
+                              100 * kOne + kOne / 3, kVolumeRange) == 100 * kOne);
+    XSFLIB_CHECK(NearestValue(hokuto::song::Console{.engine = hokuto::format::Engine::kSwitch}, {Kind::kVolume},
+                              140 * kOne, kVolumeRange) == 127 * kOne);
+    XSFLIB_CHECK(NearestValue(hokuto::song::Console{.engine = hokuto::format::Engine::kSwitch}, {Kind::kVolume}, -kOne,
+                              kVolumeRange) == 0);
 }
 
 // A drag of a point changes its value. A drag of a selected point changes every selected command of its setting by the
@@ -214,6 +243,30 @@ void TestValueEdits()
     XSFLIB_CHECK(!same && !random);
 }
 
+// On the builds of Konami's driver that store a volume in a byte, a PSG channel starts at the low 4 bits of the volume
+// of its track. The volume lane of a PSG track (0 to 3) ends at 15, and a point dragged to the top or past it is set to
+// 15. The lane of a sampled track ends at 127.
+void TestKonamiPsgVolumes()
+{
+    KeyTrack psg = TrackOf({Point(Valued(Kind::kVolume, Plain(8)), 0, 0)});
+    psg.console = hokuto::song::Console{.engine = hokuto::format::Engine::kKonami,
+                                        .driver = &hokuto::song::RulesOf(hokuto::format::Engine::kKonami, 0)};
+    psg.number = 0;
+    KeyTrack sampled = psg;
+    sampled.number = 4;
+    const KeyEditorState state;
+
+    const ValueRange low = LaneRange(psg, {Kind::kVolume});
+    XSFLIB_CHECK((low == ValueRange{0, 15 * kOne}));
+    XSFLIB_CHECK((LaneRange(sampled, {Kind::kVolume}) == ValueRange{0, 127 * kOne}));
+    const std::optional<KeyEdit> top = LaneValueEdit(psg, state, 0, low.highest);
+    const std::optional<KeyEdit> past = LaneValueEdit(psg, state, 0, 127 * kOne);
+    const std::optional<KeyEdit> loud = LaneValueEdit(sampled, state, 0, 127 * kOne);
+    SEQLIB_REQUIRE(top && past && loud);
+    XSFLIB_CHECK(top->changed_controls.at(0).value == Plain(15) && past->changed_controls.at(0).value == Plain(15));
+    XSFLIB_CHECK(loud->changed_controls.at(0).value == Plain(127));
+}
+
 // A drag of a point moves its command in time. A drag of a selected point moves every selected command of its setting
 // with it, a random value included, and changes their values. A start typed for a point moves the same commands, as far
 // as the command with the least room allows. When they can't move that far, or at all, the edit says why.
@@ -229,11 +282,11 @@ void TestMoves()
                  Point(Valued(Kind::kVolume, Argument{Source::kVariable, 3, 0}), 12, 84)});
     KeyEditorState state;
     state.selected_controls = {0, 2, 6, 8};
-    state.limits = {{0, {ShiftRange{0, 36}, std::nullopt}},
-                    {2, {ShiftRange{24, 40}, std::nullopt}},
+    state.limits = {{0, {ShiftRange{0, 36}, std::nullopt, {}}},
+                    {2, {ShiftRange{24, 40}, std::nullopt, {}}},
                     {4, {}},
-                    {6, {ShiftRange{12, 24}, std::nullopt}},
-                    {8, {ShiftRange{60, 36}, std::nullopt}},
+                    {6, {ShiftRange{12, 24}, std::nullopt, {}}},
+                    {8, {ShiftRange{60, 36}, std::nullopt, {}}},
                     {10, {}},
                     {12, {}}};
 
@@ -271,21 +324,41 @@ void TestMoves()
                  typed->name == "Move");
     XSFLIB_CHECK(late->moved_controls.empty() && late->refused.find("no later than 1. 3. 0.") != std::string::npos);
     XSFLIB_CHECK(early->moved_controls.empty() && early->refused.find("no earlier than 1. 3. 0.") != std::string::npos);
-    XSFLIB_CHECK(held->moved_controls.empty() &&
-                 held->refused == "This track's notes set its timing here. Hokuto can't move the command in time yet.");
-    XSFLIB_CHECK(conditional->refused == "Hokuto can't move a command that runs only if the last comparison held.");
-    XSFLIB_CHECK(WhyPointsStay(track, state, 6) == "Hokuto can't move a command that reads or changes a variable.");
+    XSFLIB_CHECK(held->moved_controls.empty() && held->refused ==
+                                                     "The notes of this track set its timing here. Hokuto "
+                                                     "doesn't support moving this command in time yet.");
+    XSFLIB_CHECK(conditional->refused == "Can't move a command that runs only if the last comparison was true.");
+    XSFLIB_CHECK(WhyPointsStay(track, state, 6) == "Can't move a command that reads or changes a variable.");
 }
 
-// A drawn point puts a command of its setting in at its tick, and Delete removes the commands of the points.
+// A drawn point puts a command of its setting in at its tick, and Delete removes the commands of the points. A point
+// drawn at a tick where the track already runs a command of the setting changes that command: the tick keeps one
+// command, and the lane shows it as one point. A point drawn where the setting's command has the value makes no edit. A
+// value from a variable stays, and the edit says why. A command of another setting or at another tick doesn't count.
 void TestDrawAndDelete()
 {
-    const KeyEdit drawn = LaneDrawEdit({Kind::kSend, 2}, 36, 64 * kOne);
+    const KeyTrack track =
+        TrackOf({Point(Valued(Kind::kPan, Plain(10)), 0, 36), Point(Valued(Kind::kSend, Plain(20), 1), 4, 36),
+                 Point(Valued(Kind::kSend, Plain(30), 2), 8, 24),
+                 Point(Valued(Kind::kVolume, Argument{Source::kVariable, 3, 0}), 12, 48)});
+
+    const std::optional<KeyEdit> drawn = LaneDrawEdit(track, {Kind::kSend, 2}, 36, 64 * kOne);
+    const std::optional<KeyEdit> held = LaneDrawEdit(track, {Kind::kPan}, 36, -20 * kOne);
+    const std::optional<KeyEdit> same = LaneDrawEdit(track, {Kind::kPan}, 36, 10 * kOne);
+    const std::optional<KeyEdit> variable = LaneDrawEdit(track, {Kind::kVolume}, 48, 64 * kOne);
     const KeyEdit removed = LaneRemoval({4, 8});
 
-    SEQLIB_REQUIRE(drawn.added_controls.size() == 1);
-    XSFLIB_CHECK(drawn.name == "Edit Controller" && drawn.added_controls[0].first == 36);
-    XSFLIB_CHECK(drawn.added_controls[0].second == Valued(Kind::kSend, Plain(64), 2));
+    SEQLIB_REQUIRE(drawn && drawn->added_controls.size() == 1);
+    XSFLIB_CHECK(drawn->name == "Edit Controller" && drawn->added_controls[0].first == 36);
+    XSFLIB_CHECK(drawn->added_controls[0].second == Valued(Kind::kSend, Plain(64), 2) &&
+                 drawn->changed_controls.empty());
+    SEQLIB_REQUIRE(held && held->changed_controls.size() == 1);
+    XSFLIB_CHECK(held->name == "Edit Controller" && held->added_controls.empty() && held->refused.empty());
+    XSFLIB_CHECK(held->changed_controls.at(0) == Valued(Kind::kPan, Plain(-20)));
+    XSFLIB_CHECK(!same);
+    SEQLIB_REQUIRE(variable);
+    XSFLIB_CHECK(variable->added_controls.empty() && variable->changed_controls.empty());
+    XSFLIB_CHECK(variable->refused == "The value here comes from a variable. Edit it in the List Editor.");
     XSFLIB_CHECK(removed.name == "Delete" && removed.removed_controls == (std::set<uint32_t>{4, 8}));
 }
 
@@ -384,14 +457,18 @@ void TestControlsOfArchive()
 
 int main()
 {
-    TestNamesAndSettings();
-    TestLines();
-    TestRanges();
-    TestValueEdits();
-    TestMoves();
-    TestDrawAndDelete();
-    TestNextLane();
-    TestControlsOfArchive();
-
-    return xsflib::testing::Summary("lanes");
+    return xsflib::testing::RunTest("lanes",
+                                    []
+                                    {
+                                        TestNamesAndSettings();
+                                        TestLines();
+                                        TestDriverStarts();
+                                        TestRanges();
+                                        TestValueEdits();
+                                        TestKonamiPsgVolumes();
+                                        TestMoves();
+                                        TestDrawAndDelete();
+                                        TestNextLane();
+                                        TestControlsOfArchive();
+                                    });
 }

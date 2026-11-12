@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -13,19 +12,14 @@
 #include "ntdlib/ctr/snd/engine.h"
 #include "ntdlib/sar/formats.h"
 
+#include "song/pcm.h"
+
 namespace hokuto::song
 {
 namespace
 {
 
 using ntdlib::ctr::snd::DspKind;
-
-// A sample in floating point, with full scale at 1, as a 16-bit sample.
-int16_t Rounded(float sample)
-{
-    const double scaled = std::round(static_cast<double>(sample) * 32768.0);
-    return static_cast<int16_t>(std::clamp(scaled, -32768.0, 32767.0));
-}
 
 } // namespace
 
@@ -40,14 +34,20 @@ CtrModel::CtrModel(bool enhanced)
     {
         pending_floats_.assign(2 * kEnhancedSilence, 0.0f);
         float_output_.assign(2 * kEnhancedFrameSamples, 0.0f);
-        model_->dsp->SetFrameSink([this](std::span<const float> frame)
-                                  { pending_floats_.insert(pending_floats_.end(), frame.begin(), frame.end()); });
+        const auto keep_frame = [this](std::span<const float> frame)
+        {
+            pending_floats_.insert(pending_floats_.end(), frame.begin(), frame.end());
+        };
+        model_->dsp->SetFrameSink(keep_frame);
         return;
     }
 
     pending_.assign(2 * kSilence, 0);
-    model_->dsp->SetSampleSink([this](std::array<int16_t, 2> sample)
-                               { pending_.insert(pending_.end(), sample.begin(), sample.end()); });
+    const auto keep_sample = [this](std::array<int16_t, 2> sample)
+    {
+        pending_.insert(pending_.end(), sample.begin(), sample.end());
+    };
+    model_->dsp->SetSampleSink(keep_sample);
 }
 
 bool CtrModel::Start(const ntdlib::sar::SoundArchive& archive)
@@ -68,7 +68,7 @@ bool CtrModel::RunFrame()
         std::copy_n(pending_floats_.begin(), count, float_output_.begin());
         std::fill(float_output_.begin() + static_cast<std::ptrdiff_t>(count), float_output_.end(), 0.0f);
         pending_floats_.erase(pending_floats_.begin(), pending_floats_.begin() + static_cast<std::ptrdiff_t>(count));
-        std::transform(float_output_.begin(), float_output_.end(), output_.begin(), Rounded);
+        std::transform(float_output_.begin(), float_output_.end(), output_.begin(), ToPcm16);
         return ran;
     }
 

@@ -65,6 +65,7 @@ std::optional<format::File> WithMeasuredLengths(
                     kept.loop = format::LoopTicks{length->loop->start, length->loop->end};
                 }
             }
+
             measured++;
             if (progress && !progress(measured, sounds.size()))
             {
@@ -79,15 +80,18 @@ std::optional<format::File> WithMeasuredLengths(
     {
         pool.emplace_back(work);
     }
+
     work();
     for (std::thread& thread : pool)
     {
         thread.join();
     }
+
     if (failure)
     {
         std::rethrow_exception(failure);
     }
+
     if (stopped)
     {
         return std::nullopt;
@@ -125,6 +129,16 @@ std::optional<format::File> WithLengths(const format::File& file, const ntdlib::
         return song::MeasureLength(archive, sound, effects, volumes);
     };
     return WithMeasuredLengths(file, sounds, measure, threads, progress);
+}
+
+std::optional<format::File> WithLengths(const format::File& file, const song::DriverRom& rom, std::size_t threads,
+                                        const LengthProgress& progress)
+{
+    const auto measure = [&](uint32_t sound)
+    {
+        return song::MeasureLength(rom, sound);
+    };
+    return WithMeasuredLengths(file, rom.Sounds(), measure, threads, progress);
 }
 
 std::optional<format::File> WithLengths(const format::File& file, const ntdlib::rsar::SoundArchive& archive,

@@ -8,8 +8,9 @@
 // The first wave archive has a name, and the second has none. The new bank comes from another archive: its waves name
 // that archive's wave archives 3 and 7. The new wave sounds come from a file whose waves name the same two, in another
 // order. A bank or a wave sound file of the Wii U or the 3DS comes in as a file of the Switch. A sequence file that
-// only a group file beside the archive holds keeps its sequence's number when a new sound comes in. A Wii archive takes
-// a new sequence sound, a bank and wave sounds through its model. The checks read the exported archive with ntdlib.
+// only a group file beside the archive holds keeps its sequence's number when a new sound comes in. A Wii archive
+// takes a new sequence sound, a bank and wave sounds through its model. A copy of it cut short accepts none. The
+// checks read the exported archive with ntdlib.
 
 #include "edit/new_items.h"
 
@@ -38,13 +39,16 @@
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sar_tools.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
 #include "edit/replace.h"
+#include "edit/timelines.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "format/model.h"
 #include "song/archive.h"
+#include "sound_places.h"
 
 using hokuto::edit::AddBank;
 using hokuto::edit::AddSequenceSound;
@@ -56,10 +60,12 @@ using hokuto::edit::ProgramMap;
 using hokuto::edit::ReadIncoming;
 using hokuto::edit::SoundPlace;
 using hokuto::format::File;
+using hokuto::testing::PlacesOf;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Sequence;
 using ntdlib::sar::Flavor;
 using ntdlib::sar::SoundArchive;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -296,45 +302,11 @@ std::vector<std::pair<std::string, uint32_t>> LabelsOf(const sar::SequenceFile& 
     return labels;
 }
 
-// Where each sound plays in `file`. The program finds the places the same way.
-std::vector<std::optional<SoundPlace>> PlacesOf(const File& file)
-{
-    const std::vector<uint8_t> built = hokuto::format::ExportArchive(file);
-    const std::shared_ptr<const SoundArchive> archive = hokuto::song::LoadArchive(built, "test.bfsar");
-    return hokuto::edit::SoundPlaces(*archive, hokuto::format::SequencesOfFiles(file, built, *archive),
-                                     hokuto::format::StartFieldsOfSounds(file, built));
-}
-
 // Whether `call` throws std::invalid_argument: the edit refuses.
 template <typename Call>
 bool Refused(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
-}
-
-// The message of the std::invalid_argument that `call` throws, or nothing when it throws none.
-template <typename Call>
-std::string Message(Call call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return {};
+    return !ErrorOf<std::invalid_argument>(call).empty();
 }
 
 // The new sound copies the model's values and plays the new file from Main, with the map's program. The new file holds
@@ -449,11 +421,9 @@ void TestGroupSequences()
 
     const File copied = AddSequenceSound(file, 1, "SEQ_COPY", NewSequence(Flavor::kNx), kMain, {});
     const SoundArchive read = Load(hokuto::format::ExportArchive(copied), Flavor::kNx);
-    XSFLIB_CHECK(read.Sounds().size() == 3 && read.Sounds()[2].name == "SEQ_COPY");
-    if (read.Sounds().size() == 3)
-    {
-        XSFLIB_CHECK(FileOf(read, 2).version == 0x00010000);
-    }
+    SEQLIB_REQUIRE(read.Sounds().size() == 3);
+    XSFLIB_CHECK(read.Sounds()[2].name == "SEQ_COPY");
+    XSFLIB_CHECK(FileOf(read, 2).version == 0x00010000);
 }
 
 // The new sound allocates the tracks that its commands open, whatever tracks the model allocates.
@@ -537,14 +507,8 @@ void TestRefusals()
     XSFLIB_CHECK(Refused([&] { AddSequenceSound(file, kFirst, "SEQ_NEW", wide, 0, {}); }));
     XSFLIB_CHECK(HoldsNames(TestArchive(Flavor::kNx), Flavor::kNx));
     XSFLIB_CHECK(!HoldsNames(TestArchive(Flavor::kNx, false), Flavor::kNx));
-    try
-    {
-        AddSequenceSound(unnamed, kFirst, "SEQ_NEW", sequence, 0, {});
-    }
-    catch (const std::invalid_argument& error)
-    {
-        XSFLIB_CHECK(error.what() == NoNamesReason("sound"));
-    }
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&] { AddSequenceSound(unnamed, kFirst, "SEQ_NEW", sequence, 0, {}); }) == NoNamesReason("sound"));
 }
 
 // The new sound's bank slots: the model's, or those chosen for the import. More than four slots, a bank past the table
@@ -714,8 +678,9 @@ void TestWaveArchiveMap(Flavor flavor)
     XSFLIB_CHECK(Refused([&] { WithWaveArchiveMap(file, bank, {{kOtherArchive7, 1}}); }));
     XSFLIB_CHECK(Refused([&] { WithWaveArchiveMap(file, bank, {{kOtherArchive7, 1}, {kOtherArchive3, 2}}); }));
     XSFLIB_CHECK(Refused([&] { WithWaveArchiveMap(bare, bank, kMap); }));
-    XSFLIB_CHECK(Message([&] { WithWaveArchiveMap(file, wave_sounds, {}); }).find("wave sound file") !=
-                 std::string::npos);
+    XSFLIB_CHECK(
+        ErrorOf<std::invalid_argument>([&] { WithWaveArchiveMap(file, wave_sounds, {}); }).find("wave sound file") !=
+        std::string::npos);
 }
 
 // The names of the new sounds: the name for one wave sound. For more, each name takes the wave sound's index in as many
@@ -862,27 +827,57 @@ ntdlib::rsar::ArchiveModel WiiModelOf(const File& file)
     return ntdlib::rsar::ReadArchiveModel(hokuto::format::ExportArchive(file));
 }
 
-// A new sequence sound, bank and wave sounds in the Wii's archive. Each goes in through the model, and the archive's
-// other items keep their entries and their files. A new file goes into the chosen groups, or else into the last group.
-// A group that loads the model takes only what the model doesn't require. The file's sequences keep their numbers when
-// a new file comes before one of them. A file in the model form stays in it, and the game's sizes stay.
-void TestWiiItems()
+// The Wii's archive of the tests of new items, its model, the bytes and the read of its first song, and its groups
+// without the last. A new sequence sound, bank and wave sounds in the Wii's archive. Each goes in through the model,
+// and the archive's other items keep their entries and their files.
+struct WiiItemsFixture
 {
-    namespace rsar = ntdlib::rsar;
-    namespace rsar_files = ntdlib::testing::rsar_files;
+    File file;
+    ntdlib::rsar::ArchiveModel before;
+    std::vector<uint8_t> song;
+    Sequence incoming;
+    std::vector<hokuto::edit::Group> groups;
+};
+
+// The fixture of the tests of new items in the Wii's archive.
+WiiItemsFixture MakeWiiItemsFixture()
+{
     const File file = hokuto::format::ImportWiiArchive(WiiArchive());
-    const rsar::ArchiveModel before = WiiModelOf(file);
+    const ntdlib::rsar::ArchiveModel before = WiiModelOf(file);
     const std::vector<uint8_t> song = before.files[0].bytes;
     const Sequence incoming =
-        ReadIncoming(song, hokuto::song::Console{.wii = hokuto::format::BuildOfWiiArchive(*file.native)}).sequence;
+        ReadIncoming(song, hokuto::song::Console{.engine = hokuto::format::Engine::kWii,
+                                                 .wii = hokuto::format::BuildOfWiiArchive(*file.native)})
+            .sequence;
+    const std::vector<hokuto::edit::Group> groups = hokuto::edit::WiiGroupsOf(file);
+
+    return {file, before, song, incoming, groups};
+}
+
+// The Wii's archive accepts new items, and lists its groups without the last.
+void TestWiiItemsLayout()
+{
+    const WiiItemsFixture fixture = MakeWiiItemsFixture();
+    const File& file = fixture.file;
+    const std::vector<hokuto::edit::Group>& groups = fixture.groups;
 
     // The tools laid the archive out, and it takes new items. The Import window refuses a file without a Wii archive.
     XSFLIB_CHECK(!hokuto::edit::WiiAdditionsRefused(file));
-    XSFLIB_CHECK(hokuto::edit::WiiAdditionsRefused(File()) == "The file holds no archive of the Wii.");
+    XSFLIB_CHECK(hokuto::edit::WiiAdditionsRefused(File()) == "The file contains no Wii archive.");
 
     // The groups, without the last.
-    const std::vector<hokuto::edit::Group> groups = hokuto::edit::WiiGroupsOf(file);
     XSFLIB_CHECK(groups.size() == 2 && groups[0].name == "GROUP_A" && (groups[1].files == std::vector<uint32_t>{1, 3}));
+}
+
+// A new file goes into the chosen groups, or else into the last group. A group that loads the model takes only what the
+// model doesn't require. The file's sequences keep their numbers when a new file comes before one of them.
+void TestWiiSequenceGroups()
+{
+    namespace rsar = ntdlib::rsar;
+    const WiiItemsFixture fixture = MakeWiiItemsFixture();
+    const File& file = fixture.file;
+    const ntdlib::rsar::ArchiveModel& before = fixture.before;
+    const Sequence& incoming = fixture.incoming;
 
     // A copy of SEQ_SONG in GROUP_A, before SEQ_TWO's file. GROUP_A loads the model, and takes only the new file. The
     // new file takes the size that NewSequenceFileSize gives. The second song keeps its number.
@@ -913,22 +908,34 @@ void TestWiiItems()
     XSFLIB_CHECK((in_b.groups[1].file_ids == std::vector<uint32_t>{1, 3, 4}) && in_b.groups[0] == before.groups[0]);
     const rsar::ArchiveModel alone = WiiModelOf(hokuto::edit::AddWiiSequenceSound(file, 0, "SEQ_NEW", incoming, 0, {}));
     XSFLIB_CHECK(alone.groups == before.groups && alone.files.size() == 5);
+}
+
+// Without a model, a new sequence sound of the Wii uses Hokuto's settings and the first bank. The refusals of a new
+// sequence sound.
+void TestWiiSequenceSettings()
+{
+    namespace rsar = ntdlib::rsar;
+    const WiiItemsFixture fixture = MakeWiiItemsFixture();
+    const File& file = fixture.file;
+    const Sequence& incoming = fixture.incoming;
 
     // Without a model, Hokuto's settings and the first bank. The refusals.
     const rsar::ArchiveModel plain =
         WiiModelOf(hokuto::edit::AddWiiSequenceSound(file, std::nullopt, "SEQ_NEW", incoming, 0, {}));
     SEQLIB_REQUIRE(plain.sounds.size() == 4);
     XSFLIB_CHECK(plain.sounds[3].volume == 127 && plain.sounds[3].bank == 0 && plain.sounds[3].player_id == 0);
-    XSFLIB_CHECK(Message([&] { hokuto::edit::AddWiiSequenceSound(file, 0, "SEQ_TWO", incoming, 0, {}); }) ==
-                 "The archive holds the name SEQ_TWO already.");
-    XSFLIB_CHECK(Message([&] { hokuto::edit::AddWiiSequenceSound(file, 1, "SEQ_NEW", incoming, 0, {}); }) ==
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&] { hokuto::edit::AddWiiSequenceSound(file, 0, "SEQ_TWO", incoming, 0, {}); }) ==
+                 "The archive already has an item named SEQ_TWO.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&] { hokuto::edit::AddWiiSequenceSound(file, 1, "SEQ_NEW", incoming, 0, {}); }) ==
                  "The sound to copy isn't a sequence sound.");
-    XSFLIB_CHECK(Message(
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&]
                      {
                          hokuto::edit::AddWiiSequenceSound(file, 0, "SEQ_NEW", incoming, 0, {},
                                                            std::vector<uint32_t>{sar::kNoItem});
-                     }) == "A sequence sound of the Wii plays a bank. Choose one for its slot.");
+                     }) == "A Wii sequence sound requires a bank. Choose one for its slot.");
     XSFLIB_CHECK(Refused(
         [&]
         {
@@ -937,6 +944,16 @@ void TestWiiItems()
         }));
     const std::vector<uint32_t> kPast = {2};
     XSFLIB_CHECK(Refused([&] { hokuto::edit::AddWiiSequenceSound(file, 0, "SEQ_NEW", incoming, 0, {}, {}, kPast); }));
+}
+
+// New banks in the Wii's archive: one with its RWAR, and one whose wave data doesn't hold its waves.
+void TestWiiNewBanks()
+{
+    namespace rsar = ntdlib::rsar;
+    namespace rsar_files = ntdlib::testing::rsar_files;
+    const WiiItemsFixture fixture = MakeWiiItemsFixture();
+    const File& file = fixture.file;
+    const ntdlib::rsar::ArchiveModel& before = fixture.before;
 
     // A bank with its RWAR, and a bank whose wave data doesn't hold its waves.
     const File with_bank =
@@ -950,6 +967,17 @@ void TestWiiItems()
     XSFLIB_CHECK(Refused([&] { hokuto::edit::AddWiiBank(file, "BANK_NEW", rsar_files::MakeNewBank(), {}); }));
     XSFLIB_CHECK(Refused(
         [&] { hokuto::edit::AddWiiBank(file, "SEQ_SONG", rsar_files::MakeNewBank(), rsar_files::MakeRwar()); }));
+}
+
+// New wave sounds in the Wii's archive, copies of WSD_ONE and SEQ_SONG.
+void TestWiiNewWaveSounds()
+{
+    namespace rsar = ntdlib::rsar;
+    namespace rsar_files = ntdlib::testing::rsar_files;
+    const WiiItemsFixture fixture = MakeWiiItemsFixture();
+    const File& file = fixture.file;
+    const ntdlib::rsar::ArchiveModel& before = fixture.before;
+    const std::vector<uint32_t> kGroupA = {0};
 
     // Wave sounds that copy WSD_ONE and SEQ_SONG. GROUP_A loads WSD_ONE and takes the new file.
     const std::vector<uint8_t> wave_sounds = before.files[2].bytes;
@@ -971,6 +999,14 @@ void TestWiiItems()
     XSFLIB_CHECK(Refused([&] { hokuto::edit::AddWiiWaveSounds(file, 0, "WSD_ONE", wave_sounds, wave_data); }));
     XSFLIB_CHECK(
         Refused([&] { hokuto::edit::AddWiiWaveSounds(file, 0, "WSD_NEW", rsar_files::MakeNewBank(), wave_data); }));
+}
+
+// A file in the model form stays in it, and a file of another console takes no new item.
+void TestWiiModelForm()
+{
+    namespace rsar_files = ntdlib::testing::rsar_files;
+    const WiiItemsFixture fixture = MakeWiiItemsFixture();
+    const File& file = fixture.file;
 
     // A file in the model form stays in it. A file of another console takes no new item.
     const File modelled = hokuto::format::InModelForm(file);
@@ -980,35 +1016,87 @@ void TestWiiItems()
                  WiiModelOf(modelled_bank).banks.size() == 2);
     const File later = hokuto::format::ImportArchive(BankArchive(Flavor::kNx), Flavor::kNx);
     XSFLIB_CHECK(
-        Message([&]
-                { hokuto::edit::AddWiiBank(later, "BANK_NEW", rsar_files::MakeNewBank(), rsar_files::MakeRwar()); }) ==
-        "The file holds no archive of the Wii.");
+        ErrorOf<std::invalid_argument>(
+            [&] { hokuto::edit::AddWiiBank(later, "BANK_NEW", rsar_files::MakeNewBank(), rsar_files::MakeRwar()); }) ==
+        "The file contains no Wii archive.");
+}
+
+// A Wii archive cut short in the middle of its FILE block. Its header contains the offset of the block at 0x20 and its
+// size at 0x24. The tables before the block stay whole, and the archive imports. Its model reads past its end, and the
+// archive accepts no new item. The Import window says why.
+void TestCutShortWiiArchive()
+{
+    const std::vector<uint8_t> whole = WiiArchive();
+    const std::size_t end = xsflib::LoadBe32(&whole[0x20]) + xsflib::LoadBe32(&whole[0x24]) / 2;
+    SEQLIB_REQUIRE(end < whole.size());
+    const File cut = hokuto::format::ImportWiiArchive(std::span(whole).first(end));
+
+    const std::optional<std::string> refused = hokuto::edit::WiiAdditionsRefused(cut);
+
+    XSFLIB_CHECK(refused == "Can't add items to this archive. It's cut short: its tables refer to data past its end.");
+    XSFLIB_CHECK(xsflib::testing::ErrorOf<xsflib::FormatError>([&] { hokuto::format::InModelForm(cut); }) ==
+                 "the archive is cut short, and a file in the model form requires the whole archive");
+}
+
+// The Import window reads the groups and the refusal of the Wii's archive from the archive that an export writes, with
+// each timeline folded (WiiAdditionsOf). They match those of the archive that the edits read (WiiGroupsOf and
+// WiiAdditionsRefused), for an archive that accepts new items, for one cut short, and for a file of another console.
+void TestWiiAdditionsOfExport()
+{
+    const File file = hokuto::edit::OpenTimelines(hokuto::format::ImportWiiArchive(WiiArchive()));
+    const std::vector<uint8_t> whole = WiiArchive();
+    const std::size_t end = xsflib::LoadBe32(&whole[0x20]) + xsflib::LoadBe32(&whole[0x24]) / 2;
+    SEQLIB_REQUIRE(end < whole.size());
+    const File cut = hokuto::format::ImportWiiArchive(std::span(whole).first(end));
+
+    const hokuto::edit::WiiAdditions additions =
+        hokuto::edit::WiiAdditionsOf(file, hokuto::format::ExportArchive(hokuto::edit::FoldTimelines(file)));
+    const hokuto::edit::WiiAdditions cut_additions =
+        hokuto::edit::WiiAdditionsOf(cut, hokuto::format::ExportArchive(cut));
+    const hokuto::edit::WiiAdditions other = hokuto::edit::WiiAdditionsOf(File(), {});
+
+    XSFLIB_CHECK(!additions.refused && additions.groups == hokuto::edit::WiiGroupsOf(file));
+    XSFLIB_CHECK(additions.groups.size() == 2 && additions.groups[1].name == "GROUP_B");
+    XSFLIB_CHECK(cut_additions.groups.empty() && cut_additions.refused == hokuto::edit::WiiAdditionsRefused(cut));
+    XSFLIB_CHECK(cut_additions.refused ==
+                 "Can't add items to this archive. It's cut short: its tables refer to data past its end.");
+    XSFLIB_CHECK(other.groups.empty() && other.refused == "The file contains no Wii archive.");
+    XSFLIB_CHECK(hokuto::edit::WiiAdditionsOf(File()).refused == "The file contains no Wii archive.");
 }
 
 } // namespace
 
 int main()
 {
-    TestAdd(Flavor::kNx);
-    TestAdd(Flavor::kCafe);
-    TestTracks();
-    TestGroupSequences();
-    TestNames();
-    TestRefusals();
-    TestBankSlots();
-    TestNewWaveArchives(Flavor::kNx);
-    TestNewWaveArchives(Flavor::kCafe);
-    TestNewBank(Flavor::kNx);
-    TestNewBank(Flavor::kCafe);
-    TestListedWaveArchives();
-    TestNewBankRefusals();
-    TestWaveArchiveMap(Flavor::kNx);
-    TestWaveArchiveMap(Flavor::kCafe);
-    TestWaveSoundNames();
-    TestNewWaveSounds(Flavor::kNx);
-    TestNewWaveSounds(Flavor::kCafe);
-    TestNewWaveSoundRefusals();
-    TestWiiItems();
-
-    return xsflib::testing::Summary("new_items");
+    return xsflib::testing::RunTest("new_items",
+                                    []
+                                    {
+                                        TestAdd(Flavor::kNx);
+                                        TestAdd(Flavor::kCafe);
+                                        TestTracks();
+                                        TestGroupSequences();
+                                        TestNames();
+                                        TestRefusals();
+                                        TestBankSlots();
+                                        TestNewWaveArchives(Flavor::kNx);
+                                        TestNewWaveArchives(Flavor::kCafe);
+                                        TestNewBank(Flavor::kNx);
+                                        TestNewBank(Flavor::kCafe);
+                                        TestListedWaveArchives();
+                                        TestNewBankRefusals();
+                                        TestWaveArchiveMap(Flavor::kNx);
+                                        TestWaveArchiveMap(Flavor::kCafe);
+                                        TestWaveSoundNames();
+                                        TestNewWaveSounds(Flavor::kNx);
+                                        TestNewWaveSounds(Flavor::kCafe);
+                                        TestNewWaveSoundRefusals();
+                                        TestWiiItemsLayout();
+                                        TestWiiSequenceGroups();
+                                        TestWiiSequenceSettings();
+                                        TestWiiNewBanks();
+                                        TestWiiNewWaveSounds();
+                                        TestWiiModelForm();
+                                        TestCutShortWiiArchive();
+                                        TestWiiAdditionsOfExport();
+                                    });
 }

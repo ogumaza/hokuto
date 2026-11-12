@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // A sound archive opened from a file, with the group files that the game keeps beside it. Hokuto reads the BFSAR
-// archives of the Switch and the Wii U, and the BCSAR archives of the 3DS. ntdlib reads them as hacsf2, cafesf2 and
-// citrusf2 do. The archive's flavor, in ntdlib::sar::SoundArchive::ReadOptions, names its console. The Wii's BRSAR
-// archives go through ntdlib's rsar. revosf2 reads them with rsar too.
+// archives of the Switch and the Wii U, and the BCSAR archives of the 3DS. The archive's flavor, in
+// ntdlib::sar::SoundArchive::ReadOptions, names its console. The Wii's BRSAR archives go through ntdlib's rsar.
 
 #pragma once
 
@@ -22,6 +21,8 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "ntdlib/sound_build.h"
+
+#include "format/engines.h"
 
 namespace hokuto::song
 {
@@ -65,38 +66,49 @@ std::vector<std::pair<std::string, std::vector<uint8_t>>> PlaceGroupFiles(
 ntdlib::sar::Flavor FlavorOfArchive(std::span<const uint8_t> bytes);
 
 // The settings of ntdlib's performer and converter for the console whose archive `archive` is: the Switch's, the
-// Wii U's or the 3DS's. citrusf2 converts with the 3DS's.
+// Wii U's or the 3DS's.
 ntdlib::sequence_export::Settings SettingsOf(const ntdlib::sar::SoundArchive& archive);
 
 // The sound archive of the Wii in `bytes`, read by `options`. Messages call it `name`. Throws std::runtime_error with a
 // message for the user if the bytes aren't such an archive. The converter reads an archive by rsar's default options.
-// So does revosf2. The model of the Wii plays an archive read by ntdlib::rvl::snd::kRsarOptions.
+// The model of the Wii plays an archive read by ntdlib::rvl::snd::kRsarOptions.
 std::shared_ptr<const ntdlib::rsar::SoundArchive> LoadWiiArchive(std::vector<uint8_t> bytes, const std::string& name,
                                                                  const ntdlib::rsar::ReadOptions& options = {});
 
 // The settings of ntdlib's performer and converter for the Wii archive `archive`: those of `build`, the game's build of
-// NW4R SND, or else of the build that the archive's version gives. revosf2 takes that build when it lacks the game's
-// main.dol.
+// NW4R SND, or else of the build that the archive's version gives.
 ntdlib::sequence_export::Settings SettingsOf(const ntdlib::rsar::SoundArchive& archive,
                                              const std::optional<ntdlib::SndBuild>& build = {});
 
 // The build of NW4R SND that a game's main.dol links, from its banner, with the build of AX that its microcode
-// identifies (ntdlib::FindSndBuild and ntdlib::IdentifyBuild). revosf2 reads the build the same way. Nothing for bytes
-// that aren't a DOL with AX's microcode.
+// identifies (ntdlib::FindSndBuild and ntdlib::IdentifyBuild). Nothing for bytes that aren't a DOL with AX's microcode.
 std::optional<ntdlib::SndBuild> ReadWiiBuild(std::span<const uint8_t> dol);
 
 // The main.dol of the extracted disc that holds the Wii archive at `archive`: sys/main.dol beside a folder named files
-// that holds the archive, at any depth. revosf2 looks for it there too. Dolphin and wit extract a disc that way.
-// Nothing if there's none.
+// that holds the archive, at any depth. Dolphin and wit extract a disc that way. Nothing if there's none.
 std::optional<std::filesystem::path> FindMainDol(const std::filesystem::path& archive);
 
-// The console whose player reads a sequence's bytecode: the 3DS, the Wii U or the Switch by its flavor, or the Wii with
-// the build of NW4R SND that plays the archive. The Wii's builds differ in the commands that they read.
+class DriverRules;
+
+// The console whose player reads a sequence's bytecode: the 3DS, the Wii U or the Switch, the Wii with the build of
+// NW4R SND that plays the archive, MusicPlayer2000 on the GBA, NITRO-Composer or DSE on the DS, or one of the GBA's
+// other drivers. The Wii's builds differ in the commands that they read.
 struct Console
 {
-    ntdlib::sar::Flavor flavor = ntdlib::sar::Flavor::kNx; // means nothing on the Wii
+    // The engine. On the Wii, `wii` also contains the build of NW4R SND, and on one of the GBA's other drivers,
+    // `driver` contains the driver's rules. MusicPlayer2000 reads the bytes of ntdlib/mp2k/commands.h, NITRO-Composer
+    // those of ntdlib/ntr/snd/commands.h, and Procyon Studio's sound driver those of ntdlib/dse/commands.h.
+    format::Engine engine = format::Engine::kSwitch;
+
     std::optional<ntdlib::SndBuild> wii;
+    const DriverRules* driver = nullptr; // the bytes of another of the GBA's drivers, such as Konami's (song/driver.h)
+
+    // On the GBA, the bytes that a note reads at most after its code (format::NativeArchive::gba_note_arguments).
+    int note_arguments = 3;
 };
+
+// The flavor of the engine of `console`: a later console's flavor, and kNx for the other engines.
+ntdlib::sar::Flavor FlavorOf(const Console& console);
 
 // The rules of NintendoWare's codec by which the console of `flavor` reads its sequences: the Wii U's for kCafe, the
 // 3DS's for kCtr, and otherwise the Switch's. ntdlib's join encodes a sequence by the same rules.
@@ -112,7 +124,14 @@ bool Runs(ntdlib::sar::Flavor flavor, ntdlib::commands::Kind kind, uint8_t index
 
 // The same for `console`. NW4R SND's builds lack the commands that ntdlib::nwsnd::RevolutionPolicy::HasCommand leaves
 // out, such as the bank select, the LFO's phase, curve and period, and the commands that later builds added.
+// MusicPlayer2000 and NITRO-Composer run the commands that their bytes hold.
 bool Runs(const Console& console, ntdlib::commands::Kind kind, uint8_t index);
+
+// Whether the player of `console` runs `command`, a command of a track with its opcode and arguments. On DSE, a command
+// of kOther is any code that the common form has no kind for. The driver runs each of them except 0xAB, 0xCB and 0xF8.
+// Those skip their arguments and do nothing else. For a command of another kind, or on another console, the function
+// returns the answer for its kind and index.
+bool Runs(const Console& console, const ntdlib::commands::Command& command);
 
 // What `command` sets, for a message about the commands that a console skips or lacks, such as "send C", "LFOs 1 to 3"
 // or "bank select".

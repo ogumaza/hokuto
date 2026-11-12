@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -26,6 +27,8 @@
 #include "seqlib/sf2/writer.h"
 #include "xsflib/testing/check.h"
 
+#include "test_math.h"
+
 namespace
 {
 
@@ -33,9 +36,10 @@ namespace sf2 = seqlib::sf2;
 namespace midi = seqlib::midi;
 using hokuto::synth::RenderSoundFont;
 using hokuto::synth::StereoRender;
+using hokuto::testing::Near;
 using G = sf2::Generator;
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kPi = std::numbers::pi;
 constexpr int kRate = 48000;
 
 // The sine's period in points, and its frequency at its original key when it plays at 48 kHz.
@@ -252,12 +256,6 @@ double Frequency(const StereoRender& render, double from, double to)
 double Cents(const StereoRender& render, double from, double to, double base = kSineHz)
 {
     return 1200.0 * std::log2(Frequency(render, from, to) / base);
-}
-
-// Whether `a` and `b` differ by `tolerance` or less.
-bool Near(double a, double b, double tolerance)
-{
-    return std::abs(a - b) <= tolerance;
 }
 
 // The pitch follows the key, the root key, the tunings and the sample's rate (sections 7.10 and 8.1.2).
@@ -730,21 +728,23 @@ void TestRefusals()
 
 int main()
 {
-    TestPitch();
-    TestPitchWheel();
-    TestLevels();
-    TestModulators();
-    TestPan();
-    TestEnvelope();
-    TestLoops();
-    TestExclusiveClass();
-    TestSustainPedal();
-    TestDrums();
-    TestFilter();
-    TestTiming();
-    TestProgress();
-    TestLimit();
-    TestRefusals();
-
-    return xsflib::testing::Summary("sf2_synth");
+    return xsflib::testing::RunTest("sf2_synth",
+                                    []
+                                    {
+                                        TestPitch();
+                                        TestPitchWheel();
+                                        TestLevels();
+                                        TestModulators();
+                                        TestPan();
+                                        TestEnvelope();
+                                        TestLoops();
+                                        TestExclusiveClass();
+                                        TestSustainPedal();
+                                        TestDrums();
+                                        TestFilter();
+                                        TestTiming();
+                                        TestProgress();
+                                        TestLimit();
+                                        TestRefusals();
+                                    });
 }

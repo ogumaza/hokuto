@@ -2,30 +2,24 @@
 
 // The Export window of File > Export and of the browser's Export…, and the warnings that it lists. The window shows
 // what an export writes, from which sequence or item, and the warnings, before anything is written.
+// export_warnings.h declares the warnings.
 
 #pragma once
 
 #include <imgui.h>
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-#include <span>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sound_build.h"
 
-#include "app/effect_editor.h"
-#include "format/archive.h"
-#include "song/audibility.h"
+#include "format/engine.h"
 #include "song/items.h"
-#include "song/sequence.h"
 
 namespace hokuto::app
 {
@@ -45,6 +39,7 @@ enum class ExportTarget
     kWiiUSong,   // of the Wii U
     kSwitchSong, // of the Switch
     kWiiSong,    // of the Wii
+    kDsSong,     // of the DS
     kItemFile,
     kCtrFile,    // an item's file for the 3DS
     kWiiUFile,   // for the Wii U
@@ -53,6 +48,7 @@ enum class ExportTarget
     kWav,
     kSoundFont,
     kSfz,
+    kAiff, // a GBA voice's sample as an AIFF file
 };
 
 // The console among the 3DS, the Wii U and the Switch that `target` writes an item's file for, or nothing for a target
@@ -126,41 +122,15 @@ struct MeasuredView
     std::string closing;
 };
 
-// The lines of the Measured section: `renderer` played the export, and the measure compared it with Hokuto's playback
-// over `seconds` (song::CompareLevels). `departures` names the renderer's known departures from the format's
-// specification, and can be empty. `cut` says that the measure stopped before the end of the export. `random` says that
-// the sound draws random numbers (edit::DrawsRandom).
-std::vector<std::string> MeasuredLines(const song::LevelComparison& comparison, const std::string& renderer,
-                                       const std::string& departures, double seconds, bool cut, bool random);
-
-// The line of a place that the measure names: how audible it is, where it lies, and how much louder or quieter the
-// export plays there. A run of windows more than 6 dB off, or a second more than 3 dB off, is audible. A second from 1
-// to 3 dB off may be audible.
-std::string PlaceLine(const song::LevelPlace& place);
-
-// The names of `names` in a list for a warning: "A", "A and B", "A, B and C", or the first five and how many more.
-std::string NameList(const std::vector<std::string>& names);
-
-// A size for a warning: bytes up to a kilobyte, then kilobytes or megabytes to a tenth.
-std::string SizeText(std::size_t bytes);
-
-// The end of a sentence about one thing that says how its size changes from `before` to `after` bytes: "grows by
-// 2.1 KB, to 38.5 MB", "shrinks by 96 bytes, to 1.1 MB" or "keeps its size, 1.1 MB". With `plural`, the words follow a
-// plural subject, such as "grow by 2.1 KB, to 38.5 MB". The change itself shows where the rounding would hide it.
-std::string SizeChangeText(std::size_t before, std::size_t after, bool plural = false);
-
-// The sizes of two files for a sentence that compares them, such as "The present file takes 2.1 KB. The new one takes
-// 2.3 KB.": SizeText's, or each size in bytes where two different sizes would read the same in SizeText.
-std::pair<std::string, std::string> SizeTexts(std::size_t first, std::size_t second);
-
 // The view of File > Export's export to `target`: the sound archive, or MIDI with SoundFont 2 or SFZ. `sound` names the
 // sequence of a MIDI export.
 ExportView FileExportView(ExportTarget target, const std::string& sound);
 
 // The view of File > Export > Another Console…: the sequence's sound in a new file of each console other than the
 // console of `from`, the file's engine. A sound of the 3DS, the Wii U or the Switch goes to the other two, the nearest
-// first (song::OtherConsoles), and then to the Wii. A sound of the Wii goes to each of the three: the Wii U first, then
-// the Switch and the 3DS. `sound` names the sequence.
+// first (song::OtherConsoles). A sound of another engine goes to each of the three: the Wii U first, then the Switch
+// and the 3DS. The Wii follows, unless the sound comes from the Wii. NITRO-Composer of the DS comes last, unless the
+// sound plays on it. `sound` names the sequence.
 ExportView OtherConsoleExportView(format::Engine from, const std::string& sound);
 
 // The view of the export of `item` of `archive`. The item's file is the first target. The same file for each of the
@@ -180,71 +150,41 @@ ExportView ItemExportView(const ntdlib::rsar::SoundArchive& archive, const song:
 // SoundFont 2 file or as an SFZ file.
 ExportView InstrumentExportView(const std::string& bank, uint32_t program);
 
-// The warnings about an archive that grew in an export: the archive, then the files of each group that grew. A game
-// loads a group's files into its sound heap, and no file gives the heap's size.
-std::vector<std::string> GrowthWarnings(const format::ArchiveGrowth& growth);
+// The view of the export of a GBA ROM's voice group that `voice_group` names: a SoundFont 2 file of the voices that the
+// songs select, with each voice at its program, or the group as assembly. With `program`, the voice at that program
+// alone. With `sample` too, the voice's sample as the ROM contains it or as an AIFF file.
+ExportView VoiceGroupExportView(const std::string& voice_group, const std::optional<uint32_t>& program,
+                                bool sample = false);
 
-// The note of an export of the archive that writes streams beside it, at `paths`: the streams that the game lacks.
-std::string StreamsNote(const std::vector<std::string>& paths);
+// The view of the export of a sequence of a DS archive that `sequence` names: MIDI with SoundFont 2, MIDI with SFZ, and
+// the sequence's file.
+ExportView DsSequenceExportView(const std::string& sequence);
 
-// The note of an export of the archive that writes group files beside it, under `names`: the group files that the edits
-// changed. A name that starts with the userManagementFiles folder's name and a slash goes into that folder
-// (song::PlaceGroupFiles).
-std::string GroupFilesNote(const std::vector<std::string>& names);
+// The view of the export of a sound of DSE that `sound` names: MIDI with SoundFont 2, and MIDI with SFZ. A song is also
+// exported as its file (`song`). A sound effect's file contains the other sound effects of its bank too.
+ExportView DseSoundExportView(const std::string& sound, bool song);
 
-// The warning of an export that leaves out group file `index`, counted from 0: an edit changed it, and Hokuto couldn't
-// find its group.
-std::string UnknownGroupNote(std::size_t index);
+// The window of a GBA song that the browser exports: as MIDI with SoundFont 2, or as assembly.
+ExportView GbaSongExportView(const std::string& song);
 
-// The note of an export to MIDI of a sound that plays on the engine of `console`, another console than the file's
-// `file_console`. The files hold the sound's conversion for that console.
-std::string EngineNote(const std::string& console, const std::string& file_console);
+// The view of the export of a song of another driver of the GBA, such as Konami's driver: MIDI with SoundFont 2, and
+// with `sfz`, MIDI with SFZ too.
+ExportView DriverSongExportView(const std::string& song, bool sfz);
 
-// The note of an export of the archive whose sounds `names` play on other consoles' engines in Hokuto. The archive
-// keeps them for `file_console`.
-std::string EngineSoundsNote(const std::vector<std::string>& names, const std::string& file_console);
+// The view of the export of the samples of such a driver: all of them as a SoundFont 2 file for kBank, as a folder of
+// WAV files for kWaveArchive, and one of them as a WAV file or a SoundFont 2 file otherwise. With `sfz`, a SoundFont's
+// samples go out as SFZ files too.
+ExportView DriverSamplesExportView(song::ItemKind kind, const std::string& source, bool sfz);
 
-// What the MIDI file and the instruments of `target` can't hold of `sequence`, beside what the converter reports: the
-// paths that its variables choose, the effects on the aux buses, and the buses' volumes.
-std::vector<std::string> MidiWarnings(const song::Sequence& sequence, const BusEffects& effects,
-                                      const std::array<float, format::kAuxBuses>& volumes, ExportTarget target);
+// The view of the export of an item of a DS archive of `kind` that `source` names: a bank, a wave archive, a wave or a
+// stream. Each is exported as its file. A bank's instruments go out as SoundFont 2 and SFZ, and the waves and a stream
+// as WAV files.
+ExportView DsItemExportView(song::ItemKind kind, const std::string& source);
 
-// The warnings of an export of `item` of `archive` to `target`: the other sounds whose sequences a sequence file holds,
-// or whose wave sounds a wave sound file holds, and what a WAV file leaves out: channels past the first two, and a wave
-// sound's other notes, its pan and its envelope. A file for another console takes the oldest versions that the
-// console's games hold, and a warning gives a version older than the file's. `found` lists what the export's work
-// found: each wave of a wave archive that a WAV export leaves out, with the reason, or what the converter reports of a
-// bank's instruments.
-std::vector<std::string> ItemWarnings(const ntdlib::sar::SoundArchive& archive, const song::Item& item,
-                                      ExportTarget target, const std::vector<std::string>& found);
-
-// The warnings of an export of the stream file `stream` as a file of the console of `to`. A stream of a later version
-// than the one that goes to that console goes out in that version. A stream that goes to the 3DS from another console
-// holds none of the samples that the 3DS's tools encode past a looped stream's end. Before version 2.3.0.0 of a 3DS
-// archive, a stream sound plays the tracks of its stream file, and the converted stream may hold none. A stream of the
-// Wii keeps its tracks. A stream that ntdlib can't read gives no warnings: the conversion fails with the reason.
-std::vector<std::string> StreamConversionWarnings(std::span<const uint8_t> stream, ntdlib::sar::Flavor to);
-
-// The warnings of an export of `stream`, a stream file of the Wii, as a WAV file. `build` of NW4R SND plays it. A build
-// before March 2008 plays only the first two channels. A later build plays the stream's tracks with their volumes and
-// pans. The WAV file holds every channel as it is.
-std::vector<std::string> WiiStreamWavWarnings(std::span<const uint8_t> stream, const ntdlib::SndBuild& build);
-
-// The same for `item` of the Wii's `archive`: the other sounds whose sequences or wave sounds its file holds, and what
-// a WAV file leaves out: channels past the first two, and a wave sound's pan and envelope. NW4R SND plays only a wave
-// sound's first note.
-std::vector<std::string> ItemWarnings(const ntdlib::rsar::SoundArchive& archive, const song::Item& item,
-                                      ExportTarget target, const std::vector<std::string>& found);
-
-// The lines that the Export window lists for an export of SFZ files (`sfz`) or SoundFont 2 files: those of a
-// conversion's report (song::ConversionReport) or a bank's warnings from ntdlib's converter. A line that names only the
-// other format stays out (song::ReportFor), and each line becomes a sentence.
-std::vector<std::string> ConverterWarnings(std::vector<std::string> lines, bool sfz);
-
-// The warning of an export of a bank's instruments to SoundFont 2 when they need several files, or nothing. `stem` is
-// the name that the dialog offers, without its extension.
-std::vector<std::string> SoundFontWarnings(const ntdlib::sequence_export::BankConversion& bank,
-                                           const std::string& stem);
+// The view of the export of an item of DSE's files of `kind` that `source` names: a bank, a bank with samples or a
+// wave. A bank is exported as its file, and its instruments as SoundFont 2 and SFZ. A bank with samples is exported as
+// its file, and its waves as WAV files. A wave has no file by itself and is exported as a WAV file.
+ExportView DseItemExportView(song::ItemKind kind, const std::string& source);
 
 // Draws the Export window, a modal popup. The first call opens it. The window lies over the middle of the main window
 // until the user drags it by its title bar. `place` then keeps the window's centre, and the window opens there again.

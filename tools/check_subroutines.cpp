@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Checks the edits of a program's labels and subroutines (src/edit/subroutines.h) on a sound archive of the Wii, the
-// 3DS, the Wii U or the Switch. The List Editor makes these edits. The tool imports the archive into a Hokuto file the
-// way the program does, but without timelines: it edits every sequence as a program. ntdlib's performer reads each
-// sequence sound. Five rounds follow:
+// 3DS, the Wii U or the Switch, on a GBA ROM with MusicPlayer2000 or Konami's driver, or on DSE files. The List Editor
+// makes these edits. The tool imports the archive into a Hokuto file the way the program does, but without timelines:
+// it edits every sequence as a program. ntdlib's performer reads each sequence sound. Five rounds follow:
 //
 // - Labels. Up to 8 labels of each sequence take another name and then their name again. Up to 8 new labels go in at
 //   commands spread over the sequence, and go again. Up to 8 labels move to the next command that nothing goes to, and
@@ -31,11 +31,24 @@
 // prints a line for each problem, and a summary. It returns 1 when a sequence or a sound differs, or when an edit, a
 // read or the export fails.
 //
+// A GBA ROM follows the rules of MusicPlayer2000: patterns three deep, and repeats that go back inside a pattern. The
+// ROM keeps no labels, and an import adds none. In the first round, up to 8 labels therefore go into each song first,
+// at commands spread over it. After the new names, the export has to give the ROM of the file without labels, byte for
+// byte, and the file has to save and open again with the new names in both forms. On a ROM without room for a song that
+// outgrows its place (tools::Roomless), a round leaves out the edits of such a song, and counts them apart. With
+// --filler, such a song moves into the filler runs of the ROM instead (format::NativeArchive::gba_filler). A ROM with
+// Konami's driver has the same rounds, by the driver's rules.
+//
+// A set of DSE's files keeps no labels either. Each sequence's first label names its file, and the export has to give
+// the set's bytes after the new names. DSE's tracks have no calls. The second round's edit refuses a subroutine. A ROM
+// of another of the GBA's drivers keeps no labels either. On Brownie Brown's driver, a label names each sound's list,
+// and the export has to give the ROM's bytes after the new names.
+//
 // With --model, the file goes into the model form before the edits (format::InModelForm), and the archive that the
 // model builds has to be the game's. Each file that the edits make then has to save in both forms and open again as it
 // was (tools/checked_archive.h).
 //
-// usage: hokuto_check_subroutines [--model] <archive>
+// usage: hokuto_check_subroutines [--model] [--filler] <archive>
 
 #include <algorithm>
 #include <cstddef>
@@ -59,13 +72,17 @@
 #include "xsflib/files.h"
 
 #include "app/list_edits.h"
+#include "check_support.h"
 #include "checked_archive.h"
+#include "checked_saves.h"
 #include "edit/bytecode.h"
 #include "edit/commands.h"
 #include "edit/replace.h"
 #include "edit/subroutines.h"
 #include "format/archive.h"
 #include "format/file.h"
+#include "loop_passes.h"
+#include "notes_apart.h"
 #include "song/sequence.h"
 
 namespace
@@ -76,6 +93,7 @@ namespace sar = ntdlib::sar;
 namespace song = hokuto::song;
 using hokuto::format::File;
 using hokuto::tools::CheckedArchive;
+using hokuto::tools::SpreadIndices;
 using ntdlib::commands::Command;
 using ntdlib::commands::Label;
 using ntdlib::commands::Sequence;
@@ -101,6 +119,8 @@ struct Totals
     std::size_t reads = 0;
     std::size_t loops_moved = 0;
     std::size_t problems = 0;
+    std::size_t given = 0;    // the labels that went into a GBA song first
+    std::size_t outgrown = 0; // the edits of songs that outgrew their places in a GBA ROM without room
     std::map<std::string, std::size_t> refusals;
 };
 
@@ -156,21 +176,13 @@ bool SamePlaying(const song::Sequence& before, const song::Sequence& after, bool
         return NotesOf(after, std::numeric_limits<uint32_t>::max(), true) ==
                NotesOf(before, std::numeric_limits<uint32_t>::max(), true);
     }
-    if (!before.loop || !after.loop)
+    const std::optional<uint32_t> end = hokuto::tools::EarlierEnd(before, after);
+    if (!end)
     {
         return false;
     }
 
-    const uint32_t period = before.loop->end - before.loop->start;
-    const uint32_t shift = after.loop->start > before.loop->start ? after.loop->start - before.loop->start
-                                                                  : before.loop->start - after.loop->start;
-    if (period == 0 || after.loop->end - after.loop->start != period || shift % period != 0)
-    {
-        return false;
-    }
-
-    const uint32_t end = std::min(before.loop->end, after.loop->end);
-    return NotesOf(after, end, false) == NotesOf(before, end, false);
+    return NotesOf(after, *end, false) == NotesOf(before, *end, false);
 }
 
 // The items of sequence `sequence` of `file` that a jump, a call, a track start, a label or a place in the archive's
@@ -205,27 +217,23 @@ bool SameSequence(const File& before, const File& after, uint32_t sequence)
     return *before.sequences[sequence] == *after.sequences[sequence] && before.native->fields == after.native->fields;
 }
 
-// Up to `most` indices from 0 to `count`, spread evenly.
-std::vector<std::size_t> Spread(std::size_t count, std::size_t most)
-{
-    std::vector<std::size_t> chosen;
-    const std::size_t taken = std::min(count, most);
-    for (std::size_t i = 0; i < taken; i++)
-    {
-        chosen.push_back(i * count / taken);
-    }
-
-    return chosen;
-}
-
 // The first round's pairs of edits on sequence `sequence`: new names, new labels and moves, each undone by a second
-// edit.
+// edit. A sequence whose command offsets can't be found counts as a problem, and receives no edits.
 void LabelPairs(const Archive& archive, uint32_t sequence, Totals& totals)
 {
     const File& file = archive.file;
     const Sequence& commands = *file.sequences[sequence];
-    const std::vector<uint32_t> offsets = edit::Offsets(commands, edit::ConsoleOf(file));
     const std::string where = "sequence " + std::to_string(sequence) + ": ";
+    std::vector<uint32_t> offsets;
+    try
+    {
+        offsets = edit::Offsets(commands, edit::ConsoleOf(file));
+    }
+    catch (const std::exception& error)
+    {
+        Problem(archive, totals, where + "the offsets of the commands can't be found: " + error.what());
+        return;
+    }
     const auto check = [&](const File& back, const std::string& what)
     {
         if (!SameSequence(file, back, sequence))
@@ -234,7 +242,7 @@ void LabelPairs(const Archive& archive, uint32_t sequence, Totals& totals)
         }
     };
 
-    for (const std::size_t index : Spread(commands.labels.size(), kMostLabels))
+    for (const std::size_t index : SpreadIndices(commands.labels.size(), kMostLabels))
     {
         const std::string& name = commands.labels[index].name;
         try
@@ -250,7 +258,7 @@ void LabelPairs(const Archive& archive, uint32_t sequence, Totals& totals)
         }
     }
 
-    for (const std::size_t item : Spread(commands.items.size(), kMostLabels))
+    for (const std::size_t item : SpreadIndices(commands.items.size(), kMostLabels))
     {
         const std::string name = edit::UniqueLabel(commands.labels, "check_label");
         try
@@ -267,7 +275,7 @@ void LabelPairs(const Archive& archive, uint32_t sequence, Totals& totals)
 
     // Up to kMostLabels labels, spread over the file, move to the next command that nothing goes to, and back.
     const std::set<uint32_t> entered = EnteredItems(file, sequence);
-    for (const std::size_t index : Spread(commands.labels.size(), kMostLabels))
+    for (const std::size_t index : SpreadIndices(commands.labels.size(), kMostLabels))
     {
         const Label& label = commands.labels[index];
         uint32_t to = label.item + 1;
@@ -293,9 +301,48 @@ void LabelPairs(const Archive& archive, uint32_t sequence, Totals& totals)
     }
 }
 
+// `file` with up to kMostLabels new labels in each sequence, at commands spread over it. A GBA song has no labels. A
+// sequence whose command offsets can't be found counts as a problem, and receives no labels.
+File WithLabels(const Archive& archive, File file, Totals& totals)
+{
+    for (uint32_t sequence = 0; sequence < file.sequences.size(); sequence++)
+    {
+        std::vector<uint32_t> offsets;
+        try
+        {
+            offsets = edit::Offsets(*file.sequences[sequence], edit::ConsoleOf(file));
+        }
+        catch (const std::exception& error)
+        {
+            Problem(archive, totals,
+                    "sequence " + std::to_string(sequence) +
+                        ": the offsets of the commands can't be found: " + error.what());
+            continue;
+        }
+        for (const std::size_t item : SpreadIndices(file.sequences[sequence]->items.size(), kMostLabels))
+        {
+            const std::string name = edit::UniqueLabel(file.sequences[sequence]->labels, "check_label");
+            try
+            {
+                file = edit::AddLabel(file, sequence, offsets[item], name).file;
+                ++totals.given;
+            }
+            catch (const std::exception& error)
+            {
+                Problem(archive, totals,
+                        "sequence " + std::to_string(sequence) + ": a first label at item " + std::to_string(item) +
+                            ": " + error.what());
+            }
+        }
+    }
+
+    return file;
+}
+
 // The first round's version: every label of every sequence takes another name. The exported archive, imported again,
-// has to hold the new names.
-void RenameAll(const Archive& archive, Totals& totals)
+// has to hold the new names. On the GBA, with any of its drivers, and on DSE, the files keep no labels. The export has
+// to give the bytes of `unlabeled`, and the saved file has to hold the new names.
+void RenameAll(const Archive& archive, const File& unlabeled, Totals& totals)
 {
     File version = archive.file;
     for (uint32_t sequence = 0; sequence < version.sequences.size(); sequence++)
@@ -315,6 +362,31 @@ void RenameAll(const Archive& archive, Totals& totals)
                             error.what());
             }
         }
+    }
+
+    if (archive.archive.gba || archive.archive.driver || archive.archive.dse)
+    {
+        try
+        {
+            if (hokuto::format::ExportArchive(version) != hokuto::format::ExportArchive(unlabeled))
+            {
+                Problem(archive, totals, "the labels changed the bytes of the export");
+            }
+            if (!hokuto::tools::SavesAndOpens(version))
+            {
+                Problem(archive, totals, "the file with the new names opens otherwise");
+                return;
+            }
+            for (const auto& sequence : version.sequences)
+            {
+                totals.names_read += sequence->labels.size();
+            }
+        }
+        catch (const std::exception& error)
+        {
+            Problem(archive, totals, std::string("the save with the new names failed: ") + error.what());
+        }
+        return;
     }
 
     try
@@ -548,7 +620,14 @@ void CallRound(const Archive& archive, const std::string& round, std::size_t& co
         {
             try
             {
-                version = edit_call(version, sequence, call).file;
+                File made = edit_call(version, sequence, call).file;
+                if (hokuto::tools::Outgrows(archive.archive, made, sequence))
+                {
+                    ++totals.outgrown;
+                    refusal.reset();
+                    break;
+                }
+                version = std::move(made);
                 edited.insert(sequence);
                 ++count;
                 refusal.reset();
@@ -557,6 +636,12 @@ void CallRound(const Archive& archive, const std::string& round, std::size_t& co
             catch (const std::invalid_argument& error)
             {
                 refusal = refusal.value_or(error.what());
+            }
+            catch (const std::runtime_error& error)
+            {
+                Problem(archive, totals, "sequence " + std::to_string(sequence) + ": " + round + ": " + error.what());
+                refusal.reset();
+                break;
             }
         }
         if (refusal)
@@ -568,15 +653,78 @@ void CallRound(const Archive& archive, const std::string& round, std::size_t& co
     CompareSounds(archive, version, edited, round, totals);
 }
 
+// The first round: the pairs of edits on each sequence of `archive` (LabelPairs), then the version in which every label
+// receives another name (RenameAll). A GBA song receives some labels first.
+void LabelAll(const Archive& archive, Totals& totals)
+{
+    if (archive.archive.gba || archive.archive.driver)
+    {
+        Archive labeled = archive;
+        labeled.file = WithLabels(archive, archive.file, totals);
+        for (uint32_t sequence = 0; sequence < labeled.file.sequences.size(); sequence++)
+        {
+            LabelPairs(labeled, sequence, totals);
+        }
+        RenameAll(labeled, archive.file, totals);
+    }
+    else
+    {
+        for (uint32_t sequence = 0; sequence < archive.file.sequences.size(); sequence++)
+        {
+            LabelPairs(archive, sequence, totals);
+        }
+        RenameAll(archive, archive.file, totals);
+    }
+}
+
+// Makes a run of each sequence of `archive` a subroutine, all in one version, and then by itself and back, and checks
+// that the sounds play as before.
+void MakeSubroutines(const Archive& archive, Totals& totals)
+{
+    File version = archive.file;
+    std::set<uint32_t> edited;
+    for (const auto& [sequence, sounds] : archive.by_sequence)
+    {
+        const std::optional<Run> run = RunOf(archive, sequence, totals);
+        if (!run)
+        {
+            continue;
+        }
+
+        try
+        {
+            File made = edit::ToSubroutine(version, sequence, run->commands, run->depth, run->name).file;
+            if (hokuto::tools::Outgrows(archive.archive, made, sequence))
+            {
+                ++totals.outgrown;
+                SubroutineAndBack(archive, sequence, *run, totals);
+                continue;
+            }
+            version = std::move(made);
+            edited.insert(sequence);
+            ++totals.subroutines;
+            totals.subroutine_commands += run->commands.size();
+        }
+        catch (const std::exception& error)
+        {
+            Problem(archive, totals,
+                    "sequence " + std::to_string(sequence) + ": the subroutine failed in the version: " + error.what());
+        }
+        SubroutineAndBack(archive, sequence, *run, totals);
+    }
+    CompareSounds(archive, version, edited, "Convert to Subroutine", totals);
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     std::vector<std::string> arguments = xsflib::console::Arguments(argc, argv);
     hokuto::tools::TakeModelOption(arguments);
+    hokuto::tools::TakeFillerOption(arguments);
     if (arguments.size() != 2)
     {
-        std::fprintf(stderr, "usage: hokuto_check_subroutines [--model] <archive>\n");
+        std::fprintf(stderr, "usage: hokuto_check_subroutines [--model] [--filler] <archive>\n");
         return 2;
     }
 
@@ -600,59 +748,18 @@ int main(int argc, char** argv)
 
     // The sequence sounds with a place, by their sequence.
     Totals totals;
-    for (uint32_t sound = 0; sound < archive.places.size(); sound++)
-    {
-        if (!archive.places[sound])
-        {
-            continue;
-        }
-
-        try
-        {
-            archive.songs.emplace(sound, archive.archive.Read(sound));
-            archive.by_sequence[archive.places[sound]->sequence].push_back(sound);
-            ++totals.sounds;
-        }
-        catch (const std::exception&)
-        {
-            ++totals.unreadable;
-        }
-    }
+    hokuto::tools::SequenceSounds sequence_sounds =
+        hokuto::tools::ReadSequenceSounds(archive.archive, archive.places, {}, archive.songs);
+    archive.by_sequence = std::move(sequence_sounds.by_sequence);
+    totals.sounds = sequence_sounds.read;
+    totals.unreadable = sequence_sounds.unreadable;
     totals.sequences = archive.by_sequence.size();
 
-    // The labels.
-    for (uint32_t sequence = 0; sequence < archive.file.sequences.size(); sequence++)
-    {
-        LabelPairs(archive, sequence, totals);
-    }
-    RenameAll(archive, totals);
+    // The labels. A GBA song receives some first.
+    LabelAll(archive, totals);
 
     // A run of each sequence becomes a subroutine, all in one version, and then by itself and back.
-    File version = archive.file;
-    std::set<uint32_t> edited;
-    for (const auto& [sequence, sounds] : archive.by_sequence)
-    {
-        const std::optional<Run> run = RunOf(archive, sequence, totals);
-        if (!run)
-        {
-            continue;
-        }
-
-        try
-        {
-            version = edit::ToSubroutine(version, sequence, run->commands, run->depth, run->name).file;
-            edited.insert(sequence);
-            ++totals.subroutines;
-            totals.subroutine_commands += run->commands.size();
-        }
-        catch (const std::exception& error)
-        {
-            Problem(archive, totals,
-                    "sequence " + std::to_string(sequence) + ": the subroutine failed in the version: " + error.what());
-        }
-        SubroutineAndBack(archive, sequence, *run, totals);
-    }
-    CompareSounds(archive, version, edited, "Convert to Subroutine", totals);
+    MakeSubroutines(archive, totals);
 
     // The calls.
     const auto dissolve = [](const File& file, uint32_t sequence, uint32_t call)
@@ -678,6 +785,13 @@ int main(int argc, char** argv)
         archive.name.c_str(), totals.sequences, totals.sounds, totals.unreadable, totals.renamed, totals.added,
         totals.moved, totals.names_read, totals.subroutines, totals.subroutine_commands, totals.dissolved,
         totals.copied, totals.reads, totals.loops_moved, totals.problems);
+    if (archive.archive.gba || archive.archive.driver)
+    {
+        std::printf(
+            "%s: on the GBA: %zu labels went in first: the ROM keeps none. %zu times, an edit of a song stayed "
+            "out: the song outgrew its place, and the ROM has no room for it.\n",
+            archive.name.c_str(), totals.given, totals.outgrown);
+    }
 
     return totals.problems == 0 ? 0 : 1;
 }

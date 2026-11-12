@@ -62,12 +62,14 @@ public:
         {
             Check(com, "starting COM");
         }
+
         const HRESULT started = MFStartup(MF_VERSION, MFSTARTUP_LITE);
         if (FAILED(started))
         {
             End();
             Check(started, "starting Media Foundation");
         }
+
         media_ = true;
     }
 
@@ -87,6 +89,7 @@ private:
             MFShutdown();
             media_ = false;
         }
+
         if (com_)
         {
             CoUninitialize();
@@ -122,7 +125,7 @@ Header HeaderOf(std::span<const uint8_t> frame)
     header.channels = ((frame[2] & 0x01u) << 2) | (frame[3] >> 6);
     if (header.rate_index >= kRates.size() || header.channels == 0)
     {
-        throw std::runtime_error("The AAC stream's header gives no rate or no channels that Hokuto reads.");
+        throw std::runtime_error("The AAC stream header has a sample rate or channel count that Hokuto can't read.");
     }
 
     return header;
@@ -140,6 +143,7 @@ HRESULT FindTransform(const GUID& category, const MFT_REGISTER_TYPE_INFO* input,
     {
         return listed;
     }
+
     HRESULT activated = MF_E_TOPO_CODEC_NOT_FOUND;
     for (UINT32 i = 0; i < count; i++)
     {
@@ -147,8 +151,10 @@ HRESULT FindTransform(const GUID& category, const MFT_REGISTER_TYPE_INFO* input,
         {
             activated = found[i]->ActivateObject(IID_PPV_ARGS(&transform));
         }
+
         found[i]->Release();
     }
+
     CoTaskMemFree(found);
 
     return activated;
@@ -179,7 +185,7 @@ ComPtr<IMFTransform> FindEncoder()
 void TakePackets(IMFTransform& encoder, std::vector<uint8_t>& bytes, uint32_t rate, uint32_t channels)
 {
     MFT_OUTPUT_STREAM_INFO info{};
-    CheckEncoding(encoder.GetOutputStreamInfo(0, &info), "reading the output's size");
+    CheckEncoding(encoder.GetOutputStreamInfo(0, &info), "reading the output buffer size");
     const bool provides =
         (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
     for (;;)
@@ -192,6 +198,7 @@ void TakePackets(IMFTransform& encoder, std::vector<uint8_t>& bytes, uint32_t ra
             CheckEncoding(MFCreateMemoryBuffer(std::max<DWORD>(info.cbSize, 8192), &buffer), "making a buffer");
             CheckEncoding(sample->AddBuffer(buffer.Get()), "making a sample");
         }
+
         MFT_OUTPUT_DATA_BUFFER output{};
         output.pSample = sample.Get();
         DWORD status = 0;
@@ -200,10 +207,12 @@ void TakePackets(IMFTransform& encoder, std::vector<uint8_t>& bytes, uint32_t ra
         {
             output.pEvents->Release();
         }
+
         if (result == MF_E_TRANSFORM_NEED_MORE_INPUT)
         {
             return;
         }
+
         CheckEncoding(result, "encoding");
         if (provides)
         {
@@ -227,6 +236,7 @@ void TakePackets(IMFTransform& encoder, std::vector<uint8_t>& bytes, uint32_t ra
             contiguous->Unlock();
             throw;
         }
+
         contiguous->Unlock();
     }
 }
@@ -235,7 +245,7 @@ void TakePackets(IMFTransform& encoder, std::vector<uint8_t>& bytes, uint32_t ra
 void TakeOutput(IMFTransform& decoder, std::vector<int16_t>& samples)
 {
     MFT_OUTPUT_STREAM_INFO info{};
-    Check(decoder.GetOutputStreamInfo(0, &info), "reading the output's size");
+    Check(decoder.GetOutputStreamInfo(0, &info), "reading the output buffer size");
     const bool provides =
         (info.dwFlags & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES)) != 0;
     for (;;)
@@ -248,6 +258,7 @@ void TakeOutput(IMFTransform& decoder, std::vector<int16_t>& samples)
             Check(MFCreateMemoryBuffer(std::max<DWORD>(info.cbSize, 65536), &buffer), "making a buffer");
             Check(sample->AddBuffer(buffer.Get()), "making a sample");
         }
+
         MFT_OUTPUT_DATA_BUFFER output{};
         output.pSample = sample.Get();
         DWORD status = 0;
@@ -256,10 +267,12 @@ void TakeOutput(IMFTransform& decoder, std::vector<int16_t>& samples)
         {
             output.pEvents->Release();
         }
+
         if (result == MF_E_TRANSFORM_NEED_MORE_INPUT)
         {
             return;
         }
+
         Check(result, "decoding");
         if (provides)
         {
@@ -278,29 +291,16 @@ void TakeOutput(IMFTransform& decoder, std::vector<int16_t>& samples)
     }
 }
 
-} // namespace
-
-ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
+// The input type of a decoder of the stream that `header` heads.
+ComPtr<IMFMediaType> DecoderInputType(const Header& header)
 {
-    const uint32_t frames = AdtsFrames(bytes);
-    if (frames == 0)
-    {
-        throw std::runtime_error("The file isn't an AAC stream in ADTS.");
-    }
-
-    const Header header = HeaderOf(bytes);
-    const Session session;
-    const ComPtr<IMFTransform> decoder = FindDecoder();
-
-    // The input: AAC in ADTS. The user data holds the part of HEAACWAVEINFO after its WAVEFORMATEX, with the payload's
-    // type, then the AudioSpecificConfig that the header gives.
     ComPtr<IMFMediaType> input;
-    Check(MFCreateMediaType(&input), "making the input's type");
-    Check(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "setting the input's type");
-    Check(input->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC), "setting the input's type");
-    Check(input->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, kRates[header.rate_index]), "setting the input's rate");
-    Check(input->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, header.channels), "setting the input's channels");
-    Check(input->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 1), "setting the input's payload");
+    Check(MFCreateMediaType(&input), "making the input type");
+    Check(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "setting the input type");
+    Check(input->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC), "setting the input type");
+    Check(input->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, kRates[header.rate_index]), "setting the input sample rate");
+    Check(input->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, header.channels), "setting the input channels");
+    Check(input->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 1), "setting the input payload type");
     const std::array<uint8_t, 14> user_data = {
         0x01,
         0x00,
@@ -317,10 +317,14 @@ ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
         static_cast<uint8_t>((header.object_type << 3) | (header.rate_index >> 1)),
         static_cast<uint8_t>(((header.rate_index & 0x01u) << 7) | (header.channels << 3))};
     Check(input->SetBlob(MF_MT_USER_DATA, user_data.data(), static_cast<UINT32>(user_data.size())),
-          "setting the input's details");
-    Check(decoder->SetInputType(0, input.Get(), 0), "setting the input's type");
+          "setting the input configuration");
 
-    // The output: 16-bit PCM, among the types that the decoder offers.
+    return input;
+}
+
+// Sets the output type of `decoder`.
+void SetPcmOutput(const ComPtr<IMFTransform>& decoder)
+{
     for (DWORD i = 0;; i++)
     {
         ComPtr<IMFMediaType> offered;
@@ -330,15 +334,16 @@ ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
         if (SUCCEEDED(offered->GetGUID(MF_MT_SUBTYPE, &subtype)) && subtype == MFAudioFormat_PCM &&
             SUCCEEDED(offered->GetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, &bits)) && bits == 16)
         {
-            Check(decoder->SetOutputType(0, offered.Get(), 0), "setting the output's type");
+            Check(decoder->SetOutputType(0, offered.Get(), 0), "setting the output type");
             break;
         }
     }
+}
 
-    // Each frame goes in as a sample of its own, header included.
-    Check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0), "starting the decoder");
-    Check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0), "starting the decoder");
-    std::vector<int16_t> samples;
+// Decodes the `frames` frames of `bytes`, the stream that `header` heads, through `decoder` into `samples`.
+void FeedFrames(const ComPtr<IMFTransform>& decoder, std::span<const uint8_t> bytes, uint32_t frames,
+                const Header& header, std::vector<int16_t>& samples)
+{
     std::span<const uint8_t> rest = bytes;
     for (uint32_t frame = 0; frame < frames; frame++)
     {
@@ -365,10 +370,74 @@ ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
             TakeOutput(*decoder.Get(), samples);
             result = decoder->ProcessInput(0, sample.Get(), 0);
         }
+
         Check(result, "decoding");
         TakeOutput(*decoder.Get(), samples);
         rest = rest.subspan(length);
     }
+}
+
+// The input type of an encoder of `pcm` with `channels` channels.
+ComPtr<IMFMediaType> EncoderInputType(const ntdlib::wave::Pcm& pcm, uint32_t channels)
+{
+    ComPtr<IMFMediaType> input;
+    CheckEncoding(MFCreateMediaType(&input), "making the input type");
+    CheckEncoding(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "setting the input type");
+    CheckEncoding(input->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM), "setting the input type");
+    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "setting the input sample size");
+    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, pcm.sample_rate), "setting the input sample rate");
+    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, channels), "setting the input channels");
+    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 2 * channels), "setting the input block alignment");
+    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 2 * channels * pcm.sample_rate),
+                  "setting the input sample rate");
+
+    return input;
+}
+
+// The output type of an encoder of `pcm` with `channels` channels, at `bit_rate` bits a second.
+ComPtr<IMFMediaType> EncoderOutputType(const ntdlib::wave::Pcm& pcm, uint32_t channels, uint32_t bit_rate)
+{
+    ComPtr<IMFMediaType> output;
+    CheckEncoding(MFCreateMediaType(&output), "making the output type");
+    CheckEncoding(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "setting the output type");
+    CheckEncoding(output->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC), "setting the output type");
+    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "setting the output sample size");
+    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, pcm.sample_rate), "setting the output sample rate");
+    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, channels), "setting the output channels");
+    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, bit_rate / 8), "setting the output bit rate");
+    CheckEncoding(output->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0), "setting the output payload type");
+    CheckEncoding(output->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29), "setting the output profile");
+
+    return output;
+}
+
+} // namespace
+
+ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
+{
+    const uint32_t frames = AdtsFrames(bytes);
+    if (frames == 0)
+    {
+        throw std::runtime_error("The file isn't an AAC stream in ADTS.");
+    }
+
+    const Header header = HeaderOf(bytes);
+    const Session session;
+    const ComPtr<IMFTransform> decoder = FindDecoder();
+
+    // The input: AAC in ADTS. The user data holds the part of HEAACWAVEINFO after its WAVEFORMATEX, with the payload's
+    // type, then the AudioSpecificConfig that the header gives.
+    const ComPtr<IMFMediaType> input = DecoderInputType(header);
+    Check(decoder->SetInputType(0, input.Get(), 0), "setting the input type");
+
+    // The output: 16-bit PCM, among the types that the decoder offers.
+    SetPcmOutput(decoder);
+
+    // Each frame goes in as a sample of its own, header included.
+    Check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0), "starting the decoder");
+    Check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0), "starting the decoder");
+    std::vector<int16_t> samples;
+    FeedFrames(decoder, bytes, frames, header, samples);
     Check(decoder->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0), "ending the stream");
     Check(decoder->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0), "ending the stream");
     TakeOutput(*decoder.Get(), samples);
@@ -383,6 +452,7 @@ ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
             pcm.channels[channel].push_back(samples[i + channel]);
         }
     }
+
     pcm.loop_end = static_cast<uint32_t>(pcm.channels.front().size());
 
     return pcm;
@@ -401,26 +471,8 @@ std::vector<uint8_t> EncodeAdts(const ntdlib::wave::Pcm& pcm, uint32_t bit_rate)
     const ComPtr<IMFTransform> encoder = FindEncoder();
 
     // The input: 16-bit PCM. The output: raw AAC-LC at the rate of bytes that the bits give.
-    ComPtr<IMFMediaType> input;
-    CheckEncoding(MFCreateMediaType(&input), "making the input's type");
-    CheckEncoding(input->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "setting the input's type");
-    CheckEncoding(input->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM), "setting the input's type");
-    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "setting the input's samples");
-    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, pcm.sample_rate), "setting the input's rate");
-    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, channels), "setting the input's channels");
-    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 2 * channels), "setting the input's frames");
-    CheckEncoding(input->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 2 * channels * pcm.sample_rate),
-                  "setting the input's rate");
-    ComPtr<IMFMediaType> output;
-    CheckEncoding(MFCreateMediaType(&output), "making the output's type");
-    CheckEncoding(output->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "setting the output's type");
-    CheckEncoding(output->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC), "setting the output's type");
-    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16), "setting the output's samples");
-    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, pcm.sample_rate), "setting the output's rate");
-    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, channels), "setting the output's channels");
-    CheckEncoding(output->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, bit_rate / 8), "setting the output's bits");
-    CheckEncoding(output->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0), "setting the output's payload");
-    CheckEncoding(output->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29), "setting the output's profile");
+    const ComPtr<IMFMediaType> input = EncoderInputType(pcm, channels);
+    const ComPtr<IMFMediaType> output = EncoderOutputType(pcm, channels, bit_rate);
 
     // Some versions of the encoder require the input's type first. Others require the output's type first. The code
     // sets the input's type and then the output's. After a failure, it sets them in the other order.
@@ -431,8 +483,8 @@ std::vector<uint8_t> EncodeAdts(const ntdlib::wave::Pcm& pcm, uint32_t bit_rate)
     }
     if (FAILED(typed))
     {
-        CheckEncoding(encoder->SetOutputType(0, output.Get(), 0), "setting the output's type");
-        CheckEncoding(encoder->SetInputType(0, input.Get(), 0), "setting the input's type");
+        CheckEncoding(encoder->SetOutputType(0, output.Get(), 0), "setting the output type");
+        CheckEncoding(encoder->SetInputType(0, input.Get(), 0), "setting the input type");
     }
 
     // The priming's silence and the samples go in 1,024 frames at a time.
@@ -459,6 +511,7 @@ std::vector<uint8_t> EncodeAdts(const ntdlib::wave::Pcm& pcm, uint32_t bit_rate)
                     frame < kPriming ? int16_t{0} : pcm.channels[channel][frame - kPriming];
             }
         }
+
         buffer->Unlock();
         CheckEncoding(buffer->SetCurrentLength(size), "filling a buffer");
         ComPtr<IMFSample> sample;
@@ -476,9 +529,11 @@ std::vector<uint8_t> EncodeAdts(const ntdlib::wave::Pcm& pcm, uint32_t bit_rate)
             TakePackets(*encoder.Get(), bytes, pcm.sample_rate, channels);
             result = encoder->ProcessInput(0, sample.Get(), 0);
         }
+
         CheckEncoding(result, "encoding");
         TakePackets(*encoder.Get(), bytes, pcm.sample_rate, channels);
     }
+
     CheckEncoding(encoder->ProcessMessage(MFT_MESSAGE_NOTIFY_END_OF_STREAM, 0), "ending the stream");
     CheckEncoding(encoder->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0), "ending the stream");
     TakePackets(*encoder.Get(), bytes, pcm.sample_rate, channels);

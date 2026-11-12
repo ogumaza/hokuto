@@ -85,7 +85,8 @@ void TestForget()
     history.Forget();
     const bool kept = history.Actions().size() == 1 && history.Done() == 1 && history.CanUndo();
 
-    XSFLIB_CHECK(forgot && kept);
+    XSFLIB_CHECK(forgot);
+    XSFLIB_CHECK(kept);
 }
 
 // GoTo moves to the file after any number of actions. A number past the end means the end.
@@ -105,7 +106,9 @@ void TestGoTo()
     history.GoTo(9);
     const bool at_end = history.Current() == second && history.Done() == 2;
 
-    XSFLIB_CHECK(at_start && at_first && at_end);
+    XSFLIB_CHECK(at_start);
+    XSFLIB_CHECK(at_first);
+    XSFLIB_CHECK(at_end);
 }
 
 // The history is modified while its file isn't the saved one. Undo back to the saved file ends that. Once an action
@@ -128,18 +131,25 @@ void TestModified()
     history.Undo();
     const bool dropped = history.Modified();
 
-    XSFLIB_CHECK(fresh && edited && undone && saved && before_save && dropped);
+    XSFLIB_CHECK(fresh);
+    XSFLIB_CHECK(edited);
+    XSFLIB_CHECK(undone);
+    XSFLIB_CHECK(saved);
+    XSFLIB_CHECK(before_save);
+    XSFLIB_CHECK(dropped);
 }
 
 } // namespace
 
 int main()
 {
-    TestUndoRedo();
-    TestBranch();
-    TestForget();
-    TestGoTo();
-    TestModified();
-
-    return xsflib::testing::Summary("edit");
+    return xsflib::testing::RunTest("edit",
+                                    []
+                                    {
+                                        TestUndoRedo();
+                                        TestBranch();
+                                        TestForget();
+                                        TestGoTo();
+                                        TestModified();
+                                    });
 }

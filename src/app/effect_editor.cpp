@@ -12,12 +12,12 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <tuple>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/rvl/snd/effect_setup.h"
 
+#include "app/engine_rows.h"
 #include "app/theme.h"
 #include "app/widgets.h"
 #include "format/archive.h"
@@ -38,40 +38,22 @@ using theme::Px;
 
 static_assert(kFxChannels == format::kAuxBuses && std::tuple_size_v<song::AuxEffects> == format::kAuxBuses);
 
-// The kinds that each console's inserts offer. The Switch has nn::audio's I3DL2 reverb, and the Wii U the effects of
-// nw::snd's four classes. The Wii has the effects of the SDK's AXFX library. NW4R SND's four classes set them up.
-// Before 2008, the reverbs take the older parameters. From 2008, they are AXFX's Exp reverbs, with the parameters of
-// the Wii U's reverbs. The 3DS has the reverbs and delays of nw::snd and nn::snd. Games of 2011 link nn::snd's older
-// reverb. edit::EffectName gives each kind's name.
 using Kind = format::EffectKind;
-constexpr std::array<Kind, 1> kSwitchKinds = {Kind::kI3dl2Reverb};
-constexpr std::array<Kind, 4> kWiiUKinds = {Kind::kReverbHi, Kind::kReverbStd, Kind::kChorus, Kind::kDelay};
-constexpr std::array<Kind, 4> kWiiKinds = {Kind::kWiiReverbHi, Kind::kWiiReverbStd, Kind::kWiiChorus, Kind::kWiiDelay};
-constexpr std::array<Kind, 4> kWii2008Kinds = {Kind::kWiiReverbHi2008, Kind::kWiiReverbStd2008, Kind::kWiiChorus,
-                                               Kind::kWiiDelay};
-constexpr std::array<Kind, 5> kCtrKinds = {Kind::kCtrReverb, Kind::kCtrDelay, Kind::kCtrNnReverb, Kind::kCtrNnDelay,
-                                           Kind::kCtrNnReverb2011};
 
 // The kinds that the inserts of `file` offer for a sound on `engine`. The Wii's kinds follow the build of NW4R SND that
 // a file of the Wii keeps. A sound of another console plays on the Wii's engine as edit::ForWii converts it, for the
 // build of June 2008.
 std::span<const Kind> KindsOf(const format::File& file, format::Engine engine)
 {
-    switch (engine)
+    if (engine == format::Engine::kWii)
     {
-    case format::Engine::kWiiU:
-        return kWiiUKinds;
-    case format::Engine::k3ds:
-        return kCtrKinds;
-    case format::Engine::kWii:
-        return file.native && (!file.native->wii || format::BuildOfWiiArchive(*file.native).SinceMarch2008())
+        return file.native && (file.native->engine != format::Engine::kWii ||
+                               format::BuildOfWiiArchive(*file.native).SinceMarch2008())
                    ? std::span<const Kind>(kWii2008Kinds)
                    : std::span<const Kind>(kWiiKinds);
-    case format::Engine::kSwitch:
-        break;
     }
 
-    return kSwitchKinds;
+    return RowOf(engine).kinds;
 }
 
 // A parameter's row in the window: its label, its range and the format of its value in the units shown, the factor from
@@ -475,7 +457,7 @@ bool DrawParameters(format::Effect& effect, bool* changing)
             }
             KeepDelaysWithinMaxima(effect, i);
         }
-        edited = edited || ImGui::IsItemDeactivatedAfterEdit();
+        edited = edited || SliderReleased();
         *changing = *changing || ImGui::IsItemActive();
         ImGui::PopID();
     }
@@ -487,7 +469,7 @@ bool DrawParameters(format::Effect& effect, bool* changing)
 
 std::size_t FxChannelsOf(format::Engine engine)
 {
-    return engine == format::Engine::k3ds ? 2 : kFxChannels;
+    return RowOf(engine).fx_channels;
 }
 
 std::vector<std::string> EffectKindNames(const format::File& file, format::Engine engine)
@@ -506,7 +488,7 @@ format::Effect NewEffect(const format::File& file, format::Engine engine, std::s
     const std::span<const Kind> kinds = KindsOf(file, engine);
     if (kinds.empty())
     {
-        throw std::invalid_argument("Hokuto has no effects of the engine's console.");
+        throw std::invalid_argument("No effects are available for this console.");
     }
 
     format::Effect effect;
@@ -523,8 +505,7 @@ const char* EffectName(const format::Effect& effect)
 
 std::string EffectTitle(const EffectPlace& place, const format::Effect& effect)
 {
-    return std::string("FX ") + static_cast<char>('A' + place.channel) + ": Ins. " + std::to_string(place.index + 1) +
-           " - " + EffectName(effect);
+    return FxName(place.channel) + ": Ins. " + std::to_string(place.index + 1) + " - " + EffectName(effect);
 }
 
 ActionNames EffectChangeNames(const EffectPlace& place, EffectEdit edit, const format::Effect& before,
@@ -567,16 +548,8 @@ EffectEdit DrawEffectWindow(const EffectPlace& place, format::Effect& effect, bo
     // A window over the middle of the main window, in the style of Studio Setup. The title names the channel, the
     // insert's number and the effect. The window keeps its place when another effect opens in it.
     const std::string title = EffectTitle(place, effect) + "###Effect";
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(Px(480.0f), 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Px(theme::kDialogPadding));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(theme::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(theme::kBorderStrong));
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
-                                        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
-    const bool visible = ImGui::Begin(title.c_str(), open, kFlags);
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
+    const bool visible = BeginDialogWindow(title.c_str(), open, ImGuiWindowFlags_NoResize);
     if (!visible)
     {
         ImGui::End();

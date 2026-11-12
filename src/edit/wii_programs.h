@@ -12,6 +12,8 @@
 // slot from a variable or a random number. A bank select becomes a program change where it can run with one program
 // alone, a number. Each other bank select stays, and the Wii's player skips it. A flow analysis of the sound's tracks
 // finds the slots and programs (song/track_flow.h).
+//
+// A sound of the DS plays one bank too, and NITRO-Composer has no bank select. ForDs uses the same ranges.
 
 #pragma once
 
@@ -36,6 +38,7 @@ struct SlotPrograms
     uint32_t count = 0;
 };
 
+// A sequence converted for the Wii to play with one bank, and what the conversion found (WiiProgramsOf).
 struct WiiPrograms
 {
     // The sequence with its program changes into the slots' ranges.

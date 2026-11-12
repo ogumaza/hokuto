@@ -23,6 +23,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
@@ -64,6 +65,7 @@ ntdlib::commands::Sequence SettledLayout(const ntdlib::commands::Sequence& befor
 
 // The item of `joined` that each item of `split` became. `joined` is `split` with runs of waits joined into one wait
 // each (SettledLayout). Throws std::invalid_argument for sequences that differ otherwise.
+// A wait of 0 ticks that the layout leaves out leads to the item after it.
 std::vector<std::optional<uint32_t>> ItemsAfterJoins(const ntdlib::commands::Sequence& split,
                                                      const ntdlib::commands::Sequence& joined);
 
@@ -162,6 +164,13 @@ std::optional<std::vector<ConvertedLoop>> SongLoopsOf(const ntdlib::commands::Se
 ntdlib::commands::Sequence WithLoop(const ntdlib::commands::Sequence& timeline, const ConverterHints& hints,
                                     ConvertedLoop loop, const std::map<std::string, uint32_t>& starts = {});
 
+// The part of the labels of SongOfMidi and EmptySong that comes from `name`: the name with an underscore for each
+// character other than a letter, a digit or an underscore. An empty name becomes "song".
+std::string LabelPart(const std::string& name);
+
+// The start of each label of SongOfMidi and EmptySong for a song named `name`: "SMF_", LabelPart and an underscore.
+std::string SongLabelPrefix(const std::string& name);
+
 // A song without notes. NintendoWare's MIDI converter writes it for a MIDI file named `name` that holds a tempo of 120
 // beats a minute and nothing else: the Begin label with the allocation of track 0, then the Start label and track 0.
 // The track turns the note wait off, sets the tempo and ends. The End label and an end follow. A sound starts at the
@@ -170,5 +179,28 @@ ntdlib::commands::Sequence EmptySong(const std::string& name);
 
 // The item of an empty song where a sound starts: the Start label's.
 inline constexpr uint32_t kEmptySongStart = 1;
+
+// Writes a sequence's items, with labels on the next item and targets by labels' names. The MIDI import and the layout
+// of a converted song write their sequences with it.
+class LabelWriter
+{
+public:
+    explicit LabelWriter(ntdlib::commands::Sequence& sequence);
+
+    // Puts a label named `name` on the next item.
+    void Label(const std::string& name);
+
+    // Adds `command`, with the target that the label `target` names, or with its target where `target` is empty.
+    void Item(const ntdlib::commands::Command& command, const std::string& target = {});
+
+    // Sets the target of each command that names a label to the item of that label. Throws std::invalid_argument for a
+    // label after the last command, and for a target that no label names.
+    void Finish();
+
+private:
+    ntdlib::commands::Sequence& sequence_;
+    std::vector<std::string> pending_;
+    std::vector<std::pair<uint32_t, std::string>> targets_;
+};
 
 } // namespace hokuto::edit

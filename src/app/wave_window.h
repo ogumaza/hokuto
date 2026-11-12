@@ -12,6 +12,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "app/item_views.h"
 #include "app/widgets.h"
@@ -21,10 +22,12 @@ namespace hokuto::app
 
 // What the user did in the window: new values, with the action's name for the Undo History, or a click on Play, Stop,
 // Replace… or Export…. `refused` holds a message for a typed value that the item can't take, such as a rate of 0.
+// `notes` say what the new values change beyond what the user asked, such as a loop start that moves to a block.
 struct WaveEdit
 {
     std::optional<WaveValues> values;
     std::string name;
+    std::vector<std::string> notes;
     std::string refused;
     bool play = false;
     bool stop = false;
@@ -45,6 +48,8 @@ enum class LoopMarker
 // clears it. A new state sets it: the facts keep their name from one item to the next, and Dear ImGui keeps their
 // scroll with the name. `loop_start_off` keeps the start of a loop that the switch turned off, for the switch to put
 // back.
+// `waiting` keeps the text typed into each box while the program was busy, by the box's ID, until the program is free.
+// `notes` are the notes of the last edit that the window made (WaveEdit), shown over the facts.
 struct WaveWindowState
 {
     bool top = true;
@@ -55,10 +60,20 @@ struct WaveWindowState
     std::optional<LoopMarker> dragging;
     std::optional<WaveValues> held;
     TextTyping typing;
+    WaitingValues<std::string> waiting;
+    std::vector<std::string> notes;
     bool playing = false;
 };
 
+// The notes of a change of `values` of `view`'s item to `encoding`. The item is made again from its samples. A loop's
+// start then moves forward to the frame or the block of the encoding (LoopStep), and the samples in between repeat
+// after the loop's end (edit/waves.h and edit/streams.h). A stream's end moves with them. The DS's items take other
+// rules, and get no notes.
+std::vector<std::string> EncodingNotes(const WaveView& view, const WaveValues& values,
+                                       ntdlib::sar::WaveEncoding encoding);
+
 // Draws the window for `view`. The close button and Escape clear `*open`. While `busy`, the window takes no edits.
-WaveEdit DrawWaveWindow(const WaveView& view, WaveWindowState& state, bool busy, bool* open);
+// `item` is the version and the wave or the stream that the view comes from. A value typed while busy waits for it.
+WaveEdit DrawWaveWindow(const WaveView& view, WaveWindowState& state, const ShownItem& item, bool busy, bool* open);
 
 } // namespace hokuto::app

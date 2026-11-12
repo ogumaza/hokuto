@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the edits of a track's mix (src/edit/mix.h) on a sound archive of the Wii, the 3DS, the Wii U or the Switch.
-// The tool imports the archive into a Hokuto file the way the program does. It reads each sequence sound with ntdlib's
+// Checks the edits of a track's mix (src/edit/mix.h) on a sound archive of the Wii, the 3DS, the Wii U, the Switch or
+// the DS, on a GBA ROM whose songs MusicPlayer2000 plays, or on the DSE files of a DS image. The tool imports the
+// archive into a Hokuto file the way the program does. From a DS cartridge image, the tool uses the largest sound
+// archive, or the DSE files where the image contains no sound archive (tools/checked_archive.h). The tool refuses a ROM
+// with Konami's driver: hokuto_check_konami_mix checks its mix. The tool reads each sequence sound with ntdlib's
 // performer. It then makes five rounds of edits, one for each setting: the volume, the pan, and the sends to the aux
 // buses A to C. In each round, one track of each sequence file takes an edit, through the first sound that plays the
 // file. The tracks that play notes take turns from round to round. The edit starts from the value that the mixer shows
@@ -14,13 +17,24 @@
 // mapped, unless the map leaves the default as it is. Where the command before the track's start can run on into it, a
 // jump goes before the new command. A return can run on: a sound that reaches it outside every call has no call to
 // return to, and the player runs on past it. The tool also works out which edits the sequence refuses. The 3DS's tracks
-// have no send to bus C, and the tool works out a refusal for each edit of that round there.
+// have no send to bus C, and the tool works out a refusal for each edit of that round there. A GBA track's volume runs
+// from 0 to 127 and starts at 0, and the GBA's tracks have no sends. Brownie Brown's driver refuses every pan, and the
+// volume of a PSG channel. Its volume round uses the tracks of the sample channels where any of them play notes.
+//
+// On DSE, the tracks of one channel of the driver share its volume and pan, and an edit changes the settings of the
+// stretches of the channel (song::MixStretches). A channel's volume starts at 100. The targets of the driver's slides
+// (0xE2 and 0xEA) map like values, a volume change's amount (0xE1) scales, and a pan change's (0xE9) stays. A new
+// command at the track opening is inserted after the selects of a bank there. The performer shows the starting volume
+// at tick 0, and the tool compares a track's volumes against it (AgainstDseStart). DSE's tracks have no sends, and each
+// edit of a send has to be refused. A track that has no end runs past its chunk, into bytes that the file stores as
+// data, and counts apart.
 //
 // After each round, the tool exports the edited file and checks four things:
 //
 // - The sequence refuses the edits that the tool worked out as refused, and no others.
 // - The archive, imported again, gives back the edited sequences. Each edited command holds its mapped value, and a new
-//   command and a jump stand where they were worked out.
+//   command and a jump stand where they were worked out. A GBA song can hold zeros after its items
+//   (tools::HoldsSequence).
 // - Each sound plays the notes that it played before. ntdlib's performer can find a sound's loop a whole number of
 //   passes away after an edit. The sound then compares up to the earlier loop's end, and counts apart. A sound without
 //   a loop ends once its last release falls silent, and an edit of its levels can move its end. Every note of both
@@ -34,6 +48,22 @@
 //
 // Some tracks are counted apart: a track that runs both edited commands and other commands of the setting, and a track
 // whose setting moves over time or takes random values. The values that such a track shows depend on more than the map.
+// On the GBA and on Nintendo R&D2's driver, a sound counts apart where its notes differ only on PSG channels of the
+// tracks whose volume or pan changed (PsgNotesApart and Rd2PsgNotesApart). On the DS, the driver assigns a note the
+// quietest of the channels of the lowest priority. A volume edit can therefore give a note another channel. After a
+// volume edit, a sound counts apart where each note that is missing from one read is a note that the other read lists
+// among the notes that the driver never started, or plays with another length where either read cuts it short. A note
+// whose length runs out where a later note claims its channel can also end up to a frame sooner. The notes of a chord
+// can also take each other's channels, and with them each other's lengths (ChannelsDecide). A ROM without free space
+// has no room for a song that its edits make longer. The edits of those songs then stay out, and the tool counts the
+// songs apart. With --filler, the songs move into the filler runs of the ROM instead
+// (format::NativeArchive::gba_filler), and every edit is made. On the GBA's other drivers, a song's edit stays out
+// where the export then has no room for it, such as in the room of a list of songs on Quintet's driver
+// (tools::ExportOutgrows). A volume step of Quintet's driver (F1), a volume up (5F) and a volume down (6E) add to the
+// volume, and the edit refuses a new volume on a track that runs one. A new volume on another of the GBA's drivers
+// stops at the most that the driver allows the track (DriverRules::MostVolume). Krawall sets a channel's volume and pan
+// with each note and each row, and its channels have no sends. The edit refuses every setting there, and the tool works
+// out each refusal.
 //
 // The tool also checks what the mixer lists before an edit (src/edit/reach.h). Every other track of the edited sound
 // whose setting changed has to be among the tracks that the edited track's reach lists. Every other sound with such a
@@ -55,598 +85,84 @@
 // model builds has to be the game's. Each file that the edits make then has to save in both forms and open again as it
 // was (tools/checked_archive.h).
 //
-// usage: hokuto_check_mix [--model] [--timelines] <archive> [sound]
+// usage: hokuto_check_mix [--model] [--filler] [--timelines] <archive> [sound]
 
-#include <algorithm>
-#include <array>
-#include <chrono>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <exception>
-#include <filesystem>
-#include <map>
-#include <optional>
-#include <set>
-#include <stdexcept>
-#include <string>
-#include <tuple>
-#include <utility>
-#include <vector>
-
-#include "ntdlib/commands/sequence.h"
-#include "ntdlib/commands/units.h"
-#include "xsflib/console.h"
-#include "xsflib/files.h"
-
-#include "checked_archive.h"
-#include "edit/bytecode.h"
-#include "edit/mix.h"
-#include "edit/reach.h"
-#include "edit/replace.h"
-#include "edit/timelines.h"
-#include "format/archive.h"
-#include "format/file.h"
-#include "loop_passes.h"
-#include "song/archive.h"
-#include "song/sequence.h"
+#include "check_mix.h"
 
 namespace
 {
 
-using hokuto::edit::MixEdit;
-using hokuto::edit::Reach;
 using hokuto::edit::TrackReach;
 using hokuto::format::File;
 using hokuto::song::Mix;
 using hokuto::song::Sequence;
-using hokuto::song::Setting;
-using hokuto::song::Stretch;
 using hokuto::song::Track;
 using hokuto::tools::CheckedArchive;
 using hokuto::tools::CheckedSound;
-using hokuto::tools::EarlierEnd;
-using ntdlib::commands::Command;
-using ntdlib::commands::Kind;
-using ntdlib::commands::kOne;
-using ntdlib::commands::Source;
+using hokuto::tools::mix::AgainstDseStart;
+using hokuto::tools::mix::CheckSoundAgain;
+using hokuto::tools::mix::HoldsEdit;
+using hokuto::tools::mix::kSettings;
+using hokuto::tools::mix::NameOf;
+using hokuto::tools::mix::Plan;
+using hokuto::tools::mix::PlanFor;
+using hokuto::tools::mix::Playing;
+using hokuto::tools::mix::PsgNotesApart;
+using hokuto::tools::mix::RunsIntoData;
+using hokuto::tools::mix::SequenceOf;
+using hokuto::tools::mix::Totals;
 
-// The settings, one for each round.
-constexpr std::array<Mix, 5> kSettings = {Mix::kVolume, Mix::kPan, Mix::kSendA, Mix::kSendB, Mix::kSendC};
-
-// What the check counted, for the summary.
-struct Totals
+// Exports `edited`, `file` with the edits of `plans`, from a GBA ROM. Where the ROM has no room for the songs that the
+// edits make longer, their plans leave `plans`, and `edited` is made again with the other edits. Throws on any other
+// failure. `name` is the name of the ROM, and `setting` the setting of the round.
+void DropOutgrownEdits(const File& file, File& edited, std::map<uint32_t, Plan>& plans, const std::string& name,
+                       Mix setting, Totals& totals)
 {
-    std::size_t sounds = 0;
-    std::size_t unread = 0;
-    std::size_t edits = 0;
-    std::size_t refused = 0;
-    std::size_t new_commands = 0;
-    std::size_t wrong_edits = 0;
-    std::size_t tracks = 0;
-    std::size_t mapped = 0;
-    std::size_t opened = 0;
-    std::size_t again = 0;
-    std::size_t jumps = 0;
-    std::size_t runs_past = 0;
-    std::size_t differ = 0;
-    std::size_t note_sounds = 0;
-    std::size_t mixed = 0;
-    std::size_t moving = 0;
-    std::size_t other_passes = 0;
-    std::size_t moved_loops = 0;
-    std::size_t other_ends = 0;
-    std::size_t listed_tracks = 0;
-    std::size_t listed_sounds = 0;
-    std::size_t reached_tracks = 0;
-    std::size_t reached_sounds = 0;
-    std::size_t unlisted = 0;
-    std::size_t timelines = 0;
-    std::size_t timeline_edits = 0;
-    std::size_t timeline_refused = 0;
-    std::size_t saved = 0;
-    double slowest_reach = 0.0; // seconds
-};
-
-// A setting's name in a line about it.
-const char* NameOf(Mix setting)
-{
-    switch (setting)
-    {
-    case Mix::kVolume:
-        return "volume";
-    case Mix::kPan:
-        return "pan";
-    case Mix::kSendA:
-        return "send A";
-    case Mix::kSendB:
-        return "send B";
-    case Mix::kSendC:
-        break;
-    }
-
-    return "send C";
-}
-
-// Whether `command` sets `setting`.
-bool Sets(const Command& command, Mix setting)
-{
-    switch (setting)
-    {
-    case Mix::kVolume:
-        return command.kind == Kind::kVolume;
-    case Mix::kPan:
-        return command.kind == Kind::kPan;
-    case Mix::kSendA:
-    case Mix::kSendB:
-    case Mix::kSendC:
-        break;
-    }
-
-    return command.kind == Kind::kSend && command.index == static_cast<int>(setting) - static_cast<int>(Mix::kSendA);
-}
-
-// A value of a command in whole units.
-int Whole(int64_t value)
-{
-    return static_cast<int>(std::llround(static_cast<double>(value) / kOne));
-}
-
-// The items of a sequence that set a setting on a track. `early` is set when a note ran before the first of them, or
-// when there are none.
-struct Run
-{
-    std::set<uint32_t> items;
-    bool early = false;
-    bool random = false;   // a command takes a random value
-    bool variable = false; // a command takes a variable's value
-    bool ramp = false;     // a command moves the setting over time
-    bool again = false;    // a command sets the default value
-};
-
-// The run of `setting` on `track`, or nothing when a stretch isn't made of the sequence's items.
-std::optional<Run> RunOf(const ntdlib::commands::Sequence& sequence, const std::vector<uint32_t>& offsets,
-                         const Track& track, Mix setting)
-{
-    Run run;
-    bool note = false;
-    for (const Stretch& stretch : track.stretches)
-    {
-        const std::optional<uint32_t> first = hokuto::edit::ItemAtOffset(offsets, stretch.first);
-        const std::optional<uint32_t> last = hokuto::edit::ItemAtOffset(offsets, stretch.last);
-        if (!first || !last || *last < *first)
-        {
-            return std::nullopt;
-        }
-
-        for (uint32_t i = *first; i <= *last; ++i)
-        {
-            const Command& command = sequence.items[i];
-            if (Sets(command, setting))
-            {
-                run.early = run.items.empty() ? note : run.early;
-                run.items.insert(i);
-                run.random = run.random || command.value.source == Source::kRandom;
-                run.variable = run.variable || command.value.source == Source::kVariable;
-                run.ramp = run.ramp || command.time.has_value();
-                run.again = run.again || (command.value.source == Source::kValue &&
-                                          Whole(command.value.value) == hokuto::song::MixDefault(setting));
-            }
-            note = note || command.kind == Kind::kNote;
-        }
-    }
-    run.early = run.early || run.items.empty();
-
-    return run;
-}
-
-// The edit of one track of a sequence file in a round, and what the tool worked out about it.
-struct Plan
-{
-    uint32_t sound = 0; // the sound that the edit came through
-    int track = 0;      // the track's number
-    std::vector<Stretch> stretches;
-    MixEdit edit;
-    Run run;
-    bool trim = false;                  // the map scales or shifts the values, instead of setting one value
-    std::optional<std::string> refusal; // why the sequence refuses the edit
-    std::optional<uint32_t> opening;    // the item before which a new command goes
-    bool jump = false;                  // a jump before the new command takes the item before it past it
-    Reach reach;                        // the tracks and sounds that the mixer lists for the edit
-};
-
-// The value that `plan` maps `value` to.
-int Mapped(const Plan& plan, int value)
-{
-    const Mix setting = plan.edit.setting;
-    int result = plan.edit.to;
-    if (plan.trim && setting != Mix::kPan)
-    {
-        result = static_cast<int>(std::llround(static_cast<double>(value) * plan.edit.to / plan.edit.from));
-    }
-    else if (plan.trim)
-    {
-        result = value + plan.edit.to - plan.edit.from;
-    }
-
-    return std::clamp(result, hokuto::edit::MixLowest(setting), hokuto::edit::MixHighest(setting));
-}
-
-// Whether the tracks of `console` have `setting`.
-bool Has(const hokuto::song::Console& console, Mix setting)
-{
-    if (setting == Mix::kVolume || setting == Mix::kPan)
-    {
-        return true;
-    }
-
-    const int bus = static_cast<int>(setting) - static_cast<int>(Mix::kSendA);
-    return hokuto::song::Runs(console, Kind::kSend, static_cast<uint8_t>(bus));
-}
-
-// The plan for `setting` on `track` of the sound `sound` of `file`. The sound plays sequence `index`.
-std::optional<Plan> PlanFor(const File& file, uint32_t index, const std::vector<uint32_t>& offsets, uint32_t sound,
-                            const Track& track, Mix setting)
-{
-    const ntdlib::commands::Sequence& sequence = *file.sequences[index];
-    const hokuto::song::Console console = hokuto::edit::ConsoleOf(file);
-    const std::optional<Run> run = RunOf(sequence, offsets, track, setting);
-    if (!run || track.stretches.empty())
-    {
-        return std::nullopt;
-    }
-
-    // The edit starts from the value at the track's first note.
-    Plan plan;
-    plan.sound = sound;
-    plan.track = track.number;
-    plan.stretches = track.stretches;
-    plan.run = *run;
-    plan.edit.setting = setting;
-    plan.edit.from = hokuto::song::MixAt(track, setting, track.notes.front().start);
-    if (setting == Mix::kPan)
-    {
-        plan.edit.to = plan.edit.from <= 47 ? plan.edit.from + 16 : plan.edit.from - 16;
-    }
-    else
-    {
-        plan.edit.to = plan.edit.from > 0 ? plan.edit.from / 2 : 64;
-    }
-
-    // One value, the default included where it plays, takes the new value. Several values scale or shift.
-    std::set<int> values;
-    for (const uint32_t item : run->items)
-    {
-        values.insert(Whole(sequence.items[item].value.value));
-    }
-    if (run->early)
-    {
-        values.insert(hokuto::song::MixDefault(setting));
-    }
-    plan.trim = run->random || values.size() > 1;
-
-    // The refusals, in the order that the edit checks them.
-    const int fallback = hokuto::song::MixDefault(setting);
-    const bool opens = run->early && Mapped(plan, fallback) != fallback;
-    if (!Has(console, setting))
-    {
-        plan.refusal = "a send that the console's tracks lack";
-    }
-    else if (run->variable)
-    {
-        plan.refusal = "a variable";
-    }
-    else if (plan.trim && setting != Mix::kPan && plan.edit.from <= 0)
-    {
-        plan.refusal = "a trim from 0";
-    }
-    else if (opens && hokuto::edit::Fixed(sequence))
-    {
-        plan.refusal = "a fixed sequence";
-    }
-    else if (opens)
-    {
-        plan.opening = hokuto::edit::ItemAtOffset(offsets, track.stretches.front().first);
-    }
-
-    // A jump goes before the new command where the player can run on from the item before it: anything but a jump, a
-    // return or an end that always runs, and a return that a sound reaches outside every call.
-    if (plan.opening)
-    {
-        plan.jump = hokuto::edit::RunsInto(file, index, *plan.opening);
-    }
-
-    return plan;
-}
-
-// Whether `edited`, the sequence after `plan`, holds the plan's edit: each command of the run with its mapped value,
-// and the new command where the plan put one. Every other item stays as it was, but for the targets.
-bool HoldsEdit(const ntdlib::commands::Sequence& before, const ntdlib::commands::Sequence& edited, const Plan& plan)
-{
-    const uint32_t added_items = plan.opening ? (plan.jump ? 2 : 1) : 0;
-    if (edited.items.size() != before.items.size() + added_items)
-    {
-        return false;
-    }
-
-    // The new command, after the jump past it.
-    const auto moved = [&plan, added_items](uint32_t item)
-    {
-        return plan.opening && item >= *plan.opening ? item + added_items : item;
-    };
-
-    if (plan.opening && plan.jump)
-    {
-        const Command& jump = edited.items[*plan.opening];
-        if (jump.kind != Kind::kJump || jump.conditional || jump.target != *plan.opening + 2)
-        {
-            return false;
-        }
-    }
-    if (plan.opening)
-    {
-        const Command& added = edited.items[*plan.opening + (plan.jump ? 1 : 0)];
-        const int value = Mapped(plan, hokuto::song::MixDefault(plan.edit.setting));
-        if (!Sets(added, plan.edit.setting) || added.value.source != Source::kValue ||
-            added.value.value != int64_t{value} * kOne || added.time || added.conditional)
-        {
-            return false;
-        }
-    }
-
-    // Each old item, with its new value where the run holds it.
-    for (uint32_t i = 0; i < before.items.size(); ++i)
-    {
-        Command expected = before.items[i];
-        if (plan.run.items.contains(i))
-        {
-            expected.value.value = int64_t{Mapped(plan, Whole(expected.value.value))} * kOne;
-            if (expected.value.source == Source::kRandom)
-            {
-                expected.value.high = int64_t{Mapped(plan, Whole(expected.value.high))} * kOne;
-            }
-        }
-        Command actual = edited.items[moved(i)];
-        actual.target = expected.target;
-        if (actual != expected)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-// A note as the check compares it: its track, start, key, length and velocity.
-using Played = std::tuple<int, uint32_t, uint32_t, uint32_t, uint32_t>;
-
-// The notes of `sequence`, in order, for the check's comparisons.
-std::vector<Played> NotesOf(const Sequence& sequence)
-{
-    std::vector<Played> notes;
-    for (const Track& track : sequence.tracks)
-    {
-        for (const hokuto::song::Note& note : track.notes)
-        {
-            notes.emplace_back(track.number, note.start, note.key, note.length, note.velocity);
-        }
-    }
-    std::sort(notes.begin(), notes.end());
-
-    return notes;
-}
-
-// Whether `a` and `b` play the same notes, with the same loop and length, and give every track the same settings.
-bool SamePlaying(const Sequence& a, const Sequence& b)
-{
-    if (NotesOf(a) != NotesOf(b) || a.loop != b.loop || a.length != b.length || a.tracks.size() != b.tracks.size())
-    {
-        return false;
-    }
-
-    for (std::size_t i = 0; i < a.tracks.size(); ++i)
-    {
-        for (const Mix setting : kSettings)
-        {
-            if (a.tracks[i].number != b.tracks[i].number ||
-                hokuto::song::MixSettings(a.tracks[i], setting) != hokuto::song::MixSettings(b.tracks[i], setting))
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
-}
-
-// The settings that a track should show after an edit: those of `before`, each value passed through `map`, after the
-// value `opening` at tick `tick` where a new command opens the track. A change in the same tick as the one before
-// replaces it, and a value that doesn't change shows no change.
-template <typename Map>
-std::vector<Setting> Expected(const std::vector<Setting>& before, Mix setting, std::optional<int> opening,
-                              uint32_t tick, Map map)
-{
-    std::vector<Setting> expected;
-    const int fallback = hokuto::song::MixDefault(setting);
-    const auto add = [&expected, fallback](uint32_t at, int value)
-    {
-        if (!expected.empty() && expected.back().tick == at)
-        {
-            expected.pop_back();
-        }
-        if (value != (expected.empty() ? fallback : expected.back().value))
-        {
-            expected.push_back({at, value});
-        }
-    };
-    if (opening)
-    {
-        add(tick, *opening);
-    }
-    for (const Setting& change : before)
-    {
-        add(change.tick, map(change.value));
-    }
-
-    return expected;
-}
-
-// Settings in a line about them, the first few of them.
-std::string Text(const std::vector<Setting>& settings)
-{
-    std::string text;
-    for (std::size_t i = 0; i < settings.size() && i < 6; ++i)
-    {
-        text += (i == 0 ? "" : ", ") + std::to_string(settings[i].value) + " at " + std::to_string(settings[i].tick);
-    }
-
-    return settings.empty() ? "none" : settings.size() > 6 ? text + ", ..." : text;
-}
-
-// The track with number `number` of `sequence`, or nothing.
-const Track* TrackNumbered(const Sequence& sequence, int number)
-{
-    const auto found = std::find_if(sequence.tracks.begin(), sequence.tracks.end(),
-                                    [number](const Track& track) { return track.number == number; });
-    return found != sequence.tracks.end() ? &*found : nullptr;
-}
-
-// The numbers of the tracks of `before` whose setting `setting` changed in `after`, and of those that play no more.
-std::set<int> ChangedTracks(const Sequence& before, const Sequence& after, Mix setting)
-{
-    std::set<int> changed;
-    for (const Track& old : before.tracks)
-    {
-        const Track* track = TrackNumbered(after, old.number);
-        if (track == nullptr || hokuto::song::MixSettings(*track, setting) != hokuto::song::MixSettings(old, setting))
-        {
-            changed.insert(old.number);
-        }
-    }
-
-    return changed;
-}
-
-// The loop from `start` to `end`, or "none".
-std::string LoopText(const std::optional<hokuto::song::Loop>& loop)
-{
-    return loop ? std::to_string(loop->start) + " to " + std::to_string(loop->end) : std::string("none");
-}
-
-// The settings of `settings` that come before tick `end`.
-std::vector<Setting> Before(std::vector<Setting> settings, uint32_t end)
-{
-    std::erase_if(settings, [end](const Setting& change) { return change.tick >= end; });
-
-    return settings;
-}
-
-// `sequence` up to tick `end`: the notes that start before it, each cut at it, and the settings that come before it.
-Sequence Before(Sequence sequence, uint32_t end)
-{
-    for (Track& track : sequence.tracks)
-    {
-        std::erase_if(track.notes, [end](const hokuto::song::Note& note) { return note.start >= end; });
-        for (hokuto::song::Note& note : track.notes)
-        {
-            note.length = std::min(note.length, end - note.start);
-        }
-        track.volume = Before(std::move(track.volume), end);
-        track.pan = Before(std::move(track.pan), end);
-        for (std::vector<Setting>& send : track.sends)
-        {
-            send = Before(std::move(send), end);
-        }
-    }
-
-    return sequence;
-}
-
-// The number of notes of `sequence` that start at or after tick `end`.
-std::size_t NotesFrom(const Sequence& sequence, uint32_t end)
-{
-    const auto late = [end](const hokuto::song::Note& note)
-    {
-        return note.start >= end;
-    };
-    std::size_t count = 0;
-    for (const Track& track : sequence.tracks)
-    {
-        count += static_cast<std::size_t>(std::count_if(track.notes.begin(), track.notes.end(), late));
-    }
-
-    return count;
-}
-
-// The tracks of `sequence` that play notes.
-std::vector<const Track*> Playing(const Sequence& sequence)
-{
-    std::vector<const Track*> tracks;
-    for (const Track& track : sequence.tracks)
-    {
-        if (!track.notes.empty())
-        {
-            tracks.push_back(&track);
-        }
-    }
-
-    return tracks;
-}
-
-} // namespace
-
-int main(int argc, char** argv)
-{
-    std::vector<std::string> arguments = xsflib::console::Arguments(argc, argv);
-    hokuto::tools::TakeModelOption(arguments);
-    const bool timelines = arguments.size() > 1 && arguments[1] == "--timelines";
-    const std::size_t first = timelines ? 2 : 1;
-    if (arguments.size() < first + 1 || arguments.size() > first + 2)
-    {
-        std::fprintf(stderr, "usage: hokuto_check_mix [--model] [--timelines] <archive> [sound]\n");
-        return 2;
-    }
-    const std::string only = arguments.size() > first + 1 ? arguments[first + 1] : std::string();
-
-    // The archive and the group files beside it make a Hokuto file. `playing` is the archive that the program plays.
-    const std::filesystem::path path = xsflib::PathFromUtf8(arguments[first]);
-    const std::string name = xsflib::Utf8(path.filename());
-    std::vector<uint8_t> bytes;
-    CheckedArchive archive;
-    CheckedArchive playing;
-    File file;
-    std::vector<std::optional<uint32_t>> sequences;
-    std::vector<std::optional<hokuto::edit::SoundPlace>> places;
     try
     {
-        xsflib::ReadFile(path, bytes);
-        archive = hokuto::tools::OpenChecked(path, bytes);
-        file = hokuto::tools::CheckedForm(hokuto::tools::ImportChecked(bytes, archive), bytes);
-        sequences = hokuto::tools::SequencesOfChecked(file, bytes, archive);
-        places = hokuto::tools::PlacesOfChecked(file, bytes, archive);
-        playing = archive;
-        if (timelines)
+        hokuto::format::ExportArchive(edited);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        const std::vector<uint32_t> moved = hokuto::format::MovedSongs(edited);
+        if (moved.empty() || std::string(error.what()).find("32 MiB") == std::string::npos)
         {
-            file = hokuto::edit::OpenTimelines(std::move(file));
-            playing = hokuto::tools::BuildChecked(file, name);
+            throw;
+        }
+
+        std::printf(
+            "%s: %zu songs outgrow their places after the %s edits, and the ROM has no room for "
+            "them. Their edits stay out.\n",
+            name.c_str(), moved.size(), NameOf(setting));
+        totals.outgrown += moved.size();
+        for (const uint32_t sequence : moved)
+        {
+            const auto found = plans.find(sequence);
+            if (found != plans.end())
+            {
+                totals.new_commands -= found->second.opening ? 1 : 0;
+                totals.jumps -= found->second.jump ? 1 : 0;
+                totals.listed_tracks -= found->second.reach.tracks.size();
+                totals.listed_sounds -= found->second.reach.sounds.size();
+                plans.erase(found);
+            }
+        }
+        edited = file;
+        for (const auto& [sequence, plan] : plans)
+        {
+            edited = hokuto::edit::EditMix(edited, sequence, plan.track, plan.stretches, plan.edit).file;
         }
     }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 2;
-    }
+}
 
-    // Each sequence sound before the edits, and the first sound that plays each sequence file.
-    Totals totals;
-    std::vector<std::optional<Sequence>> before(archive.SoundCount());
+// Reads each sequence sound of `archive` as `playing` plays it into `before`, or only the sound named `only`. Returns
+// the first sound that plays each sequence file and plays notes.
+std::map<uint32_t, uint32_t> ReadSoundsBefore(const CheckedArchive& archive, const CheckedArchive& playing,
+                                              const std::vector<std::optional<uint32_t>>& sequences,
+                                              const std::string& only, const std::string& name,
+                                              std::vector<std::optional<Sequence>>& before, Totals& totals)
+{
     std::map<uint32_t, uint32_t> first_sounds;
-
-    const auto sequence_of = [&](const CheckedSound& info)
-    {
-        return info.file_id < sequences.size() ? sequences[info.file_id] : std::nullopt;
-    };
     for (uint32_t sound = 0; sound < archive.SoundCount(); ++sound)
     {
         const CheckedSound info = archive.Info(sound);
@@ -667,21 +183,50 @@ int main(int argc, char** argv)
             continue;
         }
 
-        const std::optional<uint32_t> sequence = sequence_of(info);
+        const std::optional<uint32_t> sequence = SequenceOf(sequences, info);
         if (sequence && !Playing(*before[sound]).empty())
         {
             first_sounds.try_emplace(*sequence, sound);
         }
     }
 
+    return first_sounds;
+}
+
+// The offsets of the commands of each sequence of `first_sounds` in `file`. A sequence whose offsets can't be found
+// leaves `first_sounds`, and sets `failed`.
+std::map<uint32_t, std::vector<uint32_t>> FindOffsets(const File& file, const CheckedArchive& archive,
+                                                      const std::string& name,
+                                                      std::map<uint32_t, uint32_t>& first_sounds, bool& failed)
+{
     std::map<uint32_t, std::vector<uint32_t>> offsets;
-    for (const auto& [sequence, sound] : first_sounds)
+    for (auto entry = first_sounds.begin(); entry != first_sounds.end();)
     {
-        offsets[sequence] = hokuto::edit::Offsets(*file.sequences[sequence], hokuto::edit::ConsoleOf(file));
+        const auto [sequence, sound] = *entry;
+        try
+        {
+            offsets[sequence] = hokuto::edit::Offsets(*file.sequences[sequence], hokuto::edit::ConsoleOf(file));
+            ++entry;
+        }
+        catch (const std::exception& error)
+        {
+            std::printf("%s: %s: the offsets of the sequence's commands can't be found: %s\n", name.c_str(),
+                        archive.NameOf(sound).c_str(), error.what());
+            failed = true;
+            entry = first_sounds.erase(entry);
+        }
     }
 
-    // The tracks and sounds that the mixer lists for an edit of each track of each sound that takes the edits.
-    bool failed = false;
+    return offsets;
+}
+
+// The tracks and sounds that the mixer lists for an edit of each track of each sound of `first_sounds`, by sound. A
+// sound whose reach can't be found sets `failed`.
+std::map<uint32_t, std::vector<TrackReach>> MixerListings(
+    const File& file, std::span<const std::optional<hokuto::edit::SoundPlace>> places, const CheckedArchive& archive,
+    const std::string& name, const std::map<uint32_t, uint32_t>& first_sounds,
+    const std::vector<std::optional<Sequence>>& before, bool& failed, Totals& totals)
+{
     std::map<uint32_t, std::vector<TrackReach>> reaches;
     for (const auto& [sequence, sound] : first_sounds)
     {
@@ -700,373 +245,142 @@ int main(int argc, char** argv)
         totals.slowest_reach = std::max(totals.slowest_reach, taken.count());
     }
 
-    for (std::size_t round = 0; round < kSettings.size(); ++round)
+    return reaches;
+}
+
+// The track of `song`, sequence `sequence` of `file`, that round `round` edits: one that plays notes, in turn.
+const Track& EditedTrack(const File& file, const Sequence& song, uint32_t sequence, std::size_t round, Mix setting)
+{
+    std::vector<const Track*> tracks = Playing(song);
+    // On Brownie Brown's driver, only a sample channel's volume is a level. The volume round uses those tracks where
+    // any of them play notes.
+    const hokuto::song::Console console = hokuto::edit::ConsoleOf(file);
+    if (setting == Mix::kVolume && console.driver && console.driver->DriverEngine() == hokuto::format::Engine::kBrownie)
     {
-        // One edit for each sequence file, on a track that plays notes.
-        const Mix setting = kSettings[round];
-        File edited = file;
-        std::map<uint32_t, Plan> plans;
-        for (const auto& [sequence, sound] : first_sounds)
+        std::vector<const Track*> samples;
+        std::ranges::copy_if(tracks, std::back_inserter(samples),
+                             [&console](const Track* playing) { return !console.driver->PsgTrack(playing->number); });
+        if (!samples.empty())
         {
-            const std::vector<const Track*> tracks = Playing(*before[sound]);
-            const Track& track = *tracks[(sequence + round) % tracks.size()];
-            std::optional<Plan> plan = PlanFor(file, sequence, offsets[sequence], sound, track, setting);
-            if (!plan)
-            {
-                std::printf("%s: %s: track %d's stretches aren't made of items\n", name.c_str(),
-                            archive.NameOf(sound).c_str(), track.number);
-                failed = true;
-                continue;
-            }
-
-            ++totals.edits;
-            std::optional<std::string> refused;
-            std::optional<File> mixed;
-            try
-            {
-                mixed = hokuto::edit::EditMix(edited, sequence, plan->track, plan->stretches, plan->edit).file;
-            }
-            catch (const std::invalid_argument& error)
-            {
-                refused = error.what();
-            }
-            catch (const std::exception& error)
-            {
-                std::printf("%s: sequence %u can't take its edit: %s\n", name.c_str(), sequence, error.what());
-                failed = true;
-                continue;
-            }
-
-            if (refused.has_value() != plan->refusal.has_value())
-            {
-                std::printf("%s: %s: track %d's %s from %d to %d: %s, where the tool worked out %s\n", name.c_str(),
-                            archive.NameOf(sound).c_str(), plan->track, NameOf(setting), plan->edit.from, plan->edit.to,
-                            refused ? ("refused: " + *refused).c_str() : "taken",
-                            plan->refusal ? ("a refusal for " + *plan->refusal).c_str() : "no refusal");
-                ++totals.wrong_edits;
-                continue;
-            }
-
-            if (refused)
-            {
-                ++totals.refused;
-                std::printf("%s: %s: track %d's %s from %d to %d is refused for %s\n", name.c_str(),
-                            archive.NameOf(sound).c_str(), plan->track, NameOf(setting), plan->edit.from, plan->edit.to,
-                            plan->refusal->c_str());
-                continue;
-            }
-
-            // Like the program, the tool settles an edit of a timeline in the converter's layout.
-            if (hokuto::edit::IsTimeline(edited, sequence))
-            {
-                try
-                {
-                    mixed = hokuto::edit::SettleTimelines(edited, std::move(*mixed)).file;
-                }
-                catch (const std::invalid_argument& error)
-                {
-                    std::printf("%s: %s: track %d's %s from %d to %d is refused by the timeline: %s\n", name.c_str(),
-                                archive.NameOf(sound).c_str(), plan->track, NameOf(setting), plan->edit.from,
-                                plan->edit.to, error.what());
-                    ++totals.timeline_refused;
-                    continue;
-                }
-                ++totals.timeline_edits;
-            }
-            edited = std::move(*mixed);
-
-            totals.new_commands += plan->opening ? 1 : 0;
-            totals.jumps += plan->jump ? 1 : 0;
-            const auto reach = reaches.find(sound);
-            const auto index = static_cast<std::size_t>(&track - before[sound]->tracks.data());
-            if (reach != reaches.end() && index < reach->second.size())
-            {
-                plan->reach = reach->second[index].mix[static_cast<std::size_t>(setting)];
-                totals.listed_tracks += plan->reach.tracks.size();
-                totals.listed_sounds += plan->reach.sounds.size();
-            }
-            plans.emplace(sequence, std::move(*plan));
-        }
-
-        // The edited archive that a saved file holds, the archive that the program plays, and the file that the first
-        // imports into again. That file takes the timelines' hints that a saved file keeps.
-        CheckedArchive saved;
-        CheckedArchive after;
-        File again;
-        try
-        {
-            const File folded = hokuto::edit::FoldTimelines(edited);
-            hokuto::tools::CheckSaved(folded);
-            const std::vector<uint8_t> exported = hokuto::format::ExportArchive(folded);
-            const std::vector<std::vector<uint8_t>> group_files = hokuto::format::ExportGroupFiles(folded);
-            saved = hokuto::tools::BuildChecked(folded, name);
-            after = timelines ? hokuto::tools::BuildChecked(edited, name) : saved;
-            again = hokuto::tools::ImportChecked(exported, archive, group_files);
-            if (timelines)
-            {
-                again.timelines = edited.timelines;
-                again = hokuto::edit::OpenTimelines(std::move(again));
-            }
-        }
-        catch (const std::exception& error)
-        {
-            std::printf("%s: the file after the %s edits can't be exported: %s\n", name.c_str(), NameOf(setting),
-                        error.what());
-            return 1;
-        }
-
-        for (const auto& [sequence, plan] : plans)
-        {
-            const bool back = again.sequences.size() == edited.sequences.size() &&
-                              again.sequences[sequence] == edited.sequences[sequence];
-            const bool timeline = hokuto::edit::IsTimeline(edited, sequence);
-            if (!back || (!timeline && !HoldsEdit(*file.sequences[sequence], *edited.sequences[sequence], plan)))
-            {
-                std::printf("%s: sequence %u: the %s edit of track %d %s\n", name.c_str(), sequence, NameOf(setting),
-                            plan.track, back ? "isn't in the commands" : "doesn't come back from the archive");
-                ++totals.wrong_edits;
-            }
-        }
-
-        // Each sound that plays an edited sequence file, again.
-        for (uint32_t sound = 0; sound < archive.SoundCount(); ++sound)
-        {
-            const CheckedSound info = archive.Info(sound);
-            const std::optional<uint32_t> sequence = sequence_of(info);
-            if (!before[sound] || !sequence || !plans.contains(*sequence))
-            {
-                continue;
-            }
-
-            std::optional<Sequence> read;
-            try
-            {
-                read = after.Read(sound);
-                if (timelines && !SamePlaying(saved.Read(sound), *read))
-                {
-                    std::printf("%s: %s plays otherwise from the saved archive after the %s edits\n", name.c_str(),
-                                info.name.c_str(), NameOf(setting));
-                    ++totals.saved;
-                }
-            }
-            catch (const std::exception& error)
-            {
-                std::printf("%s: %s can't be read after the %s edits: %s\n", name.c_str(), info.name.c_str(),
-                            NameOf(setting), error.what());
-                ++totals.unread;
-                continue;
-            }
-
-            // ntdlib's performer finds a loop where the tracks' states repeat. After an edit, it can find the same loop
-            // a whole number of passes away. A sound without a loop ends once its last release falls silent, and its
-            // levels decide when. Every note of both reads then has to start before the earlier end. The reads compare
-            // up to the earlier end, and the sound counts apart. Any other change of the loop or the length fails.
-            const bool passes = read->loop == before[sound]->loop && read->length == before[sound]->length;
-            const bool fades = !passes && !before[sound]->loop && !read->loop;
-            const std::optional<uint32_t> cut =
-                passes ? std::nullopt
-                       : (fades ? std::optional<uint32_t>(std::min(before[sound]->length, read->length))
-                                : EarlierEnd(*before[sound], *read));
-            const std::size_t late = fades ? NotesFrom(*before[sound], *cut) + NotesFrom(*read, *cut) : 0;
-            if (late != 0)
-            {
-                std::printf(
-                    "%s: %s: the sound ends at tick %u after the %s edits, and at %u before. %zu notes start at or "
-                    "after the earlier end.\n",
-                    name.c_str(), info.name.c_str(), read->length, NameOf(setting), before[sound]->length, late);
-                ++totals.note_sounds;
-                continue;
-            }
-
-            if (fades)
-            {
-                std::printf("%s: %s: apart: the sound ends at tick %u after the %s edits, and at %u before.\n",
-                            name.c_str(), info.name.c_str(), read->length, NameOf(setting), before[sound]->length);
-            }
-            if (!passes && !cut)
-            {
-                std::printf(
-                    "%s: %s: the loop or the length moves with the %s edits. Before: loop %s, %u ticks. After: "
-                    "loop %s, %u ticks.\n",
-                    name.c_str(), info.name.c_str(), NameOf(setting), LoopText(before[sound]->loop).c_str(),
-                    before[sound]->length, LoopText(read->loop).c_str(), read->length);
-                ++totals.moved_loops;
-                continue;
-            }
-
-            totals.other_passes += cut && !fades ? 1 : 0;
-            totals.other_ends += fades ? 1 : 0;
-            const Sequence was_read = cut ? Before(*before[sound], *cut) : *before[sound];
-            const Sequence now_read = cut ? Before(*read, *cut) : *read;
-            const uint32_t end = cut.value_or(UINT32_MAX);
-
-            // The tracks that the edit changed, and the other sounds with such tracks, are in the edited track's reach.
-            const Plan& plan = plans.at(*sequence);
-            const std::set<int> changed = ChangedTracks(was_read, now_read, setting);
-
-            const auto listed = [](const auto& list, const auto& value)
-            {
-                return std::find(list.begin(), list.end(), value) != list.end();
-            };
-            for (const int number : changed)
-            {
-                if (sound != plan.sound || number == plan.track)
-                {
-                    continue;
-                }
-
-                if (listed(plan.reach.tracks, number))
-                {
-                    ++totals.reached_tracks;
-                    continue;
-                }
-
-                std::printf("%s: %s: track %d's %s changed with the edit of track %d, but its reach leaves it out\n",
-                            name.c_str(), info.name.c_str(), number, NameOf(setting), plan.track);
-                ++totals.unlisted;
-            }
-
-            const bool other_changed = sound != plan.sound && (!changed.empty() || !passes);
-            if (other_changed && listed(plan.reach.sounds, sound))
-            {
-                ++totals.reached_sounds;
-            }
-            else if (other_changed)
-            {
-                std::printf("%s: %s changed with the %s edit of %s's track %d, but its reach leaves the sound out\n",
-                            name.c_str(), info.name.c_str(), NameOf(setting), archive.NameOf(plan.sound).c_str(),
-                            plan.track);
-                ++totals.unlisted;
-            }
-
-            // The notes stay as they were.
-            if (NotesOf(now_read) != NotesOf(was_read))
-            {
-                std::printf("%s: %s: the notes differ after the %s edits\n", name.c_str(), info.name.c_str(),
-                            NameOf(setting));
-                ++totals.note_sounds;
-            }
-
-            // Each track's settings.
-            for (const Track& old : was_read.tracks)
-            {
-                const Track* track = TrackNumbered(now_read, old.number);
-                if (track == nullptr)
-                {
-                    std::printf("%s: %s: track %d plays no notes after the %s edits\n", name.c_str(), info.name.c_str(),
-                                old.number, NameOf(setting));
-                    ++totals.differ;
-                    continue;
-                }
-
-                ++totals.tracks;
-                for (const Mix shown : kSettings)
-                {
-                    const std::vector<Setting>& was = hokuto::song::MixSettings(old, shown);
-                    const std::vector<Setting>& now = hokuto::song::MixSettings(*track, shown);
-                    if (shown != setting)
-                    {
-                        if (now != was)
-                        {
-                            std::printf("%s: %s: track %d's %s changed with a %s edit. Before: %s. After: %s.\n",
-                                        name.c_str(), info.name.c_str(), old.number, NameOf(shown), NameOf(setting),
-                                        Text(was).c_str(), Text(now).c_str());
-                            ++totals.differ;
-                        }
-                        continue;
-                    }
-
-                    // The edited commands that the track runs, and whether the new command opens it.
-                    const std::optional<Run> run = RunOf(*file.sequences[*sequence], offsets[*sequence], old, setting);
-                    if (!run)
-                    {
-                        std::printf(
-                            "%s: %s: track %d ran commands that aren't the sequence's items before the %s edits\n",
-                            name.c_str(), info.name.c_str(), old.number, NameOf(setting));
-                        ++totals.differ;
-                        continue;
-                    }
-
-                    std::size_t edited_items = 0;
-                    for (const uint32_t item : run->items)
-                    {
-                        edited_items += plan.run.items.contains(item) ? 1 : 0;
-                    }
-                    const bool opened =
-                        plan.opening && old.number == plan.track && !old.stretches.empty() &&
-                        old.stretches.front().entry == ntdlib::sequence_export::Entry::kOpen &&
-                        hokuto::edit::ItemAtOffset(offsets[*sequence], old.stretches.front().first) == plan.opening;
-
-                    // A track that runs from the item before the new command's place into the place goes past the new
-                    // command.
-                    bool runs_past = false;
-                    for (const Stretch& stretch : old.stretches)
-                    {
-                        const std::vector<uint32_t>& at = offsets[*sequence];
-                        const std::optional<uint32_t> first_item = hokuto::edit::ItemAtOffset(at, stretch.first);
-                        const std::optional<uint32_t> last_item = hokuto::edit::ItemAtOffset(at, stretch.last);
-                        runs_past = runs_past || (plan.opening && first_item && last_item &&
-                                                  *first_item < *plan.opening && *last_item >= *plan.opening);
-                    }
-                    totals.runs_past += runs_past ? 1 : 0;
-                    if (edited_items != 0 && edited_items != run->items.size())
-                    {
-                        ++totals.mixed;
-                        continue;
-                    }
-
-                    const bool mapped = edited_items != 0;
-                    const auto map = [&plan, mapped](int value)
-                    {
-                        return mapped ? Mapped(plan, value) : value;
-                    };
-                    const std::optional<int> opening =
-                        opened ? std::optional<int>(Mapped(plan, hokuto::song::MixDefault(setting))) : std::nullopt;
-                    const std::vector<Setting> expected = Before(
-                        Expected(was, setting, opening, old.stretches.empty() ? 0 : old.stretches.front().tick, map),
-                        end);
-                    totals.mapped += mapped ? 1 : 0;
-                    totals.opened += opened ? 1 : 0;
-                    if (now == expected)
-                    {
-                        continue;
-                    }
-
-                    // A command that sets the default shows no change before the edit. Once the edit maps the default,
-                    // the command shows a change in its tick, before any other.
-                    const int mapped_default = Mapped(plan, hokuto::song::MixDefault(setting));
-                    if (mapped && !opened && run->again && !now.empty() && now.front().value == mapped_default &&
-                        (was.empty() || now.front().tick <= was.front().tick) &&
-                        now == Before(Expected(was, setting, mapped_default, now.front().tick, map), end))
-                    {
-                        ++totals.again;
-                        continue;
-                    }
-
-                    if (run->ramp || run->random)
-                    {
-                        std::printf(
-                            "%s: %s: apart: track %d's %s %s after the edit of track %d from %d to %d. Before: "
-                            "%s. Expected: %s. After: %s.\n",
-                            name.c_str(), info.name.c_str(), old.number, NameOf(setting),
-                            run->ramp ? "moves over time" : "takes random values", plan.track, plan.edit.from,
-                            plan.edit.to, Text(was).c_str(), Text(expected).c_str(), Text(now).c_str());
-                        ++totals.moving;
-                        continue;
-                    }
-
-                    std::printf(
-                        "%s: %s: track %d's %s differs after the edit of track %d from %d to %d%s. Before: %s. "
-                        "Expected: %s. After: %s.\n",
-                        name.c_str(), info.name.c_str(), old.number, NameOf(setting), plan.track, plan.edit.from,
-                        plan.edit.to, opened ? ". A new command opens it" : "", Text(was).c_str(),
-                        Text(expected).c_str(), Text(now).c_str());
-                    ++totals.differ;
-                }
-            }
+            tracks = std::move(samples);
         }
     }
 
+    return *tracks[(sequence + round) % tracks.size()];
+}
+
+// The file `edited` with the edit of `plan` to sequence `sequence`, as the program makes it, or nothing where the edit
+// isn't made: the sequence refuses it (as the plan says, or otherwise), the timeline refuses it, or the ROM has no room
+// for the song. Sets `failed` where the edit fails otherwise. `sound` plays the sequence.
+std::optional<File> MixedFile(const File& edited, uint32_t sequence, const Plan& plan, const CheckedArchive& archive,
+                              uint32_t sound, Mix setting, const std::string& name, bool& failed, Totals& totals)
+{
+    std::optional<std::string> refused;
+    std::optional<File> mixed;
+    try
+    {
+        mixed = hokuto::edit::EditMix(edited, sequence, plan.track, plan.stretches, plan.edit).file;
+    }
+    catch (const std::invalid_argument& error)
+    {
+        refused = error.what();
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: sequence %u can't take its edit: %s\n", name.c_str(), sequence, error.what());
+        failed = true;
+        return std::nullopt;
+    }
+
+    if (refused.has_value() != plan.refusal.has_value())
+    {
+        std::printf("%s: %s: track %d's %s from %d to %d: %s, where the tool worked out %s\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), plan.track, NameOf(setting), plan.edit.from, plan.edit.to,
+                    refused ? ("refused: " + *refused).c_str() : "taken",
+                    plan.refusal ? ("a refusal for " + *plan.refusal).c_str() : "no refusal");
+        ++totals.wrong_edits;
+        return std::nullopt;
+    }
+
+    if (refused)
+    {
+        ++totals.refused;
+        std::printf("%s: %s: track %d's %s from %d to %d is refused for %s\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), plan.track, NameOf(setting), plan.edit.from, plan.edit.to,
+                    plan.refusal->c_str());
+        return std::nullopt;
+    }
+
+    // Like the program, the tool settles an edit of a timeline in the converter's layout.
+    if (hokuto::edit::IsTimeline(edited, sequence))
+    {
+        try
+        {
+            mixed = hokuto::edit::SettleTimelines(edited, std::move(*mixed)).file;
+        }
+        catch (const std::invalid_argument& error)
+        {
+            std::printf("%s: %s: track %d's %s from %d to %d is refused by the timeline: %s\n", name.c_str(),
+                        archive.NameOf(sound).c_str(), plan.track, NameOf(setting), plan.edit.from, plan.edit.to,
+                        error.what());
+            ++totals.timeline_refused;
+            return std::nullopt;
+        }
+        ++totals.timeline_edits;
+    }
+
+    // A ROM of another of the GBA's drivers can have no room for the song that the edit makes longer. The
+    // export further on reports any other refusal.
+    bool roomless = false;
+    try
+    {
+        roomless = archive.driver && hokuto::tools::ExportOutgrows(*mixed);
+    }
+    catch (const std::exception&)
+    {
+        roomless = false;
+    }
+    if (roomless)
+    {
+        std::printf("%s: %s: track %d's %s from %d to %d stays out: the ROM has no room for the song\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), plan.track, NameOf(setting), plan.edit.from, plan.edit.to);
+        ++totals.roomless;
+        return std::nullopt;
+    }
+
+    return mixed;
+}
+
+// Counts and prints each edit of `plans` that `edited` or `again` is missing. `edited` is `file` after the edits.
+// `after` is the archive that the program plays, and `again` is the file that it imports into again.
+void CheckEditsComeBack(const File& file, const File& edited, const CheckedArchive& after, const File& again,
+                        const std::map<uint32_t, Plan>& plans, const std::string& name, Mix setting, Totals& totals)
+{
+    for (const auto& [sequence, plan] : plans)
+    {
+        const std::optional<uint64_t> field = after.driver ? after.driver->FieldsOf(plan.sound).sequence : std::nullopt;
+        const std::optional<uint32_t> back_sequence =
+            after.gba ? hokuto::format::GbaSongSequence(again, after.gba->info.song_table, static_cast<int>(plan.sound))
+            : after.driver ? (field ? hokuto::format::SequenceNamedAt(again, *field) : std::nullopt)
+                           : std::optional<uint32_t>(sequence);
+        const bool back =
+            again.sequences.size() == edited.sequences.size() && back_sequence &&
+            hokuto::tools::HoldsSequence(after, *edited.sequences[sequence], *again.sequences[*back_sequence]);
+        const bool timeline = hokuto::edit::IsTimeline(edited, sequence);
+        if (!back || (!timeline && !HoldsEdit(*file.sequences[sequence], *edited.sequences[sequence], plan)))
+        {
+            std::printf("%s: sequence %u: the %s edit of track %d %s\n", name.c_str(), sequence, NameOf(setting),
+                        plan.track, back ? "isn't in the commands" : "doesn't come back from the archive");
+            ++totals.wrong_edits;
+        }
+    }
+}
+
+// Counts the timelines of `file`, then prints the totals of the check of the archive `name`. With `timelines`, the
+// totals include those of the timelines.
+void PrintTotals(const std::string& name, const CheckedArchive& archive, const File& file, bool timelines,
+                 Totals& totals)
+{
     for (uint32_t sequence = 0; sequence < file.sequences.size(); ++sequence)
     {
         totals.timelines += hokuto::edit::IsTimeline(file, sequence) ? 1 : 0;
@@ -1091,7 +405,244 @@ int main(int argc, char** argv)
         totals.note_sounds, totals.moved_loops, totals.unread, totals.mixed, totals.moving, totals.other_passes,
         totals.other_ends, totals.listed_tracks, totals.listed_sounds, totals.reached_tracks, totals.reached_sounds,
         totals.unlisted, totals.slowest_reach * 1000.0, timeline_line.c_str());
+    if (archive.gba)
+    {
+        std::printf(
+            "%s: Apart on the GBA: %zu sounds whose notes of a PSG channel end elsewhere after a volume or a "
+            "pan edit, and %zu songs that outgrow their places in a ROM without room for them.\n",
+            name.c_str(), totals.psg_sounds, totals.outgrown);
+    }
+    if (archive.driver)
+    {
+        std::printf(
+            "%s: Apart on the GBA's other drivers: %zu edits that stay out: the ROM has no room for the song.\n",
+            name.c_str(), totals.roomless);
+    }
+    if (archive.ds)
+    {
+        std::printf("%s: Apart on the DS: %zu sounds whose notes take other channels after a volume edit.\n",
+                    name.c_str(), totals.channel_sounds);
+    }
+    if (archive.dse)
+    {
+        std::printf(
+            "%s: Apart on DSE: %zu tracks that run past their chunks, into bytes that the file holds as data.\n",
+            name.c_str(), totals.past_end);
+    }
     hokuto::tools::PrintSaves(name);
+}
+
+// One run of the check on the archive `name`: the file before the edits, each sequence sound before them, and what
+// each round's edits take.
+struct MixRun
+{
+    std::string name;
+    bool timelines = false;
+
+    // The archive, the archive that the program plays, the Hokuto file, the sequence of each of the archive's files,
+    // and where each sound plays in the file.
+    CheckedArchive archive;
+    CheckedArchive playing;
+    File file;
+    std::vector<std::optional<uint32_t>> sequences;
+    std::vector<std::optional<hokuto::edit::SoundPlace>> places;
+
+    // Each sequence sound before the edits, the first sound that plays each sequence file, the offsets of each
+    // sequence's commands, and the tracks and sounds that the mixer lists for an edit of each track of each sound.
+    std::vector<std::optional<Sequence>> before;
+    std::map<uint32_t, uint32_t> first_sounds;
+    std::map<uint32_t, std::vector<uint32_t>> offsets;
+    std::map<uint32_t, std::vector<TrackReach>> reaches;
+};
+
+// Opens the archive at `path` into `run`: the archive, the Hokuto file that it imports into, and the archive that the
+// program plays. Throws when one of them fails, or for Konami's driver.
+void OpenMixFile(const std::filesystem::path& path, MixRun& run)
+{
+    std::vector<uint8_t> bytes;
+    xsflib::ReadFile(path, bytes);
+    run.archive = hokuto::tools::OpenChecked(path, bytes);
+    if (run.archive.Konami())
+    {
+        throw std::invalid_argument("the tool doesn't check Konami's driver: hokuto_check_konami_mix does");
+    }
+    run.file = hokuto::tools::CheckedForm(hokuto::tools::ImportChecked(bytes, run.archive), bytes);
+    run.sequences = hokuto::tools::SequencesOfChecked(run.file, bytes, run.archive);
+    run.places = hokuto::tools::PlacesOfChecked(run.file, bytes, run.archive);
+    run.playing = run.archive;
+    if (run.timelines)
+    {
+        run.file = hokuto::edit::OpenTimelines(std::move(run.file));
+        run.playing = hokuto::tools::BuildChecked(run.file, run.name);
+    }
+}
+
+// Plans one edit of `setting` for each sequence file of `run`, on a track that plays notes, and makes it in `edited`.
+// Returns the plans by sequence. Sets `failed` where a plan or an edit fails.
+std::map<uint32_t, Plan> PlanRoundEdits(const MixRun& run, std::size_t round, Mix setting, File& edited, bool& failed,
+                                        Totals& totals)
+{
+    std::map<uint32_t, Plan> plans;
+    for (const auto& [sequence, sound] : run.first_sounds)
+    {
+        const Track& track = EditedTrack(run.file, *run.before[sound], sequence, round, setting);
+        // A DSE track's settings are those of its channel.
+        Track channel_track = track;
+        channel_track.stretches = hokuto::song::MixStretches(*run.before[sound], track);
+        std::optional<Plan> plan = PlanFor(run.file, sequence, run.offsets.at(sequence), sound, channel_track, setting);
+        if (!plan && run.archive.dse &&
+            RunsIntoData(*run.file.sequences[sequence], run.offsets.at(sequence), channel_track))
+        {
+            ++totals.past_end;
+            continue;
+        }
+        if (!plan)
+        {
+            std::printf("%s: %s: track %d's stretches aren't made of items\n", run.name.c_str(),
+                        run.archive.NameOf(sound).c_str(), track.number);
+            failed = true;
+            continue;
+        }
+
+        ++totals.edits;
+        std::optional<File> mixed =
+            MixedFile(edited, sequence, *plan, run.archive, sound, setting, run.name, failed, totals);
+        if (!mixed)
+        {
+            continue;
+        }
+        edited = std::move(*mixed);
+
+        totals.new_commands += plan->opening ? 1 : 0;
+        totals.jumps += plan->jump ? 1 : 0;
+        const auto reach = run.reaches.find(sound);
+        const auto index = static_cast<std::size_t>(&track - run.before[sound]->tracks.data());
+        if (reach != run.reaches.end() && index < reach->second.size())
+        {
+            plan->reach = reach->second[index].mix[static_cast<std::size_t>(setting)];
+            totals.listed_tracks += plan->reach.tracks.size();
+            totals.listed_sounds += plan->reach.sounds.size();
+        }
+        plans.emplace(sequence, std::move(*plan));
+    }
+
+    return plans;
+}
+
+// The archives of a round's edited file: the archive that a saved file holds, the archive that the program plays, and
+// the file that the first imports into again.
+struct RoundArchives
+{
+    CheckedArchive saved;
+    CheckedArchive after;
+    File again;
+};
+
+// Makes round `round` of the edits of `run`: the edits of `kSettings[round]`, the export, and the checks of each
+// sound again. Returns false where the edited file can't be exported.
+bool RunMixRound(MixRun& run, std::size_t round, bool& failed, Totals& totals)
+{
+    // One edit for each sequence file, on a track that plays notes.
+    const Mix setting = kSettings[round];
+    File edited = run.file;
+    std::map<uint32_t, Plan> plans = PlanRoundEdits(run, round, setting, edited, failed, totals);
+
+    // The edited archive that a saved file holds, the archive that the program plays, and the file that the first
+    // imports into again. That file takes the timelines' hints that a saved file keeps.
+    RoundArchives built;
+    try
+    {
+        // A GBA ROM without free space has no room for the songs that their edits make longer. Their edits then
+        // stay out, and the others go in again.
+        if (run.archive.gba)
+        {
+            DropOutgrownEdits(run.file, edited, plans, run.name, setting, totals);
+        }
+
+        const File folded = hokuto::edit::FoldTimelines(edited);
+        hokuto::tools::CheckSaved(folded);
+        const std::vector<uint8_t> exported = hokuto::format::ExportArchive(folded);
+        const std::vector<std::vector<uint8_t>> group_files = hokuto::format::ExportGroupFiles(folded);
+        built.saved = hokuto::tools::BuildChecked(folded, run.name);
+        built.after = run.timelines ? hokuto::tools::BuildChecked(edited, run.name) : built.saved;
+        built.again = hokuto::tools::ImportChecked(exported, run.archive, group_files);
+        if (run.timelines)
+        {
+            built.again.timelines = edited.timelines;
+            built.again = hokuto::edit::OpenTimelines(std::move(built.again));
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: the file after the %s edits can't be exported: %s\n", run.name.c_str(), NameOf(setting),
+                    error.what());
+        return false;
+    }
+
+    // The import of a GBA ROM numbers the songs' sequences in the order of their places in the ROM. A song that grew
+    // moves to the free space, and the song table points to its sequence. So does the table of another of the GBA's
+    // drivers.
+    CheckEditsComeBack(run.file, edited, built.after, built.again, plans, run.name, setting, totals);
+
+    // Each sound that plays an edited sequence file, again.
+    for (uint32_t sound = 0; sound < run.archive.SoundCount(); ++sound)
+    {
+        CheckSoundAgain(sound, run.archive, run.file, run.sequences, run.before, plans, built.saved, built.after,
+                        run.timelines, run.offsets, setting, run.name, totals);
+    }
+
+    return true;
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    const std::optional<hokuto::tools::EditOptions> options = hokuto::tools::ParseEditOptions(
+        xsflib::console::Arguments(argc, argv),
+        "usage: hokuto_check_mix [--model] [--filler] [--timelines] <archive> [sound]\n");
+    if (!options)
+    {
+        return 2;
+    }
+
+    // The archive and the group files beside it make a Hokuto file. `playing` is the archive that the program plays.
+    MixRun run;
+    run.name = xsflib::Utf8(options->path.filename());
+    run.timelines = options->timelines;
+    try
+    {
+        OpenMixFile(options->path, run);
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", run.name.c_str(), error.what());
+        return 2;
+    }
+
+    // Each sequence sound before the edits, and the first sound that plays each sequence file.
+    Totals totals;
+    run.before.resize(run.archive.SoundCount());
+    run.first_sounds =
+        ReadSoundsBefore(run.archive, run.playing, run.sequences, options->only, run.name, run.before, totals);
+
+    // A sequence whose command offsets can't be found receives no edits, and the tool fails.
+    bool failed = false;
+    run.offsets = FindOffsets(run.file, run.archive, run.name, run.first_sounds, failed);
+
+    // The tracks and sounds that the mixer lists for an edit of each track of each sound that takes the edits.
+    run.reaches =
+        MixerListings(run.file, run.places, run.archive, run.name, run.first_sounds, run.before, failed, totals);
+
+    for (std::size_t round = 0; round < kSettings.size(); ++round)
+    {
+        if (!RunMixRound(run, round, failed, totals))
+        {
+            return 1;
+        }
+    }
+
+    PrintTotals(run.name, run.archive, run.file, run.timelines, totals);
 
     const bool differ = totals.wrong_edits != 0 || totals.differ != 0 || totals.note_sounds != 0 || totals.saved != 0 ||
                         totals.moved_loops != 0;

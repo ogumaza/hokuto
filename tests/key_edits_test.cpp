@@ -3,14 +3,19 @@
 // Tests what the Key Editor works out about its notes (src/app/key_edits.h), without a window: Quantize's edit, the
 // clipboard, Select All, the names of the keys, the edits of typed values, the arrow keys' moves, the instrument at a
 // tick, the gestures that have lost their notes or their lanes, the selection in a new version, the note that Acoustic
-// Feedback sounds for each gesture, and the position that a click on the ruler places.
+// Feedback sounds for each gesture, the position that a click on the ruler places, and the limits of the notes that a
+// volume command of Konami's driver starts.
 
 #include "app/key_edits.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <set>
+#include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -21,6 +26,7 @@
 #include "app/key_editor.h"
 #include "edit/notes.h"
 #include "format/shared.h"
+#include "konami_fixtures.h"
 
 using hokuto::app::CopiedNotes;
 using hokuto::app::FollowedSelection;
@@ -45,7 +51,6 @@ using hokuto::app::SoundingNote;
 using hokuto::app::Transposition;
 using hokuto::app::TypedEdit;
 using hokuto::app::WithInstrumentAt;
-using hokuto::edit::NoteLimits;
 using hokuto::edit::ShiftRange;
 
 namespace
@@ -85,7 +90,8 @@ KeyEditorState StateFor(const std::vector<uint32_t>& commands)
     state.grid = 16;
     for (const uint32_t command : commands)
     {
-        state.limits[command] = NoteLimits{ShiftRange{24, 24}, 48};
+        state.limits[command].shift = ShiftRange{24, 24};
+        state.limits[command].length = 48;
     }
 
     return state;
@@ -180,7 +186,7 @@ void TestQuantizeLimits()
     XSFLIB_CHECK(refused->changes.empty() &&
                  refused->refused.find("jumps, calls and loop points") != std::string::npos);
     SEQLIB_REQUIRE(fixed.has_value());
-    XSFLIB_CHECK(fixed->changes.empty() && fixed->refused.find("set its timing") != std::string::npos);
+    XSFLIB_CHECK(fixed->changes.empty() && fixed->refused.find("set the timing") != std::string::npos);
     XSFLIB_CHECK(!nothing.has_value());
 }
 
@@ -288,8 +294,9 @@ void TestKeyNames()
 
 // A typed start moves the selected notes together, by the first note's distance to it. A typed value goes into the
 // track's ticks: 48 to the quarter note here. A start past the room of a note's commands refuses, and so does a track
-// whose notes set its timing. The first note's start makes no edit. Text that isn't a position is refused with an
-// example of one. Without limits, the edit goes ahead, and the edit of the commands says why it can't.
+// whose notes set its timing. A note that can't move for a reason of its own, such as a tie on the GBA, refuses with
+// that reason. The first note's start makes no edit. Text that isn't a position is refused with an example of one.
+// Without limits, the edit goes ahead, and the edit of the commands says why it can't.
 void TestTypedStart()
 {
     const KeyTrack track = TrackOf({NoteAt(48, 10), NoteAt(96, 11, 64)});
@@ -298,6 +305,8 @@ void TestTypedStart()
     state.limits[11].shift = ShiftRange{96, 12};
     KeyEditorState timed = state;
     timed.limits[10].shift.reset();
+    KeyEditorState tied = timed;
+    tied.limits[10].fixed = "This note is tied.";
     KeyEditorState unknown = state;
     unknown.limits.clear();
 
@@ -315,17 +324,105 @@ void TestTypedStart()
     XSFLIB_CHECK(!same.has_value());
     SEQLIB_REQUIRE(unread && late && early && fixed && passed);
     XSFLIB_CHECK(unread->changes.empty() &&
-                 unread->refused == "Hokuto can't read \"2. 5\" as a start. A start is a position, such as 2. 1. 0.");
+                 unread->refused == "Can't read \"2. 5\" as a start. A start is a position, such as 2. 1. 0.");
     XSFLIB_CHECK(late->changes.empty() && late->refused.find("no later than 2. 2. 0.") != std::string::npos);
     XSFLIB_CHECK(early->changes.empty() && early->refused.find("no earlier than 1. 3. 0.") != std::string::npos);
-    XSFLIB_CHECK(fixed->changes.empty() && fixed->refused.find("set its timing") != std::string::npos);
+    XSFLIB_CHECK(fixed->changes.empty() && fixed->refused.find("set the timing") != std::string::npos);
     XSFLIB_CHECK(passed->changes.size() == 2 && passed->refused.empty() && IsShift(passed->changes[1], 11, 12));
+    const std::optional<KeyEdit> tie = TypedEdit(track, tied, InfoValue::kStart, "2. 2");
+    XSFLIB_CHECK(tie && tie->changes.empty() && tie->refused == "This note is tied.");
+}
+
+// A drag of a note that can't move, or of its end, changes nothing when the mouse is released. The release then says
+// why, as the drag's tooltip did: the reason for the move, or the reason for the length where the limits give one. A
+// drag that stopped nowhere makes no edit and says nothing. A drag that moves or sizes the notes makes its edit.
+void TestReleasedDrags()
+{
+    const KeyTrack track = TrackOf({NoteAt(48, 10), NoteAt(96, 11, 64)});
+    KeyEditorState fixed;
+    fixed.selected = {10};
+    fixed.limits[10].fixed = "This note can't move.";
+    fixed.limits[10].fixed_length = "This note keeps its length.";
+    XSFLIB_CHECK(FixedText(fixed, true) == "This note can't move.");
+    XSFLIB_CHECK(FixedText(fixed, false) == "This note keeps its length.");
+
+    KeyGesture move{.kind = KeyGesture::Kind::kMove};
+    XSFLIB_CHECK(!ReleasedNoteEdit(track, fixed, move));
+    move.stopped = FixedText(fixed, true);
+    const std::optional<KeyEdit> stayed = ReleasedNoteEdit(track, fixed, move);
+    SEQLIB_REQUIRE(stayed.has_value());
+    XSFLIB_CHECK(stayed->name == "Move" && stayed->changes.empty() && stayed->refused == "This note can't move.");
+
+    KeyGesture size{.kind = KeyGesture::Kind::kSize, .resize = 12};
+    size.stopped = FixedText(fixed, false);
+    const std::optional<KeyEdit> kept = ReleasedNoteEdit(track, fixed, size);
+    SEQLIB_REQUIRE(kept.has_value());
+    XSFLIB_CHECK(kept->name == "Size" && kept->changes.empty() && kept->refused == "This note keeps its length.");
+
+    // A tie gives one reason for both.
+    KeyEditorState tied = fixed;
+    tied.limits[10].fixed_length.clear();
+    XSFLIB_CHECK(FixedText(tied, false) == "This note can't move.");
+
+    // Notes with room move and size.
+    KeyEditorState roomy = StateFor({10, 11});
+    roomy.selected = {10, 11};
+    const std::optional<KeyEdit> moved = ReleasedNoteEdit(
+        track, roomy, KeyGesture{.kind = KeyGesture::Kind::kMove, .shift = 12, .stopped = "The note stops."});
+    SEQLIB_REQUIRE(moved && moved->changes.size() == 2);
+    XSFLIB_CHECK(moved->refused.empty() && IsShift(moved->changes[0], 10, 12) && IsShift(moved->changes[1], 11, 12));
+    const std::optional<KeyEdit> sized =
+        ReleasedNoteEdit(track, roomy, KeyGesture{.kind = KeyGesture::Kind::kSize, .resize = 12});
+    SEQLIB_REQUIRE(sized && sized->changes.size() == 2);
+    XSFLIB_CHECK(sized->refused.empty() && IsLength(sized->changes[0], 10, 60) && IsLength(sized->changes[1], 11, 60));
+    XSFLIB_CHECK(!ReleasedNoteEdit(track, roomy, KeyGesture{.kind = KeyGesture::Kind::kBox, .stopped = "No."}));
+}
+
+// A press that wobbles 3 pixels, less than the 9 that a drag needs before it says why the notes stop short, makes no
+// refusal: its release gives no edit and no message. A drag of 40 pixels to the side gives the reason, for a size of
+// notes that keep their length and for a move of notes that can't move. A move with room that stops 20 pixels short
+// gives the limit's text, and one that stops 2 pixels short gives nothing. Up and down count for nothing.
+void TestWobbles()
+{
+    const KeyTrack track = TrackOf({NoteAt(48, 10)});
+    KeyEditorState fixed;
+    fixed.selected = {10};
+    fixed.limits[10].fixed = "This note can't move.";
+    fixed.limits[10].fixed_length = "This note keeps its length.";
+    KeyEditorState roomy = StateFor({10});
+    roomy.selected = {10};
+
+    XSFLIB_CHECK(StoppedText(track, fixed, false, 3.0, 0.0, 9.0, {}).empty());
+    XSFLIB_CHECK(StoppedText(track, fixed, false, -3.0, 0.0, 9.0, {}).empty());
+    XSFLIB_CHECK(StoppedText(track, fixed, true, 3.0, 3.0, 9.0, "Stops.").empty());
+    XSFLIB_CHECK(StoppedText(track, roomy, true, 3.0, 20.0, 9.0, "Stops.").empty());
+    const KeyGesture wobble{.kind = KeyGesture::Kind::kSize,
+                            .stopped = StoppedText(track, fixed, false, 3.0, 0.0, 9.0, {})};
+    XSFLIB_CHECK(!ReleasedNoteEdit(track, fixed, wobble));
+
+    XSFLIB_CHECK(StoppedText(track, fixed, false, 40.0, 0.0, 9.0, {}) == "This note keeps its length.");
+    XSFLIB_CHECK(StoppedText(track, fixed, true, -40.0, 0.0, 9.0, "Stops.") == "This note can't move.");
+    XSFLIB_CHECK(StoppedText(track, roomy, true, 40.0, 20.0, 9.0, "Stops.") == "Stops.");
+    XSFLIB_CHECK(StoppedText(track, roomy, true, 40.0, 2.0, 9.0, "Stops.").empty());
+    XSFLIB_CHECK(StoppedText(track, roomy, false, 40.0, 0.0, 9.0, {}).empty());
+
+    // The edge: 8.9 pixels say nothing, and 9 give the reason, to the side and short of the pointer alike.
+    XSFLIB_CHECK(StoppedText(track, fixed, false, 8.9, 0.0, 9.0, {}).empty());
+    XSFLIB_CHECK(StoppedText(track, fixed, false, 9.0, 0.0, 9.0, {}) == "This note keeps its length.");
+    XSFLIB_CHECK(StoppedText(track, fixed, true, -8.9, 0.0, 9.0, "Stops.").empty());
+    XSFLIB_CHECK(StoppedText(track, fixed, true, -9.0, 0.0, 9.0, "Stops.") == "This note can't move.");
+    XSFLIB_CHECK(StoppedText(track, roomy, true, 40.0, 8.9, 9.0, "Stops.").empty());
+    XSFLIB_CHECK(StoppedText(track, roomy, true, 40.0, -9.0, 9.0, "Stops.") == "Stops.");
+    const KeyGesture size{.kind = KeyGesture::Kind::kSize,
+                          .stopped = StoppedText(track, fixed, false, 40.0, 0.0, 9.0, {})};
+    const std::optional<KeyEdit> refused = ReleasedNoteEdit(track, fixed, size);
+    XSFLIB_CHECK(refused && refused->changes.empty() && refused->refused == "This note keeps its length.");
 }
 
 // A typed end or length sizes the selected notes together, by the first note's change. A note lasts a tick at least: an
-// end at the note's start refuses. So does a track whose notes set its timing. The first note's length makes no edit.
-// Without limits, each command's first note gives its length. Text that isn't a position or a length is refused with an
-// example of one.
+// end at the note's start refuses. So does a track whose notes set its timing, and a tie gives its reason. The first
+// note's length makes no edit. Without limits, each command's first note gives its length. Text that isn't a position
+// or a length is refused with an example of one.
 void TestTypedLength()
 {
     KeyNote longer = NoteAt(96, 11);
@@ -336,6 +433,8 @@ void TestTypedLength()
     state.limits[11].length = 96;
     KeyEditorState timed = state;
     timed.limits[11].length.reset();
+    KeyEditorState tied = timed;
+    tied.limits[11].fixed = "This note is tied.";
     KeyEditorState unknown = state;
     unknown.limits.clear();
 
@@ -355,16 +454,39 @@ void TestTypedLength()
     XSFLIB_CHECK(!same.has_value());
     SEQLIB_REQUIRE(empty && fixed && passed);
     XSFLIB_CHECK(empty->changes.empty() && empty->refused.find("a tick at least") != std::string::npos);
-    XSFLIB_CHECK(fixed->changes.empty() && fixed->refused.find("set its timing") != std::string::npos);
+    XSFLIB_CHECK(fixed->changes.empty() && fixed->refused.find("set the timing") != std::string::npos);
+    const std::optional<KeyEdit> tie = TypedEdit(track, tied, InfoValue::kLength, "2");
+    XSFLIB_CHECK(tie && tie->changes.empty() && tie->refused == "This note is tied.");
     SEQLIB_REQUIRE_EQ(passed->changes.size(), 2);
     XSFLIB_CHECK(IsLength(passed->changes[0], 10, 96) && IsLength(passed->changes[1], 11, 144));
     SEQLIB_REQUIRE(unread_end && unread_length);
     XSFLIB_CHECK(unread_end->changes.empty() &&
-                 unread_end->refused == "Hokuto can't read \"3. 5\" as an end. An end is a position, such as 2. 1. 0.");
+                 unread_end->refused == "Can't read \"3. 5\" as an end. An end is a position, such as 2. 1. 0.");
     XSFLIB_CHECK(unread_length->changes.empty() &&
                  unread_length->refused ==
-                     "Hokuto can't read \"0. 4\" as a length. A length is a number of beats, "
+                     "Can't read \"0. 4\" as a length. A length is a number of beats, "
                      "sixteenths and ticks, such as 0. 1. 0.");
+}
+
+// A timeline's note that the end of its track cuts sounds for less than its command's length: 48 ticks of 96. Typed,
+// the command's length makes an edit only where the end cuts the note (edit::NoteLimits::cut_by_end). The edit then
+// moves the end. The length that the note shows makes none.
+void TestTypedLengthOverTheEnd()
+{
+    const KeyTrack track = TrackOf({NoteAt(96, 10)});
+    KeyEditorState state = StateFor({10});
+    state.selected = {10};
+    state.limits[10].length = 96;
+    KeyEditorState cut = state;
+    cut.limits[10].cut_by_end = true;
+
+    const std::optional<KeyEdit> kept = TypedEdit(track, state, InfoValue::kLength, "2");
+    const std::optional<KeyEdit> full = TypedEdit(track, cut, InfoValue::kLength, "2");
+    const std::optional<KeyEdit> shown = TypedEdit(track, cut, InfoValue::kLength, "1");
+
+    XSFLIB_CHECK(!kept.has_value() && !shown.has_value());
+    SEQLIB_REQUIRE(full && full->changes.size() == 1);
+    XSFLIB_CHECK(full->name == "Size" && full->refused.empty() && IsLength(full->changes[0], 10, 96));
 }
 
 // A typed pitch transposes the selected notes together, and a typed velocity changes their velocities by the same
@@ -393,10 +515,9 @@ void TestTypedPitchAndVelocity()
                  too_high->refused.find("C-2 to G8") != std::string::npos);
     XSFLIB_CHECK(!same_key.has_value());
     SEQLIB_REQUIRE(unread_key.has_value());
-    XSFLIB_CHECK(
-        unread_key->changes.empty() &&
-        unread_key->refused ==
-            "Hokuto can't read \"H3\" as a pitch. A pitch is a key's name from C-2 to G8, such as C3 for middle C.");
+    XSFLIB_CHECK(unread_key->changes.empty() &&
+                 unread_key->refused ==
+                     "Can't read \"H3\" as a pitch. A pitch is a key name from C-2 to G8, such as C3 for middle C.");
     SEQLIB_REQUIRE(louder && louder->changes.size() == 2 && softest && softest->changes.size() == 2);
     XSFLIB_CHECK(louder->name == "Set Note Velocity" && louder->changes[0].velocity == 127 &&
                  louder->changes[1].velocity == 107);
@@ -407,7 +528,7 @@ void TestTypedPitchAndVelocity()
         SEQLIB_REQUIRE(unread.has_value());
         XSFLIB_CHECK(unread->changes.empty() &&
                      unread->refused ==
-                         "Hokuto can't read \"" + text + "\" as a velocity. A velocity is a number from 1 to 127.");
+                         "Can't read \"" + text + "\" as a velocity. A velocity is a number from 1 to 127.");
     }
     XSFLIB_CHECK(!TypedEdit(track, KeyEditorState(), InfoValue::kVelocity, "64").has_value());
 }
@@ -428,6 +549,179 @@ void TestTransposition()
     XSFLIB_CHECK(down->name == "Down" && down->changes[0].transpose == -1 && down->changes[1].transpose == -1);
     XSFLIB_CHECK(!Transposition(track, state, 64).has_value() && !Transposition(track, state, -61).has_value());
     XSFLIB_CHECK(!Transposition(track, KeyEditorState(), 1).has_value());
+}
+
+// Song 0 of the later revision of the Konami fixture, with `song` as the bytes of track 0. Every other track runs the
+// bytes at `others`.
+File KonamiFileWithSong(const std::vector<uint8_t>& song, uint32_t others)
+{
+    std::vector<uint8_t> cart = LaterCart();
+    std::ranges::fill_n(cart.begin() + kSong0, static_cast<std::ptrdiff_t>(kLaterSong0.size()), uint8_t{0});
+    std::ranges::copy(song, cart.begin() + kSong0);
+    PutEntry(cart, 0, kSong0, others, 0, 0);
+
+    return format::ImportKonamiRom(cart);
+}
+
+// The limits that the Key Editor finds for the notes of track 0 of song 0 of `file`, by command.
+std::map<uint32_t, edit::NoteLimits> KonamiLimits(const File& file)
+{
+    const Sequence song0 = ReadOf(file, 0);
+    const song::Track* square = TrackOf(song0, 0);
+    XSFLIB_CHECK(square != nullptr);
+    std::vector<edit::NotePlace> places;
+    for (const song::Note& note : square ? square->notes : std::vector<song::Note>{})
+    {
+        places.push_back({.command = note.command, .stretch = square->stretches.at(note.stretch), .note = true});
+    }
+    const std::vector<edit::NoteLimits> limits = edit::LimitsOf(file, 0, places);
+    std::map<uint32_t, edit::NoteLimits> by_command;
+    for (std::size_t i = 0; i < places.size(); i++)
+    {
+        by_command.emplace(places[i].command, limits[i]);
+    }
+
+    return by_command;
+}
+
+// The message of the refusal of an edit of command `command` of track 0 of song 0 of `file`.
+std::string KonamiRefusal(const File& file, uint32_t command, int32_t shift, int transpose)
+{
+    const Sequence song0 = ReadOf(file, 0);
+    const song::Track* square = TrackOf(song0, 0);
+    const auto note = square ? std::ranges::find(square->notes, command, &song::Note::command)
+                             : std::vector<song::Note>::const_iterator();
+    if (!square || note == square->notes.end())
+    {
+        XSFLIB_CHECK(!"no note of the command");
+        return {};
+    }
+    const edit::NoteEdit edit{
+        .command = command, .stretch = square->stretches.at(note->stretch), .shift = shift, .transpose = transpose};
+    return ErrorOf<std::invalid_argument>([&] { edit::EditNotes(file, 0, std::span(&edit, 1)); });
+}
+
+// On Konami's driver, two volume commands after one PSG note command at volume 0 start two notes at its key. The edit
+// layer refuses a move and a new key of either (TestNotesOfOneSilentCommand in konami_edits_test.cpp). The limits give
+// the same reasons: neither note moves, a drag and the arrow keys leave both at their keys, and each says why.
+//
+//     +0: 00          wait 0
+//     +1: D0 1A       note 26 at volume 0, at tick 0
+//     +3: 02          wait 2
+//     +4: C2          volume 2, at tick 2: note 26 starts
+//     +5: 04          wait 4
+//     +6: C3          volume 3, at tick 6: note 26 starts again
+//     +7: 04          wait 4
+//     +8: E0          rest, at tick 10
+//     +9: 02          wait 2
+//    +10: D3 1C       note 28 at volume 3, at tick 12
+//    +12: 04          wait 4
+//    +13: E0          rest, at tick 16
+//    +14: 00          wait 0
+//    +15: FF          stop the song, at tick 16
+void TestKonamiSharedKey()
+{
+    const File file = KonamiFileWithSong(
+        {0x00, 0xD0, 0x1A, 0x02, 0xC2, 0x04, 0xC3, 0x04, 0xE0, 0x02, 0xD3, 0x1C, 0x04, 0xE0, 0x00, 0xFF, 0x00, 0xFD},
+        16);
+    const std::map<uint32_t, edit::NoteLimits> limits = KonamiLimits(file);
+    SEQLIB_REQUIRE(limits.size() == 3 && limits.contains(4) && limits.contains(6) && limits.contains(10));
+    const std::string move = KonamiRefusal(file, 4, 1, 0);
+    const std::string transpose = KonamiRefusal(file, 4, 0, 1);
+    XSFLIB_CHECK(!move.empty() && !transpose.empty() && move != transpose);
+    for (const uint32_t command : {4u, 6u})
+    {
+        const edit::NoteLimits& limit = limits.at(command);
+        XSFLIB_CHECK(!limit.shift && limit.fixed == move && limit.fixed_key == transpose);
+        XSFLIB_CHECK(limit.fixed == KonamiRefusal(file, command, -1, 0));
+        XSFLIB_CHECK(limit.fixed_key == KonamiRefusal(file, command, 0, -1));
+    }
+    XSFLIB_CHECK(limits.at(10).fixed.empty() && limits.at(10).fixed_key.empty());
+
+    // The arrow keys and a drag up or down leave the notes at their keys, and say why.
+    const KeyTrack track = TrackOf({NoteAt(2, 4, 62), NoteAt(6, 6, 62), NoteAt(12, 10, 64)});
+    KeyEditorState state;
+    state.limits = limits;
+    state.selected = {4, 10};
+    XSFLIB_CHECK(FixedKeyText(state) == transpose);
+    XSFLIB_CHECK(TransposeRange(track, state) == (std::pair<int, int>{0, 0}));
+    for (const int semitones : {1, -1, 12, -12})
+    {
+        const std::optional<KeyEdit> refused = Transposition(track, state, semitones);
+        SEQLIB_REQUIRE(refused);
+        XSFLIB_CHECK(refused->changes.empty() && refused->refused == transpose);
+    }
+
+    // A drag up or down says why once the pointer has gone the drag distance, 9 pixels here, on another key's row. A
+    // press that wobbles less, or stays on its row (a rise of 0), says nothing, and its release makes no edit.
+    for (const double rise : {0.0, 3.0, -3.0, 8.9, -8.9})
+    {
+        const KeyGesture wobble{.kind = KeyGesture::Kind::kMove,
+                                .stopped = StoppedText(track, state, true, 0.0, 0.0, 9.0, {}, rise)};
+        XSFLIB_CHECK(wobble.stopped.empty() && !ReleasedNoteEdit(track, state, wobble));
+    }
+    for (const double rise : {9.0, -9.0, 40.0, -40.0})
+    {
+        const KeyGesture drag{.kind = KeyGesture::Kind::kMove,
+                              .stopped = StoppedText(track, state, true, 0.0, 0.0, 9.0, {}, rise)};
+        XSFLIB_CHECK(drag.stopped == transpose);
+        const std::optional<KeyEdit> dragged = ReleasedNoteEdit(track, state, drag);
+        SEQLIB_REQUIRE(dragged);
+        XSFLIB_CHECK(dragged->changes.empty() && dragged->refused == transpose);
+    }
+
+    // A drag to the side says why the notes can't move.
+    XSFLIB_CHECK(!SharedRange(state, state.selected));
+    XSFLIB_CHECK(StoppedText(track, state, true, 40.0, 0.0, 9.0, {}) == move);
+
+    // The note that note 28 starts takes a new key. A drag up or down of it says nothing.
+    state.selected = {10};
+    XSFLIB_CHECK(FixedKeyText(state).empty());
+    XSFLIB_CHECK(StoppedText(track, state, true, 0.0, 0.0, 9.0, {}, 40.0).empty());
+    const std::optional<KeyEdit> up = Transposition(track, state, 1);
+    SEQLIB_REQUIRE(up);
+    XSFLIB_CHECK(up->refused.empty() && up->changes.size() == 1 && up->changes[0].transpose == 1);
+}
+
+// A volume command without a PSG note command at volume 0 before it in its block can follow another note command on
+// another pass. The edit layer refuses every edit of the note that it starts (TestNoteStartedByVolumeAfterLoopStart in
+// konami_edits_test.cpp), and the limits give the same reason for a move, a size and a new key.
+//
+//     +0: 00          wait 0
+//     +1: D3 18       note 24 at volume 3, at tick 0
+//     +3: 04          wait 4
+//     +4: D0 1A       note 26 at volume 0, at tick 4
+//     +6: 02          wait 2
+//     +7: F3          the loop's start, at tick 6
+//     +8: 00          wait 0
+//     +9: C2          volume 2, at tick 6: note 26 starts
+//    +10: 04          wait 4
+//    +11: E0          rest, at tick 10
+//    +12: 06          wait 6
+//    +13: FD          the end, at tick 16
+void TestKonamiFarKey()
+{
+    const File file = KonamiFileWithSong(
+        {0x00, 0xD3, 0x18, 0x04, 0xD0, 0x1A, 0x02, 0xF3, 0x00, 0xC2, 0x04, 0xE0, 0x06, 0xFD, 0x00, 0xFD}, 14);
+    const std::map<uint32_t, edit::NoteLimits> limits = KonamiLimits(file);
+    SEQLIB_REQUIRE(limits.size() == 2 && limits.contains(1) && limits.contains(9));
+    const std::string far = KonamiRefusal(file, 9, 1, 0);
+    XSFLIB_CHECK(!far.empty() && far == KonamiRefusal(file, 9, 0, 1));
+    const edit::NoteLimits& limit = limits.at(9);
+    XSFLIB_CHECK(!limit.shift && !limit.length);
+    XSFLIB_CHECK(limit.fixed == far && limit.fixed_length == far && limit.fixed_key == far);
+    XSFLIB_CHECK(limits.at(1).fixed_key.empty());
+
+    const KeyTrack track = TrackOf({NoteAt(0, 1, 60), NoteAt(6, 9, 62)});
+    KeyEditorState state;
+    state.limits = limits;
+    state.selected = {9};
+    XSFLIB_CHECK(TransposeRange(track, state) == (std::pair<int, int>{0, 0}));
+    const std::optional<KeyEdit> refused = Transposition(track, state, 1);
+    SEQLIB_REQUIRE(refused);
+    XSFLIB_CHECK(refused->changes.empty() && refused->refused == far);
+    XSFLIB_CHECK(StoppedText(track, state, true, 40.0, 0.0, 9.0, {}) == far);
+    XSFLIB_CHECK(StoppedText(track, state, false, 40.0, 0.0, 9.0, {}) == far);
 }
 
 // The instrument at a tick is the last note's that starts by then, or before the first note, the first note's.
@@ -573,24 +867,31 @@ void TestRulerPosition()
 
 int main()
 {
-    TestQuantizeSelection();
-    TestQuantizeEverything();
-    TestQuantizeFirstNote();
-    TestQuantizeLimits();
-    TestQuantizeWithoutLimits();
-    TestCopiedNotes();
-    TestClipboard();
-    TestSelectAll();
-    TestKeyNames();
-    TestTypedStart();
-    TestTypedLength();
-    TestTypedPitchAndVelocity();
-    TestTransposition();
-    TestInstrumentAt();
-    TestGoneGestures();
-    TestFollowedSelection();
-    TestSoundingNote();
-    TestRulerPosition();
-
-    return xsflib::testing::Summary("key edits");
+    return xsflib::testing::RunTest("key_edits",
+                                    []
+                                    {
+                                        TestQuantizeSelection();
+                                        TestQuantizeEverything();
+                                        TestQuantizeFirstNote();
+                                        TestQuantizeLimits();
+                                        TestQuantizeWithoutLimits();
+                                        TestCopiedNotes();
+                                        TestClipboard();
+                                        TestSelectAll();
+                                        TestKeyNames();
+                                        TestTypedStart();
+                                        TestReleasedDrags();
+                                        TestWobbles();
+                                        TestTypedLength();
+                                        TestTypedLengthOverTheEnd();
+                                        TestTypedPitchAndVelocity();
+                                        TestTransposition();
+                                        TestKonamiSharedKey();
+                                        TestKonamiFarKey();
+                                        TestInstrumentAt();
+                                        TestGoneGestures();
+                                        TestFollowedSelection();
+                                        TestSoundingNote();
+                                        TestRulerPosition();
+                                    });
 }

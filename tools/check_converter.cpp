@@ -43,6 +43,8 @@
 //
 // usage: hokuto_check_converter [--model] [--play] [--edits] <archive>...
 
+#include "check_converter.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -60,6 +62,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -75,13 +78,71 @@
 #include "xsflib/files.h"
 
 #include "checked_archive.h"
+#include "checked_saves.h"
 #include "edit/converter.h"
-#include "edit/notes.h"
 #include "edit/timelines.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "song/archive.h"
 #include "song/sequence.h"
+
+namespace hokuto::tools::converter
+{
+
+std::string WithoutNumbers(const std::string& text)
+{
+    std::string result;
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        const bool digit = text[i] >= '0' && text[i] <= '9';
+        if (!digit)
+        {
+            result += text[i];
+        }
+        else if (i == 0 || text[i - 1] < '0' || text[i - 1] > '9')
+        {
+            result += '#';
+        }
+    }
+
+    return result;
+}
+
+void Problem(Totals& totals, const std::string& where, const std::string& what)
+{
+    std::printf("%s: %s\n", where.c_str(), what.c_str());
+    ++totals.problems;
+}
+
+std::vector<hokuto::song::Note> NotesOf(const hokuto::song::Sequence& song)
+{
+    std::vector<hokuto::song::Note> notes;
+    for (const hokuto::song::Track& track : song.tracks)
+    {
+        for (hokuto::song::Note note : track.notes)
+        {
+            note.command = 0;
+            note.stretch = 0;
+            notes.push_back(note);
+        }
+    }
+
+    return notes;
+}
+
+std::optional<uint32_t> SequenceOfSound(const CheckedArchive& archive, uint32_t sound,
+                                        const std::vector<std::optional<uint32_t>>& sequences)
+{
+    const uint32_t file_id = archive.FileOf(sound);
+    if (!archive.IsSequence(sound) || file_id >= sequences.size())
+    {
+        return std::nullopt;
+    }
+
+    return sequences[file_id];
+}
+
+} // namespace hokuto::tools::converter
 
 namespace
 {
@@ -89,35 +150,12 @@ namespace
 namespace commands = ntdlib::commands;
 namespace nwsnd = ntdlib::nwsnd;
 using hokuto::tools::CheckedArchive;
-
-// What the check counted, for the summary.
-struct Totals
-{
-    int archives = 0;
-    int problems = 0;
-    int sequences = 0;
-    int songs = 0;
-    int read = 0;
-    int with_calls = 0;
-    int whole = 0;
-    int opened = 0;
-    int excepted = 0;
-    int kept_inline = 0;
-    int called = 0;
-    int files = 0;
-    int timelines = 0;
-    int played = 0;
-    int edited = 0;
-    int edits = 0;
-    int loops_apart = 0;
-    int silenced = 0;
-    int fewer = 0;
-    int more = 0;
-    std::map<std::string, int> refused;
-    std::set<uint64_t> unique_songs;
-    std::set<uint64_t> unique_read;
-    std::map<std::string, std::set<uint64_t>> reasons;
-};
+using hokuto::tools::converter::CheckEdits;
+using hokuto::tools::converter::NotesOf;
+using hokuto::tools::converter::Problem;
+using hokuto::tools::converter::SequenceOfSound;
+using hokuto::tools::converter::Totals;
+using hokuto::tools::converter::WithoutNumbers;
 
 // FNV-1a over `bytes`.
 uint64_t HashOf(std::span<const uint8_t> bytes)
@@ -160,26 +198,6 @@ uint32_t TimebaseOf(const commands::Sequence& sequence)
     return 48;
 }
 
-// `text` with a # for each run of digits. Reasons of the same kind then count together.
-std::string WithoutNumbers(const std::string& text)
-{
-    std::string result;
-    for (std::size_t i = 0; i < text.size(); ++i)
-    {
-        const bool digit = text[i] >= '0' && text[i] <= '9';
-        if (!digit)
-        {
-            result += text[i];
-        }
-        else if (i == 0 || text[i - 1] < '0' || text[i - 1] > '9')
-        {
-            result += '#';
-        }
-    }
-
-    return result;
-}
-
 // The items of the tracks of the song `name` in `layout`: from the first track's label to the End label. A song edited
 // by hand can hold code of its own before them.
 std::pair<std::size_t, std::size_t> TracksOf(const commands::Sequence& layout, const std::string& name)
@@ -205,13 +223,6 @@ std::pair<std::size_t, std::size_t> TracksOf(const commands::Sequence& layout, c
     }
 
     return {std::min(first, end), end};
-}
-
-// Prints problem `what` at `where`, and counts it.
-void Problem(Totals& totals, const std::string& where, const std::string& what)
-{
-    std::printf("%s: %s\n", where.c_str(), what.c_str());
-    ++totals.problems;
 }
 
 // Checks the sequence in `data`, a sequence file's bytecode, with `labels` and the sounds' starts in `entries`.
@@ -301,6 +312,49 @@ void CheckSequence(const std::string& where, std::span<const uint8_t> data,
                 has_calls ? " with calls" : "", whole ? ", one bar for the whole song" : "", kept_inline, called);
 }
 
+// Checks the converted songs of the sequence files of `archive`, a sound archive from the file at `path`, by `grammar`.
+// `read` reads a sequence file into its data and its labels. A file that `read` can't read counts as a problem.
+template <typename Archive, typename Read>
+void CheckSequenceFiles(const std::string& path, const Archive& archive, const nwsnd::Grammar& grammar,
+                        const Read& read, Totals& totals)
+{
+    // The starts of each sequence file's sounds.
+    std::map<uint32_t, std::set<uint32_t>> starts;
+    for (const auto& sound : archive.Sounds())
+    {
+        if (sound.type == std::remove_cvref_t<decltype(sound.type)>::kSequence)
+        {
+            starts[sound.file_id].insert(sound.start_offset);
+        }
+    }
+
+    for (const auto& [file_id, offsets] : starts)
+    {
+        const std::span<const uint8_t> file = archive.FileData(file_id);
+        if (file.empty())
+        {
+            continue;
+        }
+
+        const std::string where = path + "#" + std::to_string(file_id);
+        try
+        {
+            const auto sequence = read(file);
+            std::vector<nwsnd::LabelOffset> labels;
+            for (const auto& label : sequence.labels)
+            {
+                labels.push_back({label.name, label.offset});
+            }
+            CheckSequence(where, sequence.data, labels, grammar, std::vector<uint32_t>(offsets.begin(), offsets.end()),
+                          totals);
+        }
+        catch (const std::exception& error)
+        {
+            Problem(totals, where, error.what());
+        }
+    }
+}
+
 // Checks the converted songs of the sequence files of a sound archive of the 3DS, the Wii U or the Switch, `bytes`, of
 // `flavor`, from the file at `path`.
 void CheckSar(const std::string& path, std::vector<uint8_t> bytes, ntdlib::sar::Flavor flavor, Totals& totals)
@@ -311,42 +365,9 @@ void CheckSar(const std::string& path, std::vector<uint8_t> bytes, ntdlib::sar::
     const nwsnd::Grammar grammar = flavor == ntdlib::sar::Flavor::kCtr    ? nwsnd::GrammarOf<nwsnd::CtrPolicy>()
                                    : flavor == ntdlib::sar::Flavor::kCafe ? nwsnd::GrammarOf<nwsnd::CafePolicy>()
                                                                           : nwsnd::GrammarOf<nwsnd::NxPolicy>();
-
-    // The starts of each sequence file's sounds.
-    std::map<uint32_t, std::set<uint32_t>> starts;
-    for (const ntdlib::sar::SoundInfo& sound : archive.Sounds())
-    {
-        if (sound.type == ntdlib::sar::SoundType::kSequence)
-        {
-            starts[sound.file_id].insert(sound.start_offset);
-        }
-    }
-
-    for (const auto& [file_id, offsets] : starts)
-    {
-        const std::span<const uint8_t> file = archive.FileData(file_id);
-        if (file.empty())
-        {
-            continue;
-        }
-
-        const std::string where = path + "#" + std::to_string(file_id);
-        try
-        {
-            const ntdlib::sar::SequenceFile sequence = ntdlib::sar::SequenceFile::Read(file);
-            std::vector<nwsnd::LabelOffset> labels;
-            for (const ntdlib::sar::Sequence::Label& label : sequence.labels)
-            {
-                labels.push_back({label.name, label.offset});
-            }
-            CheckSequence(where, sequence.data, labels, grammar, std::vector<uint32_t>(offsets.begin(), offsets.end()),
-                          totals);
-        }
-        catch (const std::exception& error)
-        {
-            Problem(totals, where, error.what());
-        }
-    }
+    CheckSequenceFiles(
+        path, archive, grammar, [](std::span<const uint8_t> file) { return ntdlib::sar::SequenceFile::Read(file); },
+        totals);
 }
 
 // Checks the converted songs of the sequence files of a sound archive of the Wii, `bytes`, from the file at `path`. The
@@ -357,58 +378,9 @@ void CheckRsar(const std::string& path, std::vector<uint8_t> bytes, const ntdlib
     options.playback_fields = true;
     const ntdlib::rsar::SoundArchive archive = ntdlib::rsar::SoundArchive::Load(std::move(bytes), options);
     const nwsnd::Grammar grammar = nwsnd::GrammarOf<nwsnd::RevolutionPolicy>(build);
-
-    std::map<uint32_t, std::set<uint32_t>> starts;
-    for (const ntdlib::rsar::SoundInfo& sound : archive.Sounds())
-    {
-        if (sound.type == ntdlib::rsar::SoundType::kSequence)
-        {
-            starts[sound.file_id].insert(sound.start_offset);
-        }
-    }
-
-    for (const auto& [file_id, offsets] : starts)
-    {
-        const std::span<const uint8_t> file = archive.FileData(file_id);
-        if (file.empty())
-        {
-            continue;
-        }
-
-        const std::string where = path + "#" + std::to_string(file_id);
-        try
-        {
-            const ntdlib::rsar::Sequence sequence = ntdlib::rsar::Sequence::Parse(file, options);
-            std::vector<nwsnd::LabelOffset> labels;
-            for (const ntdlib::rsar::Sequence::Label& label : sequence.labels)
-            {
-                labels.push_back({label.name, label.offset});
-            }
-            CheckSequence(where, sequence.data, labels, grammar, std::vector<uint32_t>(offsets.begin(), offsets.end()),
-                          totals);
-        }
-        catch (const std::exception& error)
-        {
-            Problem(totals, where, error.what());
-        }
-    }
-}
-
-// The notes of `song` without the places of their commands. The layouts move those places.
-std::vector<hokuto::song::Note> NotesOf(const hokuto::song::Sequence& song)
-{
-    std::vector<hokuto::song::Note> notes;
-    for (const hokuto::song::Track& track : song.tracks)
-    {
-        for (hokuto::song::Note note : track.notes)
-        {
-            note.command = 0;
-            note.stretch = 0;
-            notes.push_back(note);
-        }
-    }
-
-    return notes;
+    CheckSequenceFiles(
+        path, archive, grammar,
+        [&](std::span<const uint8_t> file) { return ntdlib::rsar::Sequence::Parse(file, options); }, totals);
 }
 
 // The tool's options: --play and --edits.
@@ -417,362 +389,6 @@ struct Options
     bool play = false;
     bool edits = false;
 };
-
-// A note as an edit leaves it: its track, start, key and velocity. The engine sets the length of many notes, such as a
-// note of a one-shot wave, and an edit can change it.
-struct HeardNote
-{
-    friend auto operator<=>(const HeardNote&, const HeardNote&) = default;
-
-    int track = 0;
-    uint32_t start = 0;
-    int key = 0;
-    int velocity = 0;
-    uint32_t command = 0; // the note's command, in the archive that the program plays
-};
-
-// The notes of `song` that start before `cut`, in order, without their commands.
-std::vector<HeardNote> HeardNotes(const hokuto::song::Sequence& song, uint32_t cut, bool commands = false)
-{
-    std::vector<HeardNote> notes;
-    for (const hokuto::song::Track& track : song.tracks)
-    {
-        for (const hokuto::song::Note& note : track.notes)
-        {
-            if (note.start < cut)
-            {
-                notes.push_back({track.number, note.start, note.key, note.velocity, commands ? note.command : 0});
-            }
-        }
-    }
-    std::sort(notes.begin(), notes.end());
-
-    return notes;
-}
-
-// An edit of the arrangement: its name, the version that it makes, and the notes that the saved archive has to play
-// before `cut`. A moved loop has to play from its new start to its new end. An edit of a part changes the notes of
-// `changed`, in order, on track `track`. A moved loop changes no note, and its track is -1.
-struct ArrangementEdit
-{
-    std::string name;
-    hokuto::format::File file;
-    std::vector<HeardNote> expected;
-    uint32_t cut = 0;
-    std::optional<hokuto::song::Loop> loop;
-    std::vector<HeardNote> changed;
-    int track = -1;
-};
-
-// The edits that the arrangement's info line makes of the busiest part of the busiest track of `shown`, the first sound
-// of timeline `sequence` of `opened`, and the moves of the loop's edges. `before` is the sound as the game's archive
-// plays it. An edit that the sequence refuses counts apart, by its reason.
-std::vector<ArrangementEdit> ArrangementEdits(const hokuto::format::File& opened, uint32_t sequence,
-                                              const hokuto::song::Sequence& shown, const hokuto::song::Sequence& before,
-                                              Totals& totals)
-{
-    // A note at the sequence's end starts in the tick where the sound ends, and doesn't sound.
-    std::vector<ArrangementEdit> edits;
-    const uint32_t cut = before.loop ? before.loop->end : before.length;
-
-    const auto refuse = [&totals](const std::string& name, const std::exception& error)
-    {
-        ++totals.refused[name + ": " + WithoutNumbers(error.what())];
-    };
-
-    // The busiest part. The arrangement splits parts on beats, at gaps of two bars of 4/4.
-    const auto busiest = std::max_element(shown.tracks.begin(), shown.tracks.end(),
-                                          [](const auto& a, const auto& b) { return a.notes.size() < b.notes.size(); });
-    if (busiest != shown.tracks.end() && !busiest->notes.empty())
-    {
-        const std::vector<hokuto::song::Part> parts = hokuto::song::SplitParts(shown, *busiest, 1, 8);
-        const auto part = std::max_element(parts.begin(), parts.end(),
-                                           [](const auto& a, const auto& b) { return a.count < b.count; });
-        std::set<uint32_t> commands;
-        for (std::size_t n = part->first; n < part->first + part->count; ++n)
-        {
-            commands.insert(busiest->notes[n].command);
-        }
-
-        // Each command takes the edit once. Every note that the command plays changes the same way, in the part and
-        // elsewhere, such as in a pass of a loop inside the part.
-        const auto edit_part = [&](const std::string& name, auto change, auto expect)
-        {
-            std::vector<hokuto::edit::NoteEdit> note_edits;
-            std::set<uint32_t> done;
-            for (std::size_t n = part->first; n < part->first + part->count; ++n)
-            {
-                const hokuto::song::Note& note = busiest->notes[n];
-                if (done.insert(note.command).second)
-                {
-                    hokuto::edit::NoteEdit& note_edit = note_edits.emplace_back(
-                        hokuto::edit::NoteEdit{.command = note.command, .stretch = busiest->stretches[note.stretch]});
-                    change(note_edit, note);
-                }
-            }
-            try
-            {
-                ArrangementEdit made{.name = name,
-                                     .file = hokuto::edit::EditNotes(opened, sequence, note_edits, {}).file,
-                                     .expected = HeardNotes(shown, cut, true),
-                                     .cut = cut,
-                                     .loop = before.loop,
-                                     .track = busiest->number};
-                for (HeardNote& note : made.expected)
-                {
-                    const bool changed = note.track == busiest->number && commands.contains(note.command);
-                    note.command = 0;
-                    if (changed)
-                    {
-                        expect(note);
-                        made.changed.push_back(note);
-                    }
-                }
-                for (std::vector<HeardNote>* notes : {&made.expected, &made.changed})
-                {
-                    std::erase_if(*notes, [cut](const HeardNote& note) { return note.start >= cut; });
-                    std::sort(notes->begin(), notes->end());
-                }
-                edits.push_back(std::move(made));
-            }
-            catch (const std::invalid_argument& error)
-            {
-                refuse(name, error);
-            }
-        };
-
-        const uint32_t beat = static_cast<uint32_t>(std::max(shown.timebase, 1));
-        const auto shift = [beat](hokuto::edit::NoteEdit& note_edit, const auto&)
-        {
-            note_edit.shift = static_cast<int32_t>(beat);
-        };
-        edit_part("Move", shift, [beat](HeardNote& note) { note.start += beat; });
-        const auto transpose = [](hokuto::edit::NoteEdit& note_edit, const auto&)
-        {
-            note_edit.transpose = 1;
-        };
-        edit_part("Transpose", transpose, [](HeardNote& note) { ++note.key; });
-        const auto soften = [](hokuto::edit::NoteEdit& note_edit, const hokuto::song::Note& note)
-        {
-            note_edit.velocity = std::max(note.velocity - 10, 1);
-        };
-        const auto softer = [](HeardNote& note)
-        {
-            note.velocity = std::max(note.velocity - 10, 1);
-        };
-        edit_part("Change Part Velocity", soften, softer);
-    }
-
-    // The loop's edges, a beat in and a bar out.
-    const std::optional<hokuto::edit::ConvertedLoop> loop = hokuto::edit::TimelineLoop(opened, sequence);
-    if (loop && before.loop && before.loop->start == loop->start && before.loop->end == loop->end)
-    {
-        const uint32_t beat = static_cast<uint32_t>(std::max(shown.timebase, 1));
-        std::vector<std::pair<std::string, hokuto::edit::ConvertedLoop>> moves;
-        if (loop->start + beat < loop->end)
-        {
-            moves.push_back({"Size: start later", {loop->start + beat, loop->end}});
-            moves.push_back({"Size: end earlier", {loop->start, loop->end - beat}});
-        }
-        if (loop->start >= beat)
-        {
-            moves.push_back({"Size: start earlier", {loop->start - beat, loop->end}});
-        }
-        moves.push_back({"Size: end later", {loop->start, loop->end + 4 * beat}});
-        for (const auto& [name, moved] : moves)
-        {
-            try
-            {
-                const uint32_t moved_cut = std::min(loop->end, moved.end);
-                edits.push_back({.name = name,
-                                 .file = hokuto::edit::MoveLoop(opened, sequence, moved).file,
-                                 .expected = HeardNotes(before, moved_cut),
-                                 .cut = moved_cut,
-                                 .loop = hokuto::song::Loop{moved.start, moved.end}});
-            }
-            catch (const std::invalid_argument& error)
-            {
-                refuse(name, error);
-            }
-        }
-    }
-
-    return edits;
-}
-
-// The sequence of `file` that sound `sound` of `archive` plays, or nothing for a sound of another kind. `sequences`
-// gives each file's sequence.
-std::optional<uint32_t> SequenceOfSound(const CheckedArchive& archive, uint32_t sound,
-                                        const std::vector<std::optional<uint32_t>>& sequences)
-{
-    const uint32_t file_id = archive.FileOf(sound);
-    if (!archive.IsSequence(sound) || file_id >= sequences.size())
-    {
-        return std::nullopt;
-    }
-
-    return sequences[file_id];
-}
-
-// Settles each of the arrangement's edits of the first sound of each timeline of `opened`, and checks the saved archive
-// and file (see the top of the file). `unfolded` is the archive that the program plays, and `game` the game's.
-void CheckEdits(const std::string& name, const hokuto::format::File& opened, const CheckedArchive& game,
-                const CheckedArchive& unfolded, const std::vector<std::optional<uint32_t>>& sequences, Totals& totals)
-{
-    std::set<uint32_t> done;
-    int edited = 0;
-    int edits = 0;
-    for (uint32_t sound = 0; sound < game.SoundCount(); ++sound)
-    {
-        const std::optional<uint32_t> sequence = SequenceOfSound(game, sound, sequences);
-        if (!sequence || !hokuto::edit::IsTimeline(opened, *sequence) || !done.insert(*sequence).second)
-        {
-            continue;
-        }
-
-        const std::string where = name + " " + game.NameOf(sound);
-        try
-        {
-            const hokuto::song::Sequence before = game.Read(sound);
-            const hokuto::song::Sequence shown = unfolded.Read(sound);
-            for (const ArrangementEdit& edit : ArrangementEdits(opened, *sequence, shown, before, totals))
-            {
-                // The program settles the edit, and saves it with the timeline's subroutines.
-                const hokuto::edit::Settled settled = hokuto::edit::SettleTimelines(opened, edit.file);
-                if (!hokuto::edit::IsTimeline(settled.file, *sequence))
-                {
-                    Problem(totals, where, edit.name + ": the edit leaves no timeline");
-                    continue;
-                }
-                const hokuto::format::File folded = hokuto::edit::FoldTimelines(settled.file);
-                hokuto::tools::CheckSaved(folded, true);
-                const std::vector<uint8_t> saved = hokuto::format::ExportArchive(folded);
-                const std::vector<std::vector<uint8_t>> group_files = hokuto::format::ExportGroupFiles(folded);
-                const CheckedArchive archive = hokuto::tools::BuildChecked(folded, name);
-                const hokuto::song::Sequence after = archive.Read(sound);
-
-                // The settled edit plays as the edit plays before the program settles it.
-                const hokuto::song::Sequence unsettled = hokuto::tools::BuildChecked(edit.file, name).Read(sound);
-                if (NotesOf(after) != NotesOf(unsettled) || after.length != unsettled.length ||
-                    after.loop != unsettled.loop)
-                {
-                    Problem(totals, where, edit.name + ": the settled edit plays otherwise");
-                }
-
-                // An instrument can lack a region for a changed note's new key or velocity. A changed note can cut
-                // other notes of its track in its tick through a key group, or stop cutting them. The performer leaves
-                // out a note that doesn't sound. ntdlib's performer can find a loop a whole number of passes earlier or
-                // later. Every track's state repeats there. The performer stops at the end of the loop that it finds.
-                const uint32_t length = edit.loop ? edit.loop->end - edit.loop->start : 0;
-                const bool apart =
-                    edit.loop && after.loop && after.loop != edit.loop && length > 0 &&
-                    after.loop->end - after.loop->start == length &&
-                    (std::max(after.loop->start, edit.loop->start) - std::min(after.loop->start, edit.loop->start)) %
-                            length ==
-                        0;
-                const uint32_t cut = apart ? std::min(edit.cut, after.loop->end) : edit.cut;
-                std::vector<HeardNote> expected = edit.expected;
-                std::vector<HeardNote> changed = edit.changed;
-                for (std::vector<HeardNote>* notes : {&expected, &changed})
-                {
-                    std::erase_if(*notes, [cut](const HeardNote& note) { return note.start >= cut; });
-                }
-                const std::vector<HeardNote> heard = HeardNotes(after, cut);
-                std::set<uint32_t> ticks;
-                for (const HeardNote& note : changed)
-                {
-                    ticks.insert(note.start);
-                }
-                std::vector<HeardNote> fewer;
-                std::vector<HeardNote> more;
-                std::ranges::set_difference(expected, heard, std::back_inserter(fewer));
-                std::ranges::set_difference(heard, expected, std::back_inserter(more));
-                const auto left_out = [&edit, &changed, &ticks](const HeardNote& note)
-                {
-                    return std::ranges::binary_search(changed, note) ||
-                           (note.track == edit.track && ticks.contains(note.start));
-                };
-                const auto added = [&edit](const HeardNote& note)
-                {
-                    return note.track == edit.track;
-                };
-                const bool allowed = std::ranges::all_of(fewer, left_out) && std::ranges::all_of(more, added);
-                totals.fewer += allowed && !fewer.empty() ? 1 : 0;
-                totals.more += allowed && !more.empty() ? 1 : 0;
-                if (!allowed)
-                {
-                    // The first note that differs.
-                    const auto [played, wanted] =
-                        std::mismatch(heard.begin(), heard.end(), expected.begin(), expected.end());
-
-                    const auto text = [](const std::vector<HeardNote>& notes, auto note)
-                    {
-                        return note == notes.end()
-                                   ? std::string("none")
-                                   : "track " + std::to_string(note->track) + " at " + std::to_string(note->start) +
-                                         ", key " + std::to_string(note->key) + ", velocity " +
-                                         std::to_string(note->velocity);
-                    };
-                    Problem(totals, where,
-                            edit.name + ": the saved archive plays other notes: " + text(heard, played) +
-                                " in the place of " + text(expected, wanted) + ", of " + std::to_string(heard.size()) +
-                                " and " + std::to_string(expected.size()));
-                }
-                totals.loops_apart += apart ? 1 : 0;
-
-                // The changed notes can leave the loop silent once their waves end. The sequence keeps its loop.
-                const std::optional<hokuto::edit::ConvertedLoop> kept =
-                    hokuto::edit::TimelineLoop(settled.file, *sequence);
-                const bool silenced = edit.track >= 0 && edit.loop && !after.loop && kept &&
-                                      kept->start == edit.loop->start && kept->end == edit.loop->end;
-                totals.silenced += silenced ? 1 : 0;
-                if (edit.loop && after.loop != edit.loop && !apart && !silenced)
-                {
-                    const auto text = [](const std::optional<hokuto::song::Loop>& loop)
-                    {
-                        return loop ? std::to_string(loop->start) + " to " + std::to_string(loop->end)
-                                    : std::string("none");
-                    };
-                    Problem(totals, where,
-                            edit.name + ": the saved archive plays another loop: " + text(after.loop) +
-                                " in the place of " + text(edit.loop));
-                }
-
-                // The saved file opens again as the same timeline, with its hints and without them. Without them, the
-                // converter's rules find the hints again.
-                hokuto::format::File imported = hokuto::tools::ImportChecked(saved, archive, group_files);
-                const hokuto::edit::ConverterHints& hints = settled.file.timelines->at(*sequence);
-                const hokuto::edit::ConvertedSong found = hokuto::edit::ReadConverted(*imported.sequences[*sequence]);
-                imported.timelines = std::map<uint32_t, hokuto::edit::ConverterHints>{{*sequence, hints}};
-                const hokuto::format::File decided = hokuto::edit::OpenTimelines(imported);
-                if (!hokuto::edit::IsTimeline(decided, *sequence))
-                {
-                    Problem(totals, where, edit.name + ": the saved file doesn't open as a timeline");
-                }
-                else if (*decided.sequences[*sequence] != *settled.file.sequences[*sequence])
-                {
-                    Problem(totals, where, edit.name + ": the saved file opens as another timeline");
-                }
-                if (!found.hints || hokuto::edit::LayOutConverted(*imported.sequences[*sequence], *found.hints,
-                                                                  false) != *settled.file.sequences[*sequence])
-                {
-                    Problem(totals, where,
-                            edit.name + ": the saved file without its hints opens as another layout" +
-                                (found.hints ? std::string() : ": " + found.problem));
-                }
-                ++edits;
-            }
-            ++edited;
-        }
-        catch (const std::exception& error)
-        {
-            Problem(totals, where, error.what());
-        }
-    }
-    totals.edited += edited;
-    totals.edits += edits;
-    std::printf("%s: %d timelines took %d edits\n", name.c_str(), edited, edits);
-}
 
 // Imports the archive at `path` into a file, opens its timelines, and checks that they give the archive back. With
 // `play`, checks that each sound of a timeline plays the same notes without subroutines. With `edits`, checks the
@@ -855,7 +471,7 @@ void Check(const std::filesystem::path& path, const Options& options, Totals& to
     ++totals.archives;
     try
     {
-        if (std::memcmp(bytes.data(), "RSAR", 4) == 0)
+        if (hokuto::tools::IsWiiArchive(bytes))
         {
             // The build of the program's import: the game's, or else the one that the archive's version gives
             // (format::BuildOfWiiArchive).

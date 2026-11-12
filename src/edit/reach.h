@@ -3,8 +3,9 @@
 // What else an edit of a track's mix or instrument changes. The edits change the commands that set the setting (mix.h,
 // instruments.h). The sound's other tracks can run the same commands, and so can the other sounds that play the same
 // sequence file, such as the callers of a subroutine. A new command at a track's opening reaches the other sounds that
-// open the track there too. The mixer and the inspector list them before an edit. The tempo row lists the other sounds
-// that run a command that sets the tempo.
+// open the track there too. On Nintendo R&D2's driver, a track that the command of a track starts gets the settings of
+// the starting track, and the edit reaches it too. The mixer and the inspector list them before an edit. The tempo row
+// lists the other sounds that run a command that sets the tempo.
 
 #pragma once
 

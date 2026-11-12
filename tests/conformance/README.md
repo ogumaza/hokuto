@@ -23,6 +23,9 @@ pans and sends to aux bus A, and plays an LFO, a pitch bend and a release. Each 
 bus A, at the values that a new effect starts from in Hokuto. The Switch's file holds the I3DL2 reverb at nn::audio's
 preset 1.
 
+The suite covers only the NintendoWare consoles: the Switch, the Wii U, the 3DS and the Wii. It has no files for the
+GBA, the DS, DSE or the GBA's other drivers.
+
 ## The renders
 
 Each line of `hashes.txt` gives a file, the index of a sequence sound in its sound table, the seconds of the render and

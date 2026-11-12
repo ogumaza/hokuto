@@ -44,6 +44,7 @@
 #include "xsflib/binary.h"
 #include "xsflib/testing/check.h"
 
+#include "binary_form_testing.h"
 #include "edit/bytecode.h"
 #include "edit/commands.h"
 #include "edit/converter.h"
@@ -59,9 +60,13 @@
 using hokuto::format::ArchiveForm;
 using hokuto::format::File;
 using hokuto::format::Model;
+using hokuto::testing::ChunkIds;
+using hokuto::testing::ComesBack;
+using hokuto::testing::Patched;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::sar::Flavor;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -237,65 +242,6 @@ std::vector<uint8_t> WiiArchive(const std::vector<uint8_t>& bytecode, uint32_t s
     return rsar::BuildArchive(model);
 }
 
-// The IDs in the table of chunks of `binary`, a file in the binary form.
-std::vector<std::string> ChunkIds(std::span<const uint8_t> binary)
-{
-    std::vector<std::string> ids;
-    const uint32_t count = xsflib::LoadLe32(&binary[16]);
-    for (std::size_t c = 0; c < count; ++c)
-    {
-        const uint8_t* entry = &binary[24 + 24 * c];
-        ids.emplace_back(entry, entry + 4);
-    }
-
-    return ids;
-}
-
-// The message that Read throws for `binary` with byte `at` of chunk `id` set to `value`, or nothing. The chunk's CRC-32
-// matches its new bytes.
-std::string Patched(std::vector<uint8_t> binary, std::string_view id, std::size_t at, uint8_t value)
-{
-    const std::vector<std::string> ids = ChunkIds(binary);
-    const auto chunk = static_cast<std::size_t>(std::ranges::find(ids, id) - ids.begin());
-    uint8_t* entry = &binary[24 + 24 * chunk];
-    const auto start = static_cast<std::size_t>(xsflib::LoadLe64(entry + 8));
-    const auto size = static_cast<std::size_t>(xsflib::LoadLe64(entry + 16));
-    binary[start + at] = value;
-    xsflib::StoreLe32(entry + 4, format::Crc32(std::span(binary).subspan(start, size)));
-    try
-    {
-        format::Read(binary);
-    }
-    catch (const xsflib::FormatError& error)
-    {
-        return error.what();
-    }
-
-    return "";
-}
-
-// The message that `action` throws as an Error, or nothing.
-template <typename Error, typename Action>
-std::string Message(const Action& action)
-{
-    try
-    {
-        action();
-    }
-    catch (const Error& error)
-    {
-        return error.what();
-    }
-
-    return "";
-}
-
-// Whether `file` comes back from both forms unchanged.
-bool ComesBack(const File& file)
-{
-    return format::Read(format::Write(file)) == file && format::ReadText(format::WriteText(file)) == file;
-}
-
 // `data` without the zeros at its end: a sequence file's padding.
 std::vector<uint8_t> WithoutTrailingZeros(std::vector<uint8_t> data)
 {
@@ -429,7 +375,7 @@ void TestWii()
     XSFLIB_CHECK(model.form == ArchiveForm::kModel && model.engine == format::Engine::kWii);
     XSFLIB_CHECK(format::ExportArchive(model) == archive);
     XSFLIB_CHECK(model.native->tables == file.native->tables && !model.native->game_sizes);
-    XSFLIB_CHECK(model.native->wii && model.native->wii_build == kBuild);
+    XSFLIB_CHECK(model.native->engine == format::Engine::kWii && model.native->wii_build == kBuild);
     XSFLIB_CHECK(model.sequences.size() == 1 && *model.sequences[0] == *file.sequences[0]);
 
     const std::vector<uint8_t> binary = format::Write(model);
@@ -449,8 +395,8 @@ void TestWii()
     XSFLIB_CHECK(held.wii->sounds.at(1).start_offset == 0 && held.wii->groups.size() == 1);
     XSFLIB_CHECK(format::ReadModel(format::SoundsChunk(held), format::ItemsChunk(held)) == held);
     XSFLIB_CHECK(Patched(binary, "ITMS", 1, 0x80) ==
-                 "The file holds a flag of the Wii's archive that this version of Hokuto doesn't know. A later version "
-                 "made it.");
+                 "The file contains a Wii archive flag that this version of Hokuto doesn't support. A later version of "
+                 "Hokuto saved it.");
 
     // Without the game's build, the archive's version gives it, and the file keeps none.
     const File plain = format::InModelForm(format::ImportWiiArchive(archive));
@@ -482,7 +428,7 @@ void TestWii()
     const std::vector<uint8_t> untreed = ntdlib::testing::rsar_tools::MakeArchive(
         0x0104, {{rsar::SequenceFile{.data = kWiiBytecode}.Write()}}, {{"SEQ_FIRST", 0, 0}}, {{0}});
     XSFLIB_CHECK(
-        !Message<xsflib::FormatError>([&] { format::InModelForm(format::ImportWiiArchive(untreed)); }).empty());
+        !ErrorOf<xsflib::FormatError>([&] { format::InModelForm(format::ImportWiiArchive(untreed)); }).empty());
 }
 
 // A new command and a new sequence sound go into a file in the model form. The file stays in the model form, and comes
@@ -579,7 +525,8 @@ void TestNewFile()
 
     const File wii = format::NewFile(format::Engine::kWii);
     XSFLIB_CHECK(wii.form == ArchiveForm::kModel && wii.engine == format::Engine::kWii && wii.sequences.empty());
-    XSFLIB_CHECK(wii.native->wii && !wii.native->wii_build && wii.native->tables->sounds.empty());
+    XSFLIB_CHECK(wii.native->engine == format::Engine::kWii && !wii.native->wii_build &&
+                 wii.native->tables->sounds.empty());
     const Model wii_model = format::ModelOf(wii);
     XSFLIB_CHECK(wii_model.wii && wii_model.wii->version == 0x0104 && wii_model.wii->sounds.empty() &&
                  wii_model.wii->files.empty() && wii_model.wii->players.size() == 1 &&
@@ -596,7 +543,7 @@ void TestNewFile()
         hokuto::edit::AddSequenceSound(native, std::nullopt, "SEQ_NEW", hokuto::edit::EmptySong("SEQ_NEW"),
                                        hokuto::edit::kEmptySongStart, {});
     };
-    XSFLIB_CHECK(Message<std::invalid_argument>(add).starts_with("The archive holds no sequence sound"));
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(add).starts_with("The archive has no sequence sound"));
 }
 
 // A sequence whose commands run on past a return to commands that no label or start leads to: a volume, a return, a
@@ -670,34 +617,36 @@ void TestDamaged()
 
     // SNDS: the count, then the first sound's name of 9 bytes, its kind and its flags.
     const std::vector<uint8_t> binary = format::Write(model);
-    XSFLIB_CHECK(
-        Patched(binary, "SNDS", 17, 9) ==
-        "The file holds a kind of sound (9) that this version of Hokuto doesn't know. A later version made it.");
+    XSFLIB_CHECK(Patched(binary, "SNDS", 17, 9) ==
+                 "The file contains a sound type (9) that this version of Hokuto doesn't support. A later version of "
+                 "Hokuto saved it.");
     XSFLIB_CHECK(Patched(binary, "SNDS", 18, 0x80) ==
-                 "The file holds a flag of a sound that this version of Hokuto doesn't know. A later version made it.");
+                 "The file contains a sound flag that this version of Hokuto doesn't support. A later version of "
+                 "Hokuto saved it.");
     XSFLIB_CHECK(
         Patched(binary, "ITMS", 0, 7) ==
-        "The file holds a kind of archive (7) that this version of Hokuto doesn't know. A later version made it.");
+        "The file contains an archive type (7) that this version of Hokuto doesn't support. A later version of "
+        "Hokuto saved it.");
     XSFLIB_CHECK(Patched(binary, "SNDS", 0, 9) == "The file is damaged: the SNDS chunk ends early.");
 
     Model past = held;
     past.starts[1] = 4;
-    XSFLIB_CHECK(Message<xsflib::FormatError>([&] { format::WithModel(model, past); }) ==
-                 "The file is damaged: sound 1 of the model starts past its sequence's items.");
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { format::WithModel(model, past); }) ==
+                 "The file is damaged: sound 1 of the model starts past the end of its sequence.");
     Model unnamed = held;
     unnamed.sequences.at(0).sequence = 5;
-    XSFLIB_CHECK(Message<xsflib::FormatError>([&] { format::WithModel(model, unnamed); }) ==
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { format::WithModel(model, unnamed); }) ==
                  "The file is damaged: file 0 of the model names no file or no sequence.");
 
     // The text form holds both chunks, in a file without a native archive.
     const std::string text = format::WriteText(model);
     const std::size_t items = text.find("\nchunk ITMS");
     const std::string without_items = text.substr(0, items + 1);
-    const std::string message = Message<xsflib::FormatError>([&] { format::ReadText(without_items); });
-    XSFLIB_CHECK(message.ends_with("a file in the model form holds both the SNDS and the ITMS chunk."));
+    const std::string message = ErrorOf<xsflib::FormatError>([&] { format::ReadText(without_items); });
+    XSFLIB_CHECK(message.ends_with("a file in the model form has to have both the SNDS and the ITMS chunk."));
     const std::string native = format::WriteText(format::ImportSwitchArchive(SwitchArchive(kBytecode, 4)));
     const std::string both = native + text.substr(text.find("\nchunk SNDS"));
-    XSFLIB_CHECK(Message<xsflib::FormatError>([&] { format::ReadText(both); })
+    XSFLIB_CHECK(ErrorOf<xsflib::FormatError>([&] { format::ReadText(both); })
                      .ends_with("the SNDS chunk comes once, in a file without a native archive."));
 }
 
@@ -705,16 +654,18 @@ void TestDamaged()
 
 int main()
 {
-    TestLevels();
-    TestSwitch();
-    TestChoices();
-    TestWiiU();
-    TestCtr();
-    TestWii();
-    TestEdits();
-    TestNewFile();
-    TestRunOn();
-    TestDamaged();
-
-    return xsflib::testing::Summary("model");
+    return xsflib::testing::RunTest("model",
+                                    []
+                                    {
+                                        TestLevels();
+                                        TestSwitch();
+                                        TestChoices();
+                                        TestWiiU();
+                                        TestCtr();
+                                        TestWii();
+                                        TestEdits();
+                                        TestNewFile();
+                                        TestRunOn();
+                                        TestDamaged();
+                                    });
 }

@@ -11,11 +11,11 @@ namespace hokuto::song
 namespace
 {
 
-// The tick that a run in ticks reaches: the clock's position, less `behind` seconds of the model's frames at the tempo
-// there.
-double TargetTicks(const SequenceModel& model, const PlaybackClock& clock, double behind)
+// The tick that a run in ticks reaches: the clock's position in the model's ticks, less `behind` seconds of the model's
+// frames at the tempo there. The ticks of the model count `scale` times the ticks of the clock.
+double TargetTicks(const SequenceModel& model, const PlaybackClock& clock, double behind, double scale)
 {
-    const double ticks = clock.ModelTicks();
+    const double ticks = clock.ModelTicks() * scale;
     const double frames = behind * static_cast<double>(model.SampleRate()) / static_cast<double>(model.FrameSamples());
     return std::max(ticks - frames * model.TicksPerFrame(ticks), 0.0);
 }
@@ -23,11 +23,11 @@ double TargetTicks(const SequenceModel& model, const PlaybackClock& clock, doubl
 // Whether `model` has run far enough: up to the clock's frame, up to its position in ticks with `by_ticks`, or through
 // the sequence's first pass without a clock. A model whose clock has stopped never reaches another tick. A run in ticks
 // ends there.
-bool CaughtUp(const SequenceModel& model, const PlaybackClock* clock, bool by_ticks, double behind)
+bool CaughtUp(const SequenceModel& model, const PlaybackClock* clock, bool by_ticks, double behind, double scale)
 {
     if (clock != nullptr && by_ticks)
     {
-        return model.After() >= TargetTicks(model, *clock, behind) || model.ClockStopped();
+        return model.After() >= TargetTicks(model, *clock, behind, scale) || model.ClockStopped();
     }
     if (clock != nullptr)
     {
@@ -39,11 +39,11 @@ bool CaughtUp(const SequenceModel& model, const PlaybackClock* clock, bool by_ti
 
 // Whether the next frame of `model` mixes: whether it lies in the lead before the clock's frame, or before the tick
 // that a run in ticks reaches, or after the lead's start. Without a clock, each frame mixes. The snapshots then settle.
-bool Mixes(const SequenceModel& model, const PlaybackClock* clock, bool by_ticks, double behind)
+bool Mixes(const SequenceModel& model, const PlaybackClock* clock, bool by_ticks, double behind, double scale)
 {
     if (clock != nullptr && by_ticks)
     {
-        return model.InLeadOfTick(TargetTicks(model, *clock, behind));
+        return model.InLeadOfTick(TargetTicks(model, *clock, behind, scale));
     }
     if (clock != nullptr)
     {
@@ -61,13 +61,13 @@ ModelCatchUp::~ModelCatchUp()
 }
 
 void ModelCatchUp::Start(std::shared_ptr<SequenceModel> model, std::shared_ptr<const PlaybackClock> clock,
-                         bool by_ticks, double behind)
+                         bool by_ticks, double behind, double ticks_scale)
 {
     Cancel();
     by_ticks_ = by_ticks;
 
     // The first frame starts the model. The run checks for a cancel after each frame: about every 20 µs.
-    const auto run = [this, run_model = std::move(model), run_clock = std::move(clock), by_ticks, behind]
+    const auto run = [this, run_model = std::move(model), run_clock = std::move(clock), by_ticks, behind, ticks_scale]
     {
         // The model takes the playback's mutes and buses' volumes before each frame.
         const auto follow = [&run_model, &run_clock]
@@ -84,13 +84,14 @@ void ModelCatchUp::Start(std::shared_ptr<SequenceModel> model, std::shared_ptr<c
         bool plays = run_model->SeekFrame(0);
         bool mixes = false;
         while (plays && !cancel_.load(std::memory_order_relaxed) &&
-               !CaughtUp(*run_model, run_clock.get(), by_ticks, behind))
+               !CaughtUp(*run_model, run_clock.get(), by_ticks, behind, ticks_scale))
         {
             follow();
-            mixes = mixes || Mixes(*run_model, run_clock.get(), by_ticks, behind);
+            mixes = mixes || Mixes(*run_model, run_clock.get(), by_ticks, behind, ticks_scale);
             run_model->SetMixing(mixes);
             plays = run_model->RunFrame();
         }
+
         run_model->SetMixing(true);
 
         return run_model;

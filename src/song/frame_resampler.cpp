@@ -121,6 +121,7 @@ bool ResampledRenderer::NextFrame()
         {
             return false;
         }
+
         flush_--;
     }
 

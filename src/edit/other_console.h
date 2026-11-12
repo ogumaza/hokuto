@@ -64,6 +64,7 @@
 #include "ntdlib/sound_build.h"
 
 #include "format/file.h"
+#include "song/archive.h"
 
 namespace hokuto::edit
 {
@@ -73,6 +74,10 @@ inline constexpr std::size_t kCtrWaveMemory = 64 * 1024 * 1024;
 
 // The memory in which Hokuto's model of the Wii keeps a bank's waves: the 64 MB of the Wii's MEM2.
 inline constexpr std::size_t kWiiWaveMemory = 64 * 1024 * 1024;
+
+// The memory that ntdlib's model of the DS sets aside for the sequence of a sound, its bank and its waves: the 4 MiB of
+// main memory, in which the other values of the model use the first 64 KiB.
+inline constexpr std::size_t kDsFileMemory = 0x3F0000;
 
 // A file of the other console with one sound, and what changed on the way, in words for the user. For the 3DS,
 // `stereo_waves` says whether the sound's notes play stereo waves, and `mono_waves` whether they went in as mono. For
@@ -98,11 +103,13 @@ enum class MonoWaves
 };
 
 // Sequence sound `sound` of `file` as a new file of the console of `to`. `file` is a file of the 3DS, the Wii U, the
-// Switch or the Wii. It holds its sequences as a saved file holds them. A bank that can't come along, such as one whose
-// file the archive lacks, stays behind with a warning, and its slot stays empty. So does a bank whose wave archives
-// can't come along. The warnings also name the commands that stay out, the files that go in with an older version than
-// they held, the effects that stay behind, the other sounds whose commands the sequence file holds, and settings that
-// Hokuto can't read. The biquad filters take the types and values that come nearest on the other console
+// Switch, the Wii, the GBA, the DS or DSE. A song of the GBA, a sequence of the DS and a sound of DSE go to the Wii U
+// first, and on from there. The MIDI files and SoundFonts of their converters go in as songs of NintendoWare's MIDI
+// converter and as banks. The new file holds its sequences as a saved file holds them. A bank that can't come along,
+// such as one whose file the archive lacks, stays behind with a warning, and its slot stays empty. So does a bank whose
+// wave archives can't come along. The warnings also name the commands that stay out, the files that go in with an older
+// version than they held, the effects that stay behind, the other sounds whose commands the sequence file holds, and
+// settings that Hokuto can't read. The biquad filters take the types and values that come nearest on the other console
 // (song::MapBiquads). `mono` sets how the stereo waves go to the 3DS. `ctr_wave_memory` gives the memory of the 3DS's
 // model for wave archives. Throws std::invalid_argument with a message for the user for a file without the archive's
 // tables, a target of the file's console, a sound that isn't a sequence sound, and a sequence that Hokuto can't read or
@@ -141,9 +148,26 @@ OtherConsoleSong ForWii(const format::File& file, uint32_t sound,
                         const std::optional<ntdlib::SndBuild>& wii_build = std::nullopt,
                         std::size_t wii_wave_memory = kWiiWaveMemory);
 
+// Sequence sound `sound` of `file` as a new file of the DS (format::NewFile). `file` is a file of the 3DS, the Wii U,
+// the Switch, the Wii or the GBA. A sound of the Wii and a song of the GBA go to the Wii U first, and on from there.
+// The new file contains a bare SDAT with one sequence, one bank and one wave archive. A sound of the DS plays one bank,
+// and NITRO-Composer has no bank select: the banks go in as ForWii sends them (WiiProgramsOf in edit/wii_programs.h).
+// The commands go in as NITRO-Composer reads them, and the bank goes in as files of the DS (edit/ds_conversion.h says
+// how). When the sound's files don't fit in `ds_memory`, the bank takes only the instruments of the programs that the
+// sound's notes select, and the warnings say so. A wave above the mix rate of the DS is converted to that rate. When
+// the waves still don't fit, those above each of 24,000, 16,364, 12,000 and 8,182 Hz go in at that rate in turn, and a
+// warning says which. The new sound gets the volume and the priorities of the source sound, within the ranges of the
+// DS. Its tags, scenes and track colours follow as ForOtherConsole sets them. A DS file has no effects, and they stay
+// behind with a warning. So do the 3D settings, the single play, the user parameters, the remote filter, the pan mode
+// and the pan curve. Throws std::invalid_argument with a message for the user for a file without the archive's tables,
+// a file of the DS, a sound that isn't a sequence sound, a sequence that Hokuto can't write for the DS, such as one
+// whose commands have to keep their places, and files that don't fit even so.
+OtherConsoleSong ForDs(const format::File& file, uint32_t sound, std::size_t ds_memory = kDsFileMemory);
+
 // Why Hokuto can't play the sequence sounds of `file` on `engine`, or nothing when it can. A sound plays on the engine
 // of the file's console as it is. On the engine of another console, it plays as that console plays its conversion
-// (ForEngine).
+// (ForEngine). The engines of the 3DS, the Wii U, the Switch, the Wii and the DS play the sounds of every other
+// console. The engines of the GBA, DSE and the other drivers play no sound of another console.
 std::optional<std::string> EngineRefused(const format::File& file, format::Engine engine);
 
 // Sequence sound `sound` of `file` converted for the console of `engine`. ForOtherConsole or ForWii converts it from
@@ -201,18 +225,25 @@ struct ConvertedItem
 // a file that Hokuto can't read or write for the Wii, such as one whose commands have to keep their places.
 ConvertedItem WiiSequenceFileOf(const ntdlib::sar::SoundArchive& archive, uint32_t sound);
 
+// The warning about an item that converts to the Wii with `bytes` of waves, more than the `memory` in which Hokuto's
+// model of the Wii keeps them. The model then can't load them. Nothing when they fit.
+std::optional<std::string> WiiWaveRoomWarning(std::size_t bytes, std::size_t memory = kWiiWaveMemory);
+
 // Bank `index` of `archive`, an archive of the 3DS, the Wii U or the Switch, as a bank file of the Wii with an RWAR of
 // its waves. This is how ForWii sends a bank: each program plays the region that the later consoles' reader finds at
 // each key and velocity. A wave that the archive lacks plays nothing. So does a wave that the Wii doesn't play, such as
-// one in IMA-ADPCM, and a warning counts those. Throws std::invalid_argument with a message for the user for a bank
-// that ntdlib can't read or convert.
-ConvertedItem WiiBankFilesOf(const ntdlib::sar::SoundArchive& archive, uint32_t index);
+// one in IMA-ADPCM, and a warning counts those. Another warning says when the RWAR doesn't fit in `wii_wave_memory`
+// (WiiWaveRoomWarning). Throws std::invalid_argument with a message for the user for a bank that ntdlib can't read or
+// convert.
+ConvertedItem WiiBankFilesOf(const ntdlib::sar::SoundArchive& archive, uint32_t index,
+                             std::size_t wii_wave_memory = kWiiWaveMemory);
 
 // The wave sound file of wave sound `sound` of `archive`, an archive of the 3DS, the Wii U or the Switch, as a wave
 // sound file of the Wii of version 1.3 with an RWAR of its waves (ntdlib::rsar::WiiWsdOf). The waves come along as for
-// WiiBankFilesOf. Throws std::invalid_argument with a message for the user for a file that ntdlib can't read or
-// convert.
-ConvertedItem WiiWaveSoundFilesOf(const ntdlib::sar::SoundArchive& archive, uint32_t sound);
+// WiiBankFilesOf, with the same warnings. Throws std::invalid_argument with a message for the user for a file that
+// ntdlib can't read or convert.
+ConvertedItem WiiWaveSoundFilesOf(const ntdlib::sar::SoundArchive& archive, uint32_t sound,
+                                  std::size_t wii_wave_memory = kWiiWaveMemory);
 
 // The sequence file of sequence sound `sound` of the Wii's `archive` as a sequence file of the console of `to`. NW4R
 // SND's `build` reads the file's commands. FromWii makes the same conversion of a sound's commands. The commands that

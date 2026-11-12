@@ -39,6 +39,16 @@
 // A track's removal leaves its commands and its track starts in the sequence. The sound's entry stops allocating the
 // track, and so does an allocation at the sound's start. Track 0 starts the other tracks, and stays. So does a track
 // that opens other tracks of the sound. They would stop with it.
+//
+// A DS sequence has no entry in tables that allocates its tracks. NITRO-Composer always allocates track 0, and reads an
+// allocation of the others only as a sequence's first command. A new track, a copy and a pasted track take a bit of
+// that allocation. A sequence without one gets one before its first command. Every sound of the sequence file starts
+// there, and allocates the track too. A removal clears the bit of the track in the allocation. A DS sequence plays the
+// one bank of its entry in the archive, and has no bank slots. A pasted track comes from a DS sequence of the same
+// bank. The edits read no names of a DS archive's sounds. The label of a new track contains only the name of the track,
+// such as Track_2.
+//
+// The rules of the other engines are in gba_tracks.cpp, dse_tracks.cpp, konami_tracks.cpp and rd2_tracks.cpp.
 
 #pragma once
 
@@ -66,7 +76,8 @@ struct TrackEdit
 // The file after sound `sound` of `file` gains a new track. `places` gives where each sound plays (SoundPlaces), and
 // `song` the sound as ntdlib's performer played it, for its length and its loop. The new track selects `instrument`
 // first if there's one. Throws std::invalid_argument with a message for the user for a sound that plays no sequence of
-// the file, a file without the archive's tables, commands that can't move, and a sound without a free track.
+// the file, a file without the archive's tables, commands that can't move, and a sound without a free track. On the
+// GBA, it throws for a song whose music player plays no more tracks.
 TrackEdit AddTrack(const format::File& file, std::span<const std::optional<SoundPlace>> places, uint32_t sound,
                    const song::Sequence& song, std::optional<Program> instrument);
 
@@ -81,7 +92,13 @@ TrackEdit DuplicateTrack(const format::File& file, std::span<const std::optional
 // sequence file gave the commands. The track starts at command `entry`. It can start after commands that it reaches,
 // such as a track that jumps back to commands that other sounds share. `tick` is the tick at which the sound first
 // started the track, and `timebase` the sound's ticks to a quarter note. `banks` holds the sound's bank slots: bank
-// item IDs, or 0xFFFFFFFF for an empty slot. `sound` and `track` name the sound and the track.
+// item IDs, or 0xFFFFFFFF for an empty slot. `sound` and `track` name the sound and the track. `gba` is true for a
+// track of a GBA song, and `banks` then contains the address of the voice group of the song. `ds` is true for a track
+// of a DS sequence, and `banks` then contains the index of the bank in the table of banks of the archive. `dse` is true
+// for a track of a sound of DSE, and `banks` then contains the ids of the banks of the sound. A track of a song of
+// another of the GBA's drivers, such as Konami's driver, stores the engine of the driver in `driver`, and `banks` then
+// contains the revision of the driver. On Brownie Brown's driver, `banks` also contains the sequence of the track and
+// the item of the word that names the table of the track.
 struct CopiedTrack
 {
     std::vector<ntdlib::commands::Command> commands;
@@ -92,6 +109,10 @@ struct CopiedTrack
     std::vector<uint32_t> banks;
     uint32_t sound = 0;
     int track = 0;
+    bool gba = false;
+    bool ds = false;
+    bool dse = false;
+    std::optional<format::Engine> driver;
 };
 
 // Track `track` of sound `sound` of `file`, for PasteTrack. `song` gives the sound as ntdlib's performer played it, for
@@ -104,13 +125,17 @@ CopiedTrack CopyTrack(const format::File& file, std::span<const std::optional<So
 // The file after sound `sound` of `file` gains `copied` as a new track. `song` gives the sound as ntdlib's performer
 // played it, for its ticks to a quarter note. Throws std::invalid_argument with a message for the user for the reasons
 // that AddTrack gives, for times that can't scale to the sound's ticks, and for a bank that the sound's slots can't
-// take.
+// take. It throws for a track of another console too, on the GBA for a track of another voice group, on the DS for a
+// track of another bank, and on DSE for a track of a bank that the sound doesn't hold.
 TrackEdit PasteTrack(const format::File& file, std::span<const std::optional<SoundPlace>> places, uint32_t sound,
                      const song::Sequence& song, const CopiedTrack& copied);
 
 // The file after sound `sound` of `file` stops allocating its track `track`. Throws std::invalid_argument with a
 // message for the user for track 0, a track that the sound doesn't allocate, a track that opens other tracks of the
-// sound, a sound that would allocate no track, and a file without the archive's tables.
+// sound, a sound that would allocate no track, and a file without the archive's tables. On the GBA, the song's header
+// loses the track (see above). It throws there for a track that is missing from the header, and for a song's last
+// track. On DSE, it throws for a track that is missing from the sound, the track that sets the tempo and a sound's last
+// track.
 format::File RemoveTrack(const format::File& file, std::span<const std::optional<SoundPlace>> places, uint32_t sound,
                          int track);
 

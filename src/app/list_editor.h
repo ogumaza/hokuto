@@ -27,6 +27,7 @@
 
 #include "app/list_edits.h"
 #include "app/transport.h"
+#include "app/widgets.h"
 
 namespace hokuto::app
 {
@@ -36,6 +37,9 @@ struct ListEditorState
 {
     // A row to scroll to in the next frame. The window takes the focus with it.
     std::optional<std::size_t> scroll_row;
+
+    // The jumps of the position that the rows follow. The editor keeps its scroll through the jumps while it's hidden.
+    JumpWatch jumps;
 
     // The selected commands, by their offsets, and the row that a click last selected, for a Shift-click's range.
     std::set<uint32_t> selected;
@@ -47,6 +51,10 @@ struct ListEditorState
     std::array<char, 96> text{};
     bool focus = false;
 
+    // The cell that the user ended while the program was busy, and its text. The text waits until the program is free.
+    std::optional<std::pair<std::size_t, ListColumn>> waiting_cell;
+    WaitingValues<std::string> typed_waiting;
+
     // The row whose context menu is open, the row whose menu of targets is open, and that menu's search text. The menu
     // of targets opens again in the next frame after the second click of a double-click closed it.
     std::optional<std::size_t> menu_row;
@@ -54,8 +62,8 @@ struct ListEditorState
     std::array<char, 128> filter{};
     bool reopen_targets = false;
 
-    // The kind of command that Insert adds, and a track chosen in the toolbar's menu. The program then shows that
-    // track, and clears it.
+    // The kind of command that the user chose for Insert, and a track chosen in the toolbar's menu. The program then
+    // shows that track, and clears it. Insert adds the chosen kind where the track's console runs it (InsertKindOn).
     ntdlib::commands::Kind insert_kind = ntdlib::commands::Kind::kVolume;
     std::optional<int> chosen_track;
 
@@ -80,8 +88,9 @@ struct ListEditorState
 };
 
 // Draws the List Editor while `*open` is set. A line between the rows marks the transport's position. `busy` holds the
-// edits off while the program reads the result of the last edit. Returns the edit that the user made.
+// edits off while the program reads the result of the last edit. `sound` is the version and the sound that the track
+// comes from. A value typed while busy waits for its cell of the track there. Returns the edit that the user made.
 std::optional<ListEdit> DrawListEditor(const ListTrack& track, ListEditorState& state, const Transport& transport,
-                                       bool busy, bool* open);
+                                       const ShownItem& sound, bool busy, bool* open);
 
 } // namespace hokuto::app

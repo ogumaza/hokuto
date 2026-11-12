@@ -14,6 +14,8 @@
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/sar/layout.h"
 
+#include "format/drivers.h"
+
 namespace hokuto::edit
 {
 namespace
@@ -39,7 +41,7 @@ void MovePlaces(format::File& file, uint32_t sequence, const std::vector<std::op
     ForEachItemPlace(*file.native, sequence, check);
     if (!given)
     {
-        throw std::invalid_argument("A sound starts where the two layouts of the timeline hold other commands.");
+        throw std::invalid_argument("A sound starts at a point where the two timeline layouts differ.");
     }
 
     const auto move_places = [&](format::NativeArchive& native)
@@ -57,7 +59,7 @@ void Unfold(format::File& file, uint32_t sequence, const ConverterHints& hints)
     Sequence unfolded = LayOutConverted(folded, hints, false);
     if (LayOutConverted(unfolded, hints, true) != folded)
     {
-        throw std::invalid_argument("The timeline's hints don't give its sequence back.");
+        throw std::invalid_argument("The timeline layout doesn't reproduce the sequence.");
     }
 
     MovePlaces(file, sequence, MatchingItems(folded, unfolded));
@@ -92,10 +94,12 @@ bool TryTimeline(format::File& file, uint32_t sequence)
     {
         return false;
     }
+
     if (!timeline.timelines)
     {
         timeline.timelines.emplace();
     }
+
     (*timeline.timelines)[sequence] = *converted.hints;
     file = std::move(timeline);
 
@@ -177,15 +181,18 @@ Settled SettleTimelines(const format::File& before, format::File edited, std::sp
             result.replaced.push_back(sequence);
         }
     }
+
     for (auto sequence = static_cast<uint32_t>(before.sequences.size()); sequence < result.file.sequences.size();
          ++sequence)
     {
         result.replaced.push_back(sequence);
     }
+
     if (!result.file.timelines || !before.timelines)
     {
         return result;
     }
+
     for (const uint32_t sequence : result.replaced)
     {
         result.file.timelines->erase(sequence);
@@ -203,17 +210,18 @@ Settled SettleTimelines(const format::File& before, format::File edited, std::sp
 
         ConverterHints settled_hints = hints;
         Sequence settled;
+        std::vector<std::optional<uint32_t>> items;
         try
         {
             settled = SettledLayout(*before.sequences[sequence], *result.file.sequences[sequence], settled_hints);
+            items = ItemsAfterJoins(*result.file.sequences[sequence], settled);
         }
         catch (const std::invalid_argument& error)
         {
-            throw std::invalid_argument(
-                "A timeline can't hold this edit: " + std::string(error.what()) +
-                ". The Program button of the inspector's Sequence section lets the sequence take any edit.");
+            throw std::invalid_argument("Can't make this edit in a timeline: " + std::string(error.what()) +
+                                        ". To allow any edit, click Program in the Sequence section of the inspector.");
         }
-        std::vector<std::optional<uint32_t>> items = ItemsAfterJoins(*result.file.sequences[sequence], settled);
+
         MovePlaces(result.file, sequence, items);
         result.file.sequences[sequence] = std::move(settled);
         hints = std::move(settled_hints);
@@ -248,12 +256,34 @@ format::File AsTimeline(const format::File& file, uint32_t sequence)
         throw std::invalid_argument("The file has no such sequence.");
     }
 
+    RefuseGba(
+        file,
+        "GBA songs can be edited only as a program. Hokuto can't lay them out the way the GBA MIDI converters do.");
+    if (file.native && file.native->engine == format::Engine::kDs)
+    {
+        throw std::invalid_argument(
+            "DS sequences can be edited only as a program. Hokuto can't lay them out the way the "
+            "MIDI converter of the DS SDK does.");
+    }
+    if (file.native && file.native->engine == format::Engine::kDse)
+    {
+        throw std::invalid_argument(
+            "DSE sequences can be edited only as a program. Hokuto can't lay them out the way a "
+            "MIDI converter does.");
+    }
+    if (file.native && file.native->driver)
+    {
+        throw std::invalid_argument("Songs of " + std::string(format::DriverOfFile(file)->Facts().title) +
+                                    " can be edited only as a program. Hokuto can't lay them out the way a MIDI "
+                                    "converter does.");
+    }
+
     const ConvertedSong converted = ReadConverted(*file.sequences[sequence]);
     if (!converted.hints)
     {
         throw std::invalid_argument(
-            "Hokuto edits this sequence as a program only. NintendoWare's MIDI converter didn't "
-            "write it, as far as Hokuto can tell: " +
+            "This sequence can be edited only as a program. It doesn't look like the output of "
+            "NintendoWare's MIDI converter: " +
             converted.problem + ".");
     }
 
@@ -263,6 +293,7 @@ format::File AsTimeline(const format::File& file, uint32_t sequence)
     {
         timeline.timelines.emplace();
     }
+
     (*timeline.timelines)[sequence] = *converted.hints;
 
     return timeline;
@@ -274,6 +305,7 @@ format::File WithNewModes(format::File file, std::span<const uint32_t> sequences
     {
         file.timelines.emplace();
     }
+
     for (const uint32_t sequence : sequences)
     {
         file.timelines->erase(sequence);
@@ -393,8 +425,8 @@ Edited MoveLoop(const format::File& file, uint32_t sequence, ConvertedLoop loop)
     if (!IsTimeline(file, sequence))
     {
         throw std::invalid_argument(
-            "Only a timeline's loop moves. The List Editor points a program's jumps at its "
-            "labels.");
+            "Only the loop of a timeline can be moved here. In a program, change the jump targets in "
+            "the List Editor.");
     }
 
     // Each track counts its ticks from where the header starts it, after the header's waits.
@@ -402,7 +434,7 @@ Edited MoveLoop(const format::File& file, uint32_t sequence, ConvertedLoop loop)
     const std::optional<std::map<std::string, uint32_t>> starts = TrackStartsFrom(old, 0);
     if (!starts)
     {
-        throw std::invalid_argument("The song's header doesn't say when its tracks start.");
+        throw std::invalid_argument("Can't tell from the song header when the tracks start.");
     }
 
     // The sounds' starts stay at their labels, and each note keeps its place among the notes.
@@ -417,6 +449,7 @@ Edited MoveLoop(const format::File& file, uint32_t sequence, ConvertedLoop loop)
             notes.push_back(item);
         }
     }
+
     std::size_t note = 0;
     for (uint32_t item = 0; item < old.items.size() && note < notes.size(); ++item)
     {
@@ -425,6 +458,7 @@ Edited MoveLoop(const format::File& file, uint32_t sequence, ConvertedLoop loop)
             result.items[item] = notes[note++];
         }
     }
+
     result.file.sequences[sequence] = std::move(moved);
 
     return result;

@@ -11,7 +11,10 @@
 // notes in a Wii archive, exported and measured at the Wii's 32 kHz, have to measure without a finding against the
 // Wii's model. Sent to the Wii U, they have to measure without a finding against the Wii's model as well. Sent back to
 // the Wii from the Wii U, they have to measure without a finding against the Wii U's model. Two renders of that song on
-// the Wii's model have to give the same samples.
+// the Wii's model have to give the same samples. A GBA song of four notes renders dry without the reverb of MP2K's
+// mixer. Its MIDI export, and the song sent to each other console, have to measure without a finding against that
+// render. A DS sequence of four notes is exported as MIDI with SoundFont 2 and SFZ. In each mixing mode, both exports
+// have to measure without a finding against the DS's model.
 
 #include "measure/measure.h"
 
@@ -32,20 +35,33 @@
 #include <system_error>
 #include <vector>
 
+#include "ntdlib/agb/rom.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sdat/layout.h"
 #include "ntdlib/sequence_export/convert.h"
+#include "ntdlib/testing/dse_song_files.h"
+#include "ntdlib/testing/krawall_cart.h"
+#include "ntdlib/testing/mp2k_cart.h"
+#include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
+#include "ntdlib/testing/sdat_files.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/check.h"
 
 #include "edit/other_console.h"
+#include "edit/timelines.h"
 #include "format/archive.h"
+#include "played_fixtures.h"
 #include "song/archive.h"
 #include "song/audibility.h"
+#include "song/dry_render.h"
+#include "song/ds.h"
+#include "song/gba.h"
+#include "song/krawall.h"
 #include "song/midi_export.h"
 #include "song/sequence.h"
 
@@ -54,10 +70,16 @@ namespace
 
 namespace edit = hokuto::edit;
 namespace format = hokuto::format;
+namespace krawall_cart = ntdlib::testing::krawall_cart;
 namespace measure = hokuto::measure;
 namespace sar = ntdlib::sar;
 namespace sar_files = ntdlib::testing::sar_files;
 namespace song = hokuto::song;
+
+using hokuto::testing::DseMeasureImage;
+using hokuto::testing::DsMeasureArchive;
+using hokuto::testing::GbaMeasureCart;
+using hokuto::testing::KrawallMeasureRom;
 
 // The test archive's sounds.
 constexpr uint32_t kNotesSound = 0;
@@ -242,7 +264,7 @@ void TestFaithfulExport(measure::Instruments instruments)
     const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, kNotesSound, {}, {}, "Hokuto");
     const std::atomic<bool> kGo{false};
     const measure::Measure found = measure::MeasureExport(
-        conversion, instruments, archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict, kGo);
+        conversion, instruments, song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict), kGo);
 
     SEQLIB_CHECK_EQ(found.rate, 48000);
     SEQLIB_CHECK(found.comparison.windows >= 38);
@@ -263,7 +285,7 @@ void TestMissingNote(measure::Instruments instruments)
     const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, kFewerSound, {}, {}, "Hokuto");
     const std::atomic<bool> kGo{false};
     const measure::Measure found = measure::MeasureExport(
-        conversion, instruments, archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict, kGo);
+        conversion, instruments, song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict), kGo);
 
     SEQLIB_REQUIRE(!found.places.empty());
     SEQLIB_CHECK(found.places.size() <= 3);
@@ -293,8 +315,8 @@ void TestOtherConsole()
     const std::atomic<bool> kGo{false};
     const std::atomic<bool> kStop{true};
     const measure::Renders renders =
-        measure::RenderOtherConsole(archive, SequenceOf(*archive, kNotesSound), wii_u, SequenceOf(*wii_u, kNotesSound),
-                                    song::Mixing::kStrict, song::Mixing::kStrict, kGo);
+        measure::RenderOtherConsole(song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict),
+                                    song::DryOf(wii_u, SequenceOf(*wii_u, kNotesSound), song::Mixing::kStrict), kGo);
     const measure::Measure found = measure::MeasureRenders(renders);
 
     SEQLIB_CHECK(!renders.cut);
@@ -302,10 +324,10 @@ void TestOtherConsole()
     SEQLIB_CHECK(found.comparison.places.empty());
     SEQLIB_CHECK(std::abs(found.comparison.gain_db) < 1.0);
     SEQLIB_CHECK(std::abs(found.comparison.lag) <= 0.005);
-    SEQLIB_CHECK(measure::RenderOtherConsole(archive, SequenceOf(*archive, kNotesSound), wii_u,
-                                             SequenceOf(*wii_u, kNotesSound), song::Mixing::kStrict,
-                                             song::Mixing::kStrict, kStop)
-                     .hokuto.empty());
+    SEQLIB_CHECK(
+        measure::RenderOtherConsole(song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict),
+                                    song::DryOf(wii_u, SequenceOf(*wii_u, kNotesSound), song::Mixing::kStrict), kStop)
+            .hokuto.empty());
 }
 
 // The Wii's export of the four notes measures without a finding against the Wii's model, at 32 kHz. A measure whose
@@ -317,8 +339,9 @@ void TestWiiExport(measure::Instruments instruments)
     const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, 0, {}, {}, "Hokuto");
     const std::atomic<bool> kGo{false};
     const std::atomic<bool> kStop{true};
-    const measure::Measure found = measure::MeasureExport(conversion, instruments, archive, sequence, kGo);
-    const measure::Measure stopped = measure::MeasureExport(conversion, instruments, archive, sequence, kStop);
+    const measure::Measure found = measure::MeasureExport(conversion, instruments, song::DryOf(archive, sequence), kGo);
+    const measure::Measure stopped =
+        measure::MeasureExport(conversion, instruments, song::DryOf(archive, sequence), kStop);
 
     SEQLIB_CHECK_EQ(found.rate, 32000);
     SEQLIB_CHECK(found.comparison.windows >= 38);
@@ -346,8 +369,8 @@ void TestWiiOtherConsole()
         song::LoadArchive(format::ExportArchive(sent.file), "SOUND.bfsar", format::ExportGroupFiles(sent.file));
     const std::atomic<bool> kGo{false};
     const std::atomic<bool> kStop{true};
-    const measure::Renders renders =
-        measure::RenderOtherConsole(wii, sequence, wii_u, SequenceOf(*wii_u, 0), song::Mixing::kStrict, kGo);
+    const measure::Renders renders = measure::RenderOtherConsole(
+        song::DryOf(wii, sequence), song::DryOf(wii_u, SequenceOf(*wii_u, 0), song::Mixing::kStrict), kGo);
     const measure::Measure found = measure::MeasureRenders(renders);
 
     SEQLIB_CHECK_EQ(found.rate, 48000);
@@ -356,7 +379,8 @@ void TestWiiOtherConsole()
     SEQLIB_CHECK(found.comparison.places.empty());
     SEQLIB_CHECK(std::abs(found.comparison.gain_db) < 0.2);
     SEQLIB_CHECK(std::abs(found.comparison.lag - 0.006) <= 0.001);
-    SEQLIB_CHECK(measure::RenderOtherConsole(wii, sequence, wii_u, SequenceOf(*wii_u, 0), song::Mixing::kStrict, kStop)
+    SEQLIB_CHECK(measure::RenderOtherConsole(song::DryOf(wii, sequence),
+                                             song::DryOf(wii_u, SequenceOf(*wii_u, 0), song::Mixing::kStrict), kStop)
                      .hokuto.empty());
 }
 
@@ -376,10 +400,11 @@ void TestToWii()
     const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*wii, 0));
     const std::atomic<bool> kGo{false};
     const std::atomic<bool> kStop{true};
-    const measure::Renders renders =
-        measure::RenderOtherConsole(wii_u, SequenceOf(*wii_u, 0), wii, sequence, song::Mixing::kStrict, kGo);
+    const measure::Renders renders = measure::RenderOtherConsole(
+        song::DryOf(wii_u, SequenceOf(*wii_u, 0), song::Mixing::kStrict), song::DryOf(wii, sequence), kGo);
     const measure::Measure found = measure::MeasureRenders(renders);
-    const measure::Renders same = measure::RenderOtherConsole(wii, sequence, wii, sequence, kGo);
+    const measure::Renders same =
+        measure::RenderOtherConsole(song::DryOf(wii, sequence), song::DryOf(wii, sequence), kGo);
     const measure::Measure none = measure::MeasureRenders(same);
 
     SEQLIB_CHECK_EQ(found.rate, 48000);
@@ -390,9 +415,188 @@ void TestToWii()
     SEQLIB_CHECK(std::abs(found.comparison.lag + 0.006) <= 0.001);
     SEQLIB_CHECK_EQ(none.rate, 32000);
     SEQLIB_CHECK(same.hokuto == same.exported && none.comparison.places.empty());
-    SEQLIB_CHECK(measure::RenderOtherConsole(wii_u, SequenceOf(*wii_u, 0), wii, sequence, song::Mixing::kStrict, kStop)
+    SEQLIB_CHECK(measure::RenderOtherConsole(song::DryOf(wii_u, SequenceOf(*wii_u, 0), song::Mixing::kStrict),
+                                             song::DryOf(wii, sequence), kStop)
                      .hokuto.empty());
-    SEQLIB_CHECK(measure::RenderOtherConsole(wii, sequence, wii, sequence, kStop).hokuto.empty());
+    SEQLIB_CHECK(
+        measure::RenderOtherConsole(song::DryOf(wii, sequence), song::DryOf(wii, sequence), kStop).hokuto.empty());
+}
+
+// The render of `sequence` of `rom` on the GBA's model with the reverb, for 2.5 s.
+std::vector<float> GbaRender(std::shared_ptr<const song::GbaRom> rom, std::shared_ptr<const song::Sequence> sequence)
+{
+    song::SequenceModel model(std::move(rom), std::move(sequence));
+    std::vector<float> samples;
+    for (bool plays = model.SeekFrame(0); plays && samples.size() < 5.0 * model.SampleRate(); plays = model.RunFrame())
+    {
+        const std::span<const float> output = model.FloatOutput();
+        samples.insert(samples.end(), output.begin(), output.end());
+    }
+
+    return samples;
+}
+
+// The GBA's dry render leaves out the reverb of MP2K's mixer: a song whose header sets the reverb renders as the song
+// without it. The model plays the reverb otherwise. The song's MIDI export (song::ConvertToMidi) measures without a
+// finding against the dry render. So does the song sent to the Wii U, the Switch, the 3DS and the Wii, against the same
+// render.
+void TestGba()
+{
+    const std::shared_ptr<const song::GbaRom> wet = song::LoadGbaRom(GbaMeasureCart(0x80 | 100));
+    const std::shared_ptr<const song::GbaRom> dry = song::LoadGbaRom(GbaMeasureCart(0x80));
+    const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*wet, 0));
+    const std::atomic<bool> kGo{false};
+    const song::DryRender wet_render = song::RenderDry(wet, sequence, song::Mixing::kStrict, 2.5, kGo);
+    const song::DryRender dry_render = song::RenderDry(dry, sequence, song::Mixing::kStrict, 2.5, kGo);
+    SEQLIB_CHECK(!wet_render.samples.empty() && wet_render.samples == dry_render.samples);
+    SEQLIB_CHECK_EQ(wet_render.rate, song::GbaRate(*wet));
+    SEQLIB_CHECK(GbaRender(wet, sequence) != GbaRender(dry, sequence));
+
+    const measure::Measure exported =
+        measure::MeasureExport(song::ConvertToMidi(*wet, 0, "Hokuto"), measure::Instruments::kSoundFont,
+                               song::DryOf(wet, sequence, song::Mixing::kStrict), kGo);
+    SEQLIB_CHECK_EQ(exported.rate, song::GbaRate(*wet));
+    SEQLIB_CHECK(exported.comparison.windows >= 30);
+    SEQLIB_CHECK(exported.comparison.places.empty());
+
+    const format::File file = format::ImportGbaRom(GbaMeasureCart(0x80 | 100));
+    for (const sar::Flavor to : {sar::Flavor::kCafe, sar::Flavor::kNx, sar::Flavor::kCtr})
+    {
+        const edit::OtherConsoleSong sent = edit::ForOtherConsole(file, 0, to);
+        const std::shared_ptr<const sar::SoundArchive> target =
+            song::LoadArchive(format::ExportArchive(edit::FoldTimelines(sent.file)), "SOUND");
+        const measure::Measure found = measure::MeasureRenders(
+            measure::RenderOtherConsole(song::DryOf(wet, sequence, song::Mixing::kStrict),
+                                        song::DryOf(target, SequenceOf(*target, 0), song::Mixing::kStrict), kGo));
+        SEQLIB_CHECK(found.comparison.windows >= 30);
+        SEQLIB_CHECK(found.comparison.places.empty());
+    }
+    const edit::OtherConsoleSong wii = edit::ForWii(file, 0);
+    const std::shared_ptr<const ntdlib::rsar::SoundArchive> wii_archive = song::LoadWiiArchive(
+        format::ExportArchive(edit::FoldTimelines(wii.file)), "SOUND.brsar", ntdlib::rvl::snd::kRsarOptions);
+    const measure::Measure found = measure::MeasureRenders(measure::RenderOtherConsole(
+        song::DryOf(wet, sequence, song::Mixing::kStrict),
+        song::DryOf(wii_archive, std::make_shared<const song::Sequence>(song::ReadSequence(*wii_archive, 0))), kGo));
+    SEQLIB_CHECK(found.comparison.windows >= 30);
+    SEQLIB_CHECK(found.comparison.places.empty());
+
+    const std::shared_ptr<const song::DsArchive> ds =
+        song::LoadDsArchive(format::ExportArchive(edit::ForDs(file, 0).file));
+    const measure::Renders on_ds = measure::RenderOtherConsole(
+        song::DryOf(wet, sequence, song::Mixing::kStrict),
+        song::DryOf(ds, std::make_shared<const song::Sequence>(song::ReadSequence(*ds, 0)), song::Mixing::kStrict),
+        kGo);
+    SEQLIB_CHECK(!on_ds.exported.empty() && !on_ds.hokuto.empty());
+    SEQLIB_CHECK(measure::MeasureRenders(on_ds).comparison.windows >= 30);
+}
+
+// The DS's export measures without a finding against the DS's model, at the model's rate: 32,728 Hz in strict mixing,
+// and 47,989 Hz in enhanced mixing.
+void TestDs()
+{
+    const std::shared_ptr<const song::DsArchive> archive = DsMeasureArchive();
+    const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, 0));
+    const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, 0, {}, "Hokuto");
+    const std::atomic<bool> kGo{false};
+    for (const song::Mixing mixing : {song::Mixing::kStrict, song::Mixing::kEnhanced})
+    {
+        for (const measure::Instruments instruments : {measure::Instruments::kSoundFont, measure::Instruments::kSfz})
+        {
+            const measure::Measure found =
+                measure::MeasureExport(conversion, instruments, song::DryOf(archive, sequence, mixing), kGo);
+            SEQLIB_CHECK_EQ(found.rate, mixing == song::Mixing::kStrict ? 32728 : 47989);
+            SEQLIB_CHECK(found.comparison.windows >= 30);
+            SEQLIB_CHECK(found.comparison.places.empty());
+            SEQLIB_CHECK(found.places.empty());
+            SEQLIB_CHECK(found.seconds >= 2.0 && found.seconds < 4.0);
+        }
+    }
+}
+
+// DSE's export measures without a finding against the DS's model, at the model's rate: 32,728 Hz in strict mixing, and
+// 47,989 Hz in enhanced mixing.
+void TestDse()
+{
+    const std::vector<uint8_t> image = DseMeasureImage();
+    const std::shared_ptr<const song::DseSet> set = song::LoadDseSet(image);
+    const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*set, 0));
+    const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*set, 0, "Hokuto");
+    const std::atomic<bool> kGo{false};
+    for (const song::Mixing mixing : {song::Mixing::kStrict, song::Mixing::kEnhanced})
+    {
+        for (const measure::Instruments instruments : {measure::Instruments::kSoundFont, measure::Instruments::kSfz})
+        {
+            const measure::Measure found =
+                measure::MeasureExport(conversion, instruments, song::DryOf(set, sequence, mixing), kGo);
+            SEQLIB_CHECK_EQ(found.rate, mixing == song::Mixing::kStrict ? 32728 : 47989);
+            SEQLIB_CHECK(found.comparison.windows >= 30);
+            SEQLIB_CHECK(found.comparison.places.empty());
+            SEQLIB_CHECK(found.places.empty());
+            SEQLIB_CHECK(found.seconds >= 1.0 && found.seconds < 4.0);
+        }
+    }
+
+    // The sound sent to the DS measures without a finding against DSE's model. Both play on the DS's model.
+    const std::shared_ptr<const song::DsArchive> on_ds =
+        song::LoadDsArchive(format::ExportArchive(edit::ForDs(format::ImportDseImage(image), 0).file));
+    const measure::Measure to_ds = measure::MeasureRenders(measure::RenderOtherConsole(
+        song::DryOf(set, sequence, song::Mixing::kStrict),
+        song::DryOf(on_ds, std::make_shared<const song::Sequence>(song::ReadSequence(*on_ds, 0)),
+                    song::Mixing::kStrict),
+        kGo));
+    SEQLIB_CHECK_EQ(to_ds.rate, 32728);
+    SEQLIB_CHECK(to_ds.comparison.windows >= 30);
+    SEQLIB_CHECK(to_ds.comparison.places.empty());
+}
+
+// A sound of the Switch and a sound of the Wii sent to the DS measure without a finding against the models of their
+// consoles. A DS render uses the model's rate of 32,728 Hz. The renders compare at the higher of the two rates. A
+// measure whose flag is set from the start returns nothing.
+void TestToDs()
+{
+    const std::atomic<bool> kGo{false};
+    const std::atomic<bool> kStop{true};
+    const std::shared_ptr<const sar::SoundArchive> archive = OpenMeasureArchive();
+    const format::File file = format::ImportArchive(MeasureArchiveBytes(false), sar::Flavor::kNx);
+    const std::shared_ptr<const song::DsArchive> from_switch =
+        song::LoadDsArchive(format::ExportArchive(edit::ForDs(file, kNotesSound).file));
+    const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*from_switch, 0));
+
+    const measure::Renders renders =
+        measure::RenderOtherConsole(song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict),
+                                    song::DryOf(from_switch, sequence, song::Mixing::kStrict), kGo);
+    const measure::Measure found = measure::MeasureRenders(renders);
+
+    SEQLIB_CHECK_EQ(found.rate, 48000);
+    SEQLIB_CHECK(!renders.cut);
+    SEQLIB_CHECK(found.comparison.windows >= 38);
+    SEQLIB_CHECK(found.comparison.places.empty());
+
+    // A sound that plays its conversion on the DS's engine measures against the same conversion without a finding.
+    const measure::Measure same = measure::MeasureRenders(
+        measure::RenderOtherConsole(song::DryOf(from_switch, sequence, song::Mixing::kStrict),
+                                    song::DryOf(from_switch, sequence, song::Mixing::kStrict), kGo));
+    SEQLIB_CHECK_EQ(same.rate, 32728);
+    SEQLIB_CHECK(same.comparison.windows >= 30);
+    SEQLIB_CHECK(same.comparison.places.empty());
+
+    SEQLIB_CHECK(
+        measure::RenderOtherConsole(song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict),
+                                    song::DryOf(from_switch, sequence, song::Mixing::kStrict), kStop)
+            .hokuto.empty());
+
+    const std::shared_ptr<const ntdlib::rsar::SoundArchive> wii = OpenWiiMeasureArchive(true);
+    const std::shared_ptr<const song::DsArchive> from_wii = song::LoadDsArchive(
+        format::ExportArchive(edit::ForDs(format::ImportWiiArchive(WiiMeasureBytes(true)), 0).file));
+    const auto wii_sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*wii, 0));
+    const measure::Measure wii_found = measure::MeasureRenders(measure::RenderOtherConsole(
+        song::DryOf(wii, wii_sequence),
+        song::DryOf(from_wii, std::make_shared<const song::Sequence>(song::ReadSequence(*from_wii, 0)),
+                    song::Mixing::kStrict),
+        kGo));
+    SEQLIB_CHECK_EQ(wii_found.rate, 32728);
+    SEQLIB_CHECK(wii_found.comparison.windows >= 30);
+    SEQLIB_CHECK(wii_found.comparison.places.empty());
 }
 
 // A measure whose flag is set from the start returns nothing.
@@ -405,11 +609,55 @@ void TestCancel()
     for (const measure::Instruments instruments : {measure::Instruments::kSoundFont, measure::Instruments::kSfz})
     {
         const measure::Measure found = measure::MeasureExport(
-            conversion, instruments, archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict, kStop);
+            conversion, instruments, song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict),
+            kStop);
         SEQLIB_CHECK_EQ(found.rate, 0);
         SEQLIB_CHECK_EQ(found.comparison.windows, std::size_t{0});
         SEQLIB_CHECK(found.places.empty());
     }
+}
+
+// The DrySource of `sequence` of `played` in `mixing` keeps the sequence. It renders the samples, at the rate, that
+// RenderDry renders from the same arguments. A render whose flag is set from the start returns nothing.
+void CheckDryOf(const song::Played& played, const std::shared_ptr<const song::Sequence>& sequence,
+                song::Mixing mixing = song::Mixing::kStrict)
+{
+    const std::atomic<bool> kGo{false};
+    const std::atomic<bool> kStop{true};
+    const song::DrySource source = song::DryOf(played, sequence, mixing);
+    const song::DryRender render = source.render(1.5, kGo);
+    const song::DryRender expected = song::RenderDry(played, sequence, mixing, 1.5, kGo);
+    SEQLIB_CHECK(source.sequence == sequence);
+    SEQLIB_CHECK(!render.samples.empty());
+    SEQLIB_CHECK_EQ(render.rate, expected.rate);
+    SEQLIB_CHECK(render.samples == expected.samples);
+    SEQLIB_CHECK(source.render(1.5, kStop).samples.empty());
+}
+
+// The DrySource of each kind of archive, ROM or set renders as RenderDry does: a sequence of the Switch, the Wii, the
+// GBA, the DS, DSE and one of the GBA's other drivers, in each mixing mode that the console plays.
+void TestDryOf()
+{
+    for (const song::Mixing mixing : {song::Mixing::kStrict, song::Mixing::kEnhanced})
+    {
+        const std::shared_ptr<const sar::SoundArchive> archive = OpenMeasureArchive();
+        CheckDryOf(archive, SequenceOf(*archive, kNotesSound), mixing);
+
+        const std::shared_ptr<const song::GbaRom> gba = song::LoadGbaRom(GbaMeasureCart(0x80 | 100));
+        CheckDryOf(gba, std::make_shared<const song::Sequence>(song::ReadSequence(*gba, 0)), mixing);
+
+        const std::shared_ptr<const song::DsArchive> ds = DsMeasureArchive();
+        CheckDryOf(ds, std::make_shared<const song::Sequence>(song::ReadSequence(*ds, 0)), mixing);
+
+        const std::shared_ptr<const song::DseSet> dse = song::LoadDseSet(DseMeasureImage());
+        CheckDryOf(dse, std::make_shared<const song::Sequence>(song::ReadSequence(*dse, 0)), mixing);
+
+        const std::shared_ptr<const song::DriverRom> driver = KrawallMeasureRom();
+        CheckDryOf(driver, std::make_shared<const song::Sequence>(driver->ReadSequence(0)), mixing);
+    }
+
+    const std::shared_ptr<const ntdlib::rsar::SoundArchive> wii = OpenWiiMeasureArchive(true);
+    CheckDryOf(wii, std::make_shared<const song::Sequence>(song::ReadSequence(*wii, 0)));
 }
 
 // A MIDI file that can't be read throws std::runtime_error, the error that the Export window shows.
@@ -422,17 +670,14 @@ void TestUnreadableMidi()
 
     for (const measure::Instruments instruments : {measure::Instruments::kSoundFont, measure::Instruments::kSfz})
     {
-        bool thrown = false;
-        try
-        {
-            measure::MeasureExport(conversion, instruments, archive, SequenceOf(*archive, kNotesSound),
-                                   song::Mixing::kStrict, kGo);
-        }
-        catch (const std::runtime_error&)
-        {
-            thrown = true;
-        }
-        SEQLIB_CHECK(thrown);
+        SEQLIB_CHECK(!xsflib::testing::ErrorOf<std::runtime_error>(
+                          [&]
+                          {
+                              measure::MeasureExport(
+                                  conversion, instruments,
+                                  song::DryOf(archive, SequenceOf(*archive, kNotesSound), song::Mixing::kStrict), kGo);
+                          })
+                          .empty());
     }
 }
 
@@ -440,17 +685,24 @@ void TestUnreadableMidi()
 
 int main()
 {
-    TestFaithfulExport(measure::Instruments::kSoundFont);
-    TestFaithfulExport(measure::Instruments::kSfz);
-    TestMissingNote(measure::Instruments::kSoundFont);
-    TestMissingNote(measure::Instruments::kSfz);
-    TestOtherConsole();
-    TestWiiExport(measure::Instruments::kSoundFont);
-    TestWiiExport(measure::Instruments::kSfz);
-    TestWiiOtherConsole();
-    TestToWii();
-    TestCancel();
-    TestUnreadableMidi();
-
-    return xsflib::testing::Summary("measure");
+    return xsflib::testing::RunTest("measure",
+                                    []
+                                    {
+                                        TestFaithfulExport(measure::Instruments::kSoundFont);
+                                        TestFaithfulExport(measure::Instruments::kSfz);
+                                        TestMissingNote(measure::Instruments::kSoundFont);
+                                        TestMissingNote(measure::Instruments::kSfz);
+                                        TestOtherConsole();
+                                        TestWiiExport(measure::Instruments::kSoundFont);
+                                        TestWiiExport(measure::Instruments::kSfz);
+                                        TestWiiOtherConsole();
+                                        TestToWii();
+                                        TestGba();
+                                        TestDs();
+                                        TestDse();
+                                        TestToDs();
+                                        TestCancel();
+                                        TestDryOf();
+                                        TestUnreadableMidi();
+                                    });
 }

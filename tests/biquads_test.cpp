@@ -28,7 +28,6 @@
 #include <optional>
 #include <set>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
@@ -40,6 +39,7 @@
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
+#include "command_builders.h"
 #include "song/items.h"
 
 using hokuto::song::BiquadChanges;
@@ -50,6 +50,13 @@ using hokuto::song::ConvertSequenceFile;
 using hokuto::song::MapBiquads;
 using hokuto::song::NearestBiquadValue;
 using hokuto::song::SameButBiquads;
+using hokuto::testing::Conditional;
+using hokuto::testing::FromVariable;
+using hokuto::testing::Of;
+using hokuto::testing::Plain;
+using hokuto::testing::Random;
+using hokuto::testing::Setting;
+using hokuto::testing::WithTarget;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
@@ -73,10 +80,10 @@ constexpr double kTop = static_cast<double>(kGridPoints - 1) / kStepsPerOctave;
 
 // The consoles. No known build of NW4R SND has the Wii's date, 20080610. Such a build plays as the builds from March
 // 2008.
-const Console kSwitch{.flavor = Flavor::kNx};
-const Console kWiiU{.flavor = Flavor::kCafe};
-const Console kCtr{.flavor = Flavor::kCtr};
-const Console kWii{.wii = ntdlib::SndBuild{.date = 20080610}};
+const Console kSwitch{.engine = hokuto::format::Engine::kSwitch};
+const Console kWiiU{.engine = hokuto::format::Engine::kWiiU};
+const Console kCtr{.engine = hokuto::format::Engine::k3ds};
+const Console kWii{.engine = hokuto::format::Engine::kWii, .wii = ntdlib::SndBuild{.date = 20080610}};
 
 // The power of row `row` of preset `type` at `frequency` Hz on a renderer at `rate`.
 double PowerAt(int type, int row, double frequency, double rate)
@@ -167,12 +174,12 @@ int RowOf(int type, int value, const Console& console)
         using Policy = ntdlib::nwsnd::RevolutionPolicy;
         return BiquadPresetRow<Policy>(type, Policy::BiquadValueOf(value));
     }
-    if (console.flavor == Flavor::kCtr)
+    if (FlavorOf(console) == Flavor::kCtr)
     {
         using Policy = ntdlib::nwsnd::CtrPolicy;
         return BiquadPresetRow<Policy>(type, Policy::BiquadValueOf(value));
     }
-    if (console.flavor == Flavor::kCafe)
+    if (FlavorOf(console) == Flavor::kCafe)
     {
         using Policy = ntdlib::nwsnd::CafePolicy;
         return BiquadPresetRow<Policy>(type, Policy::BiquadValueOf(value));
@@ -184,12 +191,12 @@ int RowOf(int type, int value, const Console& console)
 // The rate of the console's renderer: the Wii's and the Wii U's AX, the 3DS's DSP, or the Switch's renderer.
 double RateOf(const Console& console)
 {
-    if (console.wii || console.flavor == Flavor::kCafe)
+    if (console.wii || FlavorOf(console) == Flavor::kCafe)
     {
         return kWiiURate;
     }
 
-    return console.flavor == Flavor::kCtr ? kCtrRate : kSwitchRate;
+    return FlavorOf(console) == Flavor::kCtr ? kCtrRate : kSwitchRate;
 }
 
 // The distance between two passbands' edges, in octaves.
@@ -277,16 +284,6 @@ void TestGridMargin()
     XSFLIB_CHECK(margin > 3e-7);
 }
 
-// A command of `kind` with `value`.
-Command Setting(Kind kind, int value)
-{
-    Command command;
-    command.kind = kind;
-    command.value = {.source = Source::kValue, .value = value * kOne, .high = 0};
-
-    return command;
-}
-
 // A setting of the biquad filter's type to `type`.
 Command Type(int type)
 {
@@ -299,64 +296,10 @@ Command Value(int value)
     return Setting(Kind::kBiquadValue, value);
 }
 
-// A command of `kind` that takes its value from `variable`.
-Command FromVariable(Kind kind, int variable)
-{
-    Command command;
-    command.kind = kind;
-    command.value = {.source = Source::kVariable, .value = variable, .high = 0};
-
-    return command;
-}
-
-// A command of `kind` with a random value from `low` to `high`.
-Command Random(Kind kind, int low, int high)
-{
-    Command command;
-    command.kind = kind;
-    command.value = {.source = Source::kRandom, .value = low * kOne, .high = high * kOne};
-
-    return command;
-}
-
 // A wait of `ticks`.
 Command Wait(int ticks)
 {
     return Setting(Kind::kWait, ticks);
-}
-
-// A command of `kind` that goes to item `target`, with `index`, such as a track's number.
-Command WithTarget(Kind kind, uint32_t target, uint8_t index = 0)
-{
-    Command command;
-    command.kind = kind;
-    command.target = target;
-    command.index = index;
-
-    return command;
-}
-
-// A command of `kind` without a value.
-Command Plain(Kind kind)
-{
-    Command command;
-    command.kind = kind;
-
-    return command;
-}
-
-// `command`, run only if the last comparison held.
-Command Conditional(Command command)
-{
-    command.conditional = true;
-
-    return command;
-}
-
-// A sequence of `items`, without labels.
-Sequence Of(std::vector<Command> items)
-{
-    return {.items = std::move(items), .labels = {}};
 }
 
 // The value that the Wii U takes for value `value` of the Switch's type `type`.
@@ -430,6 +373,12 @@ void TestValues()
     XSFLIB_CHECK(random.value.source == Source::kRandom);
     XSFLIB_CHECK(random.value.value == std::min(OnTheWiiU(1, 10), OnTheWiiU(1, 100)));
     XSFLIB_CHECK(random.value.high == std::max(OnTheWiiU(1, 10), OnTheWiiU(1, 100)));
+
+    // A random value whose ends come in reverse order keeps both ends, in order.
+    Sequence reversed = Of({Type(1), Random(Kind::kBiquadValue, 100, 10), Plain(Kind::kEnd)});
+    MapBiquads(reversed, {}, kSwitch, kWiiU);
+    XSFLIB_CHECK(reversed.items[1].value.value == std::min(OnTheWiiU(1, 10), OnTheWiiU(1, 100)));
+    XSFLIB_CHECK(reversed.items[1].value.high == std::max(OnTheWiiU(1, 10), OnTheWiiU(1, 100)));
 }
 
 // The flow of a track: a subroutine that two tracks call with other types, the same subroutine with one type, a type
@@ -496,28 +445,27 @@ void TestWarning()
 {
     const std::optional<std::string> to_switch = BiquadWarning({.types = 2}, kWiiU, kSwitch);
     XSFLIB_CHECK(to_switch ==
-                 "The Switch plays the biquad filters of types 1 to 5 at 48 kHz, and the Wii U at 32 kHz. Their "
-                 "cutoffs lie about 1.5 times higher on the Switch. The Switch's types 6 to 10 are the same filters "
-                 "made for 48 kHz. 2 settings of types 1 to 5 took types 6 to 10.");
+                 "The Switch runs biquad filter types 1–5 at 48 kHz, and the Wii U runs them at 32 kHz. Their "
+                 "cutoffs are about 1.5 times higher on the Switch. Switch types 6–10 are the same filters designed "
+                 "for 48 kHz. 2 settings changed from types 1–5 to types 6–10.");
 
     const std::optional<std::string> from_switch =
         BiquadWarning({.types = 1, .values = 3, .band_passes = 1, .kept = 2}, kSwitch, kCtr);
     XSFLIB_CHECK(from_switch ==
-                 "The Switch plays the biquad filters of types 1 to 5 at 48 kHz, and the 3DS at 32,728 Hz. Their "
-                 "cutoffs lie about 1.5 times higher on the Switch. The Switch's types 6 to 10 are the same filters "
-                 "made for 48 kHz. 1 setting of types 6 to 10 took types 1 to 5. 3 settings of the value of a filter "
-                 "of types 1 to 5 took the value whose passband on the 3DS lies nearest. 1 setting of a band-pass "
-                 "keeps its type, and no value moves the band: it lies 0.55 octaves lower on the 3DS. 2 settings keep "
-                 "their filters at the other rate: a type from a variable or a random number, or a value that plays "
-                 "with more than one type.");
+                 "The Switch runs biquad filter types 1–5 at 48 kHz, and the 3DS runs them at 32,728 Hz. Their "
+                 "cutoffs are about 1.5 times higher on the Switch. Switch types 6–10 are the same filters designed "
+                 "for 48 kHz. 1 setting changed from types 6–10 to types 1–5. 3 values of types 1–5 changed to "
+                 "the value with the nearest passband on the 3DS. 1 band-pass setting is unchanged. Its band is 0.55 "
+                 "octaves lower on the 3DS, and no value can correct that. 2 settings are unchanged because their "
+                 "types come from a variable or a random number, or their values are used with more than one type.");
 
     const std::optional<std::string> to_wii = BiquadWarning({.band_passes = 2, .kept = 1}, kSwitch, kWii);
     XSFLIB_CHECK(to_wii ==
-                 "The Switch plays the biquad filters of types 1 to 5 at 48 kHz, and the Wii at 32 kHz. Their "
-                 "cutoffs lie about 1.5 times higher on the Switch. The Switch's types 6 to 10 are the same filters "
-                 "made for 48 kHz. 2 settings of a band-pass keep their type, and no value moves the band: it lies "
-                 "0.58 octaves lower on the Wii. 1 setting keeps its filter at the other rate: a type from a variable "
-                 "or a random number, or a value that plays with more than one type.");
+                 "The Switch runs biquad filter types 1–5 at 48 kHz, and the Wii runs them at 32 kHz. Their "
+                 "cutoffs are about 1.5 times higher on the Switch. Switch types 6–10 are the same filters designed "
+                 "for 48 kHz. 2 band-pass settings are unchanged. Their band is 0.58 octaves lower on the Wii, and no "
+                 "value can correct that. 1 setting is unchanged because its type comes from a variable or a random "
+                 "number, or its value is used with more than one type.");
     XSFLIB_CHECK(!BiquadWarning({}, kSwitch, kWiiU));
 }
 
@@ -544,14 +492,16 @@ void TestSameButBiquads()
 
 int main()
 {
-    TestNearest();
-    TestGridMargin();
-    TestTypes();
-    TestValues();
-    TestFlow();
-    TestFiles();
-    TestWarning();
-    TestSameButBiquads();
-
-    return xsflib::testing::Summary("biquads");
+    return xsflib::testing::RunTest("biquads",
+                                    []
+                                    {
+                                        TestNearest();
+                                        TestGridMargin();
+                                        TestTypes();
+                                        TestValues();
+                                        TestFlow();
+                                        TestFiles();
+                                        TestWarning();
+                                        TestSameButBiquads();
+                                    });
 }

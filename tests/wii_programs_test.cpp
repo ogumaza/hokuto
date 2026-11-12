@@ -24,27 +24,26 @@
 #include "ntdlib/commands/units.h"
 #include "xsflib/testing/check.h"
 
+#include "command_builders.h"
+
 namespace
 {
 
 using hokuto::edit::SlotPrograms;
 using hokuto::edit::WiiPrograms;
 using hokuto::edit::WiiProgramsOf;
+using hokuto::testing::Conditional;
+using hokuto::testing::FromVariable;
+using hokuto::testing::Of;
+using hokuto::testing::Plain;
+using hokuto::testing::Random;
+using hokuto::testing::Setting;
+using hokuto::testing::WithTarget;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
-
-// A command of `kind` with `value`.
-Command Setting(Kind kind, int value)
-{
-    Command command;
-    command.kind = kind;
-    command.value = {.source = Source::kValue, .value = value * kOne, .high = 0};
-
-    return command;
-}
 
 // A program change to `program`.
 Command Program(int program)
@@ -58,26 +57,6 @@ Command BankSelect(int slot)
     return Setting(Kind::kBankSelect, slot);
 }
 
-// A command of `kind` that takes its value from `variable`.
-Command FromVariable(Kind kind, int variable)
-{
-    Command command;
-    command.kind = kind;
-    command.value = {.source = Source::kVariable, .value = variable, .high = 0};
-
-    return command;
-}
-
-// A command of `kind` with a random value from `low` to `high`.
-Command Random(Kind kind, int low, int high)
-{
-    Command command;
-    command.kind = kind;
-    command.value = {.source = Source::kRandom, .value = low * kOne, .high = high * kOne};
-
-    return command;
-}
-
 // A note of `key` for 24 ticks, at velocity 100.
 Command Note(uint8_t key)
 {
@@ -86,40 +65,6 @@ Command Note(uint8_t key)
     command.velocity = 100 * kOne;
 
     return command;
-}
-
-// A command of `kind` that goes to item `target`, with `index`, such as a track's number.
-Command WithTarget(Kind kind, uint32_t target, uint8_t index = 0)
-{
-    Command command;
-    command.kind = kind;
-    command.target = target;
-    command.index = index;
-
-    return command;
-}
-
-// A command of `kind` without a value.
-Command Plain(Kind kind)
-{
-    Command command;
-    command.kind = kind;
-
-    return command;
-}
-
-// `command`, run only if the last comparison held.
-Command Conditional(Command command)
-{
-    command.conditional = true;
-
-    return command;
-}
-
-// A sequence of `items`, without labels.
-Sequence Of(std::vector<Command> items)
-{
-    return {.items = std::move(items), .labels = {}};
 }
 
 // Two banks of two programs each.
@@ -271,10 +216,12 @@ void TestFlow()
 
 int main()
 {
-    TestSlots();
-    TestFirstSlot();
-    TestValues();
-    TestFlow();
-
-    return xsflib::testing::Summary("wii_programs");
+    return xsflib::testing::RunTest("wii_programs",
+                                    []
+                                    {
+                                        TestSlots();
+                                        TestFirstSlot();
+                                        TestValues();
+                                        TestFlow();
+                                    });
 }

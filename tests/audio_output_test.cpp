@@ -132,11 +132,7 @@ void TestSuspendAndResume(const std::filesystem::path& path)
     SEQLIB_CHECK(xsflib::ReadFile(path, bytes));
     std::vector<float> out(bytes.size() / sizeof(float));
     std::memcpy(out.data(), bytes.data(), out.size() * sizeof(float));
-    SEQLIB_CHECK(out.size() >= (kLookAheadFrames + frames) * 2);
-    if (out.size() < (kLookAheadFrames + frames) * 2)
-    {
-        return;
-    }
+    SEQLIB_REQUIRE(out.size() >= (kLookAheadFrames + frames) * 2);
     std::size_t silent = 0;
     while (silent < kLookAheadFrames * 2 && out[silent] == 0.0f)
     {
@@ -233,22 +229,27 @@ void TestOpenAfterFailure(const std::filesystem::path& path)
 
 int main()
 {
-    // SDL3's disk driver writes the device's frames to a file in the system's temporary folder. The test sets the
-    // driver before SDL3 starts, and no other driver opens.
-    const std::filesystem::path path = std::filesystem::temp_directory_path() /
-                                       ("hokuto_audio_output_test_" + std::to_string(std::random_device{}()) + ".raw");
+    return xsflib::testing::RunTest(
+        "audio_output",
+        []
+        {
+            // SDL3's disk driver writes the device's frames to a file in the system's temporary folder. The test sets
+            // the driver before SDL3 starts, and no other driver opens.
+            const std::filesystem::path path =
+                std::filesystem::temp_directory_path() /
+                ("hokuto_audio_output_test_" + std::to_string(std::random_device{}()) + ".raw");
 
-    // The disk driver announces itself in SDL3's log as a critical message. The test's output leaves the log out.
-    SDL_SetLogOutputFunction([](void*, int, SDL_LogPriority, const char*) {}, nullptr);
-    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "disk");
-    WriteTo(path);
-    SEQLIB_CHECK(SDL_Init(SDL_INIT_AUDIO));
-    TestSuspendAndResume(path);
-    TestRestAtOtherRates();
-    TestOpenAfterFailure(path);
-    SDL_Quit();
-    std::error_code error;
-    std::filesystem::remove(path, error);
-
-    return xsflib::testing::Summary("audio_output");
+            // The disk driver announces itself in SDL3's log as a critical message. The test's output leaves the log
+            // out.
+            SDL_SetLogOutputFunction([](void*, int, SDL_LogPriority, const char*) {}, nullptr);
+            SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "disk");
+            WriteTo(path);
+            SEQLIB_CHECK(SDL_Init(SDL_INIT_AUDIO));
+            TestSuspendAndResume(path);
+            TestRestAtOtherRates();
+            TestOpenAfterFailure(path);
+            SDL_Quit();
+            std::error_code error;
+            std::filesystem::remove(path, error);
+        });
 }

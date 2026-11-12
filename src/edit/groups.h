@@ -104,4 +104,9 @@ std::vector<GroupOption> GroupOptions(std::span<const Group> groups, std::span<c
 format::File JoinGroups(const format::File& file, std::span<const uint32_t> groups, std::span<const uint32_t> items,
                         std::span<const uint32_t> before, std::span<const std::string> new_groups = {});
 
+// The files of `needed` that a group with the files `held` gains: those missing from `held`, each once. A group that
+// loads the old item or the model, the first file of `before`, gains only those missing from `before`.
+std::vector<uint32_t> Taken(std::span<const uint32_t> needed, std::span<const uint32_t> held,
+                            std::span<const uint32_t> before);
+
 } // namespace hokuto::edit

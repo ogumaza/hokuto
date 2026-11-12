@@ -28,6 +28,7 @@ struct Action
     std::shared_ptr<const format::File> file; // the file after the edit
 };
 
+// The actions of one file, and how many of them are done.
 class History
 {
 public:

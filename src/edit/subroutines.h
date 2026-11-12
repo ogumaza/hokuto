@@ -31,6 +31,7 @@
 
 #include "edit/bytecode.h"
 #include "format/file.h"
+#include "song/archive.h"
 
 namespace hokuto::edit
 {
@@ -61,6 +62,10 @@ Edited RemoveLabel(const format::File& file, uint32_t sequence, const std::strin
 
 // The calls of `commands` that go to item `item`, by their items.
 std::vector<uint32_t> CallsTo(const ntdlib::commands::Sequence& commands, uint32_t item);
+
+// Why the edits of calls and subroutines can't change the commands of `console`, or nothing where they can. The GBA's
+// drivers other than MusicPlayer2000 and DSE refuse them.
+std::optional<std::string> SubroutinesRefused(const song::Console& console);
 
 // The file after the commands at the offsets `selected` of sequence `sequence` of `file` become a subroutine named
 // `name`, with a call to it in their place. The commands follow each other in the bytecode. `depth` counts the calls

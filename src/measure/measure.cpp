@@ -71,71 +71,15 @@ double EndOf(const song::Sequence& sequence)
     return song::MsOfTick(sequence, sequence.length) / 1000.0 + (sequence.loop ? 0.0 : kTailSeconds);
 }
 
-// The renders of an export to another console: `source`, the sequence's dry render, and `target`, the export's, both to
-// `end` or kMostSeconds. The renders compare at the higher of the two rates. What the lower rate can't hold then
-// counts.
-Renders Joined(song::DryRender source, song::DryRender target, double end)
-{
-    const int rate = std::max(source.rate, target.rate);
-    source = song::AtRate(source, rate);
-    target = song::AtRate(target, rate);
-
-    return {std::move(target.samples), std::move(source.samples), end > kMostSeconds, rate};
-}
-
-// Joined with the dry render of `target_sequence` of `target_archive` in `target_mixing`, or nothing once `cancel` is
-// set.
-Renders AgainstTarget(song::DryRender source, double end,
-                      std::shared_ptr<const ntdlib::sar::SoundArchive> target_archive,
-                      std::shared_ptr<const song::Sequence> target_sequence, song::Mixing target_mixing,
-                      const std::atomic<bool>& cancel)
-{
-    if (cancel.load(std::memory_order_relaxed))
-    {
-        return {};
-    }
-
-    song::DryRender target = song::RenderDry(std::move(target_archive), std::move(target_sequence), target_mixing,
-                                             std::min(end, kMostSeconds), cancel);
-    if (cancel.load(std::memory_order_relaxed))
-    {
-        return {};
-    }
-
-    return Joined(std::move(source), std::move(target), end);
-}
-
-// The same with `target_sequence` of the Wii's `target_archive`.
-Renders AgainstTarget(song::DryRender source, double end,
-                      std::shared_ptr<const ntdlib::rsar::SoundArchive> target_archive,
-                      std::shared_ptr<const song::Sequence> target_sequence, const std::atomic<bool>& cancel)
-{
-    if (cancel.load(std::memory_order_relaxed))
-    {
-        return {};
-    }
-
-    song::DryRender target =
-        song::RenderDry(std::move(target_archive), std::move(target_sequence), std::min(end, kMostSeconds), cancel);
-    if (cancel.load(std::memory_order_relaxed))
-    {
-        return {};
-    }
-
-    return Joined(std::move(source), std::move(target), end);
-}
-
 } // namespace
 
 Renders RenderExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                     std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                     std::shared_ptr<const song::Sequence> sequence, song::Mixing mixing,
-                     const std::atomic<bool>& cancel)
+                     const song::DrySource& source, const std::atomic<bool>& cancel)
 {
     // The model renders first. The synth then renders at the model's rate.
-    const double end = ExportSeconds(conversion, *sequence);
+    const double end = ExportSeconds(conversion, *source.sequence);
     const double seconds = std::min(end, kMostSeconds);
-    song::DryRender model = song::RenderDry(std::move(archive), std::move(sequence), mixing, seconds, cancel);
+    song::DryRender model = source.render(seconds, cancel);
     if (cancel.load(std::memory_order_relaxed))
     {
         return {};
@@ -148,85 +92,35 @@ Renders RenderExport(const ntdlib::sequence_export::Conversion& conversion, Inst
     }
     if (exported.rate != model.rate)
     {
-        throw std::runtime_error("The synth didn't render at the model's rate.");
+        throw std::runtime_error("The synth rendered at the wrong sample rate.");
     }
 
     return {std::move(exported.samples), std::move(model.samples), end > kMostSeconds, model.rate};
 }
 
-Renders RenderExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                     std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                     std::shared_ptr<const song::Sequence> sequence, const std::atomic<bool>& cancel)
+Renders RenderOtherConsole(const song::DrySource& source, const song::DrySource& target,
+                           const std::atomic<bool>& cancel)
 {
-    // The model renders first. The synth then renders at the model's rate.
-    const double end = ExportSeconds(conversion, *sequence);
+    const double end = EndOf(*source.sequence);
     const double seconds = std::min(end, kMostSeconds);
-    song::DryRender model = song::RenderDry(std::move(archive), std::move(sequence), seconds, cancel);
+    song::DryRender rendered = source.render(seconds, cancel);
     if (cancel.load(std::memory_order_relaxed))
     {
         return {};
     }
 
-    synth::StereoRender exported = RenderMidi(conversion, instruments, model.rate, seconds, cancel);
+    song::DryRender exported = target.render(seconds, cancel);
     if (cancel.load(std::memory_order_relaxed))
     {
         return {};
     }
-    if (exported.rate != model.rate)
-    {
-        throw std::runtime_error("The synth didn't render at the Wii's rate.");
-    }
 
-    return {std::move(exported.samples), std::move(model.samples), end > kMostSeconds, model.rate};
-}
+    // The renders compare at the higher of the two rates. What the lower rate can't hold then counts.
+    const int rate = std::max(rendered.rate, exported.rate);
+    rendered = song::AtRate(rendered, rate);
+    exported = song::AtRate(exported, rate);
 
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::sar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, song::Mixing mixing,
-                           song::Mixing target_mixing, const std::atomic<bool>& cancel)
-{
-    const double end = EndOf(*sequence);
-    song::DryRender source =
-        song::RenderDry(std::move(archive), std::move(sequence), mixing, std::min(end, kMostSeconds), cancel);
-    return AgainstTarget(std::move(source), end, std::move(target_archive), std::move(target_sequence), target_mixing,
-                         cancel);
-}
-
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::sar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, song::Mixing target_mixing,
-                           const std::atomic<bool>& cancel)
-{
-    const double end = EndOf(*sequence);
-    song::DryRender source =
-        song::RenderDry(std::move(archive), std::move(sequence), std::min(end, kMostSeconds), cancel);
-    return AgainstTarget(std::move(source), end, std::move(target_archive), std::move(target_sequence), target_mixing,
-                         cancel);
-}
-
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::rsar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, song::Mixing mixing,
-                           const std::atomic<bool>& cancel)
-{
-    const double end = EndOf(*sequence);
-    song::DryRender source =
-        song::RenderDry(std::move(archive), std::move(sequence), mixing, std::min(end, kMostSeconds), cancel);
-    return AgainstTarget(std::move(source), end, std::move(target_archive), std::move(target_sequence), cancel);
-}
-
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::rsar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, const std::atomic<bool>& cancel)
-{
-    const double end = EndOf(*sequence);
-    song::DryRender source =
-        song::RenderDry(std::move(archive), std::move(sequence), std::min(end, kMostSeconds), cancel);
-    return AgainstTarget(std::move(source), end, std::move(target_archive), std::move(target_sequence), cancel);
+    return {std::move(exported.samples), std::move(rendered.samples), end > kMostSeconds, rate};
 }
 
 Measure MeasureRenders(const Renders& renders)
@@ -252,25 +146,9 @@ Measure MeasureRenders(const Renders& renders)
 }
 
 Measure MeasureExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                      std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                      std::shared_ptr<const song::Sequence> sequence, song::Mixing mixing,
-                      const std::atomic<bool>& cancel)
+                      const song::DrySource& source, const std::atomic<bool>& cancel)
 {
-    const Renders renders =
-        RenderExport(conversion, instruments, std::move(archive), std::move(sequence), mixing, cancel);
-    if (cancel.load(std::memory_order_relaxed))
-    {
-        return {};
-    }
-
-    return MeasureRenders(renders);
-}
-
-Measure MeasureExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                      std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                      std::shared_ptr<const song::Sequence> sequence, const std::atomic<bool>& cancel)
-{
-    const Renders renders = RenderExport(conversion, instruments, std::move(archive), std::move(sequence), cancel);
+    const Renders renders = RenderExport(conversion, instruments, source, cancel);
     if (cancel.load(std::memory_order_relaxed))
     {
         return {};

@@ -13,6 +13,7 @@
 #include "ntdlib/sound_build.h"
 
 #include "format/file.h"
+#include "song/driver.h"
 
 namespace hokuto::edit
 {
@@ -31,6 +32,11 @@ std::size_t MostLengthThreads();
 // model can't play gets no lengths. Returns nothing once `progress` stops the measure.
 std::optional<format::File> WithLengths(const format::File& file, const ntdlib::sar::SoundArchive& archive,
                                         std::size_t threads, const LengthProgress& progress = {});
+
+// The same for a file of a ROM with one of the other GBA drivers, such as the driver of Konami. `rom` is the ROM that
+// the file builds.
+std::optional<format::File> WithLengths(const format::File& file, const song::DriverRom& rom, std::size_t threads,
+                                        const LengthProgress& progress = {});
 
 // The same for a file of the Wii. `archive` is the archive that the file builds, read by
 // ntdlib::rvl::snd::kRsarOptions, and each sound plays on the model of `build` of NW4R SND (format::BuildOfWiiArchive).

@@ -9,13 +9,12 @@
 #include <span>
 #include <utility>
 
+#include "song/pcm.h"
+
 namespace hokuto::song
 {
 namespace
 {
-
-// The scale of a meter's peak in 16-bit samples: full scale becomes 1.
-constexpr float kSampleScale = 1.0f / 32768.0f;
 
 // How far float `i` of a frame of `floats` floats lies through the frame, from 0 to just under 1. The fades follow it
 // in a straight line.
@@ -86,9 +85,11 @@ bool PlaybackClock::Ended() const
 
 std::optional<double> PlaybackClock::PositionAt(uint64_t sample) const
 {
+    // As in PeaksBetween, the frames after the oldest one in the ring are safe to read.
     const uint64_t marked = marked_.load(std::memory_order_acquire);
+    const uint64_t oldest = marked >= kMarks ? marked - kMarks + 1 : 0;
     const uint64_t frame = sample / frame_samples_;
-    if (sample >= Written() || frame >= marked)
+    if (sample >= Written() || frame >= marked || frame < oldest)
     {
         return std::nullopt;
     }
@@ -428,6 +429,7 @@ bool SequencePlayer::Silence(const PlaybackClock::CycleRange& cycle, CycleMode m
         ended_ = true;
         return false;
     }
+
     if (silent_ticks_ >= CycleEnd(cycle))
     {
         silent_ = false;
@@ -507,6 +509,7 @@ std::span<const float> SequencePlayer::ModelFrame()
     {
         resampler_.emplace(from, to);
     }
+
     resampled_.resize(frame_.size());
     resampler_->Process(samples, resampled_);
 
@@ -523,12 +526,15 @@ void SequencePlayer::TakeFrame(double position, bool fade_in, bool fade_out)
         {
             sample *= Through(i, frame_.size());
         }
+
         if (fade_out)
         {
             sample *= 1.0f - Through(i, frame_.size());
         }
+
         frame_[i] = sample;
     }
+
     frame_read_ = 0;
 
     // The meters show a frame that fades in or out at its level before the fade.
@@ -543,10 +549,12 @@ void SequencePlayer::TakeFrame(double position, bool fade_in, bool fade_out)
     {
         peaks.tracks[static_cast<std::size_t>(track)] = scaled(model_->TrackPeaks(track));
     }
+
     for (std::size_t bus = 0; bus < kAuxBuses; bus++)
     {
         peaks.buses[bus] = scaled(model_->BusPeaks(static_cast<int>(bus)));
     }
+
     clock_->Mark(frames_, position, peaks, model_->Variables());
     clock_->SetModelFrames(model_->Frames());
     clock_->SetModelTicks(model_->After());

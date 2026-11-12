@@ -4,11 +4,42 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <system_error>
+#include <utility>
 
 #include "xsflib/files.h"
 
 namespace hokuto::app
 {
+namespace
+{
+
+// `path` with its symbolic links resolved and its "." and ".." steps gone. The links resolve in the part of the path
+// that exists. Where the file system can't resolve the path, only the steps go.
+std::filesystem::path CanonicalOf(const std::string& path)
+{
+    const std::filesystem::path given = xsflib::PathFromUtf8(path);
+    std::error_code error;
+    const std::filesystem::path canonical = std::filesystem::weakly_canonical(given, error);
+
+    return error ? given.lexically_normal() : canonical;
+}
+
+// `list` without the paths of the file that `path` names.
+std::vector<std::string> WithoutFile(std::vector<std::string> list, const std::string& path)
+{
+    const std::filesystem::path file = CanonicalOf(path);
+    std::erase_if(list, [&file](const std::string& listed) { return CanonicalOf(listed) == file; });
+
+    return list;
+}
+
+} // namespace
+
+bool SameProject(const std::string& a, const std::string& b)
+{
+    return a == b || CanonicalOf(a) == CanonicalOf(b);
+}
 
 std::vector<std::string> WithRecentProject(std::vector<std::string> list, const std::string& path)
 {
@@ -17,7 +48,7 @@ std::vector<std::string> WithRecentProject(std::vector<std::string> list, const 
         return list;
     }
 
-    std::erase(list, path);
+    list = WithoutFile(std::move(list), path);
     list.insert(list.begin(), path);
     if (list.size() > kMostRecentProjects)
     {
@@ -29,9 +60,7 @@ std::vector<std::string> WithRecentProject(std::vector<std::string> list, const 
 
 std::vector<std::string> WithoutRecentProject(std::vector<std::string> list, const std::string& path)
 {
-    std::erase(list, path);
-
-    return list;
+    return WithoutFile(std::move(list), path);
 }
 
 std::vector<std::string> RecentProjectTitles(const std::vector<std::string>& list)

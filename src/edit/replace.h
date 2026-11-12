@@ -39,6 +39,7 @@
 
 #include "format/file.h"
 #include "song/archive.h"
+#include "song/driver.h"
 
 namespace hokuto::edit
 {
@@ -47,7 +48,8 @@ namespace hokuto::edit
 // in bytes. `wii` marks commands for an archive of the Wii, by the rules of its build of NW4R SND. They come from a
 // sequence file of the Wii (RSEQ), and `flavor` then means nothing. With `converted`, they come from a sequence file of
 // `flavor`, converted as NW4R SND reads its commands (WiiCommandsOf). `warnings` says what a conversion changed: for
-// the Wii, or in the biquad filters of a file of another console.
+// the Wii, or in the biquad filters of a file of another console. With `midi`, the commands come from a MIDI file
+// (edit/midi_imports.h), `flavor` is the flavor of the archive, and `warnings` also says what the song leaves out.
 struct Incoming
 {
     ntdlib::sar::Flavor flavor = ntdlib::sar::Flavor::kNx;
@@ -55,6 +57,7 @@ struct Incoming
     std::size_t size = 0;
     bool wii = false;
     bool converted = false;
+    bool midi = false;
     std::vector<std::string> warnings;
 };
 
@@ -116,11 +119,17 @@ ntdlib::commands::Sequence WithPrograms(const ntdlib::commands::Sequence& sequen
 uint32_t TracksOpened(const ntdlib::commands::Sequence& sequence, uint32_t start);
 
 // Where a sequence sound plays in a file: its sequence, and the field of the native layout that holds its start, or
-// nothing for a sound whose entry leaves the start out.
+// nothing for a sound whose entry leaves the start out. A song of a GBA ROM has no start. The fields of its header
+// start its tracks. Its music player plays `player_tracks` of them at most, or 16 for 0. On a driver whose sequence
+// starts with a table of the starts of its tracks, such as Nintendo R&D2's driver, `track_entries` contains the entries
+// of the table that start the tracks of the sound (song::SoundFields::entries).
 struct SoundPlace
 {
     uint32_t sequence = 0;
     std::optional<uint32_t> start_field;
+    std::vector<uint32_t> track_fields;  // on the GBA, the fields that start the song's tracks
+    uint32_t player_tracks = 0;          // on the GBA, the most tracks that the song's music player plays
+    std::vector<int> track_entries = {}; // on some of the GBA's other drivers, the entries that start the tracks
 };
 
 // Where each sound of `archive` plays in a file, by its place in the sound table. `sequences` gives the file's sequence
@@ -135,6 +144,27 @@ std::vector<std::optional<SoundPlace>> SoundPlaces(const ntdlib::sar::SoundArchi
 std::vector<std::optional<SoundPlace>> SoundPlaces(const ntdlib::rsar::SoundArchive& archive,
                                                    std::span<const std::optional<uint32_t>> sequences,
                                                    std::span<const std::optional<uint32_t>> start_fields);
+
+// Where each song of a GBA ROM plays in a file, by its number in the song table. `sequences` contains each song's
+// sequence (format::GbaSongSequence), `track_fields` the fields of its header that start its tracks
+// (format::GbaTrackFields), and `player_tracks` the most tracks that its music player plays (song::GbaPlayerTracks). No
+// field contains the start of a song.
+std::vector<std::optional<SoundPlace>> GbaSoundPlaces(std::span<const std::optional<uint32_t>> sequences,
+                                                      std::span<const std::vector<uint32_t>> track_fields,
+                                                      std::span<const uint32_t> player_tracks = {});
+
+// Where each sound of `rom`, a ROM of another of the GBA's drivers, plays in `file`, the file of the ROM, by its
+// number. `sequences` contains each sound's sequence: the one that the field of its sequence names
+// (format::SequenceNamedAt). The fields of the song table that start its tracks make up `track_fields`, and the entries
+// of the table of tracks of its sequence make up `track_entries`. Where the field of a sound's sequence names the
+// sound's start in it (song::SoundFields::starts), that field is `start_field`.
+std::vector<std::optional<SoundPlace>> DriverSoundPlaces(const format::File& file, const song::DriverRom& rom,
+                                                         std::span<const std::optional<uint32_t>> sequences);
+
+// Where each sound of a DS sound archive or of a set of DSE's files plays in a file, by its number (song::DsSounds and
+// song::DseSounds). `sequences` contains each sound's sequence (format::DsSoundSequences and
+// format::DseSoundSequences). A sound starts where its sequence starts, and no field contains its start.
+std::vector<std::optional<SoundPlace>> DsSoundPlaces(std::span<const std::optional<uint32_t>> sequences);
 
 // The sounds that a replacement of sound `sound`'s sequence changes besides it, by their places in the sound table: the
 // other sounds that start where it starts in a file of other sounds, without a start in their entries. Nothing in the
@@ -167,6 +197,9 @@ std::vector<StartingSound> SoundStarts(const format::File& file, std::span<const
 // std::invalid_argument with a message for the user for a sound that plays no sequence of the file.
 uint32_t TracksToAdd(const format::File& file, std::span<const std::optional<SoundPlace>> places, uint32_t sound,
                      const ntdlib::commands::Sequence& incoming, uint32_t start);
+
+// A sound's bank slots.
+inline constexpr int kBankSlots = 4;
 
 // Throws std::invalid_argument with a message for the user for more than four bank slots, and for a slot that holds
 // neither a bank of `tables` nor 0xFFFFFFFF.

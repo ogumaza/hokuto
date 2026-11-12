@@ -44,6 +44,7 @@ std::size_t TestTone::Render(float* out, std::size_t frames)
         out[i * 2] = sample;
         out[i * 2 + 1] = sample;
     }
+
     position_ += n;
 
     return n;

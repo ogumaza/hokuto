@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,9 +22,11 @@
 
 #include "app/key_edits.h"
 #include "app/theme.h"
+#include "app/time_text.h"
 #include "app/views.h"
 #include "app/widgets.h"
 #include "song/archive.h"
+#include "song/driver.h"
 
 namespace hokuto::app
 {
@@ -34,12 +37,10 @@ using ntdlib::commands::Kind;
 using theme::Px;
 
 // The editor's sizes, before the display's scale.
-constexpr float kToolbarHeight = 40.0f;
 constexpr float kHeaderHeight = 26.0f;
 constexpr float kRowHeight = 24.0f;
 constexpr float kMargin = 10.0f;
 constexpr float kIndent = 14.0f;
-constexpr float kToolSize = 28.0f;
 constexpr float kLeastComment = 120.0f;
 
 // The payload of a label's row that a drag carries: the row's index.
@@ -121,7 +122,7 @@ void SelectRow(const ListTrack& track, ListEditorState& state, std::size_t index
 // The tooltip of a kind of command that the player of the file's console skips.
 std::string SkippedKindText(const ListTrack& track)
 {
-    return "The " + track.file_engine_name + "'s player skips this kind of command.";
+    return "This kind of command is ignored" + IgnoredOn(track.file_engine_name) + ".";
 }
 
 // The menus of the kinds of command, a menu for each group. The kinds that the player of the track's console skips show
@@ -155,21 +156,6 @@ std::optional<Kind> KindMenus(bool enabled, const ListTrack& track)
     return chosen;
 }
 
-// Places the next control of the toolbar at `x`, in the middle of the bar's height.
-void PlaceInToolbar(float x, float top, float height)
-{
-    ImGui::SetCursorScreenPos(ImVec2(x, top + (Px(kToolbarHeight) - height) * 0.5f));
-}
-
-// Draws a label in capitals at `x` in the middle of the toolbar, and returns the place after it.
-float ToolbarCaps(ImDrawList* draw, float x, float top, const char* label)
-{
-    const ImVec2 caps = CapsSize(label);
-    DrawCaps(draw, ImVec2(x, top + (Px(kToolbarHeight) - caps.y) * 0.5f), theme::kTextMuted, label);
-
-    return x + caps.x + Px(8.0f);
-}
-
 // Draws the name of the subroutine that the editor shows by itself, and the menu of its runs. Returns the place after
 // them.
 float DrawSubroutineTools(const ListTrack& track, ListEditorState& state, ImDrawList* draw, ImVec2 origin)
@@ -177,8 +163,9 @@ float DrawSubroutineTools(const ListTrack& track, ListEditorState& state, ImDraw
     const ListSubroutine& subroutine = *track.subroutine;
     float x = ToolbarCaps(draw, origin.x + Px(14.0f), origin.y, "SUBROUTINE");
     ImFont* text = theme::GetFonts().text;
-    const std::string name = FitText(text, theme::kTextSize,
-                                     subroutine.name.empty() ? std::string("Subroutine") : subroutine.name, Px(200.0f));
+    // Like the targets of the calls, a subroutine without a label shows its offset.
+    const std::string name = FitText(
+        text, theme::kTextSize, subroutine.name.empty() ? OffsetText(subroutine.first) : subroutine.name, Px(200.0f));
     const ImVec2 size = TextSize(text, theme::kTextSize, name);
     DrawText(draw, text, theme::kTextSize, ImVec2(x, origin.y + (Px(kToolbarHeight) - size.y) * 0.5f), theme::kText,
              name);
@@ -213,66 +200,52 @@ float DrawSubroutineTools(const ListTrack& track, ListEditorState& state, ImDraw
     return x + Px(190.0f) + Px(20.0f);
 }
 
-// The toolbar: the track that the editor shows, and the kind of command that Insert adds, with the Insert button. A
-// subroutine that the editor shows by itself takes the track's place, with a menu of its runs, and Show Track at the
-// bar's right end. Returns the edit of a click on Insert.
-std::optional<ListEdit> DrawToolbar(const ListTrack& track, ListEditorState& state, bool busy)
+// The menu of the tracks that ran commands, at the left of the toolbar at `origin`. Returns the left edge of the next
+// control.
+float DrawTrackCombo(const ListTrack& track, ListEditorState& state, ImDrawList* draw, ImVec2 origin)
 {
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float bottom = origin.y + Px(kToolbarHeight);
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilled(origin, ImVec2(origin.x + width, bottom), theme::kRaised);
-    draw->AddRectFilled(ImVec2(origin.x, bottom - Px(1.0f)), ImVec2(origin.x + width, bottom), theme::kBorder);
-
-    // The tracks that ran commands, with notes or without.
-    float x = 0.0f;
-    if (track.subroutine)
-    {
-        x = DrawSubroutineTools(track, state, draw, origin);
-    }
-    else
-    {
-        x = ToolbarCaps(draw, origin.x + Px(14.0f), origin.y, "TRACK");
-        PlaceInToolbar(x, origin.y, ImGui::GetFrameHeight());
-        ImGui::SetNextItemWidth(Px(110.0f));
-        const std::string shown = "Track " + std::to_string(track.number);
-        if (ImGui::BeginCombo("##track", shown.c_str()))
-        {
-            for (const int number : track.tracks)
-            {
-                const std::string name = "Track " + std::to_string(number);
-                if (ImGui::Selectable(name.c_str(), number == track.number) && number != track.number)
-                {
-                    state.chosen_track = number;
-                }
-            }
-            ImGui::EndCombo();
-        }
-        x += Px(110.0f) + Px(20.0f);
-    }
-
-    // The kind of command that Insert adds. A kind that the track's console skips, chosen for another file, gives way
-    // to the volume. Every console runs the volume.
-    if (!song::Runs(track.console, state.insert_kind, 0))
-    {
-        state.insert_kind = Kind::kVolume;
-    }
-    x = ToolbarCaps(draw, x, origin.y, "INSERT");
+    float x = ToolbarCaps(draw, origin.x + Px(14.0f), origin.y, "TRACK");
     PlaceInToolbar(x, origin.y, ImGui::GetFrameHeight());
+    ImGui::SetNextItemWidth(Px(110.0f));
+    const std::string shown = "Track " + std::to_string(track.number);
+    if (ImGui::BeginCombo("##track", shown.c_str()))
+    {
+        for (const int number : track.tracks)
+        {
+            const std::string name = "Track " + std::to_string(number);
+            if (ImGui::Selectable(name.c_str(), number == track.number) && number != track.number)
+            {
+                state.chosen_track = number;
+            }
+        }
+        ImGui::EndCombo();
+    }
+    x += Px(110.0f) + Px(20.0f);
+
+    return x;
+}
+
+// The menu of the kind of command that Insert adds, at `x` in the toolbar at `top`. A kind that the track's console
+// skips is replaced by another that it runs (InsertKindOn). The choice stays for the next track whose console runs it.
+// Returns the left edge of the menu.
+float DrawInsertCombo(const ListTrack& track, ListEditorState& state, ImDrawList* draw, float x, float top)
+{
+    const Kind shown = InsertKindOn(track.console, state.insert_kind);
+    x = ToolbarCaps(draw, x, top, "INSERT");
+    PlaceInToolbar(x, top, ImGui::GetFrameHeight());
     ImGui::SetNextItemWidth(Px(170.0f));
-    const std::string kind(KindName(state.insert_kind));
+    const std::string kind(KindName(shown));
     if (ImGui::BeginCombo("##insert", kind.c_str(), ImGuiComboFlags_HeightLargest))
     {
         for (const KindGroup& group : InsertGroups())
         {
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::kTextMuted), "%s", group.name);
+            MutedText(group.name);
             ImGui::Indent(Px(10.0f));
             for (const Kind choice : group.kinds)
             {
                 const std::string name(KindName(choice));
                 const bool runs = song::Runs(track.console, choice, 0);
-                if (ImGui::Selectable(name.c_str(), choice == state.insert_kind,
+                if (ImGui::Selectable(name.c_str(), choice == shown,
                                       runs ? ImGuiSelectableFlags_None : ImGuiSelectableFlags_Disabled))
                 {
                     state.insert_kind = choice;
@@ -287,32 +260,13 @@ std::optional<ListEdit> DrawToolbar(const ListTrack& track, ListEditorState& sta
         ImGui::EndCombo();
     }
 
-    // Insert puts the command before the first selected row, or before the last row.
-    x += Px(170.0f) + Px(6.0f);
-    const ImVec2 button(Px(kToolSize), Px(kToolSize));
-    PlaceInToolbar(x, origin.y, button.y);
-    std::optional<ListEdit> edit;
-    if (IconButton("##add", Icon::kAdd, button, false, 0, "Insert") && !busy)
-    {
-        edit = InsertEdit(track, FirstSelected(track, state), state.insert_kind);
-    }
+    return x;
+}
 
-    // Show Track, at the bar's right end in a subroutine's view. In a narrow zone, it follows Insert instead.
-    float right = origin.x + width - Px(14.0f);
-    if (track.subroutine)
-    {
-        const char* label = "Show Track";
-        const float button_width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
-        right = std::max(right - button_width, x + button.x + Px(20.0f));
-        PlaceInToolbar(right, origin.y, ImGui::GetFrameHeight());
-        if (ImGui::Button(label))
-        {
-            state.close_subroutine = true;
-        }
-        right -= Px(14.0f);
-    }
-
-    // The number of commands, and of the calls that go to a subroutine that the editor shows by itself.
+// The number of commands of `track`, and of the calls to a subroutine that the editor shows, in the toolbar at
+// `origin` between the Insert button at `x` and `right`.
+void DrawCommandCount(const ListTrack& track, ImDrawList* draw, ImVec2 origin, float x, ImVec2 button, float right)
+{
     std::size_t commands = 0;
     for (const ListRow& row : track.rows)
     {
@@ -346,8 +300,62 @@ std::optional<ListEdit> DrawToolbar(const ListTrack& track, ListEditorState& sta
             ItemTooltip(tooltip);
         }
     }
+}
 
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, bottom));
+// The toolbar: the track that the editor shows, and the kind of command that Insert adds, with the Insert button. A
+// subroutine that the editor shows by itself takes the track's place, with a menu of its runs, and Show Track at the
+// bar's right end. Returns the edit of a click on Insert.
+std::optional<ListEdit> DrawToolbar(const ListTrack& track, ListEditorState& state, bool busy)
+{
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const Toolbar bar = BeginToolbar(draw);
+    const ImVec2 origin = bar.origin;
+    const float width = bar.width;
+
+    // The tracks that ran commands, with notes or without.
+    float x = 0.0f;
+    if (track.subroutine)
+    {
+        x = DrawSubroutineTools(track, state, draw, origin);
+    }
+    else
+    {
+        x = DrawTrackCombo(track, state, draw, origin);
+    }
+
+    // The kind of command that Insert adds. A kind that the track's console skips, chosen for another file, gives way
+    // to the volume, or to the first kind that the console runs where it skips the volume.
+    x = DrawInsertCombo(track, state, draw, x, origin.y);
+
+    // Insert puts the command before the first selected row, or before the last row.
+    x += Px(170.0f) + Px(6.0f);
+    const ImVec2 button(Px(kToolSize), Px(kToolSize));
+    PlaceInToolbar(x, origin.y, button.y);
+    std::optional<ListEdit> edit;
+    if (IconButton("##add", Icon::kAdd, button, false, 0, "Insert") && !busy)
+    {
+        edit = InsertEdit(track, FirstSelected(track, state), InsertKindOn(track.console, state.insert_kind));
+    }
+
+    // Show Track, at the bar's right end in a subroutine's view. In a narrow zone, it follows Insert instead.
+    float right = origin.x + width - Px(14.0f);
+    if (track.subroutine)
+    {
+        const char* label = "Show Track";
+        const float button_width = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        right = std::max(right - button_width, x + button.x + Px(20.0f));
+        PlaceInToolbar(right, origin.y, ImGui::GetFrameHeight());
+        if (ImGui::Button(label))
+        {
+            state.close_subroutine = true;
+        }
+        right -= Px(14.0f);
+    }
+
+    // The number of commands, and of the calls that go to a subroutine that the editor shows by itself.
+    DrawCommandCount(track, draw, origin, x, button, right);
+
+    EndToolbar(bar);
 
     return edit;
 }
@@ -527,8 +535,8 @@ std::optional<std::string> DrawTyping(ListEditorState& state, float top,
 
 // The tooltip of the menu items that a timeline's labels and subroutines don't take.
 constexpr const char* kTimelineOnly =
-    "A timeline's labels and subroutines come from the converter. Program in the inspector's Sequence section lets "
-    "the sequence take this edit.";
+    "In a timeline, the converter creates the labels and subroutines. To make this edit, switch the sequence to "
+    "Program in the Sequence section of the inspector.";
 
 // Asks the program to show the subroutine at offset `first` by itself, from the run `run` or else from its first run.
 void OpenSubroutine(ListEditorState& state, uint32_t first, std::optional<ListCall> run)
@@ -555,8 +563,8 @@ std::optional<ListEdit> DrawLabelMenu(const ListTrack& track, ListEditorState& s
     {
         OpenSubroutine(state, row.row.command, std::nullopt);
     }
-    ItemTooltip(runs ? "Shows the subroutine at the label by itself, with its calls."
-                     : "No call of the shown sound goes to the label.");
+    ItemTooltip(runs ? "Show the subroutine at this label on its own, with its calls."
+                     : "No call in this sound goes to this label.");
 
     ImGui::Separator();
     if (ImGui::MenuItem("Delete Label", nullptr, false, !busy && !track.timeline))
@@ -571,14 +579,33 @@ std::optional<ListEdit> DrawLabelMenu(const ListTrack& track, ListEditorState& s
     return edit;
 }
 
+// Why the edits of calls and subroutines can't change `track`'s commands, or nothing where they can. The GBA's drivers
+// other than MP2K and DSE refuse them (edit::ToSubroutine).
+std::optional<std::string> SubroutinesRefused(const ListTrack& track)
+{
+    if (track.console.driver != nullptr)
+    {
+        return "Hokuto doesn't support editing calls or subroutines in songs of " +
+               std::string(track.console.driver->Title()) + ".";
+    }
+    if (track.console.engine == format::Engine::kDse)
+    {
+        return "DSE tracks have no calls or subroutines.";
+    }
+
+    return std::nullopt;
+}
+
 // The items of a row's context menu that edit labels and subroutines: Insert Label, Convert to Subroutine, and for a
-// call Open Subroutine, Dissolve Call and Convert to Real Copy. Returns the edit that the user chose.
+// call Open Subroutine, Dissolve Call and Convert to Real Copy. An engine that refuses the edits of subroutines shows
+// them grey, with the reason in their tooltips. Returns the edit that the user chose.
 std::optional<ListEdit> DrawSubroutineItems(const ListTrack& track, ListEditorState& state, bool busy,
                                             std::size_t index)
 {
     std::optional<ListEdit> edit;
     const ListRow& row = track.rows[index];
     const bool program = !busy && !track.timeline;
+    const std::optional<std::string> refused = SubroutinesRefused(track);
     if (ImGui::MenuItem("Insert Label", nullptr, false, program))
     {
         edit = LabelEdit(track, index);
@@ -587,13 +614,14 @@ std::optional<ListEdit> DrawSubroutineItems(const ListTrack& track, ListEditorSt
     {
         ItemTooltip(kTimelineOnly);
     }
-    if (ImGui::MenuItem("Convert to Subroutine", nullptr, false, program))
+    if (ImGui::MenuItem("Convert to Subroutine", nullptr, false, program && !refused))
     {
         edit = SubroutineEdit(track, state.selected);
     }
-    ItemTooltip(track.timeline ? kTimelineOnly
-                               : "The selected commands go after the sequence's commands as a "
-                                 "subroutine, with a call in their place.");
+    ItemTooltip(track.timeline ? std::string(kTimelineOnly)
+                : refused      ? *refused
+                               : "Move the selected commands to a new subroutine at the end of the sequence, and "
+                                 "call it from here.");
     if (row.command.kind != Kind::kCall)
     {
         return edit;
@@ -605,20 +633,51 @@ std::optional<ListEdit> DrawSubroutineItems(const ListTrack& track, ListEditorSt
         const song::Stretch& stretch = track.stretches[*run];
         OpenSubroutine(state, stretch.first, ListCall{track.number, *run, stretch.tick});
     }
-    if (ImGui::MenuItem("Dissolve Call", nullptr, false, program))
+    if (ImGui::MenuItem("Dissolve Call", nullptr, false, program && !refused))
     {
         edit = DissolveEdit(track, index);
     }
-    ItemTooltip(track.timeline ? kTimelineOnly : "A copy of the subroutine's commands takes the call's place.");
-    if (ImGui::MenuItem("Convert to Real Copy", nullptr, false, program))
+    ItemTooltip(track.timeline ? std::string(kTimelineOnly)
+                : refused      ? *refused
+                               : "Replace the call with a copy of the subroutine's commands.");
+    if (ImGui::MenuItem("Convert to Real Copy", nullptr, false, program && !refused))
     {
         edit = RealCopyEdit(track, index);
     }
-    ItemTooltip(track.timeline ? kTimelineOnly
-                               : "The call goes to a copy of its subroutine, which no other call "
-                                 "plays.");
+    ItemTooltip(track.timeline ? std::string(kTimelineOnly)
+                : refused      ? *refused
+                               : "Make the call use a separate copy of the subroutine. Edits to the copy affect "
+                                 "only this call.");
 
     return edit;
+}
+
+// The Go to Target item of the menu of `row`.
+void DrawGoToTarget(const ListTrack& track, ListEditorState& state, const ListRow& row)
+{
+    // Go to Target selects the first row that runs the target. The target of a track start runs on the other track, and
+    // Go to Target shows that track from its start.
+    const uint32_t target = row.command.target;
+    const auto found = std::find_if(track.rows.begin(), track.rows.end(),
+                                    [&](const ListRow& other)
+                                    {
+                                        return !row.command.target_outside && target < track.offsets.size() &&
+                                               other.row.command == track.offsets[target];
+                                    });
+    const int opened = static_cast<int>(row.command.index);
+    const bool other = row.command.kind == Kind::kOpenTrack && found == track.rows.end() &&
+                       std::find(track.tracks.begin(), track.tracks.end(), opened) != track.tracks.end();
+    if (ImGui::MenuItem("Go to Target", nullptr, false, found != track.rows.end() || other))
+    {
+        if (found != track.rows.end())
+        {
+            SelectRow(track, state, static_cast<std::size_t>(found - track.rows.begin()));
+        }
+        else
+        {
+            state.chosen_track = opened;
+        }
+    }
 }
 
 // The context menu of a row: a command to insert before it, its condition, its target, the edits of labels and
@@ -656,37 +715,22 @@ std::optional<ListEdit> DrawRowMenu(const ListTrack& track, ListEditorState& sta
         }
         ImGui::EndMenu();
     }
-    if (ImGui::MenuItem("Condition", nullptr, row.command.conditional, !busy))
+    if (ImGui::MenuItem("Condition", nullptr, row.command.conditional,
+                        !busy && track.console.engine != format::Engine::kGba &&
+                            track.console.engine != format::Engine::kDse && !track.console.driver))
     {
         edit = ConditionEdit(track, index);
     }
-    ItemTooltip("The command runs only if the last comparison held.");
+    ItemTooltip(
+        track.console.engine == format::Engine::kGba   ? "GBA songs have no comparisons. Every command always runs."
+        : track.console.engine == format::Engine::kDse ? "DSE tracks have no comparisons. Every command always runs."
+        : track.console.driver
+            ? std::string(track.console.driver->Title()) + " has no comparisons. Every command always runs."
+            : "Runs the command only if the last comparison was true.");
 
-    // Go to Target selects the first row that runs the target. The target of a track start runs on the other track, and
-    // Go to Target shows that track from its start.
     if (ntdlib::commands::HasTarget(row.command.kind))
     {
-        const uint32_t target = row.command.target;
-        const auto found = std::find_if(track.rows.begin(), track.rows.end(),
-                                        [&](const ListRow& other)
-                                        {
-                                            return !row.command.target_outside && target < track.offsets.size() &&
-                                                   other.row.command == track.offsets[target];
-                                        });
-        const int opened = static_cast<int>(row.command.index);
-        const bool other = row.command.kind == Kind::kOpenTrack && found == track.rows.end() &&
-                           std::find(track.tracks.begin(), track.tracks.end(), opened) != track.tracks.end();
-        if (ImGui::MenuItem("Go to Target", nullptr, false, found != track.rows.end() || other))
-        {
-            if (found != track.rows.end())
-            {
-                SelectRow(track, state, static_cast<std::size_t>(found - track.rows.begin()));
-            }
-            else
-            {
-                state.chosen_track = opened;
-            }
-        }
+        DrawGoToTarget(track, state, row);
     }
 
     ImGui::Separator();
@@ -817,10 +861,242 @@ std::optional<ListEdit> HandleKeys(const ListTrack& track, ListEditorState& stat
     return std::nullopt;
 }
 
+// The index of the first row that runs after `position`, in ticks: the row that the line of the position is above.
+std::size_t PositionLine(const ListTrack& track, double position)
+{
+    std::size_t line = track.rows.size();
+    for (std::size_t i = 0; i < track.rows.size(); i++)
+    {
+        const std::optional<uint32_t> tick = track.rows[i].row.tick;
+        if (tick && static_cast<double>(*tick) > position + 1e-6)
+        {
+            line = i;
+            break;
+        }
+    }
+
+    return line;
+}
+
+// Scrolls the rows to the row to scroll to, or to keep the line of the position at `line_y` in view during playback
+// and after a jump of the position.
+void ScrollRows(const ListTrack& track, ListEditorState& state, const Transport& transport, ImVec2 origin, float line_y)
+{
+    const float row_height = Px(kRowHeight);
+    const float view_top = ImGui::GetWindowPos().y;
+    const float view_height = ImGui::GetWindowHeight();
+    const bool jumped = state.jumps.Jumped(transport);
+    if (state.scroll_row && *state.scroll_row < track.rows.size())
+    {
+        const float y = static_cast<float>(*state.scroll_row) * row_height;
+        ImGui::SetScrollY(std::max(y - view_height / 3.0f, 0.0f));
+        if (!ImGui::GetCurrentWindow()->Hidden)
+        {
+            state.scroll_row.reset();
+        }
+    }
+    else if ((transport.Playing() || jumped) && (line_y < view_top || line_y > view_top + view_height - row_height))
+    {
+        state.scroll_row.reset();
+        ImGui::SetScrollY(std::max(line_y - origin.y - view_height / 3.0f, 0.0f));
+    }
+    else
+    {
+        state.scroll_row.reset();
+    }
+}
+
+// The drag of a label's row, and the drop of a label on the row of command `i`. A drop sets `edit` to the move.
+void DragLabelRow(const ListTrack& track, std::size_t i, bool busy, std::optional<ListEdit>& edit)
+{
+    const ListRow& row = track.rows[i];
+    if (IsLabel(row) && !busy && !track.timeline &&
+        ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip))
+    {
+        ImGui::SetDragDropPayload(kLabelPayload, &i, sizeof(i));
+        WrappedTooltip("Move " + row.label);
+        ImGui::EndDragDropSource();
+    }
+    if (!IsLabel(row) && !busy && ImGui::BeginDragDropTarget())
+    {
+        if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kLabelPayload))
+        {
+            std::size_t label = 0;
+            std::memcpy(&label, payload->Data, sizeof(label));
+            edit = LabelMoveEdit(track, label, i);
+        }
+        ImGui::EndDragDropTarget();
+    }
+}
+
+// The clicks on row `i`, the last item. `column` is the column under the mouse and `typable` whether its value accepts
+// typing. `typing` is whether a field was open. A click that opens a menu sets `menu` to its id.
+void ClickListRow(const ListTrack& track, ListEditorState& state, std::size_t i,
+                  const std::optional<ListColumn>& column, bool typable, bool busy, bool typing, bool selected,
+                  const char*& menu)
+{
+    const ListRow& row = track.rows[i];
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+    {
+        const ImGuiIO& io = ImGui::GetIO();
+        const bool types = typable && !busy && !typing && !io.KeyShift && !io.KeyCtrl &&
+                           (!IsLabel(row) || ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left));
+        if (!IsLabel(row) || !types)
+        {
+            ClickRow(track, state, i);
+        }
+        if (types && NamesTarget(row, *column))
+        {
+            state.target_row = i;
+            menu = "##targets";
+        }
+        else if (types)
+        {
+            StartTyping(track, state, i, *column);
+        }
+    }
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        if (!selected)
+        {
+            SelectRow(track, state, i);
+            state.scroll_row.reset();
+        }
+        state.menu_row = i;
+        menu = "##row";
+    }
+}
+
+// The geometry of the rows: their draw list, the top left of the first row, their width and height, and the edges of
+// the columns.
+struct RowsLayout
+{
+    ImDrawList* draw = nullptr;
+    ImVec2 origin;
+    float width = 0.0f;
+    float row_height = 0.0f;
+    std::array<float, kListColumns + 1> edges{};
+};
+
+// Row `i` at `y`: its background, its drag and drop, its cells and its clicks. A drop sets `edit`, and a click that
+// opens a menu sets `menu` to its id.
+void DrawRow(const ListTrack& track, ListEditorState& state, std::size_t i, float y, const RowsLayout& layout,
+             bool busy, bool typing, std::optional<ListEdit>& edit, const char*& menu)
+{
+    const auto& [draw, origin, width, row_height, edges] = layout;
+
+    // A row that the track entered by its start, a jump, a call, a return or a loop's end has a line above it.
+    const ListRow& row = track.rows[i];
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, y));
+    ImGui::PushID(static_cast<int>(i));
+    ImGui::SetNextItemAllowOverlap();
+    ImGui::InvisibleButton("##row", ImVec2(std::max(width, edges.back() - origin.x), row_height),
+                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+    const bool hovered = ImGui::IsItemHovered();
+    const bool selected = Selected(track, state, i);
+    if (IsLabel(row) && !selected && !hovered)
+    {
+        draw->AddRectFilled(ImVec2(origin.x, y), ImVec2(origin.x + width, y + row_height), theme::kPanelAlt);
+    }
+    if (selected || hovered)
+    {
+        draw->AddRectFilled(ImVec2(origin.x, y), ImVec2(origin.x + width, y + row_height),
+                            selected ? theme::WithAlpha(theme::kAccent, hovered ? 0.3f : 0.22f) : theme::kRaisedHover);
+    }
+
+    // A label's row drags onto the row of the command that the label moves to.
+    DragLabelRow(track, i, busy, edit);
+    if (row.entered && i > 0)
+    {
+        draw->AddRectFilled(ImVec2(origin.x, y), ImVec2(origin.x + width, y + Px(1.0f)), theme::kBorder);
+    }
+
+    // A typable cell under the mouse has a box behind it.
+    const std::optional<ListColumn> column = hovered ? ColumnAt(edges, ImGui::GetIO().MousePos.x) : std::nullopt;
+    const bool typable = column && (NamesTarget(row, *column) || Typable(track, row, *column));
+    if (typable && !busy)
+    {
+        const auto c = static_cast<std::size_t>(*column);
+        draw->AddRectFilled(ImVec2(edges[c] + Px(kMargin) - Px(4.0f), y + Px(2.0f)),
+                            ImVec2(edges[c + 1] - Px(4.0f), y + row_height - Px(2.0f)), theme::kControl, Px(3.0f));
+        ImGui::SetMouseCursor(NamesTarget(row, *column) ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_TextInput);
+    }
+    DrawCells(draw, track, i, y, edges);
+    if (hovered && Skipped(track, row))
+    {
+        ItemTooltip("This command is ignored" + IgnoredOn(SkippingEngine(track, row)) + ".");
+    }
+
+    // A click selects. A click on a command's cell that takes a value also types the value, or opens the menu of
+    // targets: the box under the mouse is the field. A label's row drags, and a double-click types its name. A
+    // click with Shift or Ctrl only selects. A click while a field is open ends the typing first. A right-click
+    // opens the row's context menu.
+    ClickListRow(track, state, i, column, typable, busy, typing, selected, menu);
+    ImGui::PopID();
+}
+
+// The line of the position at `line_y`, with a mark at its left end.
+void DrawPositionLine(ImDrawList* draw, ImVec2 origin, float width, float line_y)
+{
+    draw->AddRectFilled(ImVec2(origin.x, line_y - Px(1.0f)), ImVec2(origin.x + width, line_y + Px(1.0f)),
+                        theme::WithAlpha(theme::kText, 0.85f));
+    draw->AddTriangleFilled(ImVec2(origin.x, line_y - Px(5.0f)), ImVec2(origin.x + Px(7.0f), line_y),
+                            ImVec2(origin.x, line_y + Px(5.0f)), theme::kText);
+}
+
+// Draws the field of the typed value of `state`, with the rows from `top` and the columns at `edges`. Sets `edit` to
+// the edit of the text that the field ends with. While busy, an open field stays open. The text that it ends with waits
+// with its cell until the program is free (WaitingValues). A cell that shows another text by then drops it. So does
+// another version, sound, track or subroutine, and the text of a cell that the track no longer has.
+void TakeTypedCell(const ListTrack& track, ListEditorState& state, float top,
+                   const std::array<float, kListColumns + 1>& edges, const ShownItem& sound, bool busy,
+                   std::optional<ListEdit>& edit)
+{
+    // The item of the cells: the track of `sound`, and the subroutine and its run where the editor shows one. The key
+    // of a cell names its row and its column.
+    const uint64_t first = track.subroutine ? track.subroutine->first : std::numeric_limits<uint64_t>::max();
+    const uint64_t run = track.subroutine ? track.subroutine->shown : 0;
+    const ShownItem item = sound.At({static_cast<uint64_t>(static_cast<int64_t>(track.number)), first, run});
+
+    std::optional<std::pair<std::size_t, ListColumn>> cell;
+    std::optional<std::string> typed;
+    if (state.typing && state.typing->first < track.rows.size())
+    {
+        cell = state.typing;
+        typed = DrawTyping(state, top, edges);
+    }
+    else if (state.waiting_cell && state.waiting_cell->first < track.rows.size())
+    {
+        cell = state.waiting_cell;
+    }
+    if (cell)
+    {
+        const auto [index, column] = *cell;
+        const auto key =
+            static_cast<ImGuiID>(index * std::size_t{kListColumns + 1} + static_cast<std::size_t>(column) + 1);
+        const bool ended = typed.has_value();
+        typed = state.typed_waiting.Pass(item, key, CellText(track, track.rows[index], column), std::move(typed), busy);
+        if (busy && ended)
+        {
+            state.waiting_cell = cell;
+        }
+        if (typed)
+        {
+            edit = TypedListEdit(track, index, column, *typed);
+        }
+    }
+    if (!busy)
+    {
+        state.waiting_cell.reset();
+        state.typed_waiting = {};
+    }
+}
+
 // The rows, in a part of the window that scrolls. Only the rows in view are drawn. A line between two rows marks the
-// transport's position: before the first row that runs after it. During playback, the rows scroll to keep the line in
-// view. Returns the edit of a typed value, a menu or a key.
-std::optional<ListEdit> DrawRows(const ListTrack& track, ListEditorState& state, const Transport& transport, bool busy)
+// transport's position: before the first row that runs after it. During playback and after a jump of the position, the
+// rows scroll to keep the line in view. Returns the edit of a typed value, a menu or a key.
+std::optional<ListEdit> DrawRows(const ListTrack& track, ListEditorState& state, const Transport& transport,
+                                 const ShownItem& sound, bool busy)
 {
     ImGui::BeginChild("##rows", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None, ImGuiWindowFlags_None);
     ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -833,39 +1109,13 @@ std::optional<ListEdit> DrawRows(const ListTrack& track, ListEditorState& state,
 
     // The line of the position.
     const double position = transport.Position() * std::max(track.ticks_per_quarter, 1);
-    std::size_t line = track.rows.size();
-    for (std::size_t i = 0; i < track.rows.size(); i++)
-    {
-        const std::optional<uint32_t> tick = track.rows[i].row.tick;
-        if (tick && static_cast<double>(*tick) > position + 1e-6)
-        {
-            line = i;
-            break;
-        }
-    }
+    const std::size_t line = PositionLine(track, position);
     const float line_y = origin.y + static_cast<float>(line) * row_height;
 
     // A row to scroll to goes a third of the way down the view. During playback, the line does the same once it leaves
-    // the view. A zone that comes to the front lays its rows out in a hidden frame first. The scroll goes again once
-    // the rows show.
-    if (state.scroll_row && *state.scroll_row < track.rows.size())
-    {
-        const float y = static_cast<float>(*state.scroll_row) * row_height;
-        ImGui::SetScrollY(std::max(y - view_height / 3.0f, 0.0f));
-        if (!ImGui::GetCurrentWindow()->Hidden)
-        {
-            state.scroll_row.reset();
-        }
-    }
-    else if (transport.Playing() && (line_y < view_top || line_y > view_top + view_height - row_height))
-    {
-        state.scroll_row.reset();
-        ImGui::SetScrollY(std::max(line_y - origin.y - view_height / 3.0f, 0.0f));
-    }
-    else
-    {
-        state.scroll_row.reset();
-    }
+    // the view, and so does a jump of the position out of the view, such as Go to Project Start. A zone that comes to
+    // the front lays its rows out in a hidden frame first. The scroll goes again once the rows show.
+    ScrollRows(track, state, transport, origin, line_y);
 
     std::optional<ListEdit> edit;
     const char* menu = nullptr;
@@ -878,117 +1128,14 @@ std::optional<ListEdit> DrawRows(const ListTrack& track, ListEditorState& state,
             continue;
         }
 
-        // A row that the track entered by its start, a jump, a call, a return or a loop's end has a line above it.
-        const ListRow& row = track.rows[i];
-        ImGui::SetCursorScreenPos(ImVec2(origin.x, y));
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::SetNextItemAllowOverlap();
-        ImGui::InvisibleButton("##row", ImVec2(std::max(width, edges.back() - origin.x), row_height),
-                               ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-        const bool hovered = ImGui::IsItemHovered();
-        const bool selected = Selected(track, state, i);
-        if (IsLabel(row) && !selected && !hovered)
-        {
-            draw->AddRectFilled(ImVec2(origin.x, y), ImVec2(origin.x + width, y + row_height), theme::kPanelAlt);
-        }
-        if (selected || hovered)
-        {
-            draw->AddRectFilled(
-                ImVec2(origin.x, y), ImVec2(origin.x + width, y + row_height),
-                selected ? theme::WithAlpha(theme::kAccent, hovered ? 0.3f : 0.22f) : theme::kRaisedHover);
-        }
-
-        // A label's row drags onto the row of the command that the label moves to.
-        if (IsLabel(row) && !busy && !track.timeline &&
-            ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip))
-        {
-            ImGui::SetDragDropPayload(kLabelPayload, &i, sizeof(i));
-            WrappedTooltip("Move " + row.label);
-            ImGui::EndDragDropSource();
-        }
-        if (!IsLabel(row) && !busy && ImGui::BeginDragDropTarget())
-        {
-            if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(kLabelPayload))
-            {
-                std::size_t label = 0;
-                std::memcpy(&label, payload->Data, sizeof(label));
-                edit = LabelMoveEdit(track, label, i);
-            }
-            ImGui::EndDragDropTarget();
-        }
-        if (row.entered && i > 0)
-        {
-            draw->AddRectFilled(ImVec2(origin.x, y), ImVec2(origin.x + width, y + Px(1.0f)), theme::kBorder);
-        }
-
-        // A typable cell under the mouse has a box behind it.
-        const std::optional<ListColumn> column = hovered ? ColumnAt(edges, ImGui::GetIO().MousePos.x) : std::nullopt;
-        const bool typable = column && (NamesTarget(row, *column) || Typable(track, row, *column));
-        if (typable && !busy)
-        {
-            const auto c = static_cast<std::size_t>(*column);
-            draw->AddRectFilled(ImVec2(edges[c] + Px(kMargin) - Px(4.0f), y + Px(2.0f)),
-                                ImVec2(edges[c + 1] - Px(4.0f), y + row_height - Px(2.0f)), theme::kControl, Px(3.0f));
-            ImGui::SetMouseCursor(NamesTarget(row, *column) ? ImGuiMouseCursor_Hand : ImGuiMouseCursor_TextInput);
-        }
-        DrawCells(draw, track, i, y, edges);
-        if (hovered && Skipped(track, row))
-        {
-            ItemTooltip("The " + SkippingEngine(track, row) + "'s player skips this command.");
-        }
-
-        // A click selects. A click on a command's cell that takes a value also types the value, or opens the menu of
-        // targets: the box under the mouse is the field. A label's row drags, and a double-click types its name. A
-        // click with Shift or Ctrl only selects. A click while a field is open ends the typing first. A right-click
-        // opens the row's context menu.
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
-        {
-            const ImGuiIO& io = ImGui::GetIO();
-            const bool types = typable && !busy && !typing && !io.KeyShift && !io.KeyCtrl &&
-                               (!IsLabel(row) || ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left));
-            if (!IsLabel(row) || !types)
-            {
-                ClickRow(track, state, i);
-            }
-            if (types && NamesTarget(row, *column))
-            {
-                state.target_row = i;
-                menu = "##targets";
-            }
-            else if (types)
-            {
-                StartTyping(track, state, i, *column);
-            }
-        }
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
-        {
-            if (!selected)
-            {
-                SelectRow(track, state, i);
-                state.scroll_row.reset();
-            }
-            state.menu_row = i;
-            menu = "##row";
-        }
-        ImGui::PopID();
+        DrawRow(track, state, i, y, {draw, origin, width, row_height, edges}, busy, typing, edit, menu);
     }
 
     // The field of a typed value scrolls with the rows.
-    if (state.typing && state.typing->first < track.rows.size() && !busy)
-    {
-        const auto [index, column] = *state.typing;
-        const std::optional<std::string> typed = DrawTyping(state, origin.y, edges);
-        if (typed)
-        {
-            edit = TypedListEdit(track, index, column, *typed);
-        }
-    }
+    TakeTypedCell(track, state, origin.y, edges, sound, busy, edit);
 
     // The line of the position, with a mark at its left end.
-    draw->AddRectFilled(ImVec2(origin.x, line_y - Px(1.0f)), ImVec2(origin.x + width, line_y + Px(1.0f)),
-                        theme::WithAlpha(theme::kText, 0.85f));
-    draw->AddTriangleFilled(ImVec2(origin.x, line_y - Px(5.0f)), ImVec2(origin.x + Px(7.0f), line_y),
-                            ImVec2(origin.x, line_y + Px(5.0f)), theme::kText);
+    DrawPositionLine(draw, origin, width, line_y);
 
     // The rows set the height that scrolls.
     ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + static_cast<float>(track.rows.size()) * row_height));
@@ -1009,10 +1156,56 @@ std::optional<ListEdit> DrawRows(const ListTrack& track, ListEditorState& state,
     return edit;
 }
 
+// Keeps in the selection the commands that `track` still shows, and the label once the edits' versions are read.
+void PruneSelection(const ListTrack& track, ListEditorState& state, bool busy)
+{
+    std::set<uint32_t> shown;
+    for (const ListRow& row : track.rows)
+    {
+        shown.insert(row.row.command);
+    }
+    std::erase_if(state.selected, [&shown](uint32_t command) { return !shown.contains(command); });
+    const auto shows_label = [&state](const ListRow& row)
+    {
+        return row.label == state.selected_label;
+    };
+    if (state.selected_label && !busy && std::none_of(track.rows.begin(), track.rows.end(), shows_label))
+    {
+        state.selected_label.reset();
+    }
+}
+
+// Selects every command that `track` shows, and no label, after the Edit menu's Select All.
+void SelectAllCommands(const ListTrack& track, ListEditorState& state)
+{
+    state.selected_label.reset();
+    for (const ListRow& row : track.rows)
+    {
+        if (!IsLabel(row))
+        {
+            state.selected.insert(row.row.command);
+        }
+    }
+}
+
+// The note of a track that runs no commands, over the rest of the zone.
+void DrawNoCommands(const ListTrack& track, ListEditorState& state)
+{
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    EmptyState(ImGui::GetWindowDrawList(), pos, ImVec2(pos.x + avail.x, pos.y + avail.y), "No commands",
+               track.unavailable.empty() ? "This track runs no commands." : track.unavailable);
+
+    // The toolbar moved the cursor, and the window grows only up to an item. No row is there to scroll to. A row to
+    // scroll to would otherwise give the window the focus in every frame, and close the toolbar's menus.
+    ImGui::Dummy(ImVec2(std::max(avail.x, 0.0f), std::max(avail.y, 0.0f)));
+    state.scroll_row.reset();
+}
+
 } // namespace
 
 std::optional<ListEdit> DrawListEditor(const ListTrack& track, ListEditorState& state, const Transport& transport,
-                                       bool busy, bool* open)
+                                       const ShownItem& sound, bool busy, bool* open)
 {
     // A zone that docks with the mixer in the lower zone, and takes its place while it's open (see kListEditor). Its
     // header names the track. Opening a track brings the editor to the front.
@@ -1034,6 +1227,7 @@ std::optional<ListEdit> DrawListEditor(const ListTrack& track, ListEditorState& 
     if (!visible)
     {
         ImGui::End();
+        state.jumps.Jumped(transport);
         state.focused = false;
         state.typing.reset();
         return std::nullopt;
@@ -1042,54 +1236,26 @@ std::optional<ListEdit> DrawListEditor(const ListTrack& track, ListEditorState& 
         ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || (state.focused && MenuBarFocused());
 
     // The selection keeps the commands that the track still shows, and the label once the edits' versions are read.
-    std::set<uint32_t> shown;
-    for (const ListRow& row : track.rows)
-    {
-        shown.insert(row.row.command);
-    }
-    std::erase_if(state.selected, [&shown](uint32_t command) { return !shown.contains(command); });
-    const auto shows_label = [&state](const ListRow& row)
-    {
-        return row.label == state.selected_label;
-    };
-    if (state.selected_label && !busy && std::none_of(track.rows.begin(), track.rows.end(), shows_label))
-    {
-        state.selected_label.reset();
-    }
+    PruneSelection(track, state, busy);
 
     // The Edit menu's Select All selects every command that the track shows, and no label.
     if (std::exchange(state.select_all, false))
     {
-        state.selected_label.reset();
-        for (const ListRow& row : track.rows)
-        {
-            if (!IsLabel(row))
-            {
-                state.selected.insert(row.row.command);
-            }
-        }
+        SelectAllCommands(track, state);
     }
 
     ZoneHeader("List Editor", track.name);
     std::optional<ListEdit> edit = DrawToolbar(track, state, busy);
     if (track.rows.empty())
     {
-        const ImVec2 pos = ImGui::GetCursorScreenPos();
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        EmptyState(ImGui::GetWindowDrawList(), pos, ImVec2(pos.x + avail.x, pos.y + avail.y), "No commands",
-                   track.unavailable.empty() ? "This track runs no commands." : track.unavailable);
-
-        // The toolbar moved the cursor, and the window grows only up to an item. No row is there to scroll to. A row to
-        // scroll to would otherwise give the window the focus in every frame, and close the toolbar's menus.
-        ImGui::Dummy(ImVec2(std::max(avail.x, 0.0f), std::max(avail.y, 0.0f)));
-        state.scroll_row.reset();
+        DrawNoCommands(track, state);
         ImGui::End();
         return edit;
     }
 
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     DrawColumnNames(ColumnEdges(origin.x, origin.x + ImGui::GetContentRegionAvail().x));
-    std::optional<ListEdit> listed = DrawRows(track, state, transport, busy);
+    std::optional<ListEdit> listed = DrawRows(track, state, transport, sound, busy);
     std::optional<ListEdit> chosen = DrawRowMenu(track, state, busy);
     if (!chosen)
     {

@@ -114,9 +114,11 @@ void TestRunOut()
 
 int main()
 {
-    TestStart();
-    TestSkip();
-    TestRunOut();
-
-    return xsflib::testing::Summary("declicker");
+    return xsflib::testing::RunTest("declicker",
+                                    []
+                                    {
+                                        TestStart();
+                                        TestSkip();
+                                        TestRunOut();
+                                    });
 }

@@ -37,6 +37,7 @@
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/testing/sar_files.h"
+#include "xsflib/console.h"
 #include "xsflib/files.h"
 
 #include "conformance_render.h"
@@ -164,12 +165,12 @@ format::File WithEffect(format::File file, format::EffectKind kind, std::vector<
 // The extension of the archive that `file` holds.
 std::string ArchiveExtension(const format::File& file)
 {
-    if (file.native->wii)
+    if (file.native->engine == format::Engine::kWii)
     {
         return ".brsar";
     }
 
-    return file.native->flavor == sar::Flavor::kCtr ? ".bcsar" : ".bfsar";
+    return FlavorOf(*file.native) == sar::Flavor::kCtr ? ".bcsar" : ".bfsar";
 }
 
 // Writes `bytes` to `path`. Prints the error and returns false when the write fails.
@@ -184,70 +185,139 @@ bool Write(const std::filesystem::path& path, std::span<const uint8_t> bytes)
     return true;
 }
 
+// The files of the suite, by their names: the song on each console with its reverb, in strict mixing and, where the
+// console has it, in enhanced mixing. Returns nothing after a line about a file whose effect plays otherwise than the
+// effect of the check.
+std::optional<std::vector<std::pair<std::string, format::File>>> MakeFiles()
+{
+    std::vector<std::pair<std::string, format::File>> files;
+    const format::File nx = SwitchSong();
+    const format::File cafe = edit::ForOtherConsole(nx, 0, sar::Flavor::kCafe).file;
+    const format::File ctr = edit::ForOtherConsole(nx, 0, sar::Flavor::kCtr).file;
+    const format::File wii = edit::ForWii(nx, 0).file;
+
+    const auto i3dl2 = song::I3dl2Parameters(ntdlib::nx::audio::kI3dl2ReverbPresets[1]);
+    const format::File nx_reverb = WithEffect(nx, format::EffectKind::kI3dl2Reverb, {i3dl2.begin(), i3dl2.end()});
+    const format::File cafe_reverb =
+        WithEffect(cafe, format::EffectKind::kReverbHi,
+                   song::WiiUStartingParameters(*edit::WiiUTypeOf(format::EffectKind::kReverbHi)));
+    const format::File ctr_reverb =
+        WithEffect(ctr, format::EffectKind::kCtrReverb, edit::CtrStartingParameters(format::EffectKind::kCtrReverb));
+    const format::File wii_reverb =
+        WithEffect(wii, format::EffectKind::kWiiReverbHi2008,
+                   song::WiiStartingParameters(*edit::WiiTypeOf(format::EffectKind::kWiiReverbHi2008)));
+
+    // The effects as hokuto_check_playback's options give them: --reverb 1 on the Switch, and --effect with
+    // reverb_hi, 3ds_reverb and wii_reverb_hi_2008.
+    song::AuxEffects nx_option;
+    nx_option[0] = {ntdlib::nx::audio::kI3dl2ReverbPresets[1]};
+    const ntdlib::cafe::snd::EffectType cafe_type = *edit::WiiUTypeOf(format::EffectKind::kReverbHi);
+    song::AuxEffects cafe_option;
+    cafe_option[0] = {song::WiiUEffectOf(cafe_type, song::WiiUStartingParameters(cafe_type))};
+    song::AuxEffects ctr_option;
+    ctr_option[0] = {song::CtrReverb{ntdlib::ctr_fx::Library::kNwSnd, {}}};
+    const ntdlib::rvl::snd::EffectType wii_type = *edit::WiiTypeOf(format::EffectKind::kWiiReverbHi2008);
+    song::AuxEffects wii_option;
+    wii_option[0] = {song::WiiEffectOf(wii_type, song::WiiStartingParameters(wii_type))};
+
+    for (const auto& [name, file, option] :
+         {std::tuple{"switch", nx_reverb, nx_option}, std::tuple{"wii-u", cafe_reverb, cafe_option},
+          std::tuple{"3ds", ctr_reverb, ctr_option}, std::tuple{"wii", wii_reverb, wii_option}})
+    {
+        for (const format::Mixing mixing : {format::Mixing::kStrict, format::Mixing::kEnhanced})
+        {
+            if (mixing == format::Mixing::kEnhanced && file.native->engine == format::Engine::kWii)
+            {
+                continue;
+            }
+
+            const format::File mixed = format::WithMixing(file, mixing);
+            if (hokuto::conformance::Render(mixed, 0, kSeconds) !=
+                hokuto::conformance::Render(mixed, 0, kSeconds, &option))
+            {
+                std::fprintf(stderr, "%s: the file's effect plays otherwise than the check's\n", name);
+                return std::nullopt;
+            }
+            files.emplace_back(std::string(name) + (mixing == format::Mixing::kStrict ? "-strict" : "-enhanced"),
+                               mixed);
+        }
+    }
+
+    return files;
+}
+
+// The peak of `render`, 16-bit samples, little-endian.
+int PeakOf(const std::vector<uint8_t>& render)
+{
+    int peak = 0;
+    for (std::size_t i = 0; i + 1 < render.size(); i += 2)
+    {
+        const auto sample = static_cast<int16_t>(static_cast<uint16_t>(render[i] | (render[i + 1] << 8)));
+        peak = std::max(peak, std::abs(static_cast<int>(sample)));
+    }
+
+    return peak;
+}
+
+// Writes `file`, named `name`, into `out` in the text form and as its archive, and adds the hashes of the renders of
+// its sequence sounds to `hashes`. Prints a line for each sound. Returns false after a write fails.
+bool WriteSuiteFile(const std::filesystem::path& out, const std::string& name, const format::File& file,
+                    std::string& hashes)
+{
+    const std::string text = format::WriteText(file);
+    const std::vector<uint8_t> archive = format::ExportArchive(file);
+    if (!Write(out / (name + ".hok"), std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size())) ||
+        !Write(out / (name + ArchiveExtension(file)), archive))
+    {
+        return false;
+    }
+
+    // The hashes come from the file read back as a player reads it.
+    const format::File read =
+        format::ReadEitherForm(std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size()));
+    for (uint32_t sound = 0; sound < read.native->tables->sounds.size(); sound++)
+    {
+        if (read.native->tables->sounds[sound].kind != sar::SoundType::kSequence)
+        {
+            continue;
+        }
+
+        const std::vector<uint8_t> render = hokuto::conformance::Render(read, sound, kSeconds);
+        char line[160];
+        std::snprintf(line, sizeof(line), "%s.hok %u %.1f %s\n", name.c_str(), sound, kSeconds,
+                      hokuto::conformance::Sha256(render).c_str());
+        hashes += line;
+
+        // The render's peak, and whether the effect changes it.
+        const int peak = PeakOf(render);
+        const hokuto::song::AuxEffects dry;
+        const bool wet = hokuto::conformance::Render(read, sound, kSeconds, &dry) != render;
+        std::printf("%s: sound %u, %zu frames, peak %d, %s\n", name.c_str(), sound, render.size() / 4, peak,
+                    wet ? "the effect sounds" : "the effect changes nothing");
+    }
+
+    return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc != 2)
+    const std::vector<std::string> arguments = xsflib::console::Arguments(argc, argv);
+    if (arguments.size() != 2)
     {
         std::fprintf(stderr, "usage: hokuto_make_conformance <output folder>\n");
         return 2;
     }
 
-    const std::filesystem::path out = xsflib::PathFromUtf8(argv[1]);
-    std::vector<std::pair<std::string, format::File>> files;
+    const std::filesystem::path out = xsflib::PathFromUtf8(arguments[1]);
+    std::optional<std::vector<std::pair<std::string, format::File>>> files;
     try
     {
-        const format::File nx = SwitchSong();
-        const format::File cafe = edit::ForOtherConsole(nx, 0, sar::Flavor::kCafe).file;
-        const format::File ctr = edit::ForOtherConsole(nx, 0, sar::Flavor::kCtr).file;
-        const format::File wii = edit::ForWii(nx, 0).file;
-
-        const auto i3dl2 = song::I3dl2Parameters(ntdlib::nx::audio::kI3dl2ReverbPresets[1]);
-        const format::File nx_reverb = WithEffect(nx, format::EffectKind::kI3dl2Reverb, {i3dl2.begin(), i3dl2.end()});
-        const format::File cafe_reverb =
-            WithEffect(cafe, format::EffectKind::kReverbHi,
-                       song::WiiUStartingParameters(*edit::WiiUTypeOf(format::EffectKind::kReverbHi)));
-        const format::File ctr_reverb = WithEffect(ctr, format::EffectKind::kCtrReverb,
-                                                   edit::CtrStartingParameters(format::EffectKind::kCtrReverb));
-        const format::File wii_reverb =
-            WithEffect(wii, format::EffectKind::kWiiReverbHi2008,
-                       song::WiiStartingParameters(*edit::WiiTypeOf(format::EffectKind::kWiiReverbHi2008)));
-
-        // The effects as hokuto_check_playback's options give them: --reverb 1 on the Switch, and --effect with
-        // reverb_hi, 3ds_reverb and wii_reverb_hi_2008.
-        song::AuxEffects nx_option;
-        nx_option[0] = {ntdlib::nx::audio::kI3dl2ReverbPresets[1]};
-        const ntdlib::cafe::snd::EffectType cafe_type = *edit::WiiUTypeOf(format::EffectKind::kReverbHi);
-        song::AuxEffects cafe_option;
-        cafe_option[0] = {song::WiiUEffectOf(cafe_type, song::WiiUStartingParameters(cafe_type))};
-        song::AuxEffects ctr_option;
-        ctr_option[0] = {song::CtrReverb{ntdlib::ctr_fx::Library::kNwSnd, {}}};
-        const ntdlib::rvl::snd::EffectType wii_type = *edit::WiiTypeOf(format::EffectKind::kWiiReverbHi2008);
-        song::AuxEffects wii_option;
-        wii_option[0] = {song::WiiEffectOf(wii_type, song::WiiStartingParameters(wii_type))};
-
-        for (const auto& [name, file, option] :
-             {std::tuple{"switch", nx_reverb, nx_option}, std::tuple{"wii-u", cafe_reverb, cafe_option},
-              std::tuple{"3ds", ctr_reverb, ctr_option}, std::tuple{"wii", wii_reverb, wii_option}})
+        files = MakeFiles();
+        if (!files)
         {
-            for (const format::Mixing mixing : {format::Mixing::kStrict, format::Mixing::kEnhanced})
-            {
-                if (mixing == format::Mixing::kEnhanced && file.native->wii)
-                {
-                    continue;
-                }
-
-                const format::File mixed = format::WithMixing(file, mixing);
-                if (hokuto::conformance::Render(mixed, 0, kSeconds) !=
-                    hokuto::conformance::Render(mixed, 0, kSeconds, &option))
-                {
-                    std::fprintf(stderr, "%s: the file's effect plays otherwise than the check's\n", name);
-                    return 1;
-                }
-                files.emplace_back(std::string(name) + (mixing == format::Mixing::kStrict ? "-strict" : "-enhanced"),
-                                   mixed);
-            }
+            return 1;
         }
     }
     catch (const std::exception& error)
@@ -257,43 +327,11 @@ int main(int argc, char** argv)
     }
 
     std::string hashes;
-    for (const auto& [name, file] : files)
+    for (const auto& [name, file] : *files)
     {
-        const std::string text = format::WriteText(file);
-        const std::vector<uint8_t> archive = format::ExportArchive(file);
-        if (!Write(out / (name + ".hok"), std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size())) ||
-            !Write(out / (name + ArchiveExtension(file)), archive))
+        if (!WriteSuiteFile(out, name, file, hashes))
         {
             return 1;
-        }
-
-        // The hashes come from the file read back as a player reads it.
-        const format::File read =
-            format::ReadEitherForm(std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size()));
-        for (uint32_t sound = 0; sound < read.native->tables->sounds.size(); sound++)
-        {
-            if (read.native->tables->sounds[sound].kind != sar::SoundType::kSequence)
-            {
-                continue;
-            }
-
-            const std::vector<uint8_t> render = hokuto::conformance::Render(read, sound, kSeconds);
-            char line[160];
-            std::snprintf(line, sizeof(line), "%s.hok %u %.1f %s\n", name.c_str(), sound, kSeconds,
-                          hokuto::conformance::Sha256(render).c_str());
-            hashes += line;
-
-            // The render's peak, and whether the effect changes it.
-            int peak = 0;
-            for (std::size_t i = 0; i + 1 < render.size(); i += 2)
-            {
-                const auto sample = static_cast<int16_t>(static_cast<uint16_t>(render[i] | (render[i + 1] << 8)));
-                peak = std::max(peak, std::abs(static_cast<int>(sample)));
-            }
-            const hokuto::song::AuxEffects dry;
-            const bool wet = hokuto::conformance::Render(read, sound, kSeconds, &dry) != render;
-            std::printf("%s: sound %u, %zu frames, peak %d, %s\n", name.c_str(), sound, render.size() / 4, peak,
-                        wet ? "the effect sounds" : "the effect changes nothing");
         }
     }
 

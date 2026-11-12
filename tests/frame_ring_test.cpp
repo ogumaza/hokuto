@@ -177,10 +177,12 @@ void TestTwoThreads()
 
 int main()
 {
-    TestWrapAround();
-    TestDiscard();
-    TestSkipped();
-    TestTwoThreads();
-
-    return xsflib::testing::Summary("frame_ring");
+    return xsflib::testing::RunTest("frame_ring",
+                                    []
+                                    {
+                                        TestWrapAround();
+                                        TestDiscard();
+                                        TestSkipped();
+                                        TestTwoThreads();
+                                    });
 }

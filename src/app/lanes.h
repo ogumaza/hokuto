@@ -62,10 +62,12 @@ std::vector<KeyControl> ControlsOf(const format::File& file, uint32_t sequence, 
 // the first that the track's console holds and no lane shows.
 LaneSetting NextLane(const KeyTrack& track, std::span<const LaneSetting> lanes);
 
-// The value that the console gives a track's `setting` before a command sets it. ntdlib's performer starts a track with
+// The value that `console` gives a track's `setting` before a command sets it. ntdlib's performer starts a track with
 // the same values. Nothing where the instrument sets it, such as the envelope's, or where the starting value isn't
-// known.
-std::optional<ntdlib::commands::Fixed> StartingValue(LaneSetting setting);
+// known. MusicPlayer2000 starts a track at volume 0, priority 0, 150 BPM and an LFO speed of 22. DSE starts a track at
+// volume 100. The GBA's other drivers start a track at song::DriverRules::StartVolume, and a song at StartTempoBpm
+// where the rules give it. Without it, the tempo has no starting value.
+std::optional<ntdlib::commands::Fixed> StartingValue(LaneSetting setting, const song::Console& console = {});
 
 // The values that the lane of `setting` spans on `track`, in the setting's unit: the setting's usual range, widened to
 // hold each value that the track's commands give it, within what the console's bytes hold.
@@ -112,9 +114,10 @@ Lane LaneOf(const KeyTrack& track, LaneSetting setting);
 // and when the point is selected, every selected command of its setting.
 std::set<uint32_t> DraggedControls(const KeyTrack& track, const KeyEditorState& state, std::size_t pressed);
 
-// The edit of a drag of the point of `track.controls[pressed]` to `value`. The commands of DraggedControls change by
-// the same amount, each within what the console's bytes hold. A value from a random number or a variable stays. The
-// Undo History names the edit Edit Controller. Nothing when no value changes.
+// The edit of a drag of the point of `track.controls[pressed]` to `value`, or to the nearest value that the track's
+// commands hold. The commands of DraggedControls change by the same amount, each within what the track's commands hold.
+// A value from a random number or a variable stays. The Undo History names the edit Edit Controller. Nothing when no
+// value changes.
 std::optional<KeyEdit> LaneValueEdit(const KeyTrack& track, const KeyEditorState& state, std::size_t pressed,
                                      ntdlib::commands::Fixed value);
 
@@ -135,8 +138,12 @@ std::string WhyPointsStay(const KeyTrack& track, const KeyEditorState& state, st
 std::optional<KeyEdit> LaneStartEdit(const KeyTrack& track, const KeyEditorState& state, std::size_t index,
                                      int64_t tick);
 
-// The edit that puts a command of `setting` with `value` in at `tick`. The Undo History names it Edit Controller.
-KeyEdit LaneDrawEdit(LaneSetting setting, uint32_t tick, ntdlib::commands::Fixed value);
+// The edit that puts a command of `setting` with `value` in at `tick` of `track`. A tick where the track already runs a
+// command of the setting changes that command's value instead. A second command there would play in place of the
+// first, and the lane would show one point. A value there from a random number or a variable stays, and the edit says
+// why. The Undo History names the edit Edit Controller. Nothing when the tick's command already contains the value.
+std::optional<KeyEdit> LaneDrawEdit(const KeyTrack& track, LaneSetting setting, uint32_t tick,
+                                    ntdlib::commands::Fixed value);
 
 // The edit that deletes the commands of `offsets`. The Undo History names it Delete.
 KeyEdit LaneRemoval(const std::set<uint32_t>& offsets);

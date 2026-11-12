@@ -135,6 +135,8 @@ struct FileChanges
     std::vector<uint32_t> past_banks;  // a wave archive: the banks that name waves past its end
     std::vector<uint32_t> past_sounds; // a wave archive: the wave sounds whose notes play waves past its end, and for a
                                        // wave sound file, the sounds that play wave sounds past its end
+    std::optional<bool> wave_block;    // a bank or a wave sound file of the Wii: whether the current file describes its
+                                       // waves in a WAVE block. Nothing when ntdlib can't read the file.
 };
 
 // What `incoming` changes in the place of item `item` of `archive`, the archive that `file` builds. Banks, wave
@@ -316,8 +318,8 @@ struct IncomingWave
     uint32_t loop_start = 0;
     uint32_t loop_moved = 0; // the samples from the WAV file's loop start to the wave's
 
-    // The ratio of the energy of the WAV file's samples to that of the error of DSP-ADPCM, in decibels. Nothing for
-    // 16-bit PCM, or when DSP-ADPCM gives the samples back exactly.
+    // The ratio of the energy of the WAV file's samples to that of the encoding's error, in decibels. Nothing for
+    // 16-bit PCM, or when the encoding reproduces the samples exactly.
     std::optional<double> signal_to_noise;
 
     uint16_t bits = 16;         // the WAV file's bits per sample
@@ -368,6 +370,44 @@ IncomingWave ReadIncomingWiiWave(std::span<const uint8_t> bytes, uint16_t versio
                                  ntdlib::sar::WaveEncoding encoding = ntdlib::sar::WaveEncoding::kDspAdpcm,
                                  std::optional<WaveLoop> loop = std::nullopt,
                                  std::optional<uint32_t> rate = std::nullopt);
+
+// The same for a wave of the DS: `bytes` of the result hold the wave's parameters and samples
+// (ntdlib::sdat::WaveBytes), in `encoding`: PCM8, 16-bit PCM or IMA-ADPCM. A DS wave has one channel. The two channels
+// of a WAV file are mixed, halfway between them. The signal-to-noise ratio is that of the mixed samples to the wave's
+// decoding. A loop starts at a word of the encoding, and the samples from the WAV file's loop start to that word repeat
+// after the loop's end (ntdlib::sdat::EncodeWave). A WAV file past the highest rate that a DS wave supports is
+// resampled to 48 kHz unless `rate` sets another. Throws std::invalid_argument with a message for the user as
+// ReadIncomingWave does, and for a rate below the lowest that a DS wave supports.
+IncomingWave ReadIncomingDsWave(std::span<const uint8_t> bytes,
+                                ntdlib::sar::WaveEncoding encoding = ntdlib::sar::WaveEncoding::kImaAdpcm,
+                                std::optional<WaveLoop> loop = std::nullopt,
+                                std::optional<uint32_t> rate = std::nullopt);
+
+// The wave of `bytes`, a wave file of the DS (SWAV): `bytes` of the result hold the wave's parameters and samples.
+// Throws std::invalid_argument with a message for the user for bytes that aren't such a wave file.
+IncomingWave ReadIncomingDsWaveFile(std::span<const uint8_t> bytes);
+
+// A WAV file as a sample of a GBA ROM (edit::EncodeGbaSample): one channel of PCM8, in `bytes`, with the mean of two
+// channels and its loop to the sample's end. A WAV file without a loop takes `loop`. With `rate`, lower than the WAV
+// file's, the samples are resampled to it. The signal-to-noise ratio shows how far the samples are from those of the
+// WAV file. The file of a sample (song::GbaSampleOfFile) is imported as it is, whatever `loop` and `rate` say. Throws
+// std::invalid_argument with a message for the user as ReadIncomingWave does.
+IncomingWave ReadIncomingGbaSample(std::span<const uint8_t> bytes, std::optional<WaveLoop> loop = std::nullopt,
+                                   std::optional<uint32_t> rate = std::nullopt);
+
+// The stream that `bytes`, a WAV file, makes for the DS: `bytes` of the result hold a stream file
+// (edit::EncodeDsStream) in `encoding`. A loop starts at a block. The samples from the WAV file's loop start to the
+// block repeat after the loop's end. A WAV file past the highest rate that a DS stream supports is resampled to 48 kHz
+// unless `rate` sets another. Throws std::invalid_argument with a message for the user as ReadIncomingWave does, and
+// for more than two channels.
+IncomingWave ReadIncomingDsStream(std::span<const uint8_t> bytes,
+                                  ntdlib::sar::WaveEncoding encoding = ntdlib::sar::WaveEncoding::kImaAdpcm,
+                                  std::optional<WaveLoop> loop = std::nullopt,
+                                  std::optional<uint32_t> rate = std::nullopt);
+
+// The stream of `bytes`, a stream file of the DS (STRM). Throws std::invalid_argument with a message for the user for
+// bytes that aren't such a stream file.
+IncomingWave ReadIncomingDsStreamFile(std::span<const uint8_t> bytes);
 
 // Whether `bytes` start as a wave file of the 3DS, the Wii U or the Switch does: with CWAV or FWAV.
 bool IsWaveFile(std::span<const uint8_t> bytes);

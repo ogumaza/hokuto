@@ -224,13 +224,15 @@ void TestGrabCursor()
 
 int main()
 {
-    TestMovePosition();
-    TestDrawRange();
-    TestClickRange();
-    TestMoveLocator();
-    TestModifierClicks();
-    TestSnapToLoop();
-    TestGrabCursor();
-
-    return xsflib::testing::Summary("ruler");
+    return xsflib::testing::RunTest("ruler",
+                                    []
+                                    {
+                                        TestMovePosition();
+                                        TestDrawRange();
+                                        TestClickRange();
+                                        TestMoveLocator();
+                                        TestModifierClicks();
+                                        TestSnapToLoop();
+                                        TestGrabCursor();
+                                    });
 }

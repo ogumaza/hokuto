@@ -37,6 +37,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
@@ -58,9 +59,15 @@ struct NoteEdit
     std::optional<int> velocity;
     std::optional<uint32_t> length; // in ticks
     bool remove = false;
+
+    // The tick where the note's track ends, on a program's track that runs into an end (TrackEndOf). A new length past
+    // it is refused where the note's stretch ends before the end. Nothing leaves the end of a later stretch out.
+    std::optional<uint32_t> track_end;
 };
 
 // A note to add, in `stretch`, at `tick` in the sequence's ticks. The key is the command's key, before any transpose.
+// On Konami's driver, a note of a sample contains `sample`, and its key sets its semitones from the pitch of the
+// sample. Its `index` follows ntdlib/konami/commands.h. NewKonamiNote sets both.
 struct NewNote
 {
     song::Stretch stretch;
@@ -68,7 +75,29 @@ struct NewNote
     int key = 60;
     int velocity = 100;
     uint32_t length = 48;
+    std::optional<uint16_t> sample = {};
+    uint8_t index = 0;
 };
+
+// The MIDI keys at which a PSG note 0 and a sample without an estimate of its pitch play on Konami's driver, for a
+// track without notes.
+inline constexpr int kKonamiLowestPsgKey = 36;
+inline constexpr int kKonamiSampleKey = 60;
+
+// A note of a sample on Konami's driver: the sample, and the semitones that the command adds to the pitch of the
+// sample.
+struct KonamiSampleNote
+{
+    uint16_t sample = 0;
+    int semitones = 0;
+};
+
+// Why a note can't go on a track of Konami's driver without notes whose commands end where they start, or that runs no
+// commands. A paste or a duplicate of a track fills the first such track of the same kind of channel
+// (edit::PasteTrack, edit::DuplicateTrack).
+inline constexpr std::string_view kKonamiNoRoom =
+    "Can't add a note to this track: it ends where it starts. Paste or duplicate a track of the same kind of channel. "
+    "The copy goes to the first track of that kind without notes.";
 
 // A command of a setting to add, in `stretch`, at `tick` in the sequence's ticks, such as a new volume or pan.
 struct NewSetting
@@ -96,30 +125,63 @@ struct ShiftRange
     uint32_t later = 0;
 };
 
-// A note of a sequence as an editor finds it, or a setting: the offset of its command (song::Note::command), and the
-// stretch of the track's commands that ran it.
+// A note of a sequence as an editor finds it, or a setting: the offset of its command (song::Note::command), the
+// stretch of the track's commands that ran it, and the tick where its track ends (NoteEdit::track_end). `note` is set
+// where the command starts a note of the arrangement. On Konami's driver, a volume command can start one.
 struct NotePlace
 {
     uint32_t command = 0;
     song::Stretch stretch;
+    std::optional<uint32_t> track_end;
+    bool note = false;
 };
+
+// The tick where a track of sequence `sequence` of `file` that ran `stretches`, in order, ends: where its last stretch
+// runs into an end that no comparison decides, or returns from a call to an end in the same tick. Nothing for a track
+// that loops, for one whose time the bytecode doesn't give, and on Konami's driver and DSE.
+std::optional<uint32_t> TrackEndOf(const format::File& file, uint32_t sequence,
+                                   std::span<const song::Stretch> stretches);
 
 // What an edit can change in a note: how far the note can move, and the length of its command in ticks. Each is nothing
 // when the note can't move, or when its command's length isn't a number of ticks. A note that can't move can't change
-// its length either. A setting has no length.
+// its length either, with one exception. On Konami's driver, a note whose note command sets the key of another note
+// can't move but can change its length. A setting has no length. `fixed` contains the reason for the user why a note
+// can't move, where the timing of its track isn't the reason: a tie on the GBA, and a note of a driver that keeps every
+// note at its tick (DriverEdits::FitLimits). It's empty otherwise. `fixed_length` contains the reason why the note's
+// length can't change, where it differs from `fixed`. `fixed_key` contains the reason why the note can't take a new
+// key, and is empty where it can. `cut_by_end` is set for a note whose command lasts past the end of its track. The end
+// cuts the note. A timeline saved before such a note moved the end can hold one. So can a program. An edit of the
+// note's length then moves the end to the note's end, even at the length that the command contains. In a program, the
+// edit is refused where a move of the end could change other notes (EditNotes). The end of a later stretch counts where
+// the place sets it (NotePlace::track_end). On Konami's driver and on DSE, `cut_by_end` stays unset.
 struct NoteLimits
 {
     std::optional<ShiftRange> shift;
     std::optional<uint32_t> length;
+    std::string fixed;
+    std::string fixed_length = {};
+    std::string fixed_key = {};
+    bool cut_by_end = false;
 };
 
 // The file after `edits` and `additions` to sequence `sequence` of `file`. A command that several edits name takes the
 // first of them. The labels, the targets of jumps, calls and track starts, and the sounds' starts move with the
 // commands. Throws std::invalid_argument with a message for the user for an edit that the sequence can't take: a
 // command that isn't a note, a key or velocity outside 0 to 127, a move or an addition outside its block or at the tick
-// where its track ends, and the changes of timing above that a track can't take.
+// where its track ends, and the changes of timing above that a track can't take. A note whose new length runs past the
+// end of its track moves the end to the note's end. In a program, that end has to be the end of the stretch that ran
+// the note. The edit is refused there where a move of the end could change other notes: another note sounds up to the
+// end, the stretch starts after its track opens, a note of the end's block waits for its length, or the track may tie
+// its notes or play one note at a time. A new length past the end of a later stretch (NoteEdit::track_end) is refused
+// too: the notes of the stretches between could sound up to that end.
 Edited EditNotes(const format::File& file, uint32_t sequence, std::span<const NoteEdit> edits,
                  std::span<const NewNote> additions = {});
+
+// EditNotes on a sequence whose notes hold their key, their velocity and their length. The notes of the later consoles
+// hold them too. A new note's velocity goes through the driver's VolumeOf on one of the GBA's other drivers. Writable
+// comes last.
+Edited EditNotesWithLengths(const format::File& file, uint32_t sequence, std::span<const NoteEdit> edits,
+                            std::span<const NewNote> additions);
 
 // The file after `settings` go into sequence `sequence` of `file`, each at its tick. `Edited::added` holds the item of
 // each new command, in order. The labels, the targets and the sounds' starts move with the commands. EditNotes moves
@@ -134,7 +196,11 @@ Edited AddSettings(const format::File& file, uint32_t sequence, std::span<const 
 // several moves name takes the first of them, and a move of 0 ticks leaves its command where it is. Throws
 // std::invalid_argument with a message for the user for a command that isn't a setting, the timebase, a command that
 // runs only if the last comparison held, one that reads or changes a variable, and a move past what ShiftRangeOf gives.
-Edited MoveSettings(const format::File& file, uint32_t sequence, std::span<const SettingMove> moves);
+// On Krawall, `rows` lists the rows that the module played: the stretches of a track of the sound
+// (song::Track::stretches). Each track contains them. A move goes to the row that plays at its new tick
+// (KrawallRowsOfMove). A move outside the rows of its pattern there is refused, and so is every move without `rows`.
+Edited MoveSettings(const format::File& file, uint32_t sequence, std::span<const SettingMove> moves,
+                    std::span<const song::Stretch> rows = {});
 
 // The stretch of `stretches` (song::Track::stretches) that a new note or a new setting at `tick` goes into: the last
 // that starts by the tick. At the start of a call, that's the call. Nothing when every stretch starts later.
@@ -152,9 +218,13 @@ std::optional<ShiftRange> ShiftRangeOf(const format::File& file, uint32_t sequen
 // the song loops, `loop_end` gives the end of the loop that the arrangement shows (TimelineRead). No note or setting of
 // a timeline then moves to it or past it. The editors show nothing there. A track pasted from a song with another loop
 // can loop over a pass of another length. The arrangement then shows the loop that ntdlib's performer finds. That loop
-// can end before the pasted track's loop does. Throws std::invalid_argument for an offset where no command starts.
+// can end before the pasted track's loop does. On Krawall, a note can't move, and a setting moves in the arrangement's
+// ticks up to the rows of its pattern that play on from its row in `rows` (KrawallTicksOfRows, and MoveSettings for
+// `rows`). Without `rows`, no setting of Krawall moves. Throws std::invalid_argument for an offset where no command
+// starts.
 std::vector<NoteLimits> LimitsOf(const format::File& file, uint32_t sequence, std::span<const NotePlace> notes,
-                                 std::optional<uint32_t> loop_end = std::nullopt);
+                                 std::optional<uint32_t> loop_end = std::nullopt,
+                                 std::span<const song::Stretch> rows = {});
 
 // Why MoveSettings can't move `command`, for the user: a command that isn't a setting, the timebase, a command that
 // runs only if the last comparison held, or one that reads or changes a variable. Nothing for a setting that can move.

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <stdexcept>
 #include <vector>
 
@@ -19,11 +20,12 @@
 using hokuto::audio::Resample;
 using hokuto::audio::ResampledPlace;
 using hokuto::audio::ResampleFrames;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kPi = std::numbers::pi;
 constexpr double kAmplitude = 16000.0;
 
 // `count` samples of a sine of `frequency` Hz at `rate` samples a second.
@@ -96,16 +98,7 @@ double LargestFrameError(const std::vector<float>& frames, const std::vector<flo
 template <typename Call>
 bool Refused(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::invalid_argument>(call).empty();
 }
 
 // A sine of 1 kHz goes from 48 kHz to 32 kHz and to 22,050 Hz within a few steps of 16 bits, 80 dB below the sine's
@@ -223,11 +216,13 @@ void TestFrames()
 
 int main()
 {
-    TestSines();
-    TestLoop();
-    TestHigherRate();
-    TestRefusals();
-    TestFrames();
-
-    return xsflib::testing::Summary("resampler");
+    return xsflib::testing::RunTest("resampler",
+                                    []
+                                    {
+                                        TestSines();
+                                        TestLoop();
+                                        TestHigherRate();
+                                        TestRefusals();
+                                        TestFrames();
+                                    });
 }

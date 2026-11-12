@@ -6,30 +6,36 @@
 // bank slot 1 and program 0 for its note. Track 3 selects program 1 for a note, then bank slot 1 for a second note. In
 // the second file, a note plays program 0 before a program change to a random program. In the third, a note plays
 // program 1 before a program change that runs only if the last comparison held. Each edit goes through an export of the
-// archive. ntdlib's performer then plays the edited archive, and the instruments of its notes have to show the edit.
+// archive. ntdlib's performer then plays the edited archive, and the instruments of its notes have to show the edit. A
+// small GBA ROM checks MusicPlayer2000's rules: one voice group, and no program before a track's first VOICE.
 
 #include "edit/instruments.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
+#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
+#include "cart_bytes.h"
 #include "edit/replace.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "song/archive.h"
+#include "song/gba.h"
 #include "song/sequence.h"
+#include "sound_places.h"
 
 using hokuto::edit::Edited;
 using hokuto::edit::EditInstrument;
@@ -37,6 +43,7 @@ using hokuto::edit::Program;
 using hokuto::format::File;
 using hokuto::song::Sequence;
 using hokuto::song::Track;
+using hokuto::testing::PlayedSequence;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 
@@ -153,14 +160,6 @@ std::vector<uint8_t> TestArchive()
     return sar_files::Archive(false, spec);
 }
 
-// ntdlib's performer plays sound `sound` of the archive that `file` builds.
-Sequence Played(const File& file, uint32_t sound)
-{
-    const std::shared_ptr<const sar::SoundArchive> archive =
-        hokuto::song::LoadArchive(hokuto::format::ExportArchive(file), "test.bfsar");
-    return hokuto::song::ReadSequence(*archive, sound);
-}
-
 // The instrument of each note of `track`.
 std::vector<Program> Instruments(const Track& track)
 {
@@ -188,30 +187,21 @@ std::vector<std::vector<uint32_t>> Notes(const Track& track)
 // The edit of track `index` of sound `sound` of `file` from `from` to `to`.
 Edited Edit(const File& file, uint32_t sound, std::size_t index, Program from, Program to)
 {
-    const Sequence played = Played(file, sound);
+    const Sequence played = PlayedSequence(file, sound);
     const Track& track = played.tracks.at(index);
     return EditInstrument(file, sound, track.number, track.stretches, from, to);
 }
 
-// The message for the user with which the edit refuses, or nothing.
-std::optional<std::string> Refusal(const File& file, uint32_t sound, std::size_t index, Program from, Program to)
+// The message for the user with which the edit refuses, or an empty string.
+std::string Refusal(const File& file, uint32_t sound, std::size_t index, Program from, Program to)
 {
-    try
-    {
-        Edit(file, sound, index, from, to);
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return std::nullopt;
+    return xsflib::testing::ErrorOf<std::invalid_argument>([&] { Edit(file, sound, index, from, to); });
 }
 
 // Whether the edit refuses with a message for the user.
 bool Refuses(const File& file, uint32_t sound, std::size_t index, Program from, Program to)
 {
-    return Refusal(file, sound, index, from, to).has_value();
+    return !Refusal(file, sound, index, from, to).empty();
 }
 
 // The tracks of `after` other than track `index` play the instruments and notes of `before`.
@@ -232,9 +222,9 @@ void TestArchivePlays()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
 
-    const Sequence song = Played(file, kSong);
-    const Sequence random = Played(file, kRandom);
-    const Sequence choice = Played(file, kChoice);
+    const Sequence song = PlayedSequence(file, kSong);
+    const Sequence random = PlayedSequence(file, kRandom);
+    const Sequence choice = PlayedSequence(file, kChoice);
 
     SEQLIB_REQUIRE(song.tracks.size() == 4);
     XSFLIB_CHECK(Instruments(song.tracks[0]) == (std::vector<Program>{{0, 1}, {0, 1}}));
@@ -249,11 +239,11 @@ void TestArchivePlays()
 void TestProgram()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence before = Played(file, kSong);
+    const Sequence before = PlayedSequence(file, kSong);
 
     const Edited edited = Edit(file, kSong, 0, {0, 1}, {0, 2});
 
-    const Sequence after = Played(edited.file, kSong);
+    const Sequence after = PlayedSequence(edited.file, kSong);
     XSFLIB_CHECK(Instruments(after.tracks.at(0)) == (std::vector<Program>{{0, 2}, {0, 2}}));
     XSFLIB_CHECK(Notes(after.tracks[0]) == Notes(before.tracks[0]) && OthersAsBefore(before, after, 0));
     XSFLIB_CHECK(edited.file.sequences[0]->items.size() == file.sequences[0]->items.size());
@@ -265,11 +255,11 @@ void TestProgram()
 void TestStart()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence before = Played(file, kSong);
+    const Sequence before = PlayedSequence(file, kSong);
 
     const Edited edited = Edit(file, kSong, 1, {0, 0}, {0, 1});
 
-    const Sequence after = Played(edited.file, kSong);
+    const Sequence after = PlayedSequence(edited.file, kSong);
     const auto& items = edited.file.sequences[0]->items;
     XSFLIB_CHECK(Instruments(after.tracks.at(1)) == (std::vector<Program>{{0, 1}, {0, 2}}));
     XSFLIB_CHECK(Notes(after.tracks[1]) == Notes(before.tracks[1]) && OthersAsBefore(before, after, 1));
@@ -283,11 +273,11 @@ void TestStart()
 void TestSlot()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence before = Played(file, kSong);
+    const Sequence before = PlayedSequence(file, kSong);
 
     const Edited edited = Edit(file, kSong, 2, {1, 0}, {0, 2});
 
-    const Sequence after = Played(edited.file, kSong);
+    const Sequence after = PlayedSequence(edited.file, kSong);
     const auto& items = edited.file.sequences[0]->items;
     XSFLIB_CHECK(Instruments(after.tracks.at(2)) == (std::vector<Program>{{0, 2}}));
     XSFLIB_CHECK(OthersAsBefore(before, after, 2));
@@ -300,11 +290,11 @@ void TestSlot()
 void TestSlotAtStart()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence before = Played(file, kSong);
+    const Sequence before = PlayedSequence(file, kSong);
 
     const Edited edited = Edit(file, kSong, 3, {0, 1}, {1, 1});
 
-    const Sequence after = Played(edited.file, kSong);
+    const Sequence after = PlayedSequence(edited.file, kSong);
     XSFLIB_CHECK(Instruments(after.tracks.at(3)) == (std::vector<Program>{{1, 1}, {1, 1}}));
     XSFLIB_CHECK(Notes(after.tracks[3]) == Notes(before.tracks[3]) && OthersAsBefore(before, after, 3));
     XSFLIB_CHECK(edited.file.sequences[0]->items.size() == file.sequences[0]->items.size() + 1);
@@ -315,11 +305,11 @@ void TestSlotAtStart()
 void TestBoth()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence before = Played(file, kSong);
+    const Sequence before = PlayedSequence(file, kSong);
 
     const Edited edited = Edit(file, kSong, 0, {0, 1}, {1, 2});
 
-    const Sequence after = Played(edited.file, kSong);
+    const Sequence after = PlayedSequence(edited.file, kSong);
     const auto& items = edited.file.sequences[0]->items;
     XSFLIB_CHECK(Instruments(after.tracks.at(0)) == (std::vector<Program>{{1, 2}, {1, 2}}));
     XSFLIB_CHECK(Notes(after.tracks[0]) == Notes(before.tracks[0]) && OthersAsBefore(before, after, 0));
@@ -335,7 +325,7 @@ void TestBeforeRandom()
 
     const Edited edited = Edit(file, kRandom, 0, {0, 0}, {0, 2});
 
-    const Sequence after = Played(edited.file, kRandom);
+    const Sequence after = PlayedSequence(edited.file, kRandom);
     XSFLIB_CHECK(after.tracks.at(0).notes.size() == 2 && Instruments(after.tracks[0]).at(0) == (Program{0, 2}));
     XSFLIB_CHECK(edited.file.sequences[1]->items.size() == file.sequences[1]->items.size() + 1);
 }
@@ -348,48 +338,116 @@ void TestBeforeRandom()
 void TestRefusals()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     File fixed = file;
     ntdlib::commands::Sequence outside = *file.sequences[0];
     outside.items.at(1).target_outside = true;
     fixed.sequences[0] = std::move(outside);
     const auto refuses_fixed = [&](std::size_t index, Program from, Program to)
     {
-        try
-        {
-            EditInstrument(fixed, kSong, song.tracks.at(index).number, song.tracks[index].stretches, from, to);
-        }
-        catch (const std::invalid_argument&)
-        {
-            return true;
-        }
-
-        return false;
+        const Track& track = song.tracks.at(index);
+        return !xsflib::testing::ErrorOf<std::invalid_argument>(
+                    [&] { EditInstrument(fixed, kSong, track.number, track.stretches, from, to); })
+                    .empty();
     };
 
     XSFLIB_CHECK(Refuses(file, kSong, 3, {0, 1}, {0, 2}));
     XSFLIB_CHECK(Refuses(file, kSong, 1, {0, 0}, {1, 0}));
-    XSFLIB_CHECK(Refusal(file, kRandom, 0, {0, 0}, {1, 0}).value_or("").find("random number") != std::string::npos);
-    XSFLIB_CHECK(Refusal(file, kRandom, 0, {0, 1}, {0, 2}).value_or("").find("random number") != std::string::npos);
+    XSFLIB_CHECK(Refusal(file, kRandom, 0, {0, 0}, {1, 0}).find("random number") != std::string::npos);
+    XSFLIB_CHECK(Refusal(file, kRandom, 0, {0, 1}, {0, 2}).find("random number") != std::string::npos);
     XSFLIB_CHECK(Refuses(file, kChoice, 0, {0, 1}, {0, 0}));
-    XSFLIB_CHECK(Refusal(file, kSong, 0, {1, 1}, {0, 0}).value_or("").find("No note") != std::string::npos);
+    XSFLIB_CHECK(Refusal(file, kSong, 0, {1, 1}, {0, 0}).find("No note") != std::string::npos);
     XSFLIB_CHECK(Refuses(file, kSong, 0, {0, 1}, {4, 1}));
     XSFLIB_CHECK(!Refuses(file, kSong, 0, {0, 1}, {0, 1}));
     XSFLIB_CHECK(refuses_fixed(1, {0, 0}, {0, 1}) && !refuses_fixed(0, {0, 1}, {0, 2}));
+}
+
+// A GBA ROM of one song with voices 0 to 2. Track 0 selects voice 1 and plays keys 60 and 62. Track 1 plays key 64
+// before any VOICE, then selects voice 0 and plays key 65. MusicPlayer2000's square wave before a VOICE has no
+// envelope, and key 64 never sounds. The ROM has free space for a song that grows.
+std::vector<uint8_t> GbaRom()
+{
+    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+    using enum ntdlib::mp2k::Command;
+
+    mp2k_cart::Cart cart;
+    const uint32_t wave = cart.Wave(mp2k_cart::Saw(), 13379, 0);
+    const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, wave)},
+                                             {1, mp2k_cart::Cart::Voice(0, wave)},
+                                             {2, mp2k_cart::Cart::Voice(0, wave)}});
+    mp2k_cart::Track first;
+    first.Cmd(kCmdVoice, 1).Cmd(kCmdVol, 100).Note(24, 60, 100).Wait(24).Note(24, 62, 100).Wait(24).Fine();
+    mp2k_cart::Track second;
+    second.Cmd(kCmdVol, 100).Note(24, 64, 100).Wait(24).Cmd(kCmdVoice, 0).Note(24, 65, 100).Wait(24).Fine();
+    cart.Song({first, second}, voices);
+    for (uint32_t a = 0x38000; a < 0x40000; a++)
+    {
+        cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
+    }
+
+    const ntdlib::agb::Rom rom = cart.ToRom();
+    return hokuto::testing::RomBytes(rom);
+}
+
+// ntdlib's performer plays song 0 of the ROM that `file` builds.
+Sequence PlayedGba(const File& file)
+{
+    return hokuto::song::ReadSequence(*hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(file)), 0);
+}
+
+// The edit of track `index` of the GBA song of `file` from `from` to `to`.
+Edited EditGba(const File& file, std::size_t index, Program from, Program to)
+{
+    const Sequence played = PlayedGba(file);
+    const Track& track = played.tracks.at(index);
+    return EditInstrument(file, 0, track.number, track.stretches, from, to);
+}
+
+// The VOICE of a GBA track gets the new program. A track starts without a program. The notes of voice 0 therefore take
+// a new program in their VOICE alone, and key 64 stays silent. The other track plays as before. The voice group is the
+// song's one bank, and it contains programs 0 to 127.
+void TestGba()
+{
+    const File file = hokuto::format::ImportGbaRom(GbaRom());
+    const Sequence before = PlayedGba(file);
+    SEQLIB_REQUIRE(before.tracks.size() == 2);
+    XSFLIB_CHECK(Instruments(before.tracks[0]) == (std::vector<Program>{{0, 1}, {0, 1}}));
+    XSFLIB_CHECK(Instruments(before.tracks[1]) == (std::vector<Program>{{0, 0}}));
+
+    const Sequence voice = PlayedGba(EditGba(file, 0, {0, 1}, {0, 2}).file);
+    XSFLIB_CHECK(Instruments(voice.tracks.at(0)) == (std::vector<Program>{{0, 2}, {0, 2}}));
+    XSFLIB_CHECK(Notes(voice.tracks[0]) == Notes(before.tracks[0]) && OthersAsBefore(before, voice, 0));
+
+    const Edited zero = EditGba(file, 1, {0, 0}, {0, 2});
+    const Sequence start = PlayedGba(zero.file);
+    XSFLIB_CHECK(Instruments(start.tracks.at(1)) == (std::vector<Program>{{0, 2}}));
+    XSFLIB_CHECK(Notes(start.tracks[1]) == Notes(before.tracks[1]) && OthersAsBefore(before, start, 1));
+    XSFLIB_CHECK(zero.file.sequences[0]->items.size() == file.sequences[0]->items.size());
+
+    const auto refuses = [&file](Program to)
+    {
+        return !xsflib::testing::ErrorOf<std::invalid_argument>([&] { EditGba(file, 0, {0, 1}, to); }).empty();
+    };
+    XSFLIB_CHECK(refuses({1, 1}));
+    XSFLIB_CHECK(refuses({0, 128}));
+    XSFLIB_CHECK(!refuses({0, 127}));
 }
 
 } // namespace
 
 int main()
 {
-    TestArchivePlays();
-    TestProgram();
-    TestStart();
-    TestSlot();
-    TestSlotAtStart();
-    TestBoth();
-    TestBeforeRandom();
-    TestRefusals();
-
-    return xsflib::testing::Summary("instruments");
+    return xsflib::testing::RunTest("instruments",
+                                    []
+                                    {
+                                        TestArchivePlays();
+                                        TestProgram();
+                                        TestStart();
+                                        TestSlot();
+                                        TestSlotAtStart();
+                                        TestBoth();
+                                        TestBeforeRandom();
+                                        TestRefusals();
+                                        TestGba();
+                                    });
 }

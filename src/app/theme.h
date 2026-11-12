@@ -7,6 +7,9 @@
 
 #include <imgui.h>
 
+#include <array>
+#include <cstddef>
+
 namespace hokuto::app::theme
 {
 
@@ -50,9 +53,10 @@ inline constexpr ImU32 kSky = IM_COL32(56, 189, 248, 255); // the browser's soun
 inline constexpr ImU32 kSolo = IM_COL32(240, 82, 82, 255);
 inline constexpr ImU32 kMeterMid = IM_COL32(234, 200, 70, 255);
 inline constexpr ImU32 kMeterHigh = IM_COL32(240, 82, 82, 255);
+inline constexpr ImU32 kCollision = IM_COL32(255, 96, 96, 255); // a note that the console's channels cut or drop
 
 // The colours that tracks take, in order.
-inline constexpr ImU32 kTrackColours[] = {
+inline constexpr std::array<ImU32, 9> kTrackColours = {
     IM_COL32(74, 127, 224, 255), IM_COL32(47, 181, 200, 255), IM_COL32(60, 184, 120, 255),
     IM_COL32(155, 197, 61, 255), IM_COL32(226, 185, 59, 255), IM_COL32(232, 128, 58, 255),
     IM_COL32(224, 82, 90, 255),  IM_COL32(211, 95, 168, 255), IM_COL32(142, 106, 216, 255),
@@ -61,17 +65,33 @@ inline constexpr ImU32 kTrackColours[] = {
 // The colour of every track while the tracks' colours are Standard.
 inline constexpr ImU32 kStandardTrackColour = IM_COL32(122, 134, 153, 255);
 
+// `colour` 40% of the way to white, with each channel rounded to the nearest whole value.
+constexpr ImU32 TowardWhite(ImU32 colour)
+{
+    ImU32 lighter = colour & IM_COL32_A_MASK;
+    for (const ImU32 shift : {IM_COL32_R_SHIFT, IM_COL32_G_SHIFT, IM_COL32_B_SHIFT})
+    {
+        const ImU32 value = (colour >> shift) & 0xFF;
+        lighter |= (value + ((255 - value) * 4 + 5) / 10) << shift;
+    }
+
+    return lighter;
+}
+
 // The colours that the user picks a track's from: the tracks' colours, the same 40% of the way to white, and the
 // Standard colour.
-inline constexpr ImU32 kTrackPalette[] = {
-    IM_COL32(74, 127, 224, 255),  IM_COL32(47, 181, 200, 255),  IM_COL32(60, 184, 120, 255),
-    IM_COL32(155, 197, 61, 255),  IM_COL32(226, 185, 59, 255),  IM_COL32(232, 128, 58, 255),
-    IM_COL32(224, 82, 90, 255),   IM_COL32(211, 95, 168, 255),  IM_COL32(142, 106, 216, 255),
-    IM_COL32(146, 178, 236, 255), IM_COL32(130, 211, 222, 255), IM_COL32(138, 212, 174, 255),
-    IM_COL32(195, 220, 139, 255), IM_COL32(238, 213, 137, 255), IM_COL32(241, 179, 137, 255),
-    IM_COL32(236, 151, 156, 255), IM_COL32(229, 159, 203, 255), IM_COL32(187, 166, 232, 255),
-    kStandardTrackColour,
-};
+inline constexpr std::array<ImU32, 2 * kTrackColours.size() + 1> kTrackPalette = []
+{
+    std::array<ImU32, 2 * kTrackColours.size() + 1> palette{};
+    for (std::size_t i = 0; i < kTrackColours.size(); i++)
+    {
+        palette[i] = kTrackColours[i];
+        palette[kTrackColours.size() + i] = TowardWhite(kTrackColours[i]);
+    }
+    palette.back() = kStandardTrackColour;
+
+    return palette;
+}();
 
 // Text sizes, before the display's scale. Dear ImGui sizes a font by the height of its line, from its ascent to its
 // descent. It rounds a size to whole points, and it stretches the glyphs to any other size. Stretched glyphs come out

@@ -65,10 +65,20 @@ std::vector<CommandRow> CommandRows(const format::File& file, uint32_t sequence,
                                     std::optional<uint32_t> end);
 
 // The same rows of the sequence's commands `commands`, with the offset of each item in `offsets` (Offsets). A caller
-// that lists several tracks works out the offsets once.
+// that lists several tracks works out the offsets once. `console` is the console of the bytes. Without it, the rows
+// follow the console of every driver except Brownie Brown's driver. The rests and releases of Brownie Brown's driver
+// wait too.
 std::vector<CommandRow> CommandRows(const ntdlib::commands::Sequence& commands, const std::vector<uint32_t>& offsets,
                                     std::span<const song::Stretch> stretches, std::span<const song::Note> notes,
-                                    std::optional<uint32_t> end);
+                                    std::optional<uint32_t> end, const song::Console* console = nullptr);
+
+// The place of each note of `track` that the driver never started (song::Track::unstarted), in order: the offset of
+// its command, and the stretch that ran the command at the note's start (CommandRows). The performer records no
+// stretch for such a note (song::Note::stretch). Where several stretches ran the command at that tick, the first of
+// them counts. Nothing for a note whose command no stretch ran there. `track` is a track of sequence `sequence` of
+// `file`.
+std::vector<std::optional<NotePlace>> UnstartedPlaces(const format::File& file, uint32_t sequence,
+                                                      const song::Track& track);
 
 // The command at offset `command` of sequence `sequence` of `file`, with its target as an item of the sequence. Throws
 // std::invalid_argument with a message for the user for an offset where no command starts.
@@ -97,14 +107,17 @@ uint32_t ItemOf(const format::File& file, uint32_t sequence, uint32_t command);
 // The lowest and the highest value that an argument can take.
 using ValueRange = format::ValueRange;
 
-// The values that the bytes of `command` can hold on `console` in its value from `source`, or with `time` in its time:
-// in the unit of the command's kind, in ticks for a time, or as a variable's number from a variable. A random value's
+// The values that the bytes of `command` can hold on track `track` of `console` in its value from `source`, or with
+// `time` in its time: in the unit of the command's kind, in ticks for a time, or as a variable's number from a
+// variable. Where a driver plays less of a value on some tracks, the range is what the track plays: a PSG track of
+// Konami's driver accepts a volume up to 15. A random value's
 // range holds both ends. A note's velocity runs from 0 to 127, and its key too. A tempo and a timebase start at 1: 0
 // stops the player's clock. A tempo ends at 1023, except on the Wii before March 2008. The player holds a higher tempo
 // at 1023. Nothing where the command can't take such an argument, or where the console's player skips the command
 // (song::Runs).
-std::optional<ValueRange> ArgumentRange(const song::Console& console, const ntdlib::commands::Command& command,
-                                        ntdlib::commands::Source source, bool time = false);
+std::optional<ValueRange> ArgumentRange(const song::Console& console, int track,
+                                        const ntdlib::commands::Command& command, ntdlib::commands::Source source,
+                                        bool time = false);
 
 // `command` with each value at the nearest one that `console` holds.
 ntdlib::commands::Command Nearest(const song::Console& console, ntdlib::commands::Command command);
@@ -138,21 +151,27 @@ Edited ChangeCommands(const format::File& file, uint32_t sequence, std::span<con
 // The file after `moves` take settings of sequence `sequence` of `file` to other ticks (MoveSettings), and the commands
 // at `places` then take the values of `commands` (ChangeCommands). The places name commands of `file`. A drag in the
 // Key Editor's controller lanes moves settings and changes their values in one edit. Throws std::invalid_argument with
-// a message for the user for each move that MoveSettings refuses, and for each change that ChangeCommands refuses.
+// a message for the user for each move that MoveSettings refuses, and for each change that ChangeCommands refuses. On
+// Krawall, `rows` contains the rows of the module (MoveSettings).
 Edited MoveAndChangeCommands(const format::File& file, uint32_t sequence, std::span<const SettingMove> moves,
-                             std::span<const CommandPlace> places, std::span<const ntdlib::commands::Command> commands);
+                             std::span<const CommandPlace> places, std::span<const ntdlib::commands::Command> commands,
+                             std::span<const song::Stretch> rows = {});
 
 // The file after `command` goes in before the command at `place` of sequence `sequence` of `file`. With `entered`, the
 // track entered the sequence at that command: code that enters there runs the new command first. A target of the new
 // command names an item before the edit. `Edited::added` holds the new command's item. Throws std::invalid_argument
 // with a message for the user for a command that the console's bytes can't hold or its player skips (song::Runs), and
-// for a sequence whose commands can't move.
+// for a sequence whose commands can't move. On the DS, it also throws for a command before the allocation of tracks at
+// a sequence's first command, and for a new allocation of tracks at any later command: NITRO-Composer reads the
+// allocation only at the first command.
 Edited InsertCommand(const format::File& file, uint32_t sequence, const CommandPlace& place, bool entered,
                      ntdlib::commands::Command command);
 
 // The file after the commands at `places` of sequence `sequence` of `file` go. A note goes as the Key Editor removes it
 // (EditNotes). Throws std::invalid_argument with a message for the user for a sequence whose commands can't move, and
 // for a note that can't go.
+// On the GBA's other drivers, it also throws for the end of a track, and on a driver whose loops are counted repeats
+// (DriverEdits::CountsRepeats) for the start or the end of a repeat without the other.
 Edited RemoveCommands(const format::File& file, uint32_t sequence, std::span<const CommandPlace> places);
 
 } // namespace hokuto::edit

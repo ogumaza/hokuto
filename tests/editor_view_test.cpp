@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // Tests the view of a sound that a file keeps (src/app/editor_view.h): from the transport, the arrangement, the tracks'
-// mutes and solos and the editors, and back into them. The states are made by hand.
+// mutes and solos and the editors, and back into them. The states are made by hand. Tests the cycle's locators for a
+// sound's sequence and after a new version of it too, with made-up sequences.
 
 #include "app/editor_view.h"
 
@@ -19,17 +20,23 @@
 #include "app/transport.h"
 #include "app/views.h"
 #include "format/file.h"
+#include "song/sequence.h"
 
 using hokuto::app::ApplyView;
 using hokuto::app::ArrangementState;
 using hokuto::app::KeyEditorState;
 using hokuto::app::LaneSetting;
+using hokuto::app::Locators;
+using hokuto::app::LocatorsAfter;
 using hokuto::app::OpenEditors;
+using hokuto::app::SongLocators;
 using hokuto::app::SongView;
 using hokuto::app::Transport;
 using hokuto::app::ViewOf;
 using hokuto::format::EditorView;
 using hokuto::format::ViewFront;
+using hokuto::song::Loop;
+using hokuto::song::Sequence;
 using ntdlib::commands::Kind;
 
 namespace
@@ -142,18 +149,19 @@ void TestApplyView()
     XSFLIB_CHECK((editors == OpenEditors{2, std::nullopt, ViewFront::kKeyEditor}) &&
                  (list == OpenEditors{std::nullopt, 5, ViewFront::kListEditor}));
 
-    const auto front = [&kNumbers](std::optional<uint8_t> key, std::optional<uint8_t> list, ViewFront in_view)
+    const auto front =
+        [&kNumbers](std::optional<uint8_t> key_track, std::optional<uint8_t> list_track, ViewFront in_view)
     {
         EditorView view = TestView();
-        view.key_editor_track = key;
-        view.list_editor_track = list;
+        view.key_editor_track = key_track;
+        view.list_editor_track = list_track;
         view.front = in_view;
-        Transport transport;
-        ArrangementState arrangement;
-        SongView song;
-        song.tracks.resize(3);
-        KeyEditorState key_editor;
-        return ApplyView(view, kNumbers, transport, arrangement, song, key_editor).front;
+        Transport its_transport;
+        ArrangementState its_arrangement;
+        SongView its_song;
+        its_song.tracks.resize(3);
+        KeyEditorState its_editor;
+        return ApplyView(view, kNumbers, its_transport, its_arrangement, its_song, its_editor).front;
     };
 
     XSFLIB_CHECK(front(2, 5, ViewFront::kKeyEditor) == ViewFront::kKeyEditor);
@@ -226,14 +234,87 @@ void TestRoundTrip()
     XSFLIB_CHECK(view == TestView());
 }
 
+// A sequence at 48 ticks to the quarter note that lasts `length` ticks, with `loop`. The last note of the sequence ends
+// at tick `notes_end`.
+Sequence SongOf(uint32_t length, uint32_t notes_end, std::optional<Loop> loop)
+{
+    Sequence sequence;
+    sequence.timebase = 48;
+    sequence.length = length;
+    sequence.notes_end = notes_end;
+    sequence.loop = loop;
+    return sequence;
+}
+
+// The locators go round a sequence's loop. Without one, they run from the start to the beat on which the last note
+// ends: 1,000 ticks end in beat 21. For a sequence without notes, they span its length.
+void TestSongLocators()
+{
+    XSFLIB_CHECK((SongLocators(SongOf(3072, 3072, Loop{384, 3072})) == Locators{8.0, 64.0}));
+    XSFLIB_CHECK((SongLocators(SongOf(1100, 1000, std::nullopt)) == Locators{0.0, 21.0}));
+    XSFLIB_CHECK((SongLocators(SongOf(96, 0, std::nullopt)) == Locators{0.0, 2.0}));
+}
+
+// A song whose loop runs from beat 8 to beat 24 replaces one whose loop runs over its 64 beats. Replace… makes such a
+// version. Locators on the old loop move to the new one, and an undo moves them back. So do locators on the old loop
+// that a file's view kept as floats: 335 ticks come back as 6.9791665 quarter notes. The user's locators inside the
+// new song stay. Those that start at or past its end take the new loop. A version with the same loop keeps the
+// locators.
+void TestLocatorsAfter()
+{
+    const Sequence long_song = SongOf(3072, 3072, Loop{0, 3072});
+    const Sequence short_song = SongOf(1152, 1152, Loop{384, 1152});
+    XSFLIB_CHECK((LocatorsAfter({0.0, 64.0}, long_song, short_song) == Locators{8.0, 24.0}));
+    XSFLIB_CHECK((LocatorsAfter({8.0, 24.0}, short_song, long_song) == Locators{0.0, 64.0}));
+    const Sequence odd_loop = SongOf(3072, 3072, Loop{335, 3072});
+    const auto kept = static_cast<double>(static_cast<float>(335.0 / 48));
+    XSFLIB_CHECK(kept != 335.0 / 48);
+    XSFLIB_CHECK((LocatorsAfter({kept, 64.0}, odd_loop, short_song) == Locators{8.0, 24.0}));
+
+    XSFLIB_CHECK((LocatorsAfter({4.0, 12.0}, long_song, short_song) == Locators{4.0, 12.0}));
+    XSFLIB_CHECK((LocatorsAfter({24.0, 32.0}, long_song, short_song) == Locators{8.0, 24.0}));
+    XSFLIB_CHECK((LocatorsAfter({40.0, 48.0}, long_song, short_song) == Locators{8.0, 24.0}));
+    XSFLIB_CHECK((LocatorsAfter({0.0, 64.0}, long_song, long_song) == Locators{0.0, 64.0}));
+    XSFLIB_CHECK((LocatorsAfter({2.0, 6.0}, long_song, long_song) == Locators{2.0, 6.0}));
+}
+
+// Without a loop, the locators that showing a song set only grow. Its last note ends at tick 1,000, in beat 21. They
+// reach beat 23 once the last note ends at tick 1,100, and stay there when it moves back to tick 1,000. They reach beat
+// 25 once it ends at tick 1,200: locators from the start that end past the last note count as grown. So do the user's
+// locators from the start to beat 30. They stay while the notes end before them, and reach beat 32 once the last note
+// ends at tick 1,500. Locators on a loop that is removed reach back to the start, and keep the loop's end where the
+// last note ends before it. The user's locators elsewhere stay, unless they start at or past the song's end.
+void TestLocatorsWithoutLoop()
+{
+    const Sequence ends_1000 = SongOf(1100, 1000, std::nullopt);
+    const Sequence ends_1100 = SongOf(1200, 1100, std::nullopt);
+    const Sequence ends_1200 = SongOf(1300, 1200, std::nullopt);
+    const Sequence ends_1500 = SongOf(1600, 1500, std::nullopt);
+    XSFLIB_CHECK((LocatorsAfter({0.0, 21.0}, ends_1000, ends_1100) == Locators{0.0, 23.0}));
+    XSFLIB_CHECK((LocatorsAfter({0.0, 23.0}, ends_1100, ends_1000) == Locators{0.0, 23.0}));
+    XSFLIB_CHECK((LocatorsAfter({0.0, 23.0}, ends_1000, ends_1200) == Locators{0.0, 25.0}));
+    XSFLIB_CHECK((LocatorsAfter({0.0, 30.0}, ends_1000, ends_1100) == Locators{0.0, 30.0}));
+    XSFLIB_CHECK((LocatorsAfter({0.0, 30.0}, ends_1100, ends_1500) == Locators{0.0, 32.0}));
+
+    const Sequence looped = SongOf(1152, 1152, Loop{384, 1152});
+    XSFLIB_CHECK((LocatorsAfter({8.0, 24.0}, looped, ends_1000) == Locators{0.0, 24.0}));
+    XSFLIB_CHECK((LocatorsAfter({2.0, 6.0}, ends_1000, ends_1100) == Locators{2.0, 6.0}));
+    XSFLIB_CHECK((LocatorsAfter({30.0, 40.0}, looped, ends_1000) == Locators{0.0, 21.0}));
+}
+
 } // namespace
 
 int main()
 {
-    TestViewOf();
-    TestApplyView();
-    TestRoundedPositions();
-    TestRoundTrip();
-
-    return xsflib::testing::Summary("editor_view");
+    return xsflib::testing::RunTest("editor_view",
+                                    []
+                                    {
+                                        TestViewOf();
+                                        TestApplyView();
+                                        TestRoundedPositions();
+                                        TestRoundTrip();
+                                        TestSongLocators();
+                                        TestLocatorsAfter();
+                                        TestLocatorsWithoutLoop();
+                                    });
 }

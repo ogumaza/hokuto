@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "app/theme.h"
+#include "app/time_text.h"
 #include "app/widgets.h"
 
 namespace hokuto::app

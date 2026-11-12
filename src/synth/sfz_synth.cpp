@@ -8,11 +8,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -78,15 +78,16 @@ TickTimes::TickTimes(const seqlib::midi::File& file)
         const int ticks = file.division & 0xFF;
         if (frames <= 0 || ticks == 0)
         {
-            throw std::runtime_error("The MIDI file's timing in frames is damaged.");
+            throw std::runtime_error("The MIDI file has an invalid SMPTE time division.");
         }
 
         stretches_.push_back({0, 0.0, 1.0 / (rate * ticks)});
         return;
     }
+
     if (file.division == 0)
     {
-        throw std::runtime_error("The MIDI file gives no ticks to a quarter note.");
+        throw std::runtime_error("The MIDI file has a time division of 0 ticks per quarter note.");
     }
 
     // The tempo changes of every track, in order of tick. Changes at one tick keep the order of their tracks, and the
@@ -137,7 +138,7 @@ seqlib::midi::File ReadMidi(std::span<const uint8_t> midi)
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't read the MIDI file. ") + error.what());
+        throw std::runtime_error(std::string("Can't read the MIDI file. ") + error.what());
     }
 }
 
@@ -171,7 +172,7 @@ const export_::SfzFile& FileOf(const std::string& name, const std::vector<export
         }
     }
 
-    throw std::runtime_error("The SFZ files have no file for MIDI track \"" + name + "\".");
+    throw std::runtime_error("There's no SFZ file for MIDI track \"" + name + "\".");
 }
 
 // The tracks of `file` that play, with their messages before sample `frames` at `rate`. A track plays when a note
@@ -244,7 +245,7 @@ TemporaryFolder::TemporaryFolder()
         }
     }
 
-    throw std::runtime_error("Hokuto can't make a temporary folder for sfizz in " + xsflib::Utf8(base) + ".");
+    throw std::runtime_error("Can't create a temporary folder for sfizz in " + xsflib::Utf8(base) + ".");
 }
 
 TemporaryFolder::~TemporaryFolder()
@@ -265,14 +266,13 @@ void WriteFile(const std::filesystem::path& folder, const std::string& name, con
     const std::filesystem::path file = xsflib::PathFromUtf8(name);
     if (file.empty() || file.has_parent_path() || file.is_absolute())
     {
-        throw std::runtime_error("The SFZ files name a file \"" + name + "\" outside their folders.");
+        throw std::runtime_error("The SFZ files refer to a file outside their folders: \"" + name + "\".");
     }
 
-    std::ofstream out(folder / file, std::ios::binary);
-    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-    if (!out)
+    const std::span<const uint8_t> data(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+    if (xsflib::WriteFile(folder / file, data))
     {
-        throw std::runtime_error("Hokuto can't write " + name + " for sfizz in " + xsflib::Utf8(folder) + ".");
+        throw std::runtime_error("Can't write " + name + " for sfizz in " + xsflib::Utf8(folder) + ".");
     }
 }
 
@@ -326,8 +326,8 @@ Synth LoadSynth(const std::filesystem::path& path, const export_::SfzFile& file,
     const std::size_t played = loaded ? static_cast<std::size_t>(synth->getNumRegions()) : 0;
     if (played < regions)
     {
-        throw std::runtime_error("sfizz plays " + std::to_string(played) + " of the " + std::to_string(regions) +
-                                 " regions of " + file.name + ".");
+        throw std::runtime_error("sfizz loaded only " + std::to_string(played) + " of the " + std::to_string(regions) +
+                                 " regions in " + file.name + ".");
     }
     if (!loaded)
     {
@@ -408,18 +408,20 @@ bool RenderTrack(sfz::Sfizz& synth, const TrackPlay& track, std::size_t frames, 
         {
             count = std::min(count, track.messages[next].sample - at);
         }
+
         synth.renderBlock(buffers, count, 1);
         for (std::size_t i = 0; i < count; i++)
         {
             if (!std::isfinite(left[i]) || !std::isfinite(right[i]))
             {
-                throw std::runtime_error("sfizz gave samples that aren't finite for MIDI track \"" + track.name +
+                throw std::runtime_error("sfizz produced samples that aren't finite for MIDI track \"" + track.name +
                                          "\".");
             }
 
             mix[2 * (at + i)] += left[i];
             mix[2 * (at + i) + 1] += right[i];
         }
+
         at += count;
         if (advance && !advance(at))
         {
@@ -471,6 +473,7 @@ StereoRender RenderSfz(std::span<const uint8_t> midi, const export_::SfzInstrume
     {
         WriteFile(files, file.name, file.text);
     }
+
     for (const export_::SfzSample& sample : instruments.samples)
     {
         WriteFile(samples, sample.name, sample.wav);

@@ -18,6 +18,7 @@
 #include "ntdlib/commands/sequence.h"
 
 #include "app/list_edits.h"
+#include "app/time_text.h"
 #include "app/transport.h"
 #include "edit/bytecode.h"
 
@@ -85,6 +86,89 @@ std::string LineOf(const ListTrack& track, const ListRow& row)
     return line;
 }
 
+// Whether `command` branches or reads a variable.
+bool IsLogic(const Command& command)
+{
+    return command.conditional || !VariablesRead(command).empty();
+}
+
+// Whether sequence `sequence` of `file` has a command that branches or reads a variable. A sequence that the List
+// Editor can't list has none.
+bool HasLogicCommands(const format::File& file, uint32_t sequence)
+{
+    try
+    {
+        const std::vector<Command>& items = edit::SequenceToEdit(file, sequence).items;
+        if (std::none_of(items.begin(), items.end(), IsLogic))
+        {
+            return false;
+        }
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+
+    return true;
+}
+
+// A row of `track` that branches or reads a variable, at `tick`.
+struct Run
+{
+    uint32_t tick;
+    const ListTrack* track;
+    const ListRow* row;
+};
+
+// The rows of `tracks` that branch or read variables, in the order of their ticks. At a tick, the tracks come in the
+// order of their numbers, and each track's rows in the order that it ran them.
+std::vector<Run> LogicRuns(const std::vector<ListTrack>& tracks)
+{
+    std::vector<Run> runs;
+    for (const ListTrack& track : tracks)
+    {
+        for (const ListRow& row : track.rows)
+        {
+            if (row.row.tick && IsLogic(row.command))
+            {
+                runs.push_back({*row.row.tick, &track, &row});
+            }
+        }
+    }
+    const auto earlier = [](const Run& a, const Run& b)
+    {
+        return a.tick < b.tick;
+    };
+    std::stable_sort(runs.begin(), runs.end(), earlier);
+
+    return runs;
+}
+
+// Fills `marker` with the commands of `runs` from `first` to `last`, their lines and the variables that they read.
+// `lines` keeps the line of each command once it's worked out.
+void FillLogicMarker(LogicMarkerView& marker, const std::vector<Run>& runs, std::size_t first, std::size_t last,
+                     std::map<std::pair<int, uint32_t>, std::string>& lines)
+{
+    for (std::size_t i = first; i < last; i++)
+    {
+        const Run& run = runs[i];
+        const std::pair<int, uint32_t> place(run.track->number, run.row->row.command);
+        const auto [line, new_line] = lines.try_emplace(place);
+        if (new_line)
+        {
+            line->second = LineOf(*run.track, *run.row);
+        }
+        const std::vector<int> read = VariablesRead(run.row->command);
+        marker.branch = marker.branch || run.row->command.conditional;
+        marker.variables.insert(marker.variables.end(), read.begin(), read.end());
+        marker.commands.push_back({place.first, place.second, line->second});
+    }
+
+    // Each set names each variable once, in order.
+    std::sort(marker.variables.begin(), marker.variables.end());
+    marker.variables.erase(std::unique(marker.variables.begin(), marker.variables.end()), marker.variables.end());
+}
+
 } // namespace
 
 std::vector<int> VariablesRead(const Command& command)
@@ -109,48 +193,15 @@ std::vector<int> VariablesRead(const Command& command)
 std::vector<LogicMarkerView> LogicMarkers(const format::File& file, uint32_t sequence, const song::Sequence& song)
 {
     // A sequence without such commands has no places. The List Editor's rows then aren't worked out.
-    const auto logic = [](const Command& command)
-    {
-        return command.conditional || !VariablesRead(command).empty();
-    };
-    try
-    {
-        const std::vector<Command>& items = edit::SequenceToEdit(file, sequence).items;
-        if (std::none_of(items.begin(), items.end(), logic))
-        {
-            return {};
-        }
-    }
-    catch (const std::exception&)
+    if (!HasLogicCommands(file, sequence))
     {
         return {};
     }
 
     // The rows that read variables or branch, in the order of their ticks. At a tick, the tracks come in the order of
     // their numbers, and each track's rows in the order that it ran them.
-    struct Run
-    {
-        uint32_t tick;
-        const ListTrack* track;
-        const ListRow* row;
-    };
     const std::vector<ListTrack> tracks = MakeListTracks(file, sequence, song);
-    std::vector<Run> runs;
-    for (const ListTrack& track : tracks)
-    {
-        for (const ListRow& row : track.rows)
-        {
-            if (row.row.tick && logic(row.command))
-            {
-                runs.push_back({*row.row.tick, &track, &row});
-            }
-        }
-    }
-    const auto earlier = [](const Run& a, const Run& b)
-    {
-        return a.tick < b.tick;
-    };
-    std::stable_sort(runs.begin(), runs.end(), earlier);
+    const std::vector<Run> runs = LogicRuns(tracks);
 
     // The places that run the same commands share a set. Each command's line is worked out once.
     using Signature = std::vector<std::pair<int, uint32_t>>;
@@ -170,25 +221,7 @@ std::vector<LogicMarkerView> LogicMarkers(const format::File& file, uint32_t seq
         if (added)
         {
             LogicMarkerView& marker = markers.emplace_back();
-            for (std::size_t i = first; i < last; i++)
-            {
-                const Run& run = runs[i];
-                const std::pair<int, uint32_t> place(run.track->number, run.row->row.command);
-                const auto [line, new_line] = lines.try_emplace(place);
-                if (new_line)
-                {
-                    line->second = LineOf(*run.track, *run.row);
-                }
-                const std::vector<int> read = VariablesRead(run.row->command);
-                marker.branch = marker.branch || run.row->command.conditional;
-                marker.variables.insert(marker.variables.end(), read.begin(), read.end());
-                marker.commands.push_back({place.first, place.second, line->second});
-            }
-
-            // Each set names each variable once, in order.
-            std::sort(marker.variables.begin(), marker.variables.end());
-            marker.variables.erase(std::unique(marker.variables.begin(), marker.variables.end()),
-                                   marker.variables.end());
+            FillLogicMarker(marker, runs, first, last, lines);
         }
         markers[set->second].ticks.push_back(static_cast<int32_t>(runs[first].tick));
     }

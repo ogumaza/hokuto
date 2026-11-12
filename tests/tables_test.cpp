@@ -141,7 +141,7 @@ sar::SoundArchive Strictly(const std::vector<uint8_t>& archive, Flavor flavor)
 // The values of sound `sound` that ntdlib reads from the archive that `file` exports, by the strict rules.
 sar::SoundInfo Exported(const File& file, uint32_t sound)
 {
-    return Strictly(hokuto::format::ExportArchive(file), file.native->flavor).Sounds().at(sound);
+    return Strictly(hokuto::format::ExportArchive(file), FlavorOf(*file.native)).Sounds().at(sound);
 }
 
 // `file` after its sounds `sounds` take each optional value of `values` (kOptional). A wave sound takes only the values
@@ -166,16 +166,7 @@ File WithOptionalValues(File file, const std::vector<uint32_t>& sounds, const st
 // The message of the std::invalid_argument that a change of sound `sound` of `file` throws, or nothing.
 std::string Refusal(const File& file, uint32_t sound, const SoundChange& change)
 {
-    try
-    {
-        ChangeSound(file, sound, change);
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return {};
+    return xsflib::testing::ErrorOf<std::invalid_argument>([&] { ChangeSound(file, sound, change); });
 }
 
 // Every value of the first sound changes, and ntdlib reads each new value from the export. The other sounds keep
@@ -317,16 +308,9 @@ void TestNewPlaces(Flavor flavor)
         native.tables->sounds[kWaveSound].channel_priority = 70;
     };
     unread.native.Edit(set_priority);
-    std::string message;
-    try
-    {
-        hokuto::format::ExportArchive(unread);
-    }
-    catch (const std::invalid_argument& error)
-    {
-        message = error.what();
-    }
-    XSFLIB_CHECK(message == "The archive's tables have no place for the channel priority of sound WSD_SOUND.");
+    const std::string message =
+        xsflib::testing::ErrorOf<std::invalid_argument>([&] { hokuto::format::ExportArchive(unread); });
+    XSFLIB_CHECK(message == "The archive tables have no field for the channel priority of sound WSD_SOUND.");
 }
 
 // After an export's tables grow, the files after them move. The sequences of the archive's files and the fields of the
@@ -381,40 +365,42 @@ void TestRefusals()
 {
     const File file = hokuto::format::ImportArchive(TestArchive(Flavor::kNx, false), Flavor::kNx);
     const std::string kNotSequence =
-        "Sound WSD_SOUND isn't a sequence sound. Only a sequence sound has bank slots, "
+        "Sound WSD_SOUND isn't a sequence sound. Only sequence sounds have bank slots, "
         "tracks, a channel priority and a release priority fix.";
-    const std::string kSlotsMessage = "A sound has four bank slots. Each holds one of the archive's banks, or none.";
-    const std::string kTracksMessage = "A sound allocates at least one track, of tracks 0 to 15.";
+    const std::string kSlotsMessage =
+        "A sound has four bank slots. Each slot can contain a bank of the archive, or none.";
+    const std::string kTracksMessage = "A sound must allocate at least one of tracks 0–15.";
 
     XSFLIB_CHECK(Refusal(file, kPlain, {SoundValue::kPanMode, 0, 1}) ==
-                 "Hokuto can't give sound SEQ_PLAIN a place for its pan in the archive's tables.");
+                 "Can't add a field for the pan of sound SEQ_PLAIN to the archive tables.");
     XSFLIB_CHECK(Refusal(file, kWaveSound, {SoundValue::kActorPlayer, 0, 1}) ==
-                 "Hokuto can't give sound WSD_SOUND a place for its priorities in the archive's tables.");
+                 "Can't add a field for the priorities of sound WSD_SOUND to the archive tables.");
     XSFLIB_CHECK(Refusal(file, kPlain, {SoundValue::kReleasePriorityFix, 0, 1}) ==
-                 "Hokuto can't give sound SEQ_PLAIN a place for its channel priority in the archive's tables.");
+                 "Can't add a field for the channel priority of sound SEQ_PLAIN to the archive tables.");
+    XSFLIB_CHECK(Refusal(file, kPlain, {SoundValue::kReverb, 0, 1}) == "Only GBA songs have a reverb setting.");
     XSFLIB_CHECK(Refusal(file, kPlain, {SoundValue::kPanCurve, 0, 0}).empty());
     XSFLIB_CHECK(Refusal(file, kWaveSound, {SoundValue::kPlayerPriority, 0, 64}).empty());
     XSFLIB_CHECK(Refusal(file, kWaveSound, {SoundValue::kBank, 0, kBankA}) == kNotSequence);
     XSFLIB_CHECK(Refusal(file, kWaveSound, {SoundValue::kChannelPriority, 0, 3}) == kNotSequence);
     XSFLIB_CHECK(Refusal(file, kWaveSound, {SoundValue::kTracks, 0, 1}) == kNotSequence);
     XSFLIB_CHECK(Refusal(file, kWaveSound, {SoundValue::kReleasePriorityFix, 0, 1}) == kNotSequence);
-    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPanMode, 0, 2}) == "The pan mode goes from 0 to 1.");
-    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPanCurve, 0, 9}) == "The pan curve goes from 0 to 8.");
-    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kActorPlayer, 0, 4}) == "The actor player goes from 0 to 3.");
-    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kVolume, 0, 256}) == "The volume goes from 0 to 255.");
+    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPanMode, 0, 2}) == "The pan mode must be from 0 to 1.");
+    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPanCurve, 0, 9}) == "The pan curve must be from 0 to 8.");
+    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kActorPlayer, 0, 4}) == "The actor player must be from 0 to 3.");
+    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kVolume, 0, 256}) == "The volume must be from 0 to 255.");
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kChannelPriority, 0, 128}) ==
-                 "The channel priority goes from 0 to 127.");
+                 "The channel priority must be from 0 to 127.");
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPlayer, 0, sar::ItemId(sar::kPlayerItem, 2)}) ==
-                 "The archive's tables hold no such player.");
-    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPlayer, 0, kBankA}) == "The archive's tables hold no such player.");
+                 "The archive has no such player.");
+    XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kPlayer, 0, kBankA}) == "The archive has no such player.");
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kBank, 0, sar::ItemId(sar::kBankItem, 2)}) == kSlotsMessage);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kBank, 4, kBankA}) == kSlotsMessage);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kBank, -1, kBankA}) == kSlotsMessage);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kTracks, 0, 0}) == kTracksMessage);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kTracks, 0, 0x10000}) == kTracksMessage);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kTracks, 0, 0xFFFF}).empty());
-    XSFLIB_CHECK(Refusal(file, 3, {SoundValue::kVolume, 0, 1}) == "The archive's tables hold no such sound.");
-    XSFLIB_CHECK(Refusal(File{}, 0, {SoundValue::kVolume, 0, 1}) == "This file holds no tables of an archive.");
+    XSFLIB_CHECK(Refusal(file, 3, {SoundValue::kVolume, 0, 1}) == "The archive has no such sound.");
+    XSFLIB_CHECK(Refusal(File{}, 0, {SoundValue::kVolume, 0, 1}) == "This file contains no sound archive tables.");
 }
 
 // A 3DS sound takes a new player, volume, tracks, player priority and actor player, and its old values give the archive
@@ -512,26 +498,23 @@ void TestWii()
     XSFLIB_CHECK(hokuto::format::ExportArchive(back) == archive);
 
     // One bank slot, and no actor player.
-    const std::string kSlot = "A sound of the Wii plays one bank, in slot 0.";
+    const std::string kSlot = "A Wii sound uses only one bank, in slot 0.";
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kBank, 1, kEmpty}) == kSlot);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kBank, -1, kEmpty}) == kSlot);
     XSFLIB_CHECK(Refusal(file, kSong, {SoundValue::kActorPlayer, 0, 1}) ==
-                 "Hokuto reads no actor player in an archive of the Wii.");
+                 "Hokuto doesn't read actor players in Wii archives.");
 
     // The versions before 1.2 and 1.3.
     const File old_file = hokuto::format::ImportWiiArchive(WiiArchive(0x0101));
     const File middle = hokuto::format::ImportWiiArchive(WiiArchive(0x0102));
     const std::string kPan =
-        "An archive of the Wii holds the pan mode and the pan curve from version 1.2 on. This archive holds version "
-        "1.1.";
+        "Wii archives store the pan mode and pan curve from version 1.2 on. This archive is version 1.1.";
     XSFLIB_CHECK(Refusal(old_file, kSong, {SoundValue::kPanMode, 0, 0}) == kPan);
     XSFLIB_CHECK(Refusal(old_file, kSong, {SoundValue::kPanCurve, 0, 1}) == kPan);
     XSFLIB_CHECK(Refusal(old_file, kSong, {SoundValue::kReleasePriorityFix, 0, 1}) ==
-                 "An archive of the Wii holds the release priority fix from version 1.3 on. This archive holds "
-                 "version 1.1.");
+                 "Wii archives store the release priority fix from version 1.3 on. This archive is version 1.1.");
     XSFLIB_CHECK(Refusal(middle, kSong, {SoundValue::kReleasePriorityFix, 0, 1}) ==
-                 "An archive of the Wii holds the release priority fix from version 1.3 on. This archive holds "
-                 "version 1.2.");
+                 "Wii archives store the release priority fix from version 1.3 on. This archive is version 1.2.");
     XSFLIB_CHECK(Refusal(middle, kSong, {SoundValue::kPanCurve, 0, 4}).empty());
     XSFLIB_CHECK(Refusal(old_file, kSong, {SoundValue::kVolume, 0, 10}).empty());
 
@@ -549,19 +532,21 @@ void TestWii()
 
 int main()
 {
-    TestValues(Flavor::kNx);
-    TestValues(Flavor::kCafe);
-    TestBankSlots(Flavor::kNx);
-    TestBankSlots(Flavor::kCafe);
-    TestPlaces(Flavor::kNx);
-    TestPlaces(Flavor::kCafe);
-    TestNewPlaces(Flavor::kNx);
-    TestNewPlaces(Flavor::kCafe);
-    TestMovedFiles(Flavor::kNx);
-    TestMovedFiles(Flavor::kCafe);
-    TestRefusals();
-    Test3ds();
-    TestWii();
-
-    return xsflib::testing::Summary("tables");
+    return xsflib::testing::RunTest("tables",
+                                    []
+                                    {
+                                        TestValues(Flavor::kNx);
+                                        TestValues(Flavor::kCafe);
+                                        TestBankSlots(Flavor::kNx);
+                                        TestBankSlots(Flavor::kCafe);
+                                        TestPlaces(Flavor::kNx);
+                                        TestPlaces(Flavor::kCafe);
+                                        TestNewPlaces(Flavor::kNx);
+                                        TestNewPlaces(Flavor::kCafe);
+                                        TestMovedFiles(Flavor::kNx);
+                                        TestMovedFiles(Flavor::kCafe);
+                                        TestRefusals();
+                                        Test3ds();
+                                        TestWii();
+                                    });
 }

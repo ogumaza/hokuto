@@ -9,16 +9,22 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/gba.h"
+#include "ntdlib/mp2k/sequencer.h"
+
 #include "app/key_edits.h"
+#include "app/list_edits.h"
 #include "app/theme.h"
+#include "app/time_text.h"
 #include "app/transport.h"
 #include "app/widgets.h"
 #include "edit/mix.h"
+#include "song/driver.h"
 
 namespace hokuto::app
 {
@@ -28,38 +34,6 @@ namespace
 // Parts start and end on beats, or on bars while bars show. Eight beats without a note, two bars of 4/4, start a new
 // part.
 constexpr int kPartGap = 8;
-
-// The start that every label of a sequence shares, up to and with its last underscore. NintendoWare's converter names
-// the labels after the sequence, such as SMF_BGM_TITLE_Track_1_0. A sequence with one label shares nothing.
-std::size_t SharedStart(const std::map<uint32_t, std::string>& labels)
-{
-    if (labels.size() < 2)
-    {
-        return 0;
-    }
-
-    std::string_view shared = labels.begin()->second;
-    for (const auto& [offset, name] : labels)
-    {
-        const auto [end, other] = std::mismatch(shared.begin(), shared.end(), name.begin(), name.end());
-        shared = shared.substr(0, static_cast<std::size_t>(end - shared.begin()));
-    }
-
-    const std::size_t underscore = shared.rfind('_');
-    return underscore == std::string_view::npos ? 0 : underscore + 1;
-}
-
-// The name of the subroutine at `offset`: its label without the start that every label shares, such as Track_1_0.
-std::string SubroutineName(const std::map<uint32_t, std::string>& labels, std::size_t shared, uint32_t offset)
-{
-    const auto label = labels.find(offset);
-    if (label == labels.end())
-    {
-        return "Subroutine";
-    }
-
-    return label->second.size() > shared ? label->second.substr(shared) : label->second;
-}
 
 // The level in dB of a track's send, from 0 to 255. nn::atk takes the send's fraction of 127 as its gain. The level is
 // therefore 20 log10(send / 127).
@@ -73,14 +47,18 @@ float SendLevel(int send)
     return 20.0f * std::log10(static_cast<float>(send) / 127.0f);
 }
 
-} // namespace
-
-SongView MakeSongView(const song::Sequence& sequence)
+// The timing of the song: the timebase, the tempos, the bars, the length and the loop.
+void SetSongTiming(SongView& view, const song::Sequence& sequence)
 {
-    SongView view;
-    view.name = sequence.name;
     view.ticks_per_quarter = sequence.timebase;
     view.tempo = song::TempoAt(sequence, 0);
+    // MusicPlayer2000 starts a song at kDefaultTempo, counted in frames of 60 Hz. The GBA runs its frames at
+    // kFrameRate. The GBA's other drivers count their tempos the same way (song::DriverRules::StartTempoBpm).
+    const std::optional<double> driver_start =
+        sequence.driver ? sequence.driver->StartTempoBpm() : std::optional<double>();
+    view.starting_tempo = sequence.gba   ? ntdlib::mp2k::kDefaultTempo * ntdlib::agb::kFrameRate / 60.0
+                          : driver_start ? *driver_start * ntdlib::agb::kFrameRate / 60.0
+                                         : view.starting_tempo;
     view.beats_per_bar = kBeatsPerBar;
     view.length = static_cast<int32_t>(std::min<uint32_t>(sequence.length, std::numeric_limits<int32_t>::max()));
     if (sequence.loop)
@@ -93,11 +71,12 @@ SongView MakeSongView(const song::Sequence& sequence)
         const auto tick = static_cast<int32_t>(std::min<uint32_t>(tempo.tick, std::numeric_limits<int32_t>::max()));
         view.tempo_changes.push_back({tick, tempo.bpm});
     }
+}
 
-    // Each track's parts, and how many places play each subroutine: the calls in the file that a sound reaches, or the
-    // parts that show it, whichever is more. A call that runs more than once makes a part each time.
-    const int grid = kShowBars ? view.beats_per_bar : 1;
-    std::vector<std::vector<song::Part>> parts;
+// Splits each track into parts, and counts the places that play each subroutine.
+std::map<uint32_t, int> PlaysOfCalls(const song::Sequence& sequence, int grid,
+                                     std::vector<std::vector<song::Part>>& parts)
+{
     std::map<uint32_t, int> plays = sequence.calls;
     std::map<uint32_t, int> shown;
     for (const song::Track& track : sequence.tracks)
@@ -116,44 +95,76 @@ SongView MakeSongView(const song::Sequence& sequence)
         plays[offset] = std::max(plays[offset], count);
     }
 
-    // Each track takes the colour of its number. A track that comes or goes leaves the others' colours as they were.
-    // The track's notes go into parts that the arrangement draws. A call's part takes the subroutine's name, and it's
-    // linked when the subroutine plays from more than one place.
-    const std::size_t shared = SharedStart(sequence.labels);
-    for (std::size_t i = 0; i < sequence.tracks.size(); i++)
-    {
-        const song::Track& track = sequence.tracks[i];
-        TrackView track_view;
-        track_view.name = track.name;
-        track_view.bank = track.bank;
-        track_view.program = track.program;
-        track_view.slot = track.program >= 0 && !track.notes.empty() ? track.notes.front().bank_slot : -1;
-        track_view.rainbow_colour =
-            theme::kTrackColours[static_cast<std::size_t>(track.number) % std::size(theme::kTrackColours)];
-        track_view.colour = track_view.rainbow_colour;
-        for (const song::Part& part : parts[i])
-        {
-            PartView part_view;
-            part_view.start = static_cast<int32_t>(part.start);
-            part_view.length = static_cast<int32_t>(part.end - part.start);
-            part_view.first = part.first;
-            for (std::size_t n = part.first; n < part.first + part.count; n++)
-            {
-                const song::Note& note = track.notes[n];
-                part_view.notes.push_back(
-                    {static_cast<int32_t>(note.start - part.start), static_cast<int32_t>(note.length), note.key});
-            }
-            if (part.call)
-            {
-                part_view.name = SubroutineName(sequence.labels, shared, *part.call);
-                part_view.linked = plays[*part.call] > 1;
-            }
-            track_view.parts.push_back(std::move(part_view));
-        }
-        view.tracks.push_back(std::move(track_view));
-    }
-    ShowMixerAt(view, sequence, 0.0);
+    return plays;
+}
 
+// The view of one part of a track.
+PartView MakePartView(const song::Part& part, const song::Track& track, const std::map<uint32_t, std::string>& labels,
+                      std::size_t shared, const std::map<uint32_t, int>& plays)
+{
+    PartView part_view;
+    part_view.start = static_cast<int32_t>(part.start);
+    part_view.length = static_cast<int32_t>(part.end - part.start);
+    part_view.first = part.first;
+    part_view.unstarted_first = part.unstarted_first;
+    for (std::size_t n = part.first; n < part.first + part.count; n++)
+    {
+        const song::Note& note = track.notes[n];
+        part_view.notes.push_back(
+            {static_cast<int32_t>(note.start - part.start), static_cast<int32_t>(note.length), note.key, note.cut});
+        part_view.psg = part_view.psg || note.psg != 0;
+    }
+    for (std::size_t n = part.unstarted_first; n < part.unstarted_first + part.unstarted_count; n++)
+    {
+        const song::Note& note = track.unstarted[n];
+        part_view.unstarted.push_back(
+            {static_cast<int32_t>(note.start - part.start), static_cast<int32_t>(note.length), note.key, false});
+        part_view.psg = part_view.psg || note.psg != 0;
+    }
+    if (part.call)
+    {
+        part_view.name = SubroutineName(labels, shared, *part.call);
+        part_view.linked = plays.at(*part.call) > 1;
+    }
+
+    return part_view;
+}
+
+// The view of one track and its parts.
+TrackView MakeTrackView(const song::Track& track, const std::vector<song::Part>& parts,
+                        const std::map<uint32_t, std::string>& labels, std::size_t shared,
+                        const std::map<uint32_t, int>& plays, bool sequence_ds)
+{
+    TrackView track_view;
+    track_view.name = track.name;
+    track_view.bank = track.bank;
+    track_view.program = track.program;
+    track_view.slot = track.program >= 0 && !track.notes.empty() ? track.notes.front().bank_slot : -1;
+    track_view.rainbow_colour =
+        theme::kTrackColours[static_cast<std::size_t>(track.number) % std::size(theme::kTrackColours)];
+    track_view.colour = track_view.rainbow_colour;
+    for (const std::vector<song::Note>* notes : {&track.notes, &track.unstarted})
+    {
+        for (const song::Note& note : *notes)
+        {
+            track_view.psg_channels |= note.psg != 0 ? static_cast<uint8_t>(1 << (note.psg - 1)) : 0;
+            track_view.cut_notes += note.cut ? 1 : 0;
+        }
+    }
+    track_view.unstarted_notes = track.unstarted.size();
+    // DSE runs on the DS too. Only its tracks name a driver's channel.
+    track_view.ds = sequence_ds || track.channel >= 0;
+    for (const song::Part& part : parts)
+    {
+        track_view.parts.push_back(MakePartView(part, track, labels, shared, plays));
+    }
+
+    return track_view;
+}
+
+// The variables of the song and the changes that set them.
+void AddSongVariables(SongView& view, const song::Sequence& sequence)
+{
     // The variables that a game can set, at the values that the sequence starts with.
     for (const song::Variable& variable : sequence.variables)
     {
@@ -177,6 +188,33 @@ SongView MakeSongView(const song::Sequence& sequence)
                                        .choices = variable.choices,
                                        .initial = song::StartingValue(sequence, variable.number)});
     }
+}
+
+} // namespace
+
+SongView MakeSongView(const song::Sequence& sequence, const std::map<uint32_t, std::string>& labels)
+{
+    SongView view;
+    view.name = sequence.name;
+    SetSongTiming(view, sequence);
+
+    // Each track's parts, and how many places play each subroutine: the calls in the file that a sound reaches, or the
+    // parts that show it, whichever is more. A call that runs more than once makes a part each time.
+    const int grid = kShowBars ? view.beats_per_bar : 1;
+    std::vector<std::vector<song::Part>> parts;
+    const std::map<uint32_t, int> plays = PlaysOfCalls(sequence, grid, parts);
+
+    // Each track takes the colour of its number. A track that comes or goes leaves the others' colours as they were.
+    // The track's notes go into parts that the arrangement draws. A call's part takes the subroutine's name, and it's
+    // linked when the subroutine plays from more than one place.
+    const std::size_t shared = SharedLabelStart(labels);
+    for (std::size_t i = 0; i < sequence.tracks.size(); i++)
+    {
+        const song::Track& track = sequence.tracks[i];
+        view.tracks.push_back(MakeTrackView(track, parts[i], labels, shared, plays, sequence.ds));
+    }
+    ShowMixerAt(view, sequence, 0.0);
+    AddSongVariables(view, sequence);
 
     return view;
 }
@@ -191,7 +229,9 @@ void ShowMixerAt(SongView& view, const song::Sequence& sequence, double ticks)
         {
             if (!shown.held || shown.held->control != control)
             {
-                value = ShownValue(control, song::MixAt(sequence.tracks[i], MixOf(control), tick));
+                value = ShownValue(control, song::MixAt(sequence.tracks[i], MixOf(control), tick),
+                                   sequence.gba || sequence.driver != nullptr,
+                                   sequence.driver ? sequence.driver->MostVolume(sequence.tracks[i].number) : 127);
             }
         };
         show(MixControl::kVolume, shown.volume);
@@ -221,7 +261,7 @@ song::Mix MixOf(MixControl control)
     return song::Mix::kSendC;
 }
 
-int MixValue(MixControl control, float shown)
+int MixValue(MixControl control, float shown, bool gba, int most)
 {
     // A level of minus infinity is a value of 0.
     double value = 0.0;
@@ -231,19 +271,21 @@ int MixValue(MixControl control, float shown)
     }
     else if (shown > kSilence)
     {
-        value = 127.0 * std::pow(10.0, static_cast<double>(shown) / (control == MixControl::kVolume ? 40.0 : 20.0));
+        value = (control == MixControl::kVolume ? most : 127) *
+                std::pow(10.0, static_cast<double>(shown) / (control == MixControl::kVolume && !gba ? 40.0 : 20.0));
     }
 
     const song::Mix setting = MixOf(control);
-    return static_cast<int>(std::clamp<double>(std::round(value), edit::MixLowest(setting), edit::MixHighest(setting)));
+    const int highest = control == MixControl::kVolume && most != 127 ? most : edit::MixHighest(setting, gba);
+    return static_cast<int>(std::clamp<double>(std::round(value), edit::MixLowest(setting), highest));
 }
 
-float ShownValue(MixControl control, int value)
+float ShownValue(MixControl control, int value, bool gba, int most)
 {
     switch (control)
     {
     case MixControl::kVolume:
-        return VolumeLevel(value);
+        return VolumeLevel(value, gba, most);
     case MixControl::kPan:
         return std::clamp(static_cast<float>(value) / (value < 0 ? 64.0f : 63.0f), -1.0f, 1.0f);
     default:
@@ -251,14 +293,14 @@ float ShownValue(MixControl control, int value)
     }
 }
 
-float VolumeLevel(int volume)
+float VolumeLevel(int volume, bool gba, int most)
 {
     if (volume <= 0)
     {
         return kSilence;
     }
 
-    return 40.0f * std::log10(static_cast<float>(volume) / 127.0f);
+    return (gba ? 20.0f : 40.0f) * std::log10(static_cast<float>(volume) / static_cast<float>(most));
 }
 
 } // namespace hokuto::app

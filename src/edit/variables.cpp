@@ -18,13 +18,13 @@
 #include "ntdlib/commands/units.h"
 
 #include "edit/bytecode.h"
+#include "song/driver.h"
 
 namespace hokuto::edit
 {
 namespace
 {
 
-using ntdlib::commands::Argument;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::Sequence;
@@ -58,10 +58,12 @@ VariableUses UsesOfCommand(const Command& command)
     {
         uses.reads |= Bit(command.value.value);
     }
+
     if (command.time && command.time->source == Source::kVariable)
     {
         uses.reads |= Bit(command.time->value);
     }
+
     if (AddressesVariable(command.kind))
     {
         const bool overwrites = command.kind == Kind::kSetVariable || command.kind == Kind::kRandomVariable ||
@@ -85,10 +87,12 @@ void Renumber(Command& command, const std::map<int, int>& numbers)
     {
         command.value.value = renumbered(command.value.value);
     }
+
     if (command.time && command.time->source == Source::kVariable)
     {
         command.time->value = renumbered(command.time->value);
     }
+
     if (AddressesVariable(command.kind))
     {
         command.index = static_cast<uint8_t>(renumbered(command.index));
@@ -147,6 +151,7 @@ uint32_t InsertAtStart(Sequence& sequence, uint32_t start, std::vector<Command> 
             item.target = target(item.target);
         }
     }
+
     for (ntdlib::commands::Label& label : sequence.labels)
     {
         label.item = label.item == start ? start + jumps : moved(label.item);
@@ -164,13 +169,13 @@ uint32_t InsertAtStart(Sequence& sequence, uint32_t start, std::vector<Command> 
     return start + jumps;
 }
 
-MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const VariableMap& variables, uint32_t taken)
+namespace
 {
-    if (start >= sequence.items.size())
-    {
-        throw std::invalid_argument("The start lies past the end of the new sequence.");
-    }
 
+// Throws std::invalid_argument with a message for the user for a move or a fixed value of `variables` that
+// WithVariables refuses.
+void CheckMoves(const VariableMap& variables)
+{
     const auto game = [](int number)
     {
         return number >= 0 && number < song::kGameVariables;
@@ -179,31 +184,34 @@ MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const Va
     {
         if (!game(from) || !game(to))
         {
-            throw std::invalid_argument("A game sets the variables 0 to 31. Hokuto moves only those.");
+            throw std::invalid_argument("Only variables 0–31 can be moved. Those are the variables that a game sets.");
         }
     }
+
     for (const auto& [number, value] : variables.fixed)
     {
         const std::string name = "Variable " + std::to_string(number);
         if (!game(number))
         {
-            throw std::invalid_argument("A game sets the variables 0 to 31. Hokuto fixes only those.");
+            throw std::invalid_argument(
+                "Only variables 0–31 can be given a fixed value. Those are the variables that a game sets.");
         }
         if (variables.moves.contains(number))
         {
-            throw std::invalid_argument(name + " can't both move and take a fixed value.");
+            throw std::invalid_argument(name + " can't be both moved and given a fixed value.");
         }
         if (value < -32768 || value > 32767)
         {
-            throw std::invalid_argument("A variable holds a value from -32768 to 32767.");
+            throw std::invalid_argument("Variable values must be from -32768 to 32767.");
         }
     }
+}
 
-    // The variables that the commands use, and their numbers after the moves. Two of them can't take one number.
-    const std::vector<bool> reached = Reached(sequence, start, true);
-    const VariableUses uses = UsesOf(sequence, start);
-    const uint64_t used = uses.reads | uses.sets;
-    std::map<int, int> numbers;
+// Stores in `numbers` the number that each moved variable of `variables` moves to, and returns the numbers, a bit each,
+// that the variables of `used` occupy after the moves (WithVariables). Throws std::invalid_argument with a message for
+// the user for moves that give two of them one number.
+uint64_t MovedNumbers(const VariableMap& variables, uint64_t used, std::map<int, int>& numbers)
+{
     for (const auto& [from, to] : variables.moves)
     {
         if (from != to)
@@ -211,6 +219,7 @@ MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const Va
             numbers[from] = to;
         }
     }
+
     uint64_t renumbered = 0;
     for (int number = 0; number < 64; number++)
     {
@@ -218,19 +227,28 @@ MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const Va
         const int to = found != numbers.end() ? found->second : number;
         if ((used & Bit(number)) != 0 && (renumbered & Bit(to)) != 0)
         {
-            throw std::invalid_argument("The moves give two of the new commands' variables number " +
+            throw std::invalid_argument("After these moves, two variables of the new commands would both be variable " +
                                         std::to_string(to) + ".");
         }
+
         renumbered |= (used & Bit(number)) != 0 ? Bit(to) : 0;
     }
 
-    // Each fixed variable that the commands read takes one of the sound's variables. It keeps its number where it can.
-    MappedVariables mapped{sequence, start, {}};
+    return renumbered;
+}
+
+// The commands that set each fixed variable of `variables` that the commands read (`reads`, a bit each), in the sound
+// variable that stores it (WithVariables). `holders_of` gains each holder, and `numbers` each holder that isn't the
+// variable. A holder avoids `taken` and `renumbered`. Throws std::invalid_argument with a message for the user when no
+// sound variable is free.
+std::vector<Command> AssignFixed(const VariableMap& variables, uint64_t reads, uint32_t taken, uint64_t renumbered,
+                                 std::map<int, int>& numbers, std::map<int, int>& holders_of)
+{
     std::vector<Command> setters;
     uint64_t holders = 0;
     for (const auto& [number, value] : variables.fixed)
     {
-        if ((uses.reads & Bit(number)) == 0)
+        if ((reads & Bit(number)) == 0)
         {
             continue;
         }
@@ -246,6 +264,7 @@ MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const Va
         {
             holder = number;
         }
+
         for (int candidate = 0; !holder && candidate < kSoundVariables; candidate++)
         {
             if (free(candidate))
@@ -255,20 +274,45 @@ MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const Va
         }
         if (!holder)
         {
-            throw std::invalid_argument("Variable " + std::to_string(number) +
-                                        " can't take a fixed value. The new commands and the game's code use every "
-                                        "one of the sound's variables, 0 to 15.");
+            throw std::invalid_argument("Can't give variable " + std::to_string(number) +
+                                        " a fixed value. The new commands and the game code already use all of the "
+                                        "sound variables 0–15.");
         }
+
         holders |= Bit(*holder);
-        mapped.holders[number] = *holder;
+        holders_of[number] = *holder;
         if (*holder != number)
         {
             numbers[number] = *holder;
         }
-        setters.push_back(Command{.kind = Kind::kSetVariable,
-                                  .index = static_cast<uint8_t>(*holder),
-                                  .value = Argument{Source::kValue, int64_t{value} * ntdlib::commands::kOne, 0}});
+
+        setters.push_back(song::ValueCommand(Kind::kSetVariable, value, static_cast<uint8_t>(*holder)));
     }
+
+    return setters;
+}
+
+} // namespace
+
+MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const VariableMap& variables, uint32_t taken)
+{
+    if (start >= sequence.items.size())
+    {
+        throw std::invalid_argument("The start is past the end of the new sequence.");
+    }
+
+    CheckMoves(variables);
+
+    // The variables that the commands use, and their numbers after the moves. Two of them can't take one number.
+    const std::vector<bool> reached = Reached(sequence, start, true);
+    const VariableUses uses = UsesOf(sequence, start);
+    const uint64_t used = uses.reads | uses.sets;
+    std::map<int, int> numbers;
+    const uint64_t renumbered = MovedNumbers(variables, used, numbers);
+
+    // Each fixed variable that the commands read takes one of the sound's variables. It keeps its number where it can.
+    MappedVariables mapped{sequence, start, {}};
+    std::vector<Command> setters = AssignFixed(variables, uses.reads, taken, renumbered, numbers, mapped.holders);
 
     // The commands that the player reaches take the new numbers, and the sound's start the fixed values.
     for (std::size_t item = 0; item < mapped.sequence.items.size(); item++)
@@ -278,13 +322,16 @@ MappedVariables WithVariables(const Sequence& sequence, uint32_t start, const Va
             Renumber(mapped.sequence.items[item], numbers);
         }
     }
+
     if (!setters.empty())
     {
         if (Fixed(mapped.sequence))
         {
             throw std::invalid_argument(
-                "The new commands can't move to make room for the commands that set the fixed variables.");
+                "Can't make room for the commands that set the fixed variables. The new commands must keep their "
+                "positions.");
         }
+
         mapped.start = InsertAtStart(mapped.sequence, start, std::move(setters));
     }
 
@@ -318,6 +365,7 @@ std::array<std::vector<uint32_t>, song::kGameVariables> VariableReaders(
                 // A sequence that can't be edited reads no variable that an edit can reach.
             }
         }
+
         for (int number = 0; number < song::kGameVariables; number++)
         {
             if ((found->second & Bit(number)) != 0)

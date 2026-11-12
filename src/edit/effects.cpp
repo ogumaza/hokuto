@@ -51,7 +51,7 @@ song::AuxEffect CtrEffectOf(format::EffectKind kind, std::span<const float> para
 {
     if (!format::IsCtrKind(kind) || parameters.size() != format::ParameterNamesOf(kind).size())
     {
-        throw std::invalid_argument("The parameters aren't those of an effect of the 3DS.");
+        throw std::invalid_argument("These parameters don't match a 3DS effect.");
     }
 
     if (kind == format::EffectKind::kCtrDelay || kind == format::EffectKind::kCtrNnDelay)
@@ -187,6 +187,25 @@ bool RunsEffect(format::Engine engine, format::EffectKind kind)
         return format::IsCtrKind(kind);
     case format::Engine::kWii:
         return WiiTypeOf(kind).has_value();
+    case format::Engine::kGba:
+        return false; // MusicPlayer2000's reverb is a setting of the song
+    case format::Engine::kDs:
+        return false; // the SDK's reverb runs on the DS's capture units, without an aux bus
+    case format::Engine::kDse:
+        return false; // DSE's driver has no effects
+    case format::Engine::kKonami:
+    case format::Engine::kRd2:
+        return false; // the GBA's other drivers mix their echo themselves, without an aux bus
+    case format::Engine::kBrownie:
+        return false; // Brownie Brown's driver has no effects
+    case format::Engine::kUbiMilan:
+        return false; // Ubisoft Milan's driver has no effects
+    case format::Engine::kRare:
+        return false; // Rare's driver has no effects
+    case format::Engine::kQuintet:
+        return false; // Quintet's driver has no effects
+    case format::Engine::kKrawall:
+        return false; // Krawall has no effects on a bus
     case format::Engine::kSwitch:
         break;
     }
@@ -220,6 +239,7 @@ std::vector<float> CtrStartingParameters(format::EffectKind kind)
         {
             parameters.push_back(SwitchValue(reverb.enable_surround));
         }
+
         if (kind != format::EffectKind::kCtrNnReverb2011)
         {
             parameters.push_back(SwitchValue(reverb.high_pass_damping));
@@ -273,7 +293,7 @@ song::AuxEffects ModelEffects(const BusEffects& effects)
             {
                 model[bus].push_back(CtrEffectOf(effect.kind, effect.parameters));
             }
-            else
+            else if (effect.kind == format::EffectKind::kI3dl2Reverb)
             {
                 model[bus].push_back(song::I3dl2Reverb(
                     std::span<const float, song::kI3dl2Parameters>(effect.parameters.data(), song::kI3dl2Parameters)));

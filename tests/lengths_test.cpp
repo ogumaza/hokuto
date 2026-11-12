@@ -17,7 +17,6 @@
 #include <optional>
 #include <vector>
 
-#include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sound_build.h"
@@ -246,8 +245,10 @@ void TestFileLengths()
 
 int main()
 {
-    TestMeasure();
-    TestFileLengths();
-
-    return xsflib::testing::Summary("lengths");
+    return xsflib::testing::RunTest("lengths",
+                                    []
+                                    {
+                                        TestMeasure();
+                                        TestFileLengths();
+                                    });
 }

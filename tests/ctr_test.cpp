@@ -50,6 +50,7 @@
 #include "song/player.h"
 #include "song/preview.h"
 #include "song/sequence.h"
+#include "played_fixtures.h"
 #include "song/sequence_model.h"
 
 namespace
@@ -66,6 +67,7 @@ using hokuto::song::PlaybackClock;
 using hokuto::song::Sequence;
 using hokuto::song::SequenceModel;
 using hokuto::song::SequencePlayer;
+using hokuto::testing::CtrNoteArchiveBytes;
 
 // The floats of a frame: 160 stereo samples, or 235 in enhanced mixing.
 constexpr std::size_t kFrameFloats = CtrModel::kFrameSamples * 2;
@@ -81,28 +83,6 @@ constexpr std::size_t kEffectFrames = 1435;
 
 // A second of frames, rounded up. The frames of both modes last as long.
 constexpr std::size_t kSecondFrames = 205;
-
-// The archive's bytes: sequence sound 0 plays key 60 at velocity 127 for 96 ticks on program 0, waits 96 ticks and
-// ends. Program 0 plays a constant wave of 2 s. With `sends`, the track first sends to buses A and B at full level.
-std::vector<uint8_t> ArchiveBytes(bool sends = false)
-{
-    constexpr sar::Flavor kCtr = sar::Flavor::kCtr;
-    std::vector<uint8_t> commands = {0x3C, 0x7F, 0x60, 0x80, 0x60, 0xFF};
-    if (sends)
-    {
-        commands.insert(commands.begin(), {0xD9, 0x7F, 0xDA, 0x7F});
-    }
-    sar_files::ArchiveSpec spec;
-    spec.sounds = {{.name = "SEQ_NOTE", .file = 0, .banks = {0}}};
-    spec.banks = {{"BANK", 1}};
-    spec.wave_archives = {{"WARC", 2}};
-    spec.players = {{"PLAYER", 1}};
-    spec.files = {{sar_files::Sequence(kCtr, commands, {{"SEQ_NOTE", 0}})},
-                  {sar_files::Bank(kCtr, sar_files::OneRegionBank())},
-                  {sar_files::WaveArchive(kCtr, {sar_files::Wave(kCtr, sar_files::ConstantWave(false, 64000))})}};
-
-    return sar_files::Archive(kCtr, spec);
-}
 
 // The reference: the DSP's output after the silence, in Hokuto's frames, and the tick count after each frame. In
 // enhanced mixing, `floats` holds the enhanced mode's frames after the silence, and `samples` the same rounded to 16
@@ -287,7 +267,7 @@ void TestPlayer(const std::shared_ptr<const sar::SoundArchive>& archive, const R
     SEQLIB_CHECK_EQ(first, 0);
 
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    const auto model = std::make_shared<SequenceModel>(archive, sequence, hokuto::song::AuxEffects{}, mixing);
+    const auto model = std::make_shared<SequenceModel>(archive, sequence, hokuto::song::ModelOptions{.mixing = mixing});
     const bool enhanced = mixing == Mixing::kEnhanced;
     SEQLIB_CHECK_EQ(model->FrameSamples(), enhanced ? CtrModel::kEnhancedFrameSamples : CtrModel::kFrameSamples);
     SEQLIB_CHECK_EQ(model->SampleRate(), enhanced ? CtrModel::kEnhancedSampleRate : CtrModel::kSampleRate);
@@ -315,7 +295,7 @@ void TestPlayer(const std::shared_ptr<const sar::SoundArchive>& archive, const R
 void TestSeeks(const std::shared_ptr<const sar::SoundArchive>& archive, const Reference& reference, Mixing mixing)
 {
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    SequenceModel model(archive, sequence, {}, mixing, 50);
+    SequenceModel model(archive, sequence, hokuto::song::ModelOptions{.mixing = mixing, .snapshot_interval = 50});
     const std::size_t frame_floats = FrameFloats(mixing);
     std::size_t wrong = 0;
     for (const uint64_t frame : {300u, 120u, 0u, 377u, 51u})
@@ -359,7 +339,7 @@ void TestSwitch(const std::shared_ptr<const sar::SoundArchive>& archive, const R
     constexpr std::size_t kBefore = 100;
     const Mixing to = from == Mixing::kStrict ? Mixing::kEnhanced : Mixing::kStrict;
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    const auto model = std::make_shared<SequenceModel>(archive, sequence, hokuto::song::AuxEffects{}, from);
+    const auto model = std::make_shared<SequenceModel>(archive, sequence, hokuto::song::ModelOptions{.mixing = from});
     const auto clock = std::make_shared<PlaybackClock>(model->FrameSamples());
     SequencePlayer player(model, 0, clock);
     const std::size_t frame_floats = FrameFloats(from);
@@ -368,7 +348,7 @@ void TestSwitch(const std::shared_ptr<const sar::SoundArchive>& archive, const R
     // The player switches to a model in the other mode after kBefore frames.
     std::size_t rendered = player.Render(output.data(), kBefore * frame_floats / 2);
     SEQLIB_REQUIRE(rendered == kBefore * frame_floats / 2);
-    clock->Offer(std::make_shared<SequenceModel>(archive, sequence, hokuto::song::AuxEffects{}, to));
+    clock->Offer(std::make_shared<SequenceModel>(archive, sequence, hokuto::song::ModelOptions{.mixing = to}));
     rendered += player.Render(output.data() + rendered * 2, output.size() / 2 - rendered);
 
     SEQLIB_CHECK_EQ(player.SampleRate(), model->SampleRate());
@@ -407,7 +387,7 @@ void TestMute(const std::shared_ptr<const sar::SoundArchive>& archive, Mixing mi
     bool muted_sounds = false;
     for (const bool mute : {false, true})
     {
-        SequenceModel model(archive, sequence, {}, mixing);
+        SequenceModel model(archive, sequence, hokuto::song::ModelOptions{.mixing = mixing});
         model.SetMutes(mute ? 1u : 0u);
         for (bool more = model.SeekFrame(0); more; more = model.RunFrame())
         {
@@ -415,7 +395,9 @@ void TestMute(const std::shared_ptr<const sar::SoundArchive>& archive, Mixing mi
             muted_sounds = muted_sounds || (mute && Sounds(model.Output()));
         }
     }
-    SEQLIB_CHECK(!muted_sounds && frames[0] > 410 && frames[1] == frames[0]);
+    SEQLIB_CHECK(!muted_sounds);
+    SEQLIB_CHECK(frames[0] > 410);
+    SEQLIB_CHECK_EQ(frames[1], frames[0]);
 }
 
 // Track 0 plays the note. The meter of track 0 reaches the largest magnitude of each side of the DSP's main bus: the
@@ -426,7 +408,7 @@ void TestMute(const std::shared_ptr<const sar::SoundArchive>& archive, Mixing mi
 void TestMeters(const std::shared_ptr<const sar::SoundArchive>& archive, Mixing mixing)
 {
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    SequenceModel model(archive, sequence, {}, mixing);
+    SequenceModel model(archive, sequence, hokuto::song::ModelOptions{.mixing = mixing});
     std::array<int32_t, 2> metered{};
     std::array<int32_t, 2> heard{};
     bool others = false;
@@ -580,7 +562,8 @@ void TestEffects(const std::shared_ptr<const sar::SoundArchive>& archive, const 
     SEQLIB_REQUIRE(reference.after.size() == kEffectFrames);
 
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    const auto model = std::make_shared<SequenceModel>(archive, sequence, FileEffects(kind), mixing);
+    const auto model = std::make_shared<SequenceModel>(
+        archive, sequence, hokuto::song::ModelOptions{.effects = FileEffects(kind), .mixing = mixing});
     const auto clock = std::make_shared<PlaybackClock>(model->FrameSamples());
     SequencePlayer player(model, 0, clock);
     const std::size_t frame_floats = FrameFloats(mixing);
@@ -597,7 +580,9 @@ void TestEffects(const std::shared_ptr<const sar::SoundArchive>& archive, const 
     SEQLIB_CHECK_EQ(wrong, 0);
 
     // Seeks restore the snapshots with the effects' state.
-    SequenceModel seeking(archive, sequence, FileEffects(kind), mixing, 50);
+    SequenceModel seeking(
+        archive, sequence,
+        hokuto::song::ModelOptions{.effects = FileEffects(kind), .mixing = mixing, .snapshot_interval = 50});
     std::size_t seeks = 0;
     for (const uint64_t frame : {600u, 120u, 0u, 377u, 51u})
     {
@@ -620,7 +605,8 @@ void TestEffectVolumes(const std::shared_ptr<const sar::SoundArchive>& archive, 
     SEQLIB_REQUIRE(reference.after.size() == kEffectFrames);
 
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    SequenceModel model(archive, sequence, FileEffects(EffectKind::kCtrReverb), mixing);
+    SequenceModel model(archive, sequence,
+                        hokuto::song::ModelOptions{.effects = FileEffects(EffectKind::kCtrReverb), .mixing = mixing});
     model.SetBusVolumes({1.5f, 0.5f, 1.0f});
     const std::size_t frame_floats = FrameFloats(mixing);
     std::array<std::array<int32_t, 2>, 3> peaks{};
@@ -654,7 +640,7 @@ void TestEffectSwitch(const std::shared_ptr<const sar::SoundArchive>& archive, c
 {
     constexpr std::size_t kBefore = 100;
     const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
-    const auto model = std::make_shared<SequenceModel>(archive, sequence, hokuto::song::AuxEffects{}, mixing);
+    const auto model = std::make_shared<SequenceModel>(archive, sequence, hokuto::song::ModelOptions{.mixing = mixing});
     const auto clock = std::make_shared<PlaybackClock>(model->FrameSamples());
     SequencePlayer player(model, 0, clock);
     const std::size_t frame_floats = FrameFloats(mixing);
@@ -662,7 +648,9 @@ void TestEffectSwitch(const std::shared_ptr<const sar::SoundArchive>& archive, c
 
     std::size_t rendered = player.Render(output.data(), kBefore * frame_floats / 2);
     SEQLIB_REQUIRE(rendered == kBefore * frame_floats / 2);
-    clock->Offer(std::make_shared<SequenceModel>(archive, sequence, FileEffects(EffectKind::kCtrReverb), mixing));
+    clock->Offer(std::make_shared<SequenceModel>(
+        archive, sequence,
+        hokuto::song::ModelOptions{.effects = FileEffects(EffectKind::kCtrReverb), .mixing = mixing}));
     rendered += player.Render(output.data() + rendered * 2, output.size() / 2 - rendered);
     const std::size_t heard = rendered / (frame_floats / 2);
 
@@ -683,42 +671,49 @@ void TestEffectSwitch(const std::shared_ptr<const sar::SoundArchive>& archive, c
 
 int main()
 {
-    const std::shared_ptr<const sar::SoundArchive> archive = hokuto::song::LoadArchive(ArchiveBytes(), "test");
-    const sar::SoundArchive strict = sar::SoundArchive::Load(ArchiveBytes(), ntdlib::ctr::kSarOptions);
-    const Reference reference = RunReference(strict);
-    const Reference enhanced = RunReference(strict, Mixing::kEnhanced);
-    if (reference.after.size() == kFrames && enhanced.after.size() == kFrames)
-    {
-        TestPlayer(archive, reference, Mixing::kStrict);
-        TestPlayer(archive, enhanced, Mixing::kEnhanced);
-        TestSeeks(archive, reference, Mixing::kStrict);
-        TestSeeks(archive, enhanced, Mixing::kEnhanced);
-        TestAlignment(reference, enhanced);
-        TestSwitch(archive, reference, enhanced, Mixing::kStrict);
-        TestSwitch(archive, enhanced, reference, Mixing::kEnhanced);
-    }
-    for (const Mixing mixing : {Mixing::kStrict, Mixing::kEnhanced})
-    {
-        TestMute(archive, mixing);
-        TestMeters(archive, mixing);
-        TestNote(archive, mixing);
-    }
+    return xsflib::testing::RunTest(
+        "ctr",
+        []
+        {
+            const std::shared_ptr<const sar::SoundArchive> archive =
+                hokuto::song::LoadArchive(CtrNoteArchiveBytes(), "test");
+            const sar::SoundArchive strict = sar::SoundArchive::Load(CtrNoteArchiveBytes(), ntdlib::ctr::kSarOptions);
+            const Reference reference = RunReference(strict);
+            const Reference enhanced = RunReference(strict, Mixing::kEnhanced);
+            if (reference.after.size() == kFrames && enhanced.after.size() == kFrames)
+            {
+                TestPlayer(archive, reference, Mixing::kStrict);
+                TestPlayer(archive, enhanced, Mixing::kEnhanced);
+                TestSeeks(archive, reference, Mixing::kStrict);
+                TestSeeks(archive, enhanced, Mixing::kEnhanced);
+                TestAlignment(reference, enhanced);
+                TestSwitch(archive, reference, enhanced, Mixing::kStrict);
+                TestSwitch(archive, enhanced, reference, Mixing::kEnhanced);
+            }
+            for (const Mixing mixing : {Mixing::kStrict, Mixing::kEnhanced})
+            {
+                TestMute(archive, mixing);
+                TestMeters(archive, mixing);
+                TestNote(archive, mixing);
+            }
 
-    // The track of the effects' archive sends to buses A and B.
-    const std::shared_ptr<const sar::SoundArchive> sends = hokuto::song::LoadArchive(ArchiveBytes(true), "sends");
-    const sar::SoundArchive strict_sends = sar::SoundArchive::Load(ArchiveBytes(true), ntdlib::ctr::kSarOptions);
-    for (const Mixing mixing : {Mixing::kStrict, Mixing::kEnhanced})
-    {
-        TestEffects(sends, strict_sends, EffectKind::kCtrReverb, ntdlib::ctr_fx::Library::kNwSnd, mixing);
-        TestEffectVolumes(sends, strict_sends, mixing);
-        const ReferenceEffects effects{ntdlib::ctr_fx::Library::kNwSnd, TestReverb(EffectKind::kCtrReverb),
-                                       TestDelay()};
-        TestEffectSwitch(sends, RunReference(strict_sends, mixing), RunReference(strict_sends, mixing, &effects),
-                         mixing);
-    }
-    TestEffects(sends, strict_sends, EffectKind::kCtrNnReverb, ntdlib::ctr_fx::Library::kNnSnd, Mixing::kStrict);
-    TestEffects(sends, strict_sends, EffectKind::kCtrNnReverb2011, ntdlib::ctr_fx::Library::kNnSnd2011,
-                Mixing::kStrict);
-
-    return xsflib::testing::Summary("ctr");
+            // The track of the effects' archive sends to buses A and B.
+            const std::shared_ptr<const sar::SoundArchive> sends =
+                hokuto::song::LoadArchive(CtrNoteArchiveBytes(true), "sends");
+            const sar::SoundArchive strict_sends =
+                sar::SoundArchive::Load(CtrNoteArchiveBytes(true), ntdlib::ctr::kSarOptions);
+            for (const Mixing mixing : {Mixing::kStrict, Mixing::kEnhanced})
+            {
+                TestEffects(sends, strict_sends, EffectKind::kCtrReverb, ntdlib::ctr_fx::Library::kNwSnd, mixing);
+                TestEffectVolumes(sends, strict_sends, mixing);
+                const ReferenceEffects effects{ntdlib::ctr_fx::Library::kNwSnd, TestReverb(EffectKind::kCtrReverb),
+                                               TestDelay()};
+                TestEffectSwitch(sends, RunReference(strict_sends, mixing),
+                                 RunReference(strict_sends, mixing, &effects), mixing);
+            }
+            TestEffects(sends, strict_sends, EffectKind::kCtrNnReverb, ntdlib::ctr_fx::Library::kNnSnd,
+                        Mixing::kStrict);
+            TestEffects(sends, strict_sends, EffectKind::kCtrNnReverb2011, ntdlib::ctr_fx::Library::kNnSnd2011,
+                        Mixing::kStrict);
+        });
 }

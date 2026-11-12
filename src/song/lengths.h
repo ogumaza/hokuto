@@ -14,6 +14,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sound_build.h"
 
+#include "song/driver.h"
 #include "song/sequence.h"
 #include "song/sequence_model.h"
 
@@ -50,5 +51,12 @@ std::optional<Length> MeasureLength(const ntdlib::sar::SoundArchive& archive, ui
 std::optional<Length> MeasureLength(const ntdlib::rsar::SoundArchive& archive, const ntdlib::SndBuild& build,
                                     uint32_t sound, const AuxEffects& effects = {},
                                     const AuxVolumes& volumes = kFullVolumes);
+
+// The same for sound `sound` of the ROM `rom` with one of the GBA's other drivers (song/driver.h), on the driver's
+// player. A song's loop comes from the arrangement, and the player runs up to two passes of it to see whether the song
+// sounds. The song's tempos give the passes' times. A song that plays no sound through them counts as silent. Where the
+// two passes would pass the limit of 600 s, the song plays to the limit, and its lengths have no loop. The console's
+// frames give the times. Returns nothing for a song that can't be read.
+std::optional<Length> MeasureLength(const DriverRom& rom, uint32_t sound);
 
 } // namespace hokuto::song

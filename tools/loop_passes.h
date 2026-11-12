@@ -34,4 +34,30 @@ inline std::optional<uint32_t> EarlierEnd(const song::Sequence& before, const so
     return std::min(before.loop->end, after.loop->end);
 }
 
+// The ticks of a loop's pass, and the ticks between the starts of two loops of that length.
+struct LoopShift
+{
+    uint32_t length = 0;
+    uint32_t apart = 0;
+};
+
+// How far apart the loops of `before` and `after` start, where both loop for the same number of ticks. Nothing for a
+// sequence without a loop, or for loops of other lengths or of no length.
+inline std::optional<LoopShift> ShiftOf(const song::Sequence& before, const song::Sequence& after)
+{
+    if (!before.loop || !after.loop)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t length = before.loop->end - before.loop->start;
+    if (length == 0 || after.loop->end - after.loop->start != length)
+    {
+        return std::nullopt;
+    }
+
+    return LoopShift{length,
+                     std::max(before.loop->start, after.loop->start) - std::min(before.loop->start, after.loop->start)};
+}
+
 } // namespace hokuto::tools

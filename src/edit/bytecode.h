@@ -9,6 +9,7 @@
 #include <initializer_list>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -21,10 +22,20 @@
 namespace hokuto::edit
 {
 
-// For `file` with a native layout, the console whose player reads its sequences: the archive's flavor, or on the Wii
-// the build of NW4R SND that the archive's version gives (format::BuildOfWiiArchive). Throws std::invalid_argument for
-// a file without a native layout, or a Wii archive without its header.
+// For `file` with a native layout, the console whose player reads its sequences: the archive's flavor, on the Wii the
+// build of NW4R SND that the archive's version gives (format::BuildOfWiiArchive), MusicPlayer2000 on the GBA, or
+// NITRO-Composer or DSE on the DS. Throws std::invalid_argument for a file without a native layout, or a Wii archive
+// without its header.
 song::Console ConsoleOf(const format::File& file);
+
+// Why a command or a setting, as `what` says, that the player of `console` skips can't be inserted (song::Runs): the
+// player of the 3DS skips some commands, a build of NW4R SND on the Wii is missing some, and the bytes of
+// MusicPlayer2000, NITRO-Composer and DSE have no such command.
+std::string SkippedMessage(const song::Console& console, const std::string& what);
+
+// Throws std::invalid_argument with `message`, for the user, for a file of a GBA ROM. So far the editors edit only the
+// notes of a GBA song (EditNotes).
+void RefuseGba(const format::File& file, const char* message);
 
 // The commands of sequence `sequence` of `file`. Throws std::invalid_argument with a message for the user for a file
 // without a native layout, or a sequence that the file lacks.
@@ -48,6 +59,10 @@ struct Setters
     bool start = false;
 };
 
+// The ticks of `value` where the bytecode stores them as a whole number from 0 up (Source::kValue), or nothing for a
+// value from a random number or a variable, a negative one and a fraction of a tick.
+std::optional<uint32_t> WholeTicks(const ntdlib::commands::Argument& value);
+
 // The offset of each item of `sequence` in its bytecode on `console`, then the end. The offsets come from the encoder
 // that the export uses.
 std::vector<uint32_t> Offsets(const ntdlib::commands::Sequence& sequence, const song::Console& console);
@@ -59,13 +74,18 @@ std::optional<uint32_t> ItemAtOffset(const std::vector<uint32_t>& offsets, uint3
 // command was decoded from.
 bool Fixed(const ntdlib::commands::Sequence& sequence);
 
+// Whether the bytes of `sequence`, a sequence of `file`, must keep their places (Fixed). A GBA song's bytes can move:
+// a target outside the song is a ROM address, and MusicPlayer2000's decoder keeps as data only the bytes that no track
+// reaches.
+bool KeepsPlaces(const format::File& file, const ntdlib::commands::Sequence& sequence);
+
 // Whether a track runs on from `command` to the next item. Every command does but a jump, a return or an end that
 // always runs.
 bool RunsOn(const ntdlib::commands::Command& command);
 
 // Whether the player can run on from the item before item `item` of sequence `sequence` of `file` into it: the item
 // before runs on (RunsOn), or it's a return that a sound of the file reaches outside every call. Such a return has no
-// call to return to, and the player runs on past it.
+// call to return to, and the player runs on past it. On the GBA, no track reaches data.
 bool RunsInto(const format::File& file, uint32_t sequence, uint32_t item);
 
 // Where InsertAtOpening put new items: the first of them, and their number.
@@ -77,14 +97,18 @@ struct OpeningInsertion
 
 // Puts `commands` before item `first` of sequence `sequence` of `file`, the first command of track `track`. Only the
 // track's opening leads to the new commands: the sound's start for track 0, and the commands that open the track for
-// the others. Another sound or track may run on into `first`. Where the player can run on from the item before `first`
+// the others. On the GBA, the field of the song's header that starts the track leads to them. So does track 0's start.
+// A song of Nintendo R&D2's driver opens each track from its header, track 0 included.
+// Another sound or track may run on into `first`. Where the player can run on from the item before `first`
 // (RunsInto), a jump before the new commands takes that path past them. Every other target, label and start that leads
 // to `first` or past it moves with the items. On track 0, a label at `first` stays with the sound's start, unless a
-// jump or a call reaches it: it then goes on naming the command that they reach. A sound's start counts from the
-// bytecode's first item, whichever command that is. In a timeline (edit/timelines.h), the commands go in where
-// NintendoWare's converter writes the first settings of the song's track that the player runs from `first` instead
-// (TrackRunFrom, TrackOpening), and need no jump. Returns where the new items went: the commands, and the jump before
-// them.
+// jump or a call reaches it: it then goes on naming the command that they reach. On the DS, track 0 runs the
+// allocation of tracks at the sequence's first command before `first`. The new commands then go after the allocation
+// without a jump. Throws std::invalid_argument with a message for the user there for a target at the allocation. A
+// sound's start counts from the bytecode's first item, whichever command that is. In a timeline (edit/timelines.h), the
+// commands go in where NintendoWare's converter writes the first settings of the song's track that the player runs from
+// `first` instead (TrackRunFrom, TrackOpening), and need no jump. Returns where the new items went: the commands, and
+// the jump before them.
 OpeningInsertion InsertAtOpening(format::File& file, uint32_t sequence, uint32_t first, int track,
                                  std::vector<ntdlib::commands::Command> commands);
 
@@ -93,6 +117,25 @@ OpeningInsertion InsertAtOpening(format::File& file, uint32_t sequence, uint32_t
 // no command reaches stop a path. A path goes on after a call, and after a command that runs only if the last
 // comparison held. A return outside every call has no call to return to, and a path goes on past it.
 std::vector<bool> Reached(const ntdlib::commands::Sequence& sequence, uint32_t start, bool track_starts);
+
+// How many commands of `sequence` leave a track no way out on `console`: every path from them stays among commands that
+// neither wait nor end the track. They make up a loop without a wait, and the commands that lead only into it.
+// NITRO-Composer and MP2K have no limit of commands in a tick. Such a loop hangs the console. A wait whose length comes
+// from a variable or a random number counts as a way out, and so does a command behind an if prefix. A note waits on
+// the DS while the note wait of its track can be on. The count leaves out two kinds of loop: the DS's endless loop
+// command without a wait, and a repeat without a count on the GBA. ntdlib's models stop on those. `sound_starts`
+// contains the items where sounds start. A track that reaches a return outside every call from them runs on past it. On
+// DSE, the end of a track jumps back to the last loop point of the track (0x99), and a track has no jumps. A note never
+// waits there. A command that waits for the voices of its channel (0x95) counts as a way out, and so does an end with a
+// code that the driver treats as invalid: that end stops the track. On the GBA's other drivers, the driver class
+// returns the count (DriverEdits::LoopsWithoutWaits).
+std::size_t CommandsWithoutWayOut(const ntdlib::commands::Sequence& sequence, const song::Console& console,
+                                  std::span<const uint32_t> sound_starts = {});
+
+// Throws std::invalid_argument with a message for the user when a sequence of `after` contains more commands without a
+// way out than the same sequence of `before`. Only NITRO-Composer, DSE, MP2K and the GBA's other drivers refuse. On the
+// later consoles, the player stops at a limit of commands in a tick.
+void RefuseLoopsWithoutWaits(const format::File& before, const format::File& after);
 
 // `name`, or `name` with the first number from 2 after it that `labels` don't hold.
 std::string UniqueLabel(const std::vector<ntdlib::commands::Label>& labels, const std::string& name);
@@ -115,6 +158,7 @@ void MoveItemPlaces(format::File& file, uint32_t sequence, Moved moved)
             {
                 field.from.offset = moved(field.from.offset);
             }
+
             if (NamesItemOf(native, field.to, sequence))
             {
                 field.to.offset = moved(field.to.offset);
@@ -123,6 +167,32 @@ void MoveItemPlaces(format::File& file, uint32_t sequence, Moved moved)
     };
     file.native.Edit(move);
 }
+
+// Moves the targets of the commands of `sequence` that name its items, and its labels, by `moved`. `moved` gives the
+// new index of an old item, or of the end.
+template <typename Moved>
+void MoveTargets(ntdlib::commands::Sequence& sequence, Moved moved)
+{
+    for (ntdlib::commands::Command& command : sequence.items)
+    {
+        if (ntdlib::commands::HasTarget(command.kind) && !command.target_outside)
+        {
+            command.target = moved(command.target);
+        }
+    }
+
+    for (ntdlib::commands::Label& label : sequence.labels)
+    {
+        label.item = moved(label.item);
+    }
+}
+
+// Renumbers what names the items of sequence `sequence` after an edit moved them into `after`. `firsts` contains the
+// first new item of each old item, and the new end. It moves the commands' targets and the labels of `after` and the
+// places in the archive's tables (MoveItemPlaces). A target past the end of `firsts` stays. `places` contains the new
+// index of each old item, and of the end. It moves Edited::items and Edited::added of `edited`.
+void RenumberItems(ntdlib::commands::Sequence& after, Edited& edited, uint32_t sequence,
+                   const std::vector<uint32_t>& firsts, const std::vector<uint32_t>& places);
 
 // Calls `visit` with each place of `native`'s fields that names an item of sequence `sequence`. `Native` is
 // format::NativeArchive or a const one. A const one gives const places.

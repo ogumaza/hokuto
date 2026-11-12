@@ -16,12 +16,14 @@
 
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
+#include "ntdlib/mp2k/sequencer.h"
 
 #include "app/key_edits.h"
 #include "app/list_edits.h"
 #include "edit/bytecode.h"
 #include "edit/commands.h"
 #include "edit/notes.h"
+#include "song/driver.h"
 
 namespace hokuto::app
 {
@@ -219,7 +221,8 @@ std::optional<LaneSetting> SettingOf(const Command& command)
 
 bool Holds(const song::Console& console, LaneSetting setting)
 {
-    return edit::ArgumentRange(console, CommandOf(setting, 0), Source::kValue).has_value();
+    // Whether a console has a setting is the same on every track.
+    return edit::ArgumentRange(console, 0, CommandOf(setting, 0), Source::kValue).has_value();
 }
 
 bool Sets(const KeyTrack& track, LaneSetting setting)
@@ -281,8 +284,46 @@ LaneSetting NextLane(const KeyTrack& track, std::span<const LaneSetting> lanes)
     return unshown.value_or(LaneSetting{});
 }
 
-std::optional<Fixed> StartingValue(LaneSetting setting)
+std::optional<Fixed> StartingValue(LaneSetting setting, const song::Console& console)
 {
+    // MusicPlayer2000's driver clears a track's state as it starts it (ntdlib::mp2k::Sequencer::StartTrack).
+    if (console.engine == format::Engine::kGba)
+    {
+        switch (setting.kind)
+        {
+        case Kind::kVolume:
+        case Kind::kPriority:
+            return 0;
+        case Kind::kTempo:
+            return ntdlib::mp2k::kDefaultTempo * kOne;
+        case Kind::kLfoSpeed:
+            return 22 * kOne;
+        default:
+            break;
+        }
+    }
+    if (console.engine == format::Engine::kDse && setting.kind == Kind::kVolume)
+    {
+        return song::kDseDefaultVolume * kOne;
+    }
+
+    // The GBA's other drivers start a track at the volume that their rules give. A song starts at the tempo of the
+    // rules, where they give one (song::DriverRules::StartTempoBpm).
+    if (console.driver != nullptr && setting.kind == Kind::kVolume)
+    {
+        return console.driver->StartVolume() * kOne;
+    }
+    if (console.driver != nullptr && setting.kind == Kind::kTempo)
+    {
+        const std::optional<double> bpm = console.driver->StartTempoBpm();
+        if (!bpm)
+        {
+            return std::nullopt;
+        }
+
+        return console.driver->TempoValue(*bpm);
+    }
+
     switch (setting.kind)
     {
     case Kind::kVolume:
@@ -339,7 +380,7 @@ edit::ValueRange LaneRange(const KeyTrack& track, LaneSetting setting)
         low = std::min(low, value);
         high = std::max(high, value);
     };
-    if (const std::optional<Fixed> start = StartingValue(setting))
+    if (const std::optional<Fixed> start = StartingValue(setting, track.console))
     {
         widen(*start);
     }
@@ -360,7 +401,7 @@ edit::ValueRange LaneRange(const KeyTrack& track, LaneSetting setting)
 
     // Within the console's range.
     if (const std::optional<edit::ValueRange> console =
-            edit::ArgumentRange(track.console, CommandOf(setting, 0), Source::kValue))
+            edit::ArgumentRange(track.console, track.number, CommandOf(setting, 0), Source::kValue))
     {
         low = std::clamp(low, console->lowest, console->highest);
         high = std::clamp(high, console->lowest, console->highest);
@@ -393,7 +434,7 @@ Lane LaneOf(const KeyTrack& track, LaneSetting setting)
     // The value from each point holds up to the next point, or up to the song's end. It moves there first over the
     // point's time, from the value before.
     Lane lane;
-    std::optional<Fixed> value = StartingValue(setting);
+    std::optional<Fixed> value = StartingValue(setting, track.console);
     const double first = points.empty() ? static_cast<double>(track.song_length) : track.controls[points[0]].tick;
     if (value && first > 0.0)
     {
@@ -470,14 +511,15 @@ std::optional<KeyEdit> LaneValueEdit(const KeyTrack& track, const KeyEditorState
 {
     const KeyControl& point = track.controls.at(pressed);
     const std::optional<LaneSetting> setting = SettingOf(point.command);
+    const edit::ValueRange console = edit::ArgumentRange(track.console, track.number, point.command, Source::kValue)
+                                         .value_or(edit::ValueRange{value, value});
+    value = std::clamp(value, console.lowest, console.highest);
     if (!setting || point.command.value.source != Source::kValue || value == point.command.value.value)
     {
         return std::nullopt;
     }
 
     // Each command changes once: the pressed one to the value, and with it the other selected commands of its setting.
-    const edit::ValueRange console =
-        edit::ArgumentRange(track.console, point.command, Source::kValue).value_or(edit::ValueRange{value, value});
     const Fixed change = value - point.command.value.value;
     const std::set<uint32_t> dragged = DraggedControls(track, state, pressed);
     KeyEdit edit;
@@ -572,9 +614,7 @@ std::optional<KeyEdit> LaneStartEdit(const KeyTrack& track, const KeyEditorState
         const bool early = shift < 0;
         const int64_t bound = int64_t{point.tick} + (early ? -int64_t{range->earlier} : int64_t{range->later});
         const double quarter = std::max(track.ticks_per_quarter, 1);
-        edit.refused = std::string("The point can start no ") + (early ? "earlier" : "later") + " than " +
-                       PlainPosition(static_cast<double>(bound) / quarter) +
-                       ". A command stays between the jumps, calls and loop points before and after it.";
+        edit.refused = PointLimitText(bound, early, quarter);
         return edit;
     }
 
@@ -589,10 +629,41 @@ std::optional<KeyEdit> LaneStartEdit(const KeyTrack& track, const KeyEditorState
     return moved;
 }
 
-KeyEdit LaneDrawEdit(LaneSetting setting, uint32_t tick, Fixed value)
+std::optional<KeyEdit> LaneDrawEdit(const KeyTrack& track, LaneSetting setting, uint32_t tick, Fixed value)
 {
+    // Each command of the setting that the track runs at the tick gets the value.
     KeyEdit edit;
     edit.name = "Edit Controller";
+    bool held = false;
+    for (const KeyControl& control : track.controls)
+    {
+        if (control.tick != tick || SettingOf(control.command) != setting)
+        {
+            continue;
+        }
+
+        held = true;
+        const Source source = control.command.value.source;
+        if (source != Source::kValue)
+        {
+            edit.refused = std::string(source == Source::kRandom ? "The value here is random."
+                                                                 : "The value here comes from a variable.") +
+                           " Edit it in the List Editor.";
+            edit.changed_controls.clear();
+            return edit;
+        }
+        Command command = control.command;
+        command.value.value = value;
+        if (command.value != control.command.value)
+        {
+            edit.changed_controls.emplace(control.offset, std::move(command));
+        }
+    }
+    if (held)
+    {
+        return edit.changed_controls.empty() ? std::nullopt : std::optional<KeyEdit>(std::move(edit));
+    }
+
     edit.added_controls.emplace_back(tick, CommandOf(setting, value));
 
     return edit;

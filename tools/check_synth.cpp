@@ -51,6 +51,7 @@
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "check_part.h"
 #include "song/archive.h"
 #include "song/midi_export.h"
 #include "synth/sf2_synth.h"
@@ -60,41 +61,13 @@ namespace
 
 namespace sar = ntdlib::sar;
 using hokuto::synth::StereoRender;
+using hokuto::tools::Part;
+using hokuto::tools::PartOf;
 
 constexpr int kRate = 48000;
 
 // The longest render, in seconds: the Export window's limit.
 constexpr double kMostSeconds = 300.0;
-
-// The part of the sounds that a run renders: those whose places leave k - 1 over when divided by n.
-struct Part
-{
-    int k = 1;
-    int n = 1;
-};
-
-// The part that `text` gives as k/n, or nothing where it gives none.
-std::optional<Part> PartOf(std::string_view text)
-{
-    const std::size_t slash = text.find('/');
-    if (slash == std::string_view::npos)
-    {
-        return std::nullopt;
-    }
-
-    Part part;
-    const std::string_view k = text.substr(0, slash);
-    const std::string_view n = text.substr(slash + 1);
-    const std::from_chars_result k_read = std::from_chars(k.data(), k.data() + k.size(), part.k);
-    const std::from_chars_result n_read = std::from_chars(n.data(), n.data() + n.size(), part.n);
-    if (k_read.ec != std::errc() || n_read.ec != std::errc() || k_read.ptr != k.data() + k.size() ||
-        n_read.ptr != n.data() + n.size() || part.k <= 0 || part.k > part.n)
-    {
-        return std::nullopt;
-    }
-
-    return part;
-}
 
 // What the tool measures in a render: its length, its peak and its samples that aren't finite.
 struct Measures
@@ -216,10 +189,20 @@ double Median(std::vector<double> values)
     return values.size() % 2 == 1 ? values[middle] : (values[middle - 1] + values[middle]) / 2.0;
 }
 
-// The tool, with the command line's `arguments`. Returns the tool's exit status.
-int Run(const std::vector<std::string>& arguments)
+// The options of a run: the part of the sounds that it checks, how often a sound also renders through FluidSynth and
+// where its files are written, the sound to check, if only one, and the archive.
+struct Options
 {
-    // The options, the archive and the sound.
+    std::optional<Part> part;
+    int every = 0;
+    std::filesystem::path folder;
+    std::string only;
+    std::string archive;
+};
+
+// The options in the command line's `arguments`, or nothing after the usage when they don't fit it.
+std::optional<Options> ParseOptions(const std::vector<std::string>& arguments)
+{
     std::optional<Part> part = Part{};
     int every = 0;
     std::filesystem::path folder;
@@ -246,24 +229,47 @@ int Run(const std::vector<std::string>& arguments)
     {
         std::fprintf(stderr,
                      "usage: hokuto_check_synth [--part <k>/<n>] [--fluidsynth <every> <folder>] <archive> [sound]\n");
-        return 2;
+        return std::nullopt;
     }
     const std::string only = rest.size() > 1 ? rest[1] : std::string();
 
-    const std::filesystem::path path = xsflib::PathFromUtf8(rest[0]);
-    const std::string name = xsflib::Utf8(path.filename());
-    std::shared_ptr<const sar::SoundArchive> archive;
-    try
+    return Options{part, every, folder, only, rest[0]};
+}
+
+// Renders sound `sound` of `info` through FluidSynth too, and adds the difference in level from `render`, Hokuto's
+// render of `conversion`, to `differences`. FluidSynth's files go in `folder`, and stay there with `only`. `name` is
+// the archive's name.
+void CompareWithFluidSynth(const ntdlib::sequence_export::Conversion& conversion, const StereoRender& render,
+                           const std::string& name, const sar::SoundInfo& info, uint32_t sound, const std::string& only,
+                           const std::filesystem::path& folder, std::vector<double>& differences)
+{
+    const std::string stem = name + "-" + std::to_string(sound);
+    const bool keep = !only.empty();
+    const std::optional<std::vector<float>> theirs = FluidSynthRender(conversion, folder, stem, keep);
+    if (!theirs)
     {
-        archive = hokuto::song::OpenArchive(path);
+        std::printf("%s: FluidSynth fails to render %s\n", name.c_str(), info.name.c_str());
+        return;
     }
-    catch (const std::exception& error)
+    if (keep)
     {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 2;
+        xsflib::WriteFile(folder / (stem + ".hokuto.raw"), RawFloats(render.samples));
     }
 
-    // Each sequence sound of the part: its conversion, then its render.
+    const std::size_t common = std::min(render.samples.size(), theirs->size());
+    const double ours = Dbfs(Rms(render.samples, common));
+    const double fluidsynth = Dbfs(Rms(*theirs, common));
+    std::printf("%s: %s plays at %.2f dBFS, and %.2f dBFS in FluidSynth, over %.1f s\n", name.c_str(),
+                info.name.c_str(), ours, fluidsynth, static_cast<double>(common / 2) / kRate);
+    if (ours > -100.0 && fluidsynth > -100.0)
+    {
+        differences.push_back(fluidsynth - ours);
+    }
+}
+
+// The counts of a run, the highest peak, the times of the renders and the differences from FluidSynth.
+struct Tallies
+{
     std::size_t sounds = 0;
     std::size_t not_converted = 0;
     std::size_t failed = 0;
@@ -278,116 +284,99 @@ int Run(const std::vector<std::string>& arguments)
     double slowest = 0.0;
     std::string slowest_sound;
     std::vector<double> differences;
-    for (uint32_t sound = 0; sound < archive->Sounds().size(); sound++)
+};
+
+// Converts sound `sound` of `archive`, `info`, and renders it, with the options `o`. Prints a line for each finding,
+// under the archive's `name`, and counts the sound in `tallies`.
+void CheckSynthSound(const sar::SoundArchive& archive, const std::string& name, uint32_t sound,
+                     const sar::SoundInfo& info, const Options& o, Tallies& tallies)
+{
+    tallies.sounds++;
+    std::optional<ntdlib::sequence_export::Conversion> conversion;
+    try
     {
-        const sar::SoundInfo& info = archive->Sounds()[sound];
-        if (info.type != sar::SoundType::kSequence || (!only.empty() && info.name != only) ||
-            static_cast<int>(sound % static_cast<uint32_t>(part->n)) != part->k - 1)
-        {
-            continue;
-        }
-
-        sounds++;
-        std::optional<ntdlib::sequence_export::Conversion> conversion;
-        try
-        {
-            conversion = hokuto::song::ConvertToMidi(*archive, sound, {}, {}, "Hokuto");
-        }
-        catch (const std::exception& error)
-        {
-            std::printf("%s: %s doesn't convert: %s\n", name.c_str(), info.name.c_str(), error.what());
-            not_converted++;
-            continue;
-        }
-
-        StereoRender render;
-        const auto began = std::chrono::steady_clock::now();
-        try
-        {
-            render = hokuto::synth::RenderSoundFont(conversion->midi, conversion->sf2, kRate, kMostSeconds);
-        }
-        catch (const std::exception& error)
-        {
-            std::printf("%s: %s fails to render: %s\n", name.c_str(), info.name.c_str(), error.what());
-            failed++;
-            continue;
-        }
-        const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
-
-        const Measures measures = Measure(render.samples, render.rate);
-        audio_seconds += measures.seconds;
-        render_seconds += took;
-        if (took > slowest)
-        {
-            slowest = took;
-            slowest_sound = info.name;
-        }
-        if (measures.not_finite > 0)
-        {
-            std::printf("%s: %s gives %zu samples that aren't finite\n", name.c_str(), info.name.c_str(),
-                        measures.not_finite);
-            not_finite++;
-        }
-        if (measures.peak == 0.0)
-        {
-            silent++;
-            continue;
-        }
-        if (measures.peak > 1.0)
-        {
-            std::printf("%s: %s peaks at %+.2f dBFS\n", name.c_str(), info.name.c_str(), Dbfs(measures.peak));
-            above_full_scale++;
-        }
-        if (measures.peak > highest)
-        {
-            highest = measures.peak;
-            highest_sound = info.name;
-        }
-
-        // Every nth sound that sounds goes through FluidSynth too.
-        if (every > 0 && sounding++ % static_cast<std::size_t>(every) == 0)
-        {
-            const std::string stem = name + "-" + std::to_string(sound);
-            const bool keep = !only.empty();
-            const std::optional<std::vector<float>> theirs = FluidSynthRender(*conversion, folder, stem, keep);
-            if (!theirs)
-            {
-                std::printf("%s: FluidSynth fails to render %s\n", name.c_str(), info.name.c_str());
-                continue;
-            }
-            if (keep)
-            {
-                xsflib::WriteFile(folder / (stem + ".hokuto.raw"), RawFloats(render.samples));
-            }
-
-            const std::size_t common = std::min(render.samples.size(), theirs->size());
-            const double ours = Dbfs(Rms(render.samples, common));
-            const double fluidsynth = Dbfs(Rms(*theirs, common));
-            std::printf("%s: %s plays at %.2f dBFS, and %.2f dBFS in FluidSynth, over %.1f s\n", name.c_str(),
-                        info.name.c_str(), ours, fluidsynth, static_cast<double>(common / 2) / kRate);
-            if (ours > -100.0 && fluidsynth > -100.0)
-            {
-                differences.push_back(fluidsynth - ours);
-            }
-        }
+        conversion = hokuto::song::ConvertToMidi(archive, sound, {}, {}, "Hokuto");
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: %s doesn't convert: %s\n", name.c_str(), info.name.c_str(), error.what());
+        tallies.not_converted++;
+        return;
     }
 
+    StereoRender render;
+    const auto began = std::chrono::steady_clock::now();
+    try
+    {
+        render = hokuto::synth::RenderSoundFont(conversion->midi, conversion->sf2, kRate, kMostSeconds);
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: %s fails to render: %s\n", name.c_str(), info.name.c_str(), error.what());
+        tallies.failed++;
+        return;
+    }
+    const double took = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
+
+    const Measures measures = Measure(render.samples, render.rate);
+    tallies.audio_seconds += measures.seconds;
+    tallies.render_seconds += took;
+    if (took > tallies.slowest)
+    {
+        tallies.slowest = took;
+        tallies.slowest_sound = info.name;
+    }
+    if (measures.not_finite > 0)
+    {
+        std::printf("%s: %s gives %zu samples that aren't finite\n", name.c_str(), info.name.c_str(),
+                    measures.not_finite);
+        tallies.not_finite++;
+    }
+    if (measures.peak == 0.0)
+    {
+        tallies.silent++;
+        return;
+    }
+    if (measures.peak > 1.0)
+    {
+        std::printf("%s: %s peaks at %+.2f dBFS\n", name.c_str(), info.name.c_str(), Dbfs(measures.peak));
+        tallies.above_full_scale++;
+    }
+    if (measures.peak > tallies.highest)
+    {
+        tallies.highest = measures.peak;
+        tallies.highest_sound = info.name;
+    }
+
+    // Every nth sound that sounds goes through FluidSynth too.
+    if (o.every > 0 && tallies.sounding++ % static_cast<std::size_t>(o.every) == 0)
+    {
+        CompareWithFluidSynth(*conversion, render, name, info, sound, o.only, o.folder, tallies.differences);
+    }
+}
+
+// Prints the summary of `tallies`, under the archive's `name`.
+void PrintTallies(const std::string& name, const Tallies& tallies)
+{
     std::printf(
         "%s: %zu sequence sounds. %zu don't convert, %zu fail to render and %zu give samples that aren't "
         "finite. %zu are silent, and %zu peak above full scale.\n",
-        name.c_str(), sounds, not_converted, failed, not_finite, silent, above_full_scale);
-    if (!highest_sound.empty())
+        name.c_str(), tallies.sounds, tallies.not_converted, tallies.failed, tallies.not_finite, tallies.silent,
+        tallies.above_full_scale);
+    if (!tallies.highest_sound.empty())
     {
-        std::printf("%s: the highest peak is %+.2f dBFS, in %s.\n", name.c_str(), Dbfs(highest), highest_sound.c_str());
+        std::printf("%s: the highest peak is %+.2f dBFS, in %s.\n", name.c_str(), Dbfs(tallies.highest),
+                    tallies.highest_sound.c_str());
     }
-    if (render_seconds > 0.0)
+    if (tallies.render_seconds > 0.0)
     {
         std::printf("%s: %.0f s of audio took %.1f s, %.0f times real time. The slowest render took %.2f s, for %s.\n",
-                    name.c_str(), audio_seconds, render_seconds, audio_seconds / render_seconds, slowest,
-                    slowest_sound.c_str());
+                    name.c_str(), tallies.audio_seconds, tallies.render_seconds,
+                    tallies.audio_seconds / tallies.render_seconds, tallies.slowest, tallies.slowest_sound.c_str());
     }
-    if (!differences.empty())
+    if (!tallies.differences.empty())
     {
+        const std::vector<double>& differences = tallies.differences;
         std::printf(
             "%s: FluidSynth played %zu sounds a median of %+.2f dB from Hokuto's renderer, from %+.2f to %+.2f "
             "dB.\n",
@@ -395,8 +384,48 @@ int Run(const std::vector<std::string>& arguments)
             *std::min_element(differences.begin(), differences.end()),
             *std::max_element(differences.begin(), differences.end()));
     }
+}
 
-    return not_converted > 0 || failed > 0 || not_finite > 0 ? 1 : 0;
+// The tool, with the command line's `arguments`. Returns the tool's exit status.
+int Run(const std::vector<std::string>& arguments)
+{
+    // The options, the archive and the sound.
+    const std::optional<Options> options = ParseOptions(arguments);
+    if (!options)
+    {
+        return 2;
+    }
+    const Options& o = *options;
+
+    const std::filesystem::path path = xsflib::PathFromUtf8(o.archive);
+    const std::string name = xsflib::Utf8(path.filename());
+    std::shared_ptr<const sar::SoundArchive> archive;
+    try
+    {
+        archive = hokuto::song::OpenArchive(path);
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
+        return 2;
+    }
+
+    // Each sequence sound of the part: its conversion, then its render.
+    Tallies tallies;
+    for (uint32_t sound = 0; sound < archive->Sounds().size(); sound++)
+    {
+        const sar::SoundInfo& info = archive->Sounds()[sound];
+        if (info.type != sar::SoundType::kSequence || (!o.only.empty() && info.name != o.only) ||
+            sound % o.part->n != o.part->k - 1)
+        {
+            continue;
+        }
+
+        CheckSynthSound(*archive, name, sound, info, o, tallies);
+    }
+    PrintTallies(name, tallies);
+
+    return tallies.not_converted > 0 || tallies.failed > 0 || tallies.not_finite > 0 ? 1 : 0;
 }
 
 } // namespace

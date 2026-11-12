@@ -100,15 +100,18 @@ std::optional<std::vector<std::vector<State>>> TrackStates(const ntdlib::command
             std::set_union(out.begin(), out.end(), states[item].begin(), states[item].end(), std::back_inserter(both));
             out = std::move(both);
         }
+
         for (const uint32_t next : paths.next[item])
         {
             add(next, out);
         }
+
         if (paths.opens[item])
         {
             add(*paths.opens[item], opening);
         }
     }
+
     if (too_many)
     {
         return std::nullopt;

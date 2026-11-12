@@ -1,6 +1,6 @@
 # The .hok format
 
-Version 1.0. This document specifies Hokuto's files: what they hold, their binary form and their text form. The code
+Version 1.1. This document specifies Hokuto's files: what they hold, their binary form and their text form. The code
 in `src/format/` is the reference implementation.
 
 A `.hok` file holds a sound archive in Hokuto's form. Its sequences are commands of one instruction set, with values in
@@ -24,26 +24,81 @@ came from, the values of its tables that the Wii's sound library reads for playb
 beside it, and the game's build of that library. The rest of the archive's tables stays in the file as bytes. An export
 writes their offsets and sizes again after an edit, and the values in place.
 
-A file of any console can hold its archive as a model instead: the items of the archive's tables with their values,
-and its files, without the game's layout. The sounds' volumes, pans and sends are in Hokuto's units there. A sequence
-sound starts at an item of its sequence. A reader lays the archive out from the model as NintendoWare's tools lay one
-out. The archive plays the same as the game's. Its bytes can differ.
+Version 1.1 adds a GBA ROM whose songs MusicPlayer2000 (MP2K), Nintendo's sound driver for the GBA, plays. The ROM has
+no archive: its songs, voice groups and samples are stored at addresses among the game's code and data. The file holds
+the engine, each song as a sequence, and the rest of the ROM as bytes. An export writes each song in its place where it
+fits. A song that outgrows its place goes into the ROM's free space, and the song table names it there.
+
+A file can also hold a sound archive of the DS (`.sdat`). NITRO-Composer, the sound driver of the DS's SDK, plays its
+sequences. The file holds the engine, each sequence file (SSEQ) as a sequence, and the rest of the archive as bytes. A
+sequence archive (SSAR) stays among those bytes. An export writes the files' offsets and sizes again after an edit. A
+file can also keep the DS's cartridge image (`.nds`) that holds the archive. Its export writes the new archive into
+the image. The archive's sound table lists the sequences of its INFO block by their indexes. From index 65,536, or
+after those sequences where the block holds more, it lists the sequences of each sequence archive in the order of the
+archive's table of sequence archives, each in the order of its table. A new sequence at the end of the INFO block's
+table therefore moves no sound. A sound's index in the chunks below is its place in that list. An entry that holds no
+sequence keeps its place. A sequence archive whose file can't be read adds nothing to the list.
+
+A file can also hold the sound files of a DS game on Procyon Studio's driver (Digital Sound Elements, DSE). Such a game
+keeps no sound archive. Its songs (smdl), wave banks (swdl) and banks of sound effects (sedl) are files of the
+cartridge's file system. The file holds the engine and those files as one set: the tracks of each song and each sound
+effect as a sequence, and the rest of the files as bytes. The file keeps the cartridge image (`.nds`) too. Its export
+writes each changed file into the image.
+
+A file can also hold a GBA ROM with Konami's sound driver. As with MP2K, the file holds the engine, the tracks of each
+song as a sequence and the rest of the ROM as bytes. Each song has up to 16 tracks, each with a channel of its own, and
+the driver reads no tempo. The song table names each song. A song that fits stays in its place, and a song that outgrows
+its place moves. The song table then names the new place.
+
+A file can hold a GBA ROM with Nintendo R&D2's sound driver in the same way. A song starts with a header that names up
+to 10 tracks, and each track plays any of the driver's voices. A song sets its tempo. The tables of sequences name each
+song's sequence. A song that outgrows its place moves, and the table then names the new place.
+
+A file can hold a GBA ROM with Brownie Brown's sound driver in the same way. A sound is a list of the driver's channels,
+and sounds share the bytes that their lists name. A sequence therefore holds a region of the ROM that a group of sounds
+read. The song table names each sound's list. A region that outgrows its place moves, and the song table then names the
+lists at the new place.
+
+A file can contain a GBA ROM with Ubisoft Milan's sound driver in the same way. A sequence contains one track of
+commands for the 16 channels of the driver, and each command names its channel. The driver reads no tempo. The resource
+table of the sound bank points to each sequence. A sequence that outgrows its place moves, and the table then points to
+the new place.
+
+A file can contain a GBA ROM with Rare's sound driver in the same way. A tune's header names up to 16 tracks, and each
+command of a track names one of 16 MIDI channels. The tune table names each tune's header, and the header's track list
+names each track's start. A tune that outgrows its place moves. Its track list then names the new place.
+
+A file can contain a GBA ROM with Quintet's sound driver in the same way. A song's header gives its length and the start
+of each of its 6 channels. A music file contains its songs back to back. A song that grows takes the free bytes after
+the last song, up to the end of the file's part.
+
+A file can contain a GBA ROM with Krawall, a player of XM and S3M modules, in the same way. The patterns of a module are
+stored together, and the table of patterns in its header names the place of each pattern. Patterns that outgrow their
+place move, and the table then names the new places.
+
+A file of any console but the GBA and the DS can hold its archive as a model instead: the items of the archive's tables
+with their values, and its files, without the game's layout. The sounds' volumes, pans and sends are in Hokuto's units
+there. A sequence sound starts at an item of its sequence. A reader lays the archive out from the model as
+NintendoWare's tools lay one out. The archive plays the same as the game's. Its bytes can differ.
 
 ## What a file holds
 
 - **The engine and the mixing mode.** The engine names a console. Hokuto plays the file's sounds by that console's
-  rules. Version 1.0 has four engines: the Switch, the Wii U, the 3DS and the Wii. A sound can play on another engine
-  than the file's. Hokuto then converts the sound for that console and plays the result by that console's rules. An
-  export to that console makes the same conversion. The archive keeps the sound for the file's engine. A sound of the
-  Wii goes to the Wii U first, and from there to the Switch or the 3DS. A sound of the 3DS, the Wii U or the Switch goes
-  to the Wii directly, for a build of NW4R SND from June 2008. The mixing mode is strict or enhanced. Strict mixing
-  follows the console's hardware, and enhanced mixing lifts its limits. Each sound takes the file's mode, unless the
-  file gives the sound the other mode. The Wii's engine plays in strict mixing only.
+  rules. There are fourteen engines: the Switch, the Wii U, the 3DS, the Wii, the GBA, the DS, DSE on the DS, and
+  Konami's driver, Nintendo R&D2's driver, Brownie Brown's driver, Ubisoft Milan's driver, Rare's driver, Quintet's
+  driver and Krawall on the GBA. A sound can play on another engine than the file's. Hokuto then converts the sound for
+  that console and plays the result by that console's rules. An export to that console makes the same conversion. The
+  archive keeps the sound for the file's engine. A sound of the Wii goes to the Wii U first, and from there to the
+  Switch or the 3DS. A sound of the 3DS, the Wii U or the Switch goes to the Wii directly, for a build of NW4R SND from
+  June 2008. A sound of the Wii, the GBA, one of the GBA's other drivers or DSE goes to the DS through the Wii U. The
+  mixing mode is strict or enhanced. Strict mixing follows the console's hardware, and enhanced mixing lifts its limits.
+  Each sound takes the file's mode, unless the file gives the sound the other mode. The Wii's engine plays in strict
+  mixing only.
 - **The effects.** The effects on the console's aux buses A to C, like the effect plugins on a DAW's FX channels. A
   track's `send` commands set its levels into the buses. A bus's effects process it in order, and the bus then joins the
   output at its volume. On the Switch, a bus without effects joins the output as it is. On the Wii U, the Wii and the
   3DS, a bus reaches the output only through its effects. The AX libraries of the Wii U and the Wii drop the sends to a
-  bus without one. The 3DS's nn::snd leaves such a bus off. The 3DS has buses A and B only. Version 1.0 has sixteen
+  bus without one. The 3DS's nn::snd leaves such a bus off. The 3DS has buses A and B only. The format has sixteen
   kinds of effect: the I3DL2 reverb of the Switch's audio library, the Wii U's high reverb, standard reverb, chorus and
   delay, six effects of the Wii and five of the 3DS. A file may hold an effect of any console. A player plays only the
   effects of the console whose engine plays the sound. A sound archive holds no effects and no volumes of the buses. A
@@ -54,6 +109,13 @@ out. The archive plays the same as the game's. Its bytes can differ.
   code sets the variables.
 - **The tracks' colours.** The colour that the user gave a track of a sound, for the program's views. A sound archive
   holds none. A player ignores them.
+- **Instrument maps.** A song of a GBA ROM plays the voices of a voice group, a table of up to 128 instruments in the
+  ROM. A MIDI file's notes play programs instead, on MIDI's drum channel or on another channel. An instrument map pairs
+  each program of a MIDI file with a voice of a voice group. An import of a MIDI file into a song pairs each program
+  that the file plays with a voice. The file keeps the pairings in the map of the song's voice group, and the next
+  import into a song of that voice group proposes them. On the other consoles, a map belongs to a bank. It pairs each
+  program of a MIDI file with a program of the bank, and each note of MIDI's drum channel with a program of the bank and
+  a key. An archive and a ROM hold no maps. A player and an export ignore them.
 - **The view.** What the program showed when the file was saved: a sound, the transport's position and cycle, the
   arrangement's zoom and scroll, its selected track and the tracks that are muted and soloed, the Key Editor's zoom,
   scroll and controller lanes, and the tracks that the open editors show. The file opens as it was saved. A sound
@@ -229,6 +291,23 @@ number.
 | 74 | `user_procedure` | number |  | 0xF0 0xE0 |
 | 75 | `other` | number | opcode | its opcode |
 | 76 | `data` | none | bytes | none |
+| 77 | `note_off` | none | key | 0xCE |
+| 78 | `repeat` | number | target | 0xB5 |
+| 79 | `jump_if_equal` | number | index, target | 0xB9 6 |
+| 80 | `jump_if_not_equal` | number | index, target | 0xB9 7 |
+| 81 | `jump_if_greater` | number | index, target | 0xB9 8 |
+| 82 | `jump_if_greater_or_equal` | number | index, target | 0xB9 9 |
+| 83 | `jump_if_less_or_equal` | number | index, target | 0xB9 10 |
+| 84 | `jump_if_less` | number | index, target | 0xB9 11 |
+| 85 | `tune` | cents |  | 0xC8 |
+| 86 | `register` | number | index | 0xCC |
+| 87 | `sample_wave` | number |  | 0xCD 0x01 |
+| 88 | `voice_type` | number |  | 0xCD 0x02 |
+| 89 | `echo_volume` | number |  | 0xCD 0x08 |
+| 90 | `echo_length` | number |  | 0xCD 0x09 |
+| 91 | `psg_length` | number |  | 0xCD 0x0A |
+| 92 | `sweep` | number |  | 0xCD 0x0B |
+| 93 | `sample_offset` | number |  | 0xCD 0x0D |
 
 The opcodes are those of the consoles' bytecode, NintendoWare's sequence format. A note's opcode is its key, from 0x00
 to 0x7F. Prefixes come before an opcode, in this order: 0xA2 for a condition, then 0xA3, 0xA4 or 0xA5 for a time with a
@@ -238,6 +317,36 @@ B and 0xDE for bus C. The table gives the opcodes of LFO 0. For LFO n from 1 to 
 The second byte is 0xA0 + 6 (n − 1) for `lfo_curve`. The next five bytes are for `lfo_phase`, `lfo_depth`, `lfo_speed`,
 `lfo_type` and `lfo_range`. The second byte is 0xE1 + 2 (n − 1) for `lfo_delay`, and one more for `lfo_period`. The
 engines differ in the commands that they run (see "The engines").
+
+Kinds 77 to 93 are MP2K's, and the table gives their bytes on the GBA. A `note_off` ends the newest note of its key
+that has length 0: MP2K's end of a tie. A `repeat` goes back to its target until it has run its value's times in all,
+or for ever at 0. A conditional jump goes to its target when byte n of MP2K's memory area, n being its index, compares
+with its value as its name says. A `register` writes its value to the sound register n bytes past the first. The
+others set a voice's sample by its address, its type, the echo after a PSG note's release, a PSG voice's length and
+sweep, and the point in the sample where the track's notes start. Each of these commands does nothing on the other
+engines, and the others' encoders refuse them.
+
+On the GBA, the kinds that NintendoWare shares take MP2K's opcodes: 0xCF to 0xFF for a `note`, 0xCF for one of length
+0, 0x80 to 0xB0 for a `wait`, 0xB1 for an `end`, 0xB2 for a `jump`, 0xB3 for a `call` and 0xB4 for a `return`. 0xBA
+to 0xC5 give `priority`, `tempo`, `transpose`, `program`, `volume`, `pan`, `pitch_bend`, `bend_range`, `lfo_speed`,
+`lfo_delay`, `lfo_depth` and `lfo_type`. 0xCD and 0x04 to 0x07 give `attack`, `decay`, `sustain` and `release`, and
+0xCD 0x0C a `wait` of 16 bits. 0xB9 with operations 0 to 5 gives `set_variable`, `add_variable` and
+`subtract_variable`, with a value or from a variable. A byte below 0x80 repeats the track's last command from 0xBD
+up, with that byte as its first argument.
+
+On the DS, the kinds take NITRO-Composer's opcodes. A `note`'s opcode is its key, from 0x00 to 0x7F, and its velocity
+and its length follow. 0x80 gives a `wait`, 0x81 a `program`, 0x93 an `open_track`, 0x94 a `jump` and 0x95 a `call`. A
+target takes 3 bytes, little-endian. 0xB0 to 0xB6 give the kinds from `set_variable` to `random_variable`, and 0xB8 to
+0xBD the kinds from `compare_equal` to `compare_not_equal`. 0xC0 to 0xD7 give `pan`, `volume`, `main_volume`,
+`transpose`, `pitch_bend`, `bend_range`, `priority`, `note_wait`, `tie`, `portamento_from`, `lfo_depth`, `lfo_speed`,
+`lfo_type`, `lfo_range`, `portamento`, `portamento_time`, `attack`, `decay`, `sustain`, `release`, `loop_start`,
+`volume2`, `print_variable` and `mute`. 0xE0 gives an `lfo_delay`, 0xE1 a `tempo` and 0xE3 a `sweep_pitch`. 0xFC, 0xFD
+and 0xFF give `loop_end`, `return` and `end`. 0xFE gives `allocate_tracks`, at a sequence's start only. The DS has one
+LFO. A note's length, a wait and a program take a variable-length number: 7 bits in each byte, with the high bit set in
+every byte but the last. The opcodes from 0xB0 to 0xBF and from 0xE0 to 0xEF take 16 bits, little-endian. Those from
+0xC0 to 0xDF take a byte. Prefixes come before an opcode, in this order: 0xA2 for a condition, then 0xA0 for a random
+value or 0xA1 for a value from a variable. They give the source of a note's length and of the value of the opcodes
+from 0x80 to 0x8F and from 0xB0 to 0xEF. The other opcodes from 0x80 up are `other` commands.
 
 ## Values and units
 
@@ -278,6 +387,16 @@ kinds:
 
 The other consoles' values take the same scales. The Wii's builds of NW4R SND before 20080308 differ in one: they take a
 sweep's pitch in 32nds of a semitone. Their `sweep_pitch` is 100 v / 32 cents.
+
+MP2K's values take other scales. Its `tempo` holds half the BPM. Its value is therefore 2 v BPM. Its `pan` and
+`pitch_bend` take 0x40 off, and its bend is in 64ths of the range: v − 64 and (v − 64) / 64. Its `transpose` and
+`bend_range` are in semitones: 100 v cents. Its `tune` is in 64ths of a semitone, with 0x40 the centre: 100 (v − 64) /
+64 cents. The LFO's values stay in the driver's units: its speed in 256ths of a cycle each tick, its delay in ticks and
+its depth in the driver's steps. A song counts 24 ticks to a quarter note.
+
+The DS's values take the other consoles' scales, but for the LFO's. Its `transpose` and `pitch_bend` are signed bytes.
+An LFO's depth is in steps of 127/16,384 of its range: 127 v / 16384. Its speed is in 128ths of a cycle each 4 frames
+of the driver: about 0.37491 v Hz. Its delay is in frames of the driver: about 5.20953 v ms.
 
 ## The engines
 
@@ -352,6 +471,294 @@ every build, a sound's volume above 127 plays at 127. A sound of the Wii has one
 The build of October 2006 differs in two more ways. Its clock counts in 416ths of a tick. Each frame first takes the
 whole ticks out of the count, then adds the tempo, then runs the ticks that it took out. The timebase plays no part. The
 build also raises a `pan` or an `initial_pan` of −64 or −63 by 1, and a `surround_pan` of 0 or 1.
+
+The GBA's engine plays a song as MP2K does. Each frame of the GBA's display, about 59.73 Hz, adds the tempo to a counter,
+and each 150 in the counter is a tick. A song plays up to 16 tracks, as many as its header gives. A track's stack holds
+3 calls. A `repeat` keeps its count apart from the stack. The variables are the 256 bytes of MP2K's memory area.
+`set_variable` and the conditional jumps address them. They start at 0, and a game's code can set them. MP2K draws no
+random numbers.
+
+In DSE's files, a sequence holds the track chunks of a song or a sound effect, in the order of their bytes. Each track
+starts with a `data` item of 20 bytes: the chunk's header and the track's preamble. An encoder writes the chunk's size
+into its copy of those bytes, and pads the chunk to a multiple of 4 bytes with 0x98. A code below 0x80 gives a `note`:
+the code is its velocity, and the byte after it holds the number of bytes of its length, its change of octave and its
+key's place in the octave. A note can leave its length out and take the length before it. A `note` holds its key and its
+length, and an encoder works out the bytes from the state before the note. An octave that a note's change can't reach
+puts 0xA0 before the note. 0x80 to 0x8F give a `wait` of a length from the driver's table. 0x90 gives a `wait` of the
+length before it, and 0x91 changes that length by a signed byte. 0x92, 0x93 and 0x94 give a `wait` with its length in 1,
+2 or 3 bytes, little-endian. 0x98 gives an `end`. 0x9C gives the `loop_start` of a repeat, and 0x9D its `loop_end`. 0xA4
+and 0xA5 give a `tempo`, 0xAC a `program`, 0xDB a `bend_range`, 0xE0 a `volume`, 0xE3 a `volume2` and 0xE8 a `pan`. The
+other codes from 0x90 up are `other` commands with their bytes, 0x99 among them: a track's end goes back to its last
+0x99. An `end` can stand in the chunk's padding, with a code that the driver takes as invalid. A `data` item after a
+track's end holds bytes that the chunk's size counts and the driver never reads. Those forms come back as they were
+read. An encoder refuses other kinds, conditions, times and values from random numbers or variables.
+
+DSE's values take the other consoles' scales. Its `pan` is the byte less 64.
+
+Konami's engine plays a song as the driver does, in the revision of the file's ROM (see NATV). The revisions differ in
+their commands, their tracks and their mixer. A song's tracks are 0 to 15, and a revision can have fewer. Tracks 0 to 3
+play the GBA's PSG channels: two squares, the wave and the noise. Track t + 4 plays the driver's mixer voice t. A
+track's number therefore names its channel, and a song always holds all its tracks. The mixer's output runs at 65,536
+Hz. A revision without a mixer plays its samples through a FIFO for each timer, at 32,768 Hz. One tick is one frame of
+the GBA's display, about 59.73 Hz, and a `wait` of n lasts n ticks. A song holds no `tempo` and no variables, and the
+driver draws no random numbers.
+
+A track's bytes are a delay and then, in turn, a command and a delay. A delay becomes a `wait`, and a delay of 0 is a
+`wait` of 0. A command becomes an item of its kind. Bytes that no track reaches stay in `data` items.
+
+- **`note`:** its velocity holds the command's volume, on the scale of 65,536 for a volume of 1. Its length stays 0: a
+  note sounds until the track's next note or its next `note_off`. A `note_off` is a rest. A note of a PSG track holds
+  its key. A note of the mixer holds its sample in the part that bit 12 of an item's flags gives (`[sample n]` in the
+  text form), and the sample's change in semitones as a signed byte in its key. Where the next track plays the note, its
+  index is 1.
+- **`program`:** index 0 holds a PSG track's duty byte, or a wave in the driver's first revision. Index 1 holds a wave,
+  and index 2 an entry of the table of instruments that the game gives the driver.
+- **`volume`:** index 0 and index 1 hold the two forms of the command. Index 2 holds a volume of the track and, in its
+  velocity, a volume of the next track. A volume starts a PSG note again in some revisions.
+- **`release`:** index 0 ends a note, and indexes 1 and 2 fade this track and the next.
+- **`pan`:** in the revisions whose byte holds a position, the byte less 64. In the others, the byte holds a left level
+  and a right level. The value is the right less the left, in steps of 63/15, and the velocity holds the larger level. A
+  PSG track off centre plays its right side on its channel, and its left side on the next channel, in place of the next
+  track.
+- **`loop_start`:** the track's loop point. Its bytes hold what the driver skips after it. A `loop_end` is a loop of the
+  whole song: every track goes back to its loop point, or to its start.
+- **`end`:** index 0 ends the track until the song loops, index 1 for good, and index 2 stops the song.
+- **`call`:** its value counts the commands to read from its target, and its index names the track whose start the
+  target counts from. Its key holds the opcode. A target starts with a delay. The driver reads no delay after the last
+  command of a call. The delay after the call plays instead.
+- **`lfo_depth`, `pitch_bend`, `attack`, `decay`, `echo_volume`, `echo_length`, `mute` and `main_volume`:** the command's
+  byte, on the driver's scale. An index of a `pitch_bend` names one of the forms of the command.
+- **`other`:** the opcode and its bytes: a command without another kind, such as a change of the echo's route.
+
+An `opcode` of 0x100 plus a byte keeps a command's bytes: the byte starts them, and the item's bytes hold the rest. A
+reader uses them only where they read as the item's values, such as a delay in a longer form than its length requires.
+After an edit that changes the values, the encoder writes the usual bytes. The encoder refuses other kinds and
+conditions, times and values from random numbers or variables. It also refuses a track that would read a delay at the
+bytes of a command, or a command at the bytes of a delay.
+
+Nintendo R&D2's engine plays a song as the driver does, in the revision of the file's ROM (see NATV). A sequence starts
+with a header. A sequence of music holds a count of tracks and a byte of 0, and then 2 bytes for each track: the track's
+start, counted from the sequence's start. The count and the byte of 0 stay a `data` item of 2 bytes. A sequence of sound
+effects holds only the starts. Each start is an `open_track` item with an `opcode` of 0x100 and the track's number in
+its index. A start of 0 names no track: its item has no target. A song of the music plays tracks 0 to 9, and a sound
+effect plays one track of a sequence of sound effects. A track plays any of the driver's voices: the PSG channels and
+the voices of the driver's mixer. The mixer's output runs at 65,536 Hz. A `tempo` of 150 plays a tick in each frame of
+the GBA's display, about 59.73 Hz. A song holds no variables, and the driver draws no random numbers.
+
+Each command becomes an item of its kind. Bytes that no track reaches stay in `data` items.
+
+- **`note`:** opcodes 0x00 to 0xBF. A note of 0x60 to 0xBF holds its key less 0x60, its length and its velocity. A note
+  of 0x00 to 0x5F holds its key, and takes its length and its velocity from the track's last note that gave them. The
+  velocity stays in the driver's units, 0 to 255.
+- **`wait`:** 0xC1 holds its length, and 0xC0 takes the track's last wait.
+- **`program`, `pan`, `priority`, `bank_select`, `volume`, `pitch_bend`, `bend_range`, `send`, `tempo`, `lfo_delay`,
+  `lfo_speed`, `lfo_depth`, `transpose` and `main_volume`:** 0xC2, 0xC3, 0xC4, 0xC7, 0xE0, 0xE1, 0xE2, 0xE3, 0xE4,
+  0xE5, 0xE6, 0xE7, 0xE9 and 0xEA. A `pan` takes a position from the centre at 64, a `pitch_bend` a fraction of the
+  bend's range, and a `transpose` and a `bend_range` cents. The other values stay in the driver's units. A `send` is the
+  track's send to the driver's echo. A `main_volume` is the player's volume. A `tempo` takes a length's bytes. In one
+  revision, a `tempo` takes a byte, and 0xEA has no operand: it is an `other` item.
+- **`tie`:** 0xC5 turns legato on, with a value of 1, and 0xC6 turns it off. **`note_wait`:** 0xC8 makes notes wait for
+  their lengths, with a value of 1, and 0xC9 stops it.
+- **`portamento_from`:** 0xD0 to 0xDF, a slide for the next note. Its index holds the opcode's low digit, its key the
+  other note, its value the slide's length in 256ths of the note's, and its velocity the delay in frames where the digit
+  is odd. **`portamento`:** 0xE8, no slide for the next note.
+- **`user_procedure`:** 0xCA, with a value for the game's routine.
+- **`jump`, `call` and `open_track`:** 0xF0, 0xF4 and 0xF8, with a target counted from the sequence's start. An
+  `open_track` starts the track that its index names.
+- **`return` and `end`:** 0xFF, a `return` where a track reaches it inside a call, and an `end` outside every call.
+- **`other`:** the other opcodes from 0xC2 up. They do nothing and take no operand.
+
+A length takes a byte, or two bytes with the first byte's top bit set. The choices of a sequence piece keep a length in
+two bytes that one byte would hold (`value_bytes` 2), and a note or a wait of one byte (`repeated`). The encoder refuses
+other kinds, conditions, times and values from random numbers or variables, and a target more than 0xFFFF bytes from
+the sequence's start.
+
+Brownie Brown's engine plays a sound as the driver does, in the revision of the file's ROM (see NATV). A sound is a
+list of the driver's channels, and a channel's commands can call and jump to bytes that other sounds read. A sequence
+therefore holds a region of the ROM: the bytes from the first to the last that a group of sounds read, where no other
+sound reads a byte. A region can hold one sound or hundreds. Labels name the items where the sounds' lists start.
+Channels 0 to 3 play the music on the PSG's square 1, square 2, wave and noise channels. Channels 4 to 7 play sound
+effects on the same PSG channels, and take each one from the music while they sound. The other channels play samples:
+channels 8 to 12 on the voices of the driver's mixer in revision 0, and channels 8 to 11 on the GBA's two FIFOs in
+revision 1. There, channels 10 and 11 play a sound effect's samples, and take a FIFO from channel 8 or 9. The driver
+counts time in frames of the GBA's display, about 59.73 Hz, and a tick is a frame. A sound holds no tempo and no
+variables, and the driver draws no random numbers.
+
+Each list, each command that a channel reaches and each word of a table that a command reads becomes an item. Bytes that
+nothing reads stay in `data` items. A word starts on a multiple of 4 bytes in the ROM. The encoder puts zeros before a
+word that would start elsewhere.
+
+- **A list:** for each channel, an `open_track` item and then a `jump` with an `opcode` of 0x200. The `open_track`'s
+  index is the channel, and its target is the item where the channel's data starts. The `jump`'s target is the channel's
+  table. An `end` with an index of 1 is the word of 0xFF that ends the list. A channel's data can start at that word.
+  The first byte of the word reads as 0xFF.
+- **A table:** a run of `jump` items with an `opcode` of 0x200, each a word with the address of an item. A word whose
+  address names no item of the sequence sets bit 9 of its flags, and its target holds the address.
+- **`note`:** its key holds the byte: a key before the channel's transpose, or a noise note's setting. A note holds no
+  velocity. 0xF2 sets a channel's volume.
+- **A length byte:** 0x80 to 0xDF, an `other` item with the byte in its `opcode`. It chooses the channel's length from
+  the driver's table of lengths. In revision 0, 0xEE chooses the set of 16 lengths that the byte reads. A length of 0 in
+  the table lasts 256 ticks.
+- **`wait`, `note_off` and `release`:** 0xFE is a `wait`: the note goes on. 0xEC is a sample channel's rest, a
+  `note_off` with an index of 0, and 0xED a PSG channel's, with an index of 1. 0xE0 is a `release`: the envelope goes on
+  from the release envelope in its value.
+- **`program`:** index 0 is 0xE1's sample set, or in revision 1 its sample. Index 1 is 0xF0's envelope, index 2 0xF1's
+  byte for the PSG channel's NRx1 register, and index 3 0xFC's wave.
+- **`pan`:** index 0 is 0xEA's byte, with the right side's level in the low nibble and the left's in the high. Index 1
+  is 0xFD's byte, with the PSG channel's NR51 bits for the right side in the low nibble and for the left in the high.
+- **`volume`:** 0xF2's byte: the level that a PSG channel's envelope loses, or a sample channel's volume.
+- **`transpose`:** 0xF3's signed byte, with 100 cents for each step of the byte.
+- **`tune`:** 0xF9's signed byte: an addition to a PSG channel's frequency setting, or in revision 1 12ths of a
+  semitone on a sample channel.
+- **`sweep`:** index 0 is 0xFA, with the PSG's NR10 byte. Index 1 is 0xFB, the command that turns the sweep off.
+- **`loop_start` and `loop_end`:** 0xF4 with its count, where 0 counts 256, and 0xF5.
+- **`jump` and `call`:** 0xF8 and 0xF6. The index names the word of the channel's table, and the target is the item
+  that the word names. **`return`:** 0xF7. **`end`:** 0xFF, with an index of 0.
+- **`other`:** the opcode and its bytes. A length byte is one. So are revision 0's 0xE2 (the mixer's mode), 0xE3 (the
+  sound comes back after a fade), 0xE8 and 0xE9 (a sound effect gives the music's PSG channel back, or takes it) and
+  0xEE (the set of lengths), and each command that does nothing.
+
+A `note`, a `wait`, a `note_off` and a `release` each wait for the channel's length. Their bytes hold no number of
+ticks, and a channel that reads them with another length waits for another time. A file gives each such item the whole
+ticks that every channel that reads it waits there: a `release` in its time, and the others in their value. An item
+holds 0 where its channels wait for other lengths, or where no channel reaches it. The encoder ignores those ticks: the
+length bytes give them. Hokuto's edits put length bytes in where an item's ticks change.
+
+In revision 1, 0xE2 to 0xE9 read as 0xF2 to 0xF9, and 0xEF as 0xFF. An item that a channel reads through such a byte
+holds 0x100 plus the byte in its `opcode`, and the encoder writes the byte. The encoder refuses other kinds, conditions,
+times and values from random numbers or variables. It also refuses a sequence that the driver wouldn't read as its
+items say: a channel that reaches a word or data, a channel that runs past the items, and a call or a jump that finds
+another target in its table.
+
+Ubisoft Milan's engine plays a piece of music as the driver does. A piece plays a list of sequences one after another,
+and a piece that loops starts the list again after the last sequence. A sequence contains one track of commands for 16
+channels. The index of each command is its channel. Channels 0 to 2 play square 1, square 2 and the wave channel of the
+PSG. Channel 9 plays the noise of the PSG at keys up to 11, and the samples of the kit at higher keys, on the mixer of
+the driver. The other channels make no sound. The mixer plays 4 voices at the rate that the game sets, and both FIFOs of
+the GBA play the same samples. One tick is one frame of the GBA display, about 59.73 Hz. A piece has no `tempo` and no
+variables, and the driver draws no random numbers.
+
+A sequence starts with 4 bytes in a `data` item: the kind of resource and three bytes that the driver doesn't read. A
+`wait` follows. After that, each command has a `wait` after it, up to the `end`. The bytes contain no jumps or calls.
+
+- **`wait`:** a length in ticks. The bytes store a countdown of 2 bytes, low byte first. The first wait of a sequence
+  stores the countdown n as it is. The sequence that starts a piece runs its first command n ticks in. A sequence that
+  follows another runs the first command n + 1 ticks after the end of the sequence before it, or in the same tick for a
+  countdown of 0. Any other countdown of n is a wait of n + 1 ticks, and a countdown of 0 is a wait of 0 ticks. No
+  countdown stores a wait of 1 tick after a command, and the encoder refuses one. A wait lasts at most 65,536 ticks, and
+  a first wait at most 65,535.
+- **`note`:** 0x90, with the key and the velocity in the units of the driver, 0 to 255. The length stays 0. A note
+  sounds until a `note_off` of the same key on the same channel, or until the sample ends. A note of the kit sounds
+  until any `note_off` on channel 9. A later note on a PSG channel ends the note before it.
+- **`note_off`:** 0x80, with the key, and in the velocity a second byte that the driver doesn't read.
+- **`program`:** 0xC0, an instrument of a PSG channel, or the offset of the keys of channel 9 into the kit.
+- **`other`:** 0xE0, a command without an effect.
+- **`end`:** 0xFC, the end of the sequence.
+
+The encoder refuses other kinds, conditions, times and values from random numbers or variables, and a command without a
+`wait` after it.
+
+Rare's engine plays a tune as the driver does, with the traits of the file's build of the driver (see NATV). A tune's
+header names its tracks, and each track runs from its start to its end, or to its loop's end after its loop's start. The
+tune's tracks become one sequence, from the first track's start to the last byte that a track reads. A tune's ticks run
+at the tempo of its tempo commands, with the header's ticks to a quarter note. The driver mixes its notes into Direct
+Sound A, at the rate that the driver's init sets. The hardware's output runs at 65,536 Hz. A tune holds no variables,
+and the driver draws no random numbers.
+
+Each command becomes an item of its kind, with its channel in its index. In the build that names the channel in the
+command byte's high nibble, the index of a command without a channel holds the nibble that the driver ignores. Bytes
+that no track reaches stay in `data` items.
+
+- **`tempo`:** command 0, microseconds a quarter note in 3 bytes.
+- **`wait`:** commands 1, 2 and 3, a delay in ticks in 1, 2 or 3 bytes.
+- **`note`:** commands 5 and 4, with a key and a velocity up to 127, and a length of 0. A note of command 4 holds 4 in
+  its `opcode`. The driver plays both the same.
+- **`note_off`:** command 6. It ends the channel's first note of its key that sounds.
+- **`program` and `pitch_bend`:** commands 8 and 10. A `pitch_bend` takes a fraction of the instrument's bend range.
+- **`end`:** command 11.
+- **`lfo_depth`, `volume`, `attack`, `decay`, `sustain`, `release`, `loop_start`, `loop_end` and `monophonic`:**
+  controllers 1, 7, 20 to 23, 102, 103, 126 and 127. Controllers 20 to 23 set a channel's envelope in the build that
+  reads them. A `loop_start` and a `loop_end` hold a value of 0: the loop runs for ever. A `monophonic` turns the mode
+  on with a value of 1 (126), and off with a value of 0 (127).
+- **`other`:** command 9, a channel pressure that the driver ignores, and command 12, a command that does nothing, with
+  the command in `opcode`. Another controller, with 0x100 plus the controller in `opcode`.
+
+The second byte of a note-off, a channel pressure and controllers 102, 103, 126 and 127 does nothing. The choices of a
+sequence piece keep it where it isn't 0 (`arguments`), and a delay in more bytes than it requires (`value_bytes`). The
+encoder refuses other kinds, conditions, times and values from random numbers or variables.
+
+Quintet's engine plays a song as the driver does, in the revision of the file's ROM (see NATV). A song has 6 channels:
+two squares, the wave channel, the noise channel and FIFOs A and B. Each channel runs from its start to its end (FF).
+That command ends the channel or goes back to the channel's loop point. A whole note lasts 384 of the driver's ticks,
+and a channel's tempo command sets the ticks that each frame plays. The driver plays the FIFOs as Direct Sound A and B,
+and the hardware's output runs at the rate that the driver's init sets. A song holds no variables.
+
+Each command becomes an item of its kind: the item that ntdlib's decoder gives. A `note`, a `note_off` and a `wait` hold
+their length in the performer's ticks: 37 for each of the driver's, and 3,552 a quarter note. The other values stay in
+the driver's units. Bytes that no channel reaches stay in `data` items. A dot (D1, or 9B in the revision of notes of two
+bytes) right after a note, a rest or a wait adds half its length again, rounded down to the driver's ticks. The file
+folds such a dot into the item before it: the item's `value` holds the whole length, and its `opcode` holds 0xD1. A
+dotted length that no length gives with half of it again is refused. A tie (D4) followed by a note of the same pitch
+adds that note's length to the note before the tie, and a tie followed by a rest does the same after a rest. A tie stays
+a `tie` item.
+
+- **`note`:** a note, with its pitch from 0 to 11 in `key` and its length in `value`. `index` 1 plays the last note
+  again, or on a FIFO the sample at its rate.
+- **`note_off`:** a rest, with its length.
+- **`wait`:** in the revision of notes of two bytes, a note of another pitch that only waits, with its byte in `key`.
+- **`tempo`:** 7F.
+- **`volume`:** `index` 0, 5E, a channel's volume. `index` 1, F1, a signed step of the volume.
+- **`transpose`:** `index` 0, E4, and `index` 1, E9, the second transpose. Signed.
+- **`tune`:** `index` 0, D5, a signed byte, and `index` 1, E6, a signed halfword.
+- **`program`:** `index` 0, DC, or DD with DD in `opcode`, a FIFO's sample. The driver plays both the same. `index` 1,
+  DB, the noise macro. `index` 2, DA, the wave.
+- **`tie`:** D4.
+- **`loop_start` and `loop_end`:** D6 and D7, a repeat. A `loop_end` holds its passes, from 1 to 256. The byte 0 makes
+  256 passes.
+- **`end`:** FF.
+- **`other`:** every other command, with its number in `opcode` and its arguments in `bytes`. In the revision of notes
+  of two bytes, a byte that the driver skips takes 0x100 plus the byte in `opcode`.
+
+A note's and a rest's length is a note value: 1/n of a whole note. The choices of a sequence piece keep the code of a
+note value where it isn't the lowest code that gives the length (`length_code`). The encoder refuses other kinds,
+conditions, times, values from random numbers or variables, and a length that isn't a whole number of the driver's
+ticks or a note value of the driver.
+
+Krawall's engine plays a piece as Krawall plays it, in the revision of the file's ROM (see NATV). A sequence holds a
+module's patterns, back to back, each padded with bytes of 0 to a multiple of 4 bytes from the sequence's start. A
+pattern starts with an index of every 4th row and its count of rows. Its rows follow, and a row lists the channels that
+it has data for. The player plays each row for the ticks of the module's speed, and a tick lasts as long as the
+module's tempo sets. A piece plays the module's orders from the first, or from the first order of a song that the
+orders separate. Each of the module's first 16 channels is a track. A piece holds no variables, and the player draws no
+random numbers.
+
+Each item of a pattern takes a kind:
+
+- **`other` with `opcode` 0x200:** the pattern's start. The encoder works the index and the count of rows out from the
+  rows. In a pattern of fewer than 64 rows, the index's entries past the rows are spare: `bytes` holds them where they
+  aren't 0.
+- **`note`:** a note, with its number from 1 for C-0 in `key` and its instrument in `[sample n]`, from 1, or 0 for none.
+  A note has no velocity or length: both hold 0.
+- **`note_off`:** a note off, with its instrument in `[sample n]`, or 0 for none.
+- **`program`:** an instrument without a note, in `value`.
+- **`volume`:** the volume column's byte, in the module's codes.
+- **`other` with `opcode` 0x100 plus an effect's number:** an effect, with its operand in `bytes`.
+- **`wait`:** the end of `value` rows: the last row that has items, and the empty rows after it.
+
+Each item but a wait and a pattern's start names its channel in `index`, from 0 to 31. A row's items of one channel make
+one entry of the row, in the order note, volume and effect. A pattern's count of rows is the sum of its waits. Revision
+1, for the builds from 2004/09/17 on, counts a pattern's rows in a halfword and takes an instrument of up to 16 bits.
+Revision 0 counts them in a byte and takes an instrument of up to 9 bits. In revision 1, an instrument above 255 takes a
+third byte, and the choices of a sequence piece keep a third byte of 0 (`value_bytes` 3). The encoder refuses other
+kinds, conditions, times, values from random numbers or variables, a channel past 31 and a pattern of more rows than its
+count holds.
+
+The DS's engine plays a sequence as NITRO-Composer's driver plays it on the DS's ARM7. The driver runs a frame every
+2,728 ticks of the ARM7's timer, each 64 clocks of the system's 33,513,982 Hz: about 5.2095 ms. Each frame adds the
+tempo to a counter, and each 240 in the counter is a tick. A sequence plays up to 16 tracks. A track's stack holds 3
+calls. Variables 0 to 15 belong to the sequence's player, and 16 to 31 to every player. They start at −1, and a game's
+code can set them. The DS's sound unit mixes 16 channels. The DS's bytecode holds only the kinds that its opcodes give
+(see "Commands"), and its encoder refuses the others.
 
 ## The mixing modes
 
@@ -455,6 +862,27 @@ On the Wii:
 - AX's microcode mixes 96 samples in each frame of 3 ms, at 32 kHz. The engine mixes as the microcode of AX's build of
   December 2006 does. With BULD's flag, it mixes as the microcode of October 2006 does.
 
+On the DS:
+
+- The driver runs a frame every 174,592 clocks of the system's 33,513,982 Hz, about 5.2095 ms. In strict mixing, the
+  sound unit makes a sample every 1,024 clocks, at 32,728.5 Hz: 170 or 171 samples in a frame. Each sample holds every
+  channel's sample at its end, without interpolation. The mixer works in fixed point, adds a bias and clips the sum to
+  10 bits. In enhanced mixing, the engine makes 250 samples in each frame, at about 47,989 Hz.
+- **Channels.** Where the console's driver would take a channel that plays, or would give a note no channel for its
+  priority, the enhanced mode takes a channel past the console's 16 instead, up to 1,024 in all. The new channel plays
+  as the channel that the console's driver chose: a wave, a rectangular wave or noise. Only the sequences' notes take
+  such channels.
+- **The interpolator.** A channel that plays PCM or IMA-ADPCM gives the windowed sinc above its wave's samples, its
+  loops included. The interpolator takes them at the channel's place: the sample that plays, and the share of the
+  timer's period that has passed. A rectangular wave and noise change their levels at each overflow of their timers,
+  through band-limited steps. The steps run 32 samples late, and the waves pass through a delay of as many samples. The
+  output therefore runs 32 samples behind the console's timing.
+- **Gains.** A channel's volume, divider and pan, and the master volume, give gains in floating point. A gain that
+  changes ramps across the frame's 250 samples. A channel that starts takes its gains at once.
+- **The output.** Nothing adds the bias, cuts the fixed point's bits or clips the sum. The output is the sum on the
+  scale of 16-bit samples divided by 32,768, without a limit. A channel that stops, and a one-shot wave at its end,
+  ring out through the interpolator.
+
 ## The binary form
 
 Numbers are little-endian. A file starts with a header and a table of its chunks. The chunks follow.
@@ -465,7 +893,7 @@ Numbers are little-endian. A file starts with a header and a table of its chunks
 |---|---|---|
 | 0 | 8 | the signature: 89 48 4F 4B 0D 0A 1A 0A |
 | 8 | 2 | the major version: 1 |
-| 10 | 2 | the minor version: 0 |
+| 10 | 2 | the minor version: 1 |
 | 12 | 4 | flags: 0 |
 | 16 | 4 | the number of chunks |
 | 20 | 4 | 0 |
@@ -483,30 +911,33 @@ The table of chunks follows the header, with 24 bytes for each chunk:
 | 16 | 8 | the chunk's size in bytes |
 
 Each chunk starts on a multiple of 8 bytes. Zero bytes fill the gaps. Hokuto writes its chunks in the order ENGN, MIXR,
-SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, BANK, WAVE, SCEN, TCOL, EDTR, TAGS, LNTH and TMLN, then the other
-chunks in the order of the file that they came from. The CRC-32 is zlib's and PNG's: the reflected polynomial
-0xEDB88320, starting from 0xFFFFFFFF, with the result inverted. The CRC-32 of the ASCII text `123456789` is 0xCBF43926.
+SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK, WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH and TMLN,
+then the other chunks in the order of the file that they came from. The CRC-32 is zlib's and PNG's: the reflected
+polynomial 0xEDB88320, starting from 0xFFFFFFFF, with the result inverted. The CRC-32 of the ASCII text `123456789` is
+0xCBF43926.
 
 A reader refuses a file:
 
 - whose major version isn't 1
 - with a chunk that lies past the end of the file, or whose bytes don't match its CRC-32
-- with two chunks of the same ID among ENGN, MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, BANK, WAVE,
-  SCEN, TCOL, EDTR, TAGS, LNTH and TMLN
+- with two chunks of the same ID among ENGN, MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK,
+  WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH and TMLN
 - with a TABL, SIZE, GRPF or STRM chunk and no NATV chunk
 - with a BULD chunk and no NATV chunk of the Wii's kind
+- with a CART chunk and no NATV chunk of the DS's kinds
+- with a NATV chunk whose kind of archive isn't the engine of its ENGN chunk
 - with only one of SNDS and ITMS, or with them and a NATV chunk
 - with a BANK or WAVE chunk and no archive: neither a NATV chunk nor SNDS and ITMS
 - without an ENGN chunk
 
-MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, BANK, WAVE, SCEN, TCOL, EDTR, TAGS, LNTH and TMLN are
-optional. Hokuto keeps a chunk with any other ID and writes it back unchanged.
+MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK, WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH
+and TMLN are optional. Hokuto keeps a chunk with any other ID and writes it back unchanged.
 
 ### ENGN: the engine
 
 | Size | Contents |
 |---|---|
-| 1 | the engine: 1 for the Switch, 2 for the Wii U, 3 for the 3DS, 4 for the Wii |
+| 1 | the engine: 1 for the Switch, 2 for the Wii U, 3 for the 3DS, 4 for the Wii, 5 for the GBA, 6 for the DS, 7 for DSE, 8 for Konami's driver, 9 for Nintendo R&D2's driver, 10 for Brownie Brown's driver, 11 for Ubisoft Milan's driver, 12 for Rare's driver, 13 for Quintet's driver, 14 for Krawall |
 | 1 | the mixing mode: 0 for strict, 1 for enhanced |
 | 2 | 0 |
 | 4 | the number of sounds in another mode |
@@ -519,8 +950,10 @@ takes the other mode, or when a sound plays on another engine, in the order of t
 lists no sounds. Each sound plays on the file's engine unless the second list holds it. Hokuto writes that list only
 when a sound plays on another engine, in the order of the sounds' indexes. A chunk without it plays every sound on the
 file's engine. A reader refuses a sound twice in a list. It also refuses a mode or an engine that this specification
-doesn't define, with a message that a later version of Hokuto made the file. The mode or the engine of a sound that the
-archive lacks does nothing.
+doesn't define, with a message that a later version of Hokuto made the file. The mode or the engine of a sound that
+isn't in the archive does nothing. No sound of another console plays on the GBA's engine, DSE's, Konami's, Nintendo
+R&D2's, Brownie Brown's, Ubisoft Milan's, Rare's, Quintet's or Krawall's: a reader refuses engines 5, 7, 8, 9, 10, 11,
+12, 13 and 14 in the second list.
 
 ### MIXR: the mixer
 
@@ -717,7 +1150,8 @@ An item starts with 5 bytes:
 | 9 | the target is a byte offset past the end of the sequence's bytes |
 | 10 | an opcode follows |
 | 11 | bytes follow |
-| 12–15 | 0 |
+| 12 | a sample follows, on Konami's driver |
+| 13–15 | 0 |
 
 The parts follow in this order:
 
@@ -729,6 +1163,7 @@ The parts follow in this order:
 | target | 4 | the item's number, or a byte offset |
 | opcode | 2 | the opcode |
 | bytes | 4 + the bytes | the number of bytes, then the bytes |
+| sample | 2 | the number of the sample in the driver's table, on Konami's driver |
 
 A part that the kind has is always there. Any other part is there only when it isn't zero or empty. A time is there only
 when the command has one. A reader refuses an item with a kind, a source or a flag that this specification doesn't
@@ -1042,8 +1477,9 @@ archive builds, with the sequences without the encoder's choices and the native 
 
 | Size | Contents |
 |---|---|
-| 1 | the kind of archive: 1 for the Switch's, 2 for the Wii U's, 3 for the 3DS's, 4 for the Wii's |
-| 3 | 0 |
+| 1 | the kind of archive: 1 for the Switch's, 2 for the Wii U's, 3 for the 3DS's, 4 for the Wii's, 5 for a GBA ROM, 6 for the DS's, 7 for a set of DSE's files, 8 for a GBA ROM with Konami's driver, 9 for a GBA ROM with Nintendo R&D2's driver, 10 for a GBA ROM with Brownie Brown's driver, 11 for a GBA ROM with Ubisoft Milan's driver, 12 for a GBA ROM with Rare's driver, 13 for a GBA ROM with Quintet's driver, 14 for a GBA ROM with Krawall |
+| 1 | flags. Bit 0 says that the songs of a GBA ROM can go into its filler runs, with MP2K, Konami's driver, Nintendo R&D2's, Rare's or Krawall. Bit 1 says that a note of a GBA ROM with MP2K reads two argument bytes: its key and its velocity. An archive of another kind holds 0 |
+| 2 | 0 |
 | 4 | the number of pieces |
 | varies | the pieces |
 | 4 | the number of fields |
@@ -1077,7 +1513,7 @@ bytes:
 |---|---|
 | 4 | a piece's number, the number of pieces for the archive's end, or a sequence's number in SEQS |
 | 4 | a byte of the piece, counted from its start, or an item of the piece's sequence or of the sequence |
-| 1 | flags. Bit 0 says that the place is an item. Bit 1 says that the place names a sequence, and comes with bit 0 |
+| 1 | flags. Bit 0 says that the place is an item. Bit 1 says that the place names a sequence, and comes with bit 0. Bit 2, on where a field lies in a set of DSE's files or a ROM with Konami's or Quintet's driver, says that the field holds 2 bytes |
 | 3 | 0 |
 
 The field lies in a run of bytes, and its 4 bytes lie within the run. A place names a byte of a run, the start of any
@@ -1105,6 +1541,206 @@ bytes at most. NW4R's tools use the same padding. A file of the Wii holds no GRP
 streams beside the archive: RSTM files at the paths that the file table gives, relative to the archive's folder. It can
 take the model form (see ITMS). Its TABL chunk lists no wave archives and no groups, and its SIZE chunk gives the
 archive's size alone.
+
+A GBA ROM (kind 5) keeps its songs among the game's code and data, and code and tables all over the ROM hold addresses
+in it. Its pieces therefore keep their places. A sequence piece holds a song: the bytes from its first track's start up
+to its header, where MP2K's tools put the tracks. The header starts the run after the piece. In place of the file's
+version, a sequence piece holds its room: the size of the song's place in the ROM. The choices of a sequence piece of a
+GBA ROM are MP2K's:
+
+| Size | Contents |
+|---|---|
+| 4 | an item's number |
+| 1 | the argument bytes plus 1, or 0 |
+| 1 | the length code plus 1, or 0 |
+| 1 | flags. Bit 0 is repeated |
+| 1 | value_bytes, on Nintendo R&D2's driver, Rare's and Krawall. MP2K's and Konami's hold 0 |
+
+| Choice | Meaning |
+|---|---|
+| repeated | the command repeats the running status, and its bytes leave the opcode out. On Nintendo R&D2's driver, a `note` or a `wait` of one byte that takes the track's last values |
+| arguments | the argument bytes of a `note` or a `note_off`, where they aren't the usual ones. A note's usual ones are its key, its velocity and, where its length requires it, its extra length. A `note_off`'s usual one is its key. The bytes that a command leaves out take the track's last key and velocity. On Rare's driver, the byte that the driver ignores after a `note_off`, an `other` channel pressure, a `loop_start`, a `loop_end` and a `monophonic` |
+| length_code | a note's length code, 0 to 48, where it isn't the code of the longest length up to the note's length. On Quintet's driver, the code of a `note`'s or a `note_off`'s note value, where it isn't the lowest code that gives the length: its index in the driver's table of note values, or the byte of the note value in the revision of notes of two bytes |
+| value_bytes | on Nintendo R&D2's driver, 2 for a length in two bytes that one byte would hold. On Rare's driver, the bytes of a `wait` where they're more than its delay requires. On Krawall, 3 for an instrument in three bytes that two bytes would hold |
+
+A note of MP2K reads up to three argument bytes after its length code: its key, its velocity and its extra length. In
+some games, a note reads two: its key and its velocity. Bit 1 of NATV's flags says so. A note there lasts its code's
+length, and a byte below 0x80 after its velocity starts a command that repeats the running status. Such a ROM can't hold
+a note of another length. A tie holds it instead: a `note` of length 0 and a `note_off` at the note's end.
+
+A GBA ROM's fields hold addresses: the distance from the first place, the ROM's start, to the second, plus 0x08000000,
+little-endian. Each field of a track's address in a header names the item where the track starts. Each entry of the song
+table names the start of the run that holds its song's header. A GBA ROM holds no padding.
+
+An export writes a song in its place when its bytes fit there, and zeros after them up to the header. A song that
+outgrows its place goes into the ROM's free space, with a copy of its header after it, on a multiple of 4 bytes. Its
+place holds zeros, and a field that names the header's run names the copy. A field in the header goes into both. The
+free space starts 256 bytes or more into the run of 0xFF bytes at the ROM's end, on a multiple of 256 bytes, or else at
+the ROM's end. The songs that move follow one another there, in the order of their pieces. A ROM that grows fills with
+0xFF bytes. An export fails for a ROM past 32 MiB, unless bit 0 of NATV's flags allows filler runs. A file of the GBA
+holds no GRPF, STRM, TABL or BULD chunk, and it can't take the model form. Its SIZE chunk gives the ROM's size.
+
+With bit 0 of NATV's flags, a song that would take the ROM past 32 MiB goes into a filler run instead: the first one
+with room for the song and its header's copy, after the songs that went there before it, on a multiple of 4 bytes. A
+filler run falls within a run of 16 KiB or more of 0xFF bytes that ends before the ROM's end. It starts 256 bytes or
+more into the run, on a multiple of 256 bytes, and ends 256 bytes before the run's end. No byte of the run may be one
+that MusicPlayer2000 reads for the ROM's songs. Those bytes are the song table and the music players' table, each song's
+header and the commands that its tracks reach, the 128 voices of the song's voice group with their key split and drum
+tables, and the samples and wave patterns that those voices play. The runs come from the ROM as the export has written
+it when a song first requires one. It holds the songs that keep their places, the songs at the ROM's end, and the
+headers of the songs that move, in their places. Nothing shows that a game's other code doesn't read a filler run: the
+user chooses it. An export fails when the filler runs can't hold the songs either.
+
+An archive of the DS (SDAT, kind 6) keeps its files in its FILE block, at the offsets and sizes that its file table
+(FAT) gives. Its sequence files are SSEQ files. A sequence piece holds a sequence file's bytecode, from its start, and
+its version is the 2 bytes at 6 in the SSEQ file's header. The file's header of 0x1C bytes ends the run before the
+piece. A sequence archive (SSAR) stays in a run. The fields hold the archive's size in its header, the FILE block's size
+in the header and in the block, each file's offset and size in the file table, and each sequence file's size and its
+DATA block's size in its header. An offset counts from the archive's start. Padding of 4 bytes ends a sequence file, and
+padding of 32 bytes puts each file on a multiple of 32 bytes from the archive's start. The SDK's tools lay an archive
+out that way. Each field holds its distance little-endian. A file of the DS holds no GRPF, STRM, TABL or BULD chunk, and
+it can't take the model form. Its SIZE chunk gives the archive's size. Its CART chunk can hold the cartridge image that
+holds the archive.
+
+A set of DSE's files (kind 7) isn't a file of the game. It starts with a directory: the magic word DSET, the set's size,
+the number of files and 4 zeros, then each file's offset from the set's start, its size and its path's offset, then the
+paths, each ended by a zero. All these numbers take 4 bytes, little-endian. Each file follows on a multiple of 16 bytes,
+in the order of the list. The bytes of the tracks of a song or a sound effect make up a sequence piece. The piece has
+version 0. The file's other bytes stay in runs. A file whose bytes the encoder can't give back stays one run. The fields
+hold each file's size in its header and in the directory, its offset in the directory, the size of a bank of sound
+effects' seq chunk, and each slot of that chunk's table. A slot holds a 16-bit offset from the table's start, and a
+field in a slot holds 2 bytes. Every other field holds 4. An export refuses a slot past 16 bits. A file of DSE holds no
+GRPF, STRM, TABL or BULD chunk, and it can't take the model form. Its SIZE chunk gives the set's size. Its CART chunk
+holds the cartridge image, with the file ID and the offset at 0. A sequence piece's choices take the same 8 bytes each:
+the item's number (4 bytes), `arguments` plus 1 or 0 without them (1), `value_bytes` (1), flags (1) and 0 (1). Bit 0 of
+the flags is `repeated`. Those three are the only choices that a set holds, with an item's `opcode`: see "Commands".
+
+Like a GBA ROM of MP2K, a GBA ROM with Konami's driver (kind 8) keeps its pieces in their places. A sequence piece holds
+a song's bytes, from the song's base to its last byte, and holds its room in place of the file's version. Entries of the
+song table that give the same base and the same tracks share a piece. The song table stays in a run. Each entry gives a
+field of 4 bytes for the song's base, and then a field of 2 bytes for each of its tracks. The base's field holds the
+distance from the ROM's start to the song's first item, plus 0x08000000. A track's field holds the distance from the
+song's first item to the item where the track starts. A sequence piece holds no choices of the encoder: an item's
+`opcode` keeps what its values don't give.
+
+After the fields, NATV holds what the driver's export requires:
+
+| Size | Contents |
+|---|---|
+| 1 | the driver's revision, from 0 to 10, in the order of ntdlib's `konami::Revision` |
+| 1 | the byte that fills what the ROM grows by, up to a song |
+| 2 | 0 |
+| 4 | where the free space at the ROM's end starts, from the ROM's start |
+| 4 | the number of filler runs |
+| 8 for each | a filler run: its start and its size, each in 4 bytes |
+
+An export writes a song in its place when its bytes fit there, and zeros after them. A song that outgrows its place
+moves, largest first. It goes into the first place of a moved song with room for it, where neighbouring places count as
+one. Failing that, it goes into the free space, and the ROM grows when the songs run past its end. A song's place holds
+zeros in the bytes that no moved song takes. The free space starts 256 bytes or more into the run of 0xFF or of zeros at
+the ROM's end, on a multiple of 256 bytes, and past every byte of that run that the driver reads. Without such a run, it
+starts at the ROM's end, on a multiple of 4 bytes.
+
+An export fails for a ROM past 32 MiB, unless bit 0 of NATV's flags allows filler runs. A song that would take the ROM
+past 32 MiB then goes into the first filler run with room for it. A filler run falls within a run of 4 KiB or more of
+0xFF or of zeros that ends before the ROM's end. It starts 256 bytes or more into the run, on a multiple of 256 bytes,
+and ends 256 bytes before the run's end. No byte of the run may be one that the driver reads: the song table, each
+song's bytes, the sample tables with every sample that they name, and the driver's other tables. The runs of 0xFF come
+first, then the runs of zeros, each in the order of their places. Zeros can be data of the game, and nothing shows that
+a game's other code doesn't read a filler run: the user chooses it.
+
+A file with Konami's driver holds no GRPF, STRM, TABL, BULD or CART chunk, and it can't take the model form. Its SIZE
+chunk gives the ROM's size.
+
+A GBA ROM with Nintendo R&D2's driver (kind 9) keeps its pieces in their places too. A sequence piece holds a sequence's
+bytes, from its header to the last byte that a track reads, with the few bytes up to the next sequence that no track
+reads. It holds its room in place of the file's version. Entries of the tables that name the same address share a piece.
+The table of the music's sequences and the table of the sound effects' sequences stay in runs. Each entry gives a field
+of 4 bytes: the distance from the table's start to the sequence's first item. The choices of a sequence piece take the
+GBA's form above: `repeated` and `value_bytes`. After the fields, NATV holds what the driver's export requires, in the
+form that Konami's driver takes. The revision runs from 0 to 2, in the order of ntdlib's `rd2::Revision`. A sequence
+that outgrows its place moves as a song of Konami's driver does, and the free space and the filler runs follow the same
+rules. A run that holds a byte that the driver reads isn't a filler run. Those bytes are the settings, the tables, each
+sequence's bytes, the 64 KiB that a bank's offsets reach, and every sample that a sample set names. A sequence starts on
+a multiple of 4 bytes.
+
+A file with Nintendo R&D2's driver holds no GRPF, STRM, TABL, BULD or CART chunk, and it can't take the model form. Its
+SIZE chunk gives the ROM's size.
+
+A GBA ROM with Brownie Brown's driver (kind 10) keeps its pieces in their places too. A sequence piece holds a region's
+bytes, from the first byte that its sounds read to the last, and holds its room in place of the file's version. The
+song table stays in a run. Each entry with a list gives a field of 4 bytes: the distance from the ROM's start to the
+item where the sound's list starts, plus 0x08000000. A sequence piece holds no choices of the encoder: an item's
+`opcode` keeps what its values don't give. After the fields, NATV holds what the driver's export requires, in the form
+that Konami's driver takes. The revision runs from 0 to 1, in the order of ntdlib's `brownie::Revision`. A region that
+outgrows its place moves as a song of Konami's driver does, and the free space follows the same rules. A region that
+moves keeps its start's remainder modulo 4. NATV lists no filler runs: a ROM with this driver takes none.
+
+A file with Brownie Brown's driver holds no GRPF, STRM, TABL, BULD or CART chunk, and it can't take the model form. Its
+SIZE chunk gives the ROM's size.
+
+A GBA ROM with Ubisoft Milan's driver (kind 11) keeps its pieces in their places too. A sequence piece contains the
+bytes of a sequence, from the kind of resource to the end. The size of its place replaces the version of the file.
+Entries of the resource table that point to the same sequence share a piece. The header of the sound bank and the
+resource table stay in runs. Each entry that points to a sequence is a field of 4 bytes: the distance from the start of
+the bank to the first item of the sequence. A sequence piece contains no choices of the encoder. After the fields, NATV
+contains what the export of the driver requires, in the same form as for Konami's driver, with a revision of 0. A
+sequence that outgrows its place moves as a song of Konami's driver does, and the free space follows the same rules. A
+sequence can start at any byte. An export can't put a sequence into a filler run: bit 0 of the flags is 0, and NATV
+lists no filler runs. A reader refuses either.
+
+A file with Ubisoft Milan's driver contains no GRPF, STRM, TABL, BULD or CART chunk, and it can't use the model form.
+Its SIZE chunk stores the size of the ROM.
+
+A GBA ROM with Rare's driver (kind 12) keeps its pieces in their places too. A sequence piece contains a tune's tracks,
+from the first track's start to the last byte that a track reads. It contains its room in place of the file's version.
+Tunes whose track lists name the same tracks share a piece. The tune table, the tunes' headers and their track lists
+stay in runs. Each word of a track list gives a field of 4 bytes: the address of the item where the track starts. The
+choices of a sequence piece take the GBA's form above: `arguments` and `value_bytes`. After the fields, NATV contains
+what the driver's export requires, in the form that Konami's driver takes. The revision gives the traits of the driver's
+build as bits: bit 0 for a channel in the command byte's high nibble, and bit 1 for controllers 20 to 23. A sequence
+that outgrows its place moves as a song of Konami's driver does, and the free space and the filler runs follow the same
+rules. A run that contains a byte that the driver reads isn't a filler run. A sequence starts on a 4-byte boundary.
+A tune keeps its tracks: the track list and the count of tracks stay in their runs.
+
+A file with Rare's driver contains no GRPF, STRM, TABL, BULD or CART chunk, and it can't use the model form. Its SIZE
+chunk gives the ROM's size.
+
+A GBA ROM with Quintet's driver (kind 13) keeps its pieces in their places too. A song's header is a run of 14 bytes,
+and its commands a sequence piece: the bytes after the header, up to the song's length. A song that the decoder can't
+read in full, or whose length is odd, stays a run, header and all. Each field of a header contains 2 bytes: the distance
+from the header's start to the next piece for the song's length, and to the item where a channel starts for each of the
+6 channels. The choices of a sequence piece take the GBA's form above: `length_code`. After the fields, NATV contains
+what the driver's export requires, in the form that Konami's driver takes. The revision is 0 for notes of one byte and 1
+for notes of two bytes. The high nibble of a note of one byte picks a note value from the driver's table. The free space
+starts at 0, and the ROM has no filler runs. Then come the rooms:
+
+| Size | Contents |
+|---|---|
+| 4 | the number of rooms |
+| 12 for each | a room: the first piece after the list of songs, in 4 bytes. That piece starts at the room's end. The room's end, from the ROM's start, in 4 bytes. The byte that fills the room after the list's last piece, and 3 bytes of 0 |
+
+A list of songs is the songs of a music file or its sound effects, back to back. The game finds a song by skipping the
+songs before it. A list therefore keeps its place, and its songs keep their order. A list can grow into its room, up to
+the room's end, and an export fails for a list that outgrows it. A list that shrinks leaves the fill byte at the end of
+its room. A song's bytes take an even size: the export adds a byte of 0 after an odd sequence. A reader refuses a room
+that names a piece past the pieces.
+
+A file with Quintet's driver contains no GRPF, STRM, TABL, BULD or CART chunk, and it can't use the model form. Its SIZE
+chunk gives the ROM's size.
+
+A GBA ROM with Krawall (kind 14) keeps its pieces in their places too. A sequence piece holds a module's patterns, from
+the first pattern to the end of the pattern that starts last. It holds its room in place of the file's version. In the
+games, a module's header follows its patterns. The header stays in a run, and so do the game's tables. Each address in a
+header's table of patterns gives a field of 4 bytes: the distance from the ROM's start to the item where the pattern
+starts. Two fields can name one pattern. The choices of a sequence piece take the GBA's form above: `value_bytes`. After
+the fields, NATV contains what Krawall's export requires, in the form that Konami's driver takes. The revision is 1 for
+the builds from 2004/09/17 on and 0 for the earlier builds. Patterns that outgrow their place move as a song of Konami's
+driver does, and the free space and the filler runs follow the same rules. A moved sequence starts on a multiple of 4
+bytes. In the modified build, the modules are stored packed in the game's music files, and they stay in the runs.
+
+A file with Krawall contains no GRPF, STRM, TABL, BULD or CART chunk, and it can't use the model form. Its SIZE chunk
+gives the ROM's size.
 
 ### BULD: the game's build
 
@@ -1254,6 +1890,29 @@ writes the stream's size into the file table. The other flags are 0. A reader re
 flag that this specification doesn't define. A stream's bytes are those of its file: a stream file, or on the 3DS an AAC
 file in ADTS.
 
+### CART: the cartridge image
+
+| Size | Contents |
+|---|---|
+| 4 | the ID of the file in the image's file system that holds the archive, or 0 for a set of DSE's files |
+| 4 | the archive's offset in that file, or 0 for a set of DSE's files |
+| 4 | the image's size in bytes |
+| 4 | 0 |
+| varies | the image's bytes, up to its last byte that isn't 0xFF |
+
+A DS cartridge image fills its chip with 0xFF bytes after its data. The chunk leaves those bytes out, and 0xFF bytes
+follow its bytes up to the image's size. The image holds the game's archive in its file. NATV gives the archive itself.
+An export writes the archive that NATV builds in its place in the file. When the archive holds the game's bytes, the
+image comes back byte for byte. Otherwise the file takes the new archive's bytes. The files after it move by multiples
+of 0x200 bytes, and the file table, the header and its CRC-16 follow. The export fails for an archive of another size
+than the game's when the file holds other bytes than the archive: nothing tells Hokuto what points into those bytes.
+A DSi image holds hashes of its bytes, and only the DSi's keys give the new hashes. The export leaves the hashes of the
+bytes that change as they were, and reports them. A reader refuses a CART chunk whose image's bytes run past its size,
+or end with 0xFF, and a flag other than 0.
+
+A set of DSE's files names each file by its path. An export finds each path in the image's file system, and writes each
+file whose bytes differ from the image's. The files after it move as above.
+
 ### BANK: the banks
 
 | Size | Contents |
@@ -1396,6 +2055,35 @@ The sound is the sound's index in the archive's sound table. The track is the tr
 The colour is in 8-bit sRGB. Hokuto writes the colours in the order of their sounds, and of their tracks within a
 sound. A reader takes them in any order. It refuses a track with two colours. A colour of a sound or a track that the
 archive lacks does nothing.
+
+### IMAP: the instrument maps
+
+| Size | Contents |
+|---|---|
+| 4 | the number of maps |
+| 8 for each | a map's voice group: the voice group's address in the ROM's memory map, from 0x08000000 (4 bytes), and the number of the map's pairings (4 bytes) |
+| 4 for each pairing | 1 for MIDI's drum channel or 0 for another channel, the program, the voice, and a byte of 0 (1 byte each) |
+
+Each map's pairings follow the map's 8 bytes. A pairing gives the voice of the voice group that the MIDI file's notes of
+the program play. Programs and voices are numbers from 0 to 127. Hokuto writes the maps in the order of their addresses,
+and each map's pairings with the other channels' programs first, in the order of the programs. A reader takes them in
+any order. It refuses a voice group with two maps, a program or a voice past 127, and a map that pairs a program of a
+channel twice. A map of a voice group that is missing from the ROM does nothing.
+
+### BMAP: the banks' instrument maps
+
+| Size | Contents |
+|---|---|
+| 4 | the number of maps |
+| 12 for each | a map's bank: its index in the archive's bank table (4 bytes), the number of the map's programs (4 bytes), and the number of its drum notes (4 bytes) |
+| 8 for each program | the MIDI file's program (4 bytes), and the bank's program that plays it (4 bytes) |
+| 8 for each drum note | the note, the key that it takes, and two bytes of 0 (1 byte each), and the bank's program that plays it (4 bytes) |
+
+Each map's pairings follow the map's 12 bytes: its programs, then its drum notes. A MIDI file's programs, its notes and
+the keys are numbers from 0 to 127. A bank's programs are numbers from 0 to 65,535. Hokuto writes the maps in the order
+of their banks, and each map's pairings in the order of their programs and their notes. A reader takes them in any
+order. It refuses a bank with two maps, a number past its range, and a map that pairs a program or a note twice. A map
+of a bank that is missing from the archive does nothing.
 
 ### EDTR: the view
 
@@ -1554,7 +2242,7 @@ tracks out of the order of their numbers or a track twice, and a list of bars th
 ## The text form
 
 The text form is UTF-8, one statement a line. Lines end in LF, and a reader also takes CR LF. A file starts with a
-line of `hok` and the format's version, such as `hok 1.0`: its first four bytes are `hok `. A reader also takes a UTF-8
+line of `hok` and the format's version, such as `hok 1.1`: its first four bytes are `hok `. A reader also takes a UTF-8
 byte-order mark before them. Hokuto writes none. Indentation doesn't matter. Hokuto indents a label by 4 spaces and a
 command by 8. A `#` outside quotes starts a comment that runs to the end of the line. Blank lines don't count.
 
@@ -1586,7 +2274,7 @@ An argument is a value, `random(low,high)` with no spaces, or `var(n)` for varia
 ### The header
 
 ```
-hok 1.0
+hok 1.1
 engine switch
 mixing strict
 sound_mixing 12 enhanced # BGM_CIRCUIT
@@ -1594,12 +2282,14 @@ sound_engine 12 wii_u # BGM_CIRCUIT
 ```
 
 The first line gives the format's version. A reader refuses a major version other than 1. `engine` names the engine:
-`switch`, `wii_u`, `3ds` or `wii`. `mixing` names the mixing mode: `strict` or `enhanced`. Without a mixing line, the
-mode is strict. Each of the two comes once, before the first sequence. A line `sound_mixing` gives a sound the other
-mode: the number of its sound and the mode. Hokuto writes the sound's name from the tables in a comment, and the sounds
-in the order of ENGN, after the mixing line. A sound gives its mode once. A line `sound_engine` puts a sound on another
-engine: the number of its sound and the engine. Hokuto writes those lines in the order of ENGN too, after the lines
-of the modes. A sound gives its engine once. The lines come before the first sequence.
+`switch`, `wii_u`, `3ds`, `wii`, `gba`, `ds`, `dse`, `konami`, `rd2`, `brownie`, `ubimilan`, `rare`, `quintet` or
+`krawall`. `mixing` names the mixing mode: `strict` or `enhanced`. Without a mixing line, the mode is strict. Each of
+the two comes once, before the first sequence. A line `sound_mixing` gives a sound the other mode: the number of its
+sound and the mode. Hokuto writes the sound's name from the tables in a comment, and the sounds in the order of ENGN,
+after the mixing line. A sound gives its mode once. A line `sound_engine` puts a sound on another engine: the number of
+its sound and the engine. Hokuto writes those lines in the order of ENGN too, after the lines of the modes. A sound
+gives its engine once, and never `gba`, `dse`, `konami`, `rd2`, `brownie`, `ubimilan`, `rare`, `quintet` or `krawall`.
+The lines come before the first sequence.
 
 The tags follow, a line for each:
 
@@ -1683,7 +2373,28 @@ A track's colour is `track_colour`, the number of its sound, the track's number,
 each from 0 to 255. Hokuto writes the sound's name from the tables in a comment, and the lines in TCOL's order. A track
 takes one colour at most. The colours come before the first sequence.
 
-The view follows the tracks' colours, after a blank line:
+The instrument maps follow the tracks' colours, after a blank line, a line for each pairing:
+
+```
+instrument_map 0x81F2A2C program 33 voice 12
+instrument_map 0x81F2A2C drums 36 voice 127
+```
+
+A pairing is `instrument_map`, the voice group's address, `program` for a program of another channel than MIDI's drum
+channel or `drums` for one of the drum channel, the program, `voice` and the voice, each from 0 to 127. Hokuto writes
+the lines in IMAP's order. A map pairs a program of a channel once at most. The banks' maps follow:
+
+```
+bank_map 3 program 33 instrument 12
+bank_map 3 drum_note 36 instrument 5 key 60
+```
+
+A pairing is `bank_map`, the bank's index, then `program` and the MIDI file's program, and `instrument` and the bank's
+program. A drum note's is `drum_note` and the note, `instrument` and the bank's program, and `key` and the key that it
+takes. Hokuto writes the lines in BMAP's order. A map pairs a program or a note once at most. The maps come before the
+first sequence.
+
+The view follows the instrument maps, after a blank line:
 
 ```
 view sound 12 # BGM_CIRCUIT
@@ -1755,7 +2466,7 @@ Where its kind has them, a command's line holds these parts in this order:
 | kind | the kind's name |
 | opcode | a whole number, for `other` |
 | index | a whole number |
-| key and velocity | a whole number and a value, for `note` |
+| key and velocity | a whole number and a value, for `note`, and a whole number, for `note_off` |
 | value | an argument |
 | time | `over` and an argument |
 | target | a label, or `@` and a byte offset |
@@ -1768,29 +2479,45 @@ The parts in brackets come after them, in any order:
 | `[index n]`, `[key n]`, `[velocity x]`, `[value a]`, `[opcode n]`, `[bytes HH HH]` | a part that the kind doesn't have |
 | `[target n]` or `[target @n]` | a target on a kind without one: an item's number, or a byte offset |
 | `[value_bytes n]`, `[unused_time n]`, `[unused_random]`, `[unused_variable]` | the encoder's choices. They require a `sequence_file` of the sequence in the native archive or its group files |
+| `[repeated]`, `[arguments n]`, `[length_code n]` | MP2K's choices of the encoder, `[repeated]` of Nintendo R&D2's driver, `[arguments]` of Rare's and `[length_code]` of Quintet's. They require a `sequence_file` of the sequence in a GBA ROM |
+| `[sample n]` | the sample that a `note` of Konami's driver plays, and the instrument of a `note` or a `note_off` of Krawall |
 
 A reader checks each command's values by the rules of the console of the native archive or the model. On the Wii, the
-archive's build of the Wii's sound library gives the rules. A value has to be one that the console's bytes hold for the
-command. A reader refuses any other value, such as a negative wait or a fraction of a volume. Its message names the line
-and the values that the command takes. A file without an archive takes any value. The text form takes every value that
-the bytes hold. A game's sequence can hold any of them. Hokuto's editors can take fewer, such as velocities from 0 to
-127 and tempos from 1 to 1023 BPM.
+archive's build of the Wii's sound library gives the rules. In a GBA ROM, MP2K's bytes give them, and the bytes of
+Konami's driver, Nintendo R&D2's, Brownie Brown's, Ubisoft Milan's, Rare's, Quintet's or Krawall in a ROM with that
+driver. A value has to be one that the console's bytes hold for the command. A reader refuses any other value, such as a
+negative wait or a fraction of a volume. Its message names the line and the values that the command takes. A file
+without an archive takes any value. The text form takes every value that the bytes hold. A game's sequence can hold any
+of them. Hokuto's editors can take fewer, such as velocities from 0 to 127 and tempos from 1 to 1023 BPM.
 
 ### The native archive
 
-`native` and the kind of archive (`switch`, `wii_u`, `3ds` or `wii`) start the native archive. Where the file holds the
-game's sizes, `game_size n` follows: the size of the game's archive in bytes. A native archive gives it once at most,
-before the tables. A native archive of the Wii can then give the game's build of NW4R SND, once, before its pieces:
-`build d` with the date of the BULD chunk, and `build d october_2006` with its flag. Its pieces follow in order,
-numbered from 0. Hokuto writes each piece's number in a comment.
+`native` and the kind of archive (`switch`, `wii_u`, `3ds`, `wii`, `gba`, `ds`, `dse`, `konami`, `rd2`, `brownie`,
+`ubimilan`, `rare`, `quintet` or `krawall`) start the native archive. Where the file holds the game's sizes,
+`game_size n` follows: the size of the game's archive in bytes. A native archive gives it once at most, before the
+tables. A native archive of the Wii can then give the game's build of NW4R SND, once, before its pieces: `build d` with
+the date of the BULD chunk, and `build d october_2006` with its flag. A native archive of a GBA ROM can give `filler`
+there, once, before its pieces: bit 0 of NATV's flags. A ROM with Brownie Brown's driver, Ubisoft Milan's or Quintet's
+has no `filler` line. A ROM with Konami's driver, Nintendo R&D2's, Brownie Brown's, Ubisoft Milan's, Rare's, Quintet's
+or Krawall then gives `revision n`, the driver's revision, and `free_space s padding 0xHH`: where the free space starts,
+and the byte that fills what the ROM grows by. `filler_run s n` follows for each filler run, with its start and its
+size. A ROM with Quintet's driver then gives `list_room p e fill 0xHH` for each room: the first piece after the list,
+the room's end and the byte that fills it. A native archive of a GBA ROM with MP2K can give `note_arguments n`, once,
+before its pieces: the argument bytes that a note reads at most, 2 or 3. `note_arguments 2` is bit 1 of NATV's flags,
+and a native archive without the line reads 3. The pieces follow in order, numbered from 0. Hokuto writes each piece's
+number in a comment.
+A reader refuses a kind of archive that isn't the file's engine.
 
 - `bytes n` is a run of n bytes. The bytes follow on the next lines in base64, with padding. Each line holds whole
   groups of four characters, and padding can end any line. Hokuto writes 76 characters a line.
-- `sequence_file s version v` is a sequence file of sequence s, with the file's version.
+- `sequence_file s version v` is a sequence file of sequence s, with the file's version. In a GBA ROM, it is
+  `sequence_file s room n`: a song of sequence s, with the n bytes of its place. A ROM with Konami's driver, Nintendo
+  R&D2's, Brownie Brown's, Ubisoft Milan's, Rare's, Quintet's or Krawall takes the same form.
 - `padding a` is padding to a multiple of a bytes.
 
-`field p from q to r` is a field that lies at place p and holds the distance from q to r. Hokuto writes the fields
-after the pieces, and the tables after the fields. A place takes one of these forms:
+`field p from q to r` is a field that lies at place p and holds the distance from q to r. In a set of DSE's files and a
+ROM with Konami's or Quintet's driver, `bytes 2` ends the line of a field of 2 bytes. Hokuto writes the fields after the
+pieces, and the tables after the fields. A place takes one of these forms:
 
 | Place | Form |
 |---|---|
@@ -1856,6 +2583,11 @@ They belong to the native archive and come after it. Their sequence files name t
 The streams take the form of their chunk too: `chunk STRM n`, then the chunk's n bytes in base64. They belong to the
 native archive and come after its group files.
 
+### The cartridge image
+
+The cartridge image takes the form of its chunk: `chunk CART n`, then the chunk's n bytes in base64. It belongs to a
+native archive of the DS or a set of DSE's files, and comes after the archive, once.
+
 ### The model
 
 The model takes the form of its two chunks: `chunk SNDS n` and `chunk ITMS n`, each with the chunk's n bytes in base64
@@ -1874,13 +2606,13 @@ and streams, or after the model. A reader refuses either chunk before the archiv
 isn't a bare name takes quotes.
 
 The parts of a file come in this order: the header with its engine and mixing lines, tags, lengths, effects, buses'
-volumes, scenes, tracks' colours, view and timelines, the sequences, the native archive with its group files and streams
-or the model, the banks and the waves, and the other chunks.
+volumes, scenes, tracks' colours, instrument maps, view and timelines, the sequences, the native archive with its group
+files, streams and cartridge image or the model, the banks and the waves, and the other chunks.
 
 ### An example
 
 ```
-hok 1.0
+hok 1.1
 engine switch
 mixing strict
 
@@ -1911,9 +2643,9 @@ length is the value of variable 3. The file has no native archive and no model. 
 ## Conformance
 
 The conformance suite in `tests/conformance/` checks a player against this specification. It holds synthetic files, made
-without data from any game: one for each engine and each mixing mode that the engine plays. The suite gives the SHA-256
-of the reference implementation's render of each file's sound. A player conforms when its renders give the same hashes.
-The suite's `README.md` gives the details.
+without data from any game: one for each mixing mode of the engines of the Switch, the Wii U, the 3DS and the Wii. The
+engines of the GBA and the DS have no file yet. The suite gives the SHA-256 of the reference implementation's render of
+each file's sound. A player conforms when its renders give the same hashes. The suite's `README.md` gives the details.
 
 ## Versions
 
@@ -1922,9 +2654,18 @@ major version. A minor version adds chunks that a reader of an earlier version c
 of command, engine, archive or sound takes a new number. A reader refuses a number that its version of the specification
 doesn't define, with a message that a later version of Hokuto made the file.
 
-Version 1.0 is the first.
+Version 1.0 is the first. Version 1.1 adds GBA ROMs: engine 5, archive kind 5, command kinds 77 to 93 and the choices of
+a GBA ROM's sequence pieces. Version 1.1 also adds the DS (engine 6, archive kind 6), DSE (engine 7, archive kind 7), a
+ROM with Konami's driver (engine 8, archive kind 8, and bit 12 of an item's flags), a ROM with Nintendo R&D2's driver
+(engine 9, archive kind 9), a ROM with Brownie Brown's driver (engine 10, archive kind 10), a ROM with Ubisoft Milan's
+driver (engine 11, archive kind 11), a ROM with Rare's driver (engine 12, archive kind 12), a ROM with Quintet's driver
+(engine 13, archive kind 13) and a ROM with Krawall (engine 14, archive kind 14). A reader of version 1.0 refuses a
+file of the GBA or the DS, and reads every other file of version 1.1.
+
+Hokuto 1.0.0 writes version 1.0. Hokuto 2.0.0 writes version 1.1, and reads both.
 
 ## The hok tool
 
-The `hok` tool converts between the two forms, and between the consoles' sound archives and `.hok` files. It also puts a
-file's archive in the model form, and measures the lengths of a file's sounds. The README describes it.
+The `hok` tool converts between the two forms, and between `.hok` files and the consoles' sound archives, GBA ROMs or DS
+cartridge images. It also puts a file's archive in the model form, and measures the lengths of a file's sounds. The
+[user guide](guide.md) describes it.

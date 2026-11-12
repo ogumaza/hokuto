@@ -30,6 +30,8 @@
 #include "edit/converter.h"
 #include "edit/other_console.h"
 #include "edit/timelines.h"
+#include "format/archive.h"
+#include "format/drivers.h"
 #include "format/kinds.h"
 #include "song/archive.h"
 #include "song/biquads.h"
@@ -47,18 +49,14 @@ using ntdlib::commands::Label;
 using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
 
-// A sound's bank slots, and the bits of an item's ID that give its place in its table.
-constexpr std::size_t kBankSlots = 4;
-constexpr uint32_t kIndexBits = 0x00FFFFFF;
-
 // The message for a sound that plays no sequence of a file.
 constexpr char kNoSequence[] =
-    "The sound plays no sequence that Hokuto can edit. Its sequence file holds bytes that no command reaches, or it "
-    "isn't a sequence sound.";
+    "This sound has no sequence that Hokuto can edit. Either it isn't a sequence sound, or its sequence file contains "
+    "bytes that no command reaches.";
 
 // What the player reaches from an item of a sequence: the items, and the bank slots that each program change can run
 // with. A slot from a random number or a variable is -1.
-struct Reach
+struct SlotReach
 {
     std::vector<bool> items;
     std::map<uint32_t, std::set<int>> slots;
@@ -68,10 +66,10 @@ struct Reach
 // command opens starts with slot 0. After a call, the track goes on with the slot that it called with. A return inside
 // a call and an end stop a path, and so do bytes that no command reaches. A return outside every call has no call to
 // return to, and the player runs on past it.
-Reach Walk(const Sequence& sequence, uint32_t start)
+SlotReach WalkSlots(const Sequence& sequence, uint32_t start)
 {
     const std::vector<Command>& items = sequence.items;
-    Reach reach;
+    SlotReach reach;
     reach.items.assign(items.size(), false);
     std::set<std::tuple<uint32_t, int, bool>> seen;
     std::vector<std::tuple<uint32_t, int, bool>> next = {{start, 0, false}};
@@ -110,6 +108,7 @@ Reach Walk(const Sequence& sequence, uint32_t start)
             {
                 next.push_back({command.target, 0, false});
             }
+
             next.push_back({item + 1, slot, in_call});
             break;
 
@@ -119,6 +118,7 @@ Reach Walk(const Sequence& sequence, uint32_t start)
             {
                 next.push_back({command.target, slot, in_call || command.kind == Kind::kCall});
             }
+
             if (command.conditional || command.kind == Kind::kCall)
             {
                 next.push_back({item + 1, slot, in_call});
@@ -166,7 +166,7 @@ uint8_t VariableLengthBytes(int64_t value)
 // Where `reach` found the program changes of `sequence`, puts the programs of `programs` in the place of those that
 // they select. A program change that can run with several slots takes a new program only when the map gives each slot
 // the same one. A value that takes more bytes than its padding holds drops the padding.
-void MapPrograms(Sequence& sequence, const Reach& reach, const ProgramMap& programs)
+void MapPrograms(Sequence& sequence, const SlotReach& reach, const ProgramMap& programs)
 {
     for (const auto& [item, slots] : reach.slots)
     {
@@ -206,6 +206,7 @@ void InsertJump(Sequence& sequence, uint32_t target)
             item.target++;
         }
     }
+
     for (Label& label : sequence.labels)
     {
         label.item++;
@@ -256,11 +257,13 @@ Sequence CommandsOf(const SequenceFile& read, const ntdlib::nwsnd::Grammar& gram
     {
         labels.push_back({label.name, label.offset});
     }
+
     std::vector<uint32_t> first(starts.begin(), starts.end());
     if (labels.empty() && first.empty() && !read.data.empty())
     {
         first.push_back(0);
     }
+
     ntdlib::nwsnd::Decoded decoded;
     try
     {
@@ -268,11 +271,13 @@ Sequence CommandsOf(const SequenceFile& read, const ntdlib::nwsnd::Grammar& gram
     }
     catch (const std::exception& error)
     {
-        throw std::invalid_argument(std::string("Its commands can't be read. ") + format::AsSentence(error.what()));
+        throw std::invalid_argument(std::string("Can't read the commands in the file. ") +
+                                    format::AsSentence(error.what()));
     }
+
     if (decoded.opaque)
     {
-        throw std::invalid_argument("Its commands overlap or jump into one another.");
+        throw std::invalid_argument("The commands in the file overlap or jump into one another.");
     }
 
     Sequence sequence = std::move(decoded.sequence);
@@ -310,14 +315,13 @@ bool StartsWith(std::span<const uint8_t> bytes, std::string_view magic)
 // `old` with the commands of `mapped` that `reach` found after its commands, in their order, and a label at the start.
 // Every target of a jump, a call or a track start among them is among them, or names the end. `first` takes the item
 // where the start lands. Throws std::invalid_argument when either sequence's commands can't move.
-Sequence Appended(const Sequence& old, const Sequence& mapped, const Reach& reach, uint32_t start,
+Sequence Appended(const Sequence& old, const Sequence& mapped, const SlotReach& reach, uint32_t start,
                   const std::string& label, uint32_t& first)
 {
     if (Fixed(old))
     {
         throw std::invalid_argument(
-            "The sound's sequence file holds targets that are byte offsets. Its commands can't take others after "
-            "them.");
+            "The sequence file contains jumps to byte offsets. New commands can't be added after its commands.");
     }
 
     // The commands that the start reaches.
@@ -334,7 +338,7 @@ Sequence Appended(const Sequence& old, const Sequence& mapped, const Reach& reac
         {
             throw std::invalid_argument(
                 "The new sequence runs into bytes that no command reaches, or jumps to a byte offset. Its commands "
-                "can't move.");
+                "must keep their positions.");
         }
 
         moved[i] = static_cast<uint32_t>(appended.items.size());
@@ -350,6 +354,7 @@ Sequence Appended(const Sequence& old, const Sequence& mapped, const Reach& reac
             appended.items[to].target = moved.at(appended.items[to].target);
         }
     }
+
     first = moved.at(start);
     appended.labels.push_back({UniqueLabel(old.labels, label), first});
 
@@ -384,7 +389,8 @@ void MovePlaces(format::NativeArchive& native, uint32_t sequence, const Moves& m
 
         if (NamesItemOf(native, field.from, sequence) && field.from.offset != 0)
         {
-            throw std::invalid_argument("The archive's tables name a distance from inside the sound's sequence.");
+            throw std::invalid_argument(
+                "The archive tables refer to a distance from inside the sequence of this sound.");
         }
         if (!NamesItemOf(native, field.to, sequence))
         {
@@ -397,7 +403,7 @@ void MovePlaces(format::NativeArchive& native, uint32_t sequence, const Moves& m
         }
         else if (!moves.shared)
         {
-            throw std::invalid_argument("The archive's tables name other commands of the sound's sequence.");
+            throw std::invalid_argument("The archive tables refer to other commands in the sequence of this sound.");
         }
         else if (moves.jump)
         {
@@ -415,12 +421,13 @@ Incoming ReadIncoming(std::span<const uint8_t> bytes, const std::optional<song::
     const bool rseq = StartsWith(bytes, "RSEQ");
     if (rseq && !wii)
     {
-        throw std::invalid_argument("It's a sequence file of the Wii. It goes only into an archive of the Wii.");
+        throw std::invalid_argument("This is a Wii sequence file. It can be used only in a Wii archive.");
     }
     if (!rseq && !StartsWith(bytes, "CSEQ") && !StartsWith(bytes, "FSEQ"))
     {
         throw std::invalid_argument(format::NotKindText(bytes, "a sequence file"));
     }
+
     if (wii && rseq)
     {
         ntdlib::rsar::SequenceFile read;
@@ -430,11 +437,11 @@ Incoming ReadIncoming(std::span<const uint8_t> bytes, const std::optional<song::
         }
         catch (const std::exception& error)
         {
-            throw std::invalid_argument(std::string("Hokuto can't read it as a sequence file of the Wii: ") +
-                                        error.what() + ".");
+            throw std::invalid_argument(std::string("Can't read it as a Wii sequence file: ") + error.what() + ".");
         }
 
-        return {.sequence = CommandsOf(read, song::GrammarOf(song::Console{.wii = *wii}), bytes),
+        return {.sequence = CommandsOf(
+                    read, song::GrammarOf(song::Console{.engine = format::Engine::kWii, .wii = *wii}), bytes),
                 .size = bytes.size(),
                 .wii = true};
     }
@@ -446,16 +453,17 @@ Incoming ReadIncoming(std::span<const uint8_t> bytes, const std::optional<song::
     }
     catch (const std::exception& error)
     {
-        throw std::invalid_argument(std::string("Hokuto can't read it as a sequence file: ") + error.what() + ".");
+        throw std::invalid_argument(std::string("Can't read it as a sequence file: ") + error.what() + ".");
     }
+
     Incoming incoming{
         .flavor = read.flavor, .sequence = CommandsOf(read, song::GrammarOf(read.flavor), bytes), .size = bytes.size()};
     if (!wii)
     {
         // The biquad filters of another console play at the other console's rate.
-        if (into && into->flavor != read.flavor)
+        if (into && FlavorOf(*into) != read.flavor)
         {
-            const song::Console from{.flavor = read.flavor};
+            const song::Console from{.engine = format::EngineOf(read.flavor)};
             const song::BiquadChanges changes = song::MapBiquads(incoming.sequence, {}, from, *into);
             if (const std::optional<std::string> warning = song::BiquadWarning(changes, from, *into))
             {
@@ -485,12 +493,13 @@ ntdlib::commands::Sequence SequenceFileCommands(const ntdlib::sar::SequenceFile&
 ntdlib::commands::Sequence SequenceFileCommands(const ntdlib::rsar::SequenceFile& read, std::span<const uint8_t> bytes,
                                                 const ntdlib::SndBuild& build, std::span<const uint32_t> starts)
 {
-    return CommandsOf(read, song::GrammarOf(song::Console{.wii = build}), bytes, starts);
+    return CommandsOf(read, song::GrammarOf(song::Console{.engine = format::Engine::kWii, .wii = build}), bytes,
+                      starts);
 }
 
 Selections ProgramsSelected(const Sequence& sequence, uint32_t start)
 {
-    const Reach reach = Walk(sequence, start);
+    const SlotReach reach = WalkSlots(sequence, start);
     std::set<Program> programs;
     Selections selections;
     for (const auto& [item, slots] : reach.slots)
@@ -507,6 +516,7 @@ Selections ProgramsSelected(const Sequence& sequence, uint32_t start)
             programs.insert({slot, static_cast<int>(value.value / kOne)});
         }
     }
+
     selections.programs.assign(programs.begin(), programs.end());
 
     return selections;
@@ -515,7 +525,7 @@ Selections ProgramsSelected(const Sequence& sequence, uint32_t start)
 Sequence WithPrograms(const Sequence& sequence, uint32_t start, const ProgramMap& programs)
 {
     Sequence mapped = sequence;
-    MapPrograms(mapped, Walk(sequence, start), programs);
+    MapPrograms(mapped, WalkSlots(sequence, start), programs);
 
     return mapped;
 }
@@ -524,7 +534,7 @@ uint32_t TracksOpened(const Sequence& sequence, uint32_t start)
 {
     // Track 0, and the tracks that the reached track starts open.
     uint32_t tracks = 1;
-    const Reach reach = Walk(sequence, start);
+    const SlotReach reach = WalkSlots(sequence, start);
     for (uint32_t i = 0; i < sequence.items.size(); i++)
     {
         const Command& command = sequence.items[i];
@@ -559,7 +569,7 @@ std::vector<std::optional<SoundPlace>> SoundPlaces(const ntdlib::sar::SoundArchi
         if (sound.type == ntdlib::sar::SoundType::kSequence && sound.file_id < sequences.size() &&
             sequences[sound.file_id])
         {
-            place = SoundPlace{*sequences[sound.file_id], i < start_fields.size() ? start_fields[i] : std::nullopt};
+            place = SoundPlace{*sequences[sound.file_id], i < start_fields.size() ? start_fields[i] : std::nullopt, {}};
         }
     }
 
@@ -578,8 +588,75 @@ std::vector<std::optional<SoundPlace>> SoundPlaces(const ntdlib::rsar::SoundArch
         if (sound.type == ntdlib::rsar::SoundType::kSequence && sound.file_id < sequences.size() &&
             sequences[sound.file_id])
         {
-            place = SoundPlace{*sequences[sound.file_id], i < start_fields.size() ? start_fields[i] : std::nullopt};
+            place = SoundPlace{*sequences[sound.file_id], i < start_fields.size() ? start_fields[i] : std::nullopt, {}};
         }
+    }
+
+    return places;
+}
+
+std::vector<std::optional<SoundPlace>> DriverSoundPlaces(const format::File& file, const song::DriverRom& rom,
+                                                         std::span<const std::optional<uint32_t>> sequences)
+{
+    std::vector<std::optional<SoundPlace>> places(sequences.size());
+    const std::vector<uint64_t> starts = format::NativePieceStarts(file);
+    for (std::size_t sound = 0; sound < sequences.size(); sound++)
+    {
+        if (sequences[sound])
+        {
+            const song::SoundFields fields = rom.FieldsOf(static_cast<uint32_t>(sound));
+            std::optional<uint32_t> start_field;
+            if (fields.starts && fields.sequence)
+            {
+                const std::vector<uint32_t> found = format::FieldsAt(file, std::span(&*fields.sequence, 1));
+                start_field = found.empty() ? std::nullopt : std::optional(found.front());
+            }
+
+            places[sound] = SoundPlace{.sequence = *sequences[sound],
+                                       .start_field = start_field,
+                                       .track_fields = format::FieldsAt(file, fields.tracks, starts),
+                                       .track_entries = fields.entries};
+        }
+    }
+
+    return places;
+}
+
+std::vector<std::optional<SoundPlace>> GbaSoundPlaces(std::span<const std::optional<uint32_t>> sequences,
+                                                      std::span<const std::vector<uint32_t>> track_fields,
+                                                      std::span<const uint32_t> player_tracks)
+{
+    std::vector<std::optional<SoundPlace>> places;
+    for (std::size_t song = 0; song < sequences.size(); song++)
+    {
+        if (!sequences[song])
+        {
+            places.emplace_back();
+            continue;
+        }
+
+        SoundPlace& place = places.emplace_back(SoundPlace{}).value();
+        place.sequence = *sequences[song];
+        if (song < track_fields.size())
+        {
+            place.track_fields = track_fields[song];
+        }
+
+        if (song < player_tracks.size())
+        {
+            place.player_tracks = player_tracks[song];
+        }
+    }
+
+    return places;
+}
+
+std::vector<std::optional<SoundPlace>> DsSoundPlaces(std::span<const std::optional<uint32_t>> sequences)
+{
+    std::vector<std::optional<SoundPlace>> places;
+    for (const std::optional<uint32_t>& sequence : sequences)
+    {
+        places.push_back(sequence ? std::optional<SoundPlace>(SoundPlace{.sequence = *sequence}) : std::nullopt);
     }
 
     return places;
@@ -644,11 +721,11 @@ std::vector<StartingSound> SoundStarts(const format::File& file, std::span<const
         if (added)
         {
             const Sequence saved = SavedSequence(file, place.sequence);
-            const auto same = [](const Command& a, const Command& b)
+            const auto alike = [](const Command& a, const Command& b)
             {
                 return song::SameButBiquads(a, b);
             };
-            if (std::ranges::equal(saved.items, incoming.items, same))
+            if (std::ranges::equal(saved.items, incoming.items, alike))
             {
                 found->second = IsTimeline(file, place.sequence) ? MatchingItems(*file.sequences[place.sequence], saved)
                                                                  : std::vector<std::optional<uint32_t>>{};
@@ -687,14 +764,63 @@ void CheckBankSlots(const format::NativeTables& tables, std::span<const uint32_t
 {
     const auto past = [&tables](uint32_t bank)
     {
-        return bank != ntdlib::sar::kNoItem &&
-               (bank >> 24 != ntdlib::sar::kBankItem || (bank & kIndexBits) >= tables.banks.size());
+        return bank != ntdlib::sar::kNoItem && (ntdlib::sar::ItemType(bank) != ntdlib::sar::kBankItem ||
+                                                ntdlib::sar::ItemNumber(bank) >= tables.banks.size());
     };
-    if (slots.size() > kBankSlots || std::ranges::any_of(slots, past))
+    if (slots.size() > static_cast<std::size_t>(kBankSlots) || std::ranges::any_of(slots, past))
     {
-        throw std::invalid_argument("A sound has four bank slots. Each holds one of the archive's banks, or none.");
+        throw std::invalid_argument(
+            "A sound has four bank slots. Each slot can contain a bank of the archive, or none.");
     }
 }
+
+namespace
+{
+
+// Throws std::invalid_argument with a message for the user when the sounds that play the new commands can't allocate
+// `tracks`, a bit each, or take `banks` in their slots (ReplaceSequence).
+void CheckTables(const format::File& file, uint32_t tracks, const std::optional<std::vector<uint32_t>>& banks)
+{
+    if (!file.native->tables && tracks != 0)
+    {
+        throw std::invalid_argument(
+            "The new commands open tracks that the sound doesn't allocate. Hokuto can't read the tables of this "
+            "archive and can't add the tracks to the sound.");
+    }
+    if (!file.native->tables && banks)
+    {
+        throw std::invalid_argument(
+            "Hokuto can't read the tables of this archive and can't change the banks of the sound.");
+    }
+
+    if (banks)
+    {
+        CheckBankSlots(*file.native->tables, *banks);
+    }
+
+    if (banks && file.native->engine == format::Engine::kWii && banks->size() > 1)
+    {
+        throw std::invalid_argument("A Wii sound uses only one bank, in slot 0.");
+    }
+}
+
+// Moves the places of the items of sequence `sequence` in `native` by `moves`. Each sound of `playing` allocates
+// `tracks`, a bit each, and uses `banks` where there are some (ReplaceSequence).
+void ChangeTables(format::NativeArchive& native, uint32_t sequence, const Moves& moves,
+                  std::span<const uint32_t> playing, uint32_t tracks, const std::optional<std::vector<uint32_t>>& banks)
+{
+    MovePlaces(native, sequence, moves);
+    for (const uint32_t other : playing)
+    {
+        if (native.tables && other < native.tables->sounds.size())
+        {
+            native.tables->sounds[other].tracks |= tracks;
+            native.tables->sounds[other].banks = banks.value_or(native.tables->sounds[other].banks);
+        }
+    }
+}
+
+} // namespace
 
 format::File ReplaceSequence(const format::File& file, std::span<const std::optional<SoundPlace>> places,
                              uint32_t sound, const Sequence& incoming, uint32_t start, const ProgramMap& programs,
@@ -707,13 +833,13 @@ format::File ReplaceSequence(const format::File& file, std::span<const std::opti
     }
     if (start >= incoming.items.size())
     {
-        throw std::invalid_argument("The start lies past the end of the new sequence.");
+        throw std::invalid_argument("The start is past the end of the new sequence.");
     }
 
     // The new commands, with the programs of the map, and the item where the file's sequence holds them already. A
     // saved file holds a timeline with its subroutines. The timeline holds the item only in its header or at a label.
     const SoundPlace& place = *places[sound];
-    const Reach reach = Walk(incoming, start);
+    const SlotReach reach = WalkSlots(incoming, start);
     Sequence mapped = WithPrograms(incoming, start, programs);
     const bool timeline = IsTimeline(file, place.sequence);
     const Sequence saved = SavedSequence(file, place.sequence);
@@ -737,9 +863,10 @@ format::File ReplaceSequence(const format::File& file, std::span<const std::opti
     if (jump && Fixed(result))
     {
         throw std::invalid_argument(
-            "The sound starts where its sequence file starts, and the file's commands can't move to make room for a "
-            "jump to the new commands.");
+            "The sound starts at the beginning of its sequence file, and the commands in the file must keep their "
+            "positions. There's no room for a jump to the new commands.");
     }
+
     if (jump)
     {
         InsertJump(result, first);
@@ -752,29 +879,12 @@ format::File ReplaceSequence(const format::File& file, std::span<const std::opti
     }
     catch (const std::exception& error)
     {
-        throw std::invalid_argument(std::string("The new commands can't be written for the archive's console. ") +
+        throw std::invalid_argument(std::string("Can't write the new commands for this console. ") +
                                     format::AsSentence(error.what()));
     }
 
     // The sounds that play the new commands allocate the tracks to add, and take the bank slots.
-    if (!file.native->tables && tracks != 0)
-    {
-        throw std::invalid_argument(
-            "The new commands open tracks that the sound doesn't allocate. Hokuto can't read this archive's tables, "
-            "and so can't make the sound allocate them.");
-    }
-    if (!file.native->tables && banks)
-    {
-        throw std::invalid_argument("Hokuto can't read this archive's tables, and so can't change the sound's banks.");
-    }
-    if (banks)
-    {
-        CheckBankSlots(*file.native->tables, *banks);
-    }
-    if (banks && file.native->wii && banks->size() > 1)
-    {
-        throw std::invalid_argument("A sound of the Wii plays one bank, in slot 0.");
-    }
+    CheckTables(file, tracks, banks);
     std::vector<uint32_t> playing = SharingStart(places, sound);
     playing.push_back(sound);
 
@@ -788,15 +898,7 @@ format::File ReplaceSequence(const format::File& file, std::span<const std::opti
                       .new_end = static_cast<uint32_t>(result.items.size())};
     const auto change = [&](format::NativeArchive& native)
     {
-        MovePlaces(native, place.sequence, moves);
-        for (const uint32_t other : playing)
-        {
-            if (native.tables && other < native.tables->sounds.size())
-            {
-                native.tables->sounds[other].tracks |= tracks;
-                native.tables->sounds[other].banks = banks.value_or(native.tables->sounds[other].banks);
-            }
-        }
+        ChangeTables(native, place.sequence, moves, playing, tracks, banks);
     };
     replaced.native.Edit(change);
     replaced.sequences[place.sequence] = std::move(result);

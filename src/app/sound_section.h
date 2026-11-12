@@ -4,7 +4,8 @@
 // a sound in NintendoWare's sound tools. The player, the player priority, the actor player, the volume and the pan show
 // for every sound. The channel priority, the release priority fix, the tracks and the bank slots show for a sequence
 // sound. Each value has a menu, a slider or switches. A value that the archive doesn't hold shows greyed, and a sound
-// of the Wii shows one bank slot (edit::HeldValuesOf). The program makes the change once the user lets go of the
+// of the Wii shows one bank slot (edit::HeldValuesOf). A GBA song shows only its music player, its priority and its
+// reverb (edit/gba_tables.h). The program makes the change once the user lets go of the
 // control (edit/tables.h). A wave sound's values in its wave sound file follow: its wave, its pitch, its pans, its
 // sends, its filters and its envelope (edit/waves.h). The sound's tags follow, a box of text for each key that the
 // program offers (format::kTagKeys).
@@ -27,6 +28,8 @@
 #include "app/widgets.h"
 #include "edit/tables.h"
 #include "format/file.h"
+#include "song/ds.h"
+#include "song/gba.h"
 
 namespace hokuto::app
 {
@@ -40,6 +43,8 @@ struct SoundView
     std::vector<std::string> banks;   // the names of the archive's banks, by their indices
     format::Tags tags;                // the sound's tags
     edit::HeldValues held;            // the values that the archive holds
+    bool ds = false;                  // a sound of the DS
+    bool gba = false;                 // a song of the GBA
 };
 
 // A tag that the user typed: its key, and the new value. An empty value removes the tag.
@@ -86,8 +91,10 @@ struct SoundSection
 
 // Shows sound `sound` of `version` in `section`. A new version or another sound makes the view again, and drops the
 // value of a slider that the user holds. Another sound drops the text of a tag that the user types too. Nothing shows
-// without a version or a sound, or for a sound past the tables.
-void ShowSound(SoundSection& section, std::shared_ptr<const format::File> version, std::optional<uint32_t> sound);
+// without a version or a sound, or for a sound past the tables. A DS sound's values come from `ds`, the archive that
+// `version` builds, and a GBA song's from `gba`, the ROM that it builds.
+void ShowSound(SoundSection& section, std::shared_ptr<const format::File> version, std::optional<uint32_t> sound,
+               const song::DsArchive* ds = nullptr, const song::GbaRom* gba = nullptr);
 
 // Shows the values of the section's wave sound in its wave sound file, from `archive`, the archive that `version`
 // builds. A new version or another sound makes the view again, and drops the value of a slider that the user holds.

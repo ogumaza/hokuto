@@ -21,8 +21,6 @@
 #include "ntdlib/sar/byte_order.h"
 #include "ntdlib/sar/stream_file.h"
 #include "seqlib/file_name.h"
-#include "seqlib/pcm.h"
-#include "seqlib/wav.h"
 #include "xsflib/binary.h"
 #include "xsflib/files.h"
 
@@ -46,7 +44,7 @@ sar::StreamFile ReadStream(std::span<const uint8_t> stream)
     }
     catch (const xsflib::FormatError& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't read the stream. ") + error.what());
+        throw std::runtime_error(std::string("Can't read the stream. ") + error.what());
     }
 }
 
@@ -59,14 +57,14 @@ rsar::StreamFile ReadWiiStream(std::span<const uint8_t> stream)
     }
     catch (const xsflib::FormatError& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't read the stream. ") + error.what());
+        throw std::runtime_error(std::string("Can't read the stream. ") + error.what());
     }
 }
 
 // Whether `bytes` start as a stream file of the Wii: RSTM, with the big-endian byte order mark.
 bool IsWiiStream(std::span<const uint8_t> bytes)
 {
-    return bytes.size() >= 6 && std::memcmp(bytes.data(), "RSTM", 4) == 0 && bytes[4] == 0xFE && bytes[5] == 0xFF;
+    return bytes.size() >= 6 && std::memcmp(bytes.data(), "RSTM", 4) == 0 && BigEndianMark(bytes) == true;
 }
 
 // `text`, a path that a file table gives, as a path from the archive's folder (StreamPath).
@@ -84,6 +82,7 @@ std::optional<std::filesystem::path> PathInFolder(std::string text)
     {
         return std::nullopt;
     }
+
     for (const std::filesystem::path& part : path)
     {
         if (part == "..")
@@ -106,9 +105,10 @@ std::vector<std::filesystem::path> PathsOf(const Archive& archive, std::span<con
             file < archive.FileCount() ? StreamPath(archive, file) : std::nullopt;
         if (!path)
         {
-            throw std::runtime_error("The archive's file table gives stream file " + std::to_string(file) +
-                                     " no path in the archive's folder.");
+            throw std::runtime_error("The file table has no path inside the archive folder for stream file " +
+                                     std::to_string(file) + ".");
         }
+
         paths.push_back(std::move(*path));
     }
 
@@ -196,6 +196,7 @@ std::optional<std::string> WriteStream(const std::filesystem::path& file, std::s
             return FolderFailure(xsflib::Utf8(file.parent_path().filename()), error);
         }
     }
+
     if (xsflib::WriteFile(file, bytes))
     {
         return WriteFailure(xsflib::Utf8(file.filename()));
@@ -215,8 +216,7 @@ std::map<uint32_t, std::vector<uint8_t>> ReadStreams(const sar::SoundArchive& ar
     const char* const magic = ctr ? "CSTM" : "FSTM";
     const auto is_stream = [big_endian, magic, ctr](std::span<const uint8_t> bytes)
     {
-        return (bytes.size() >= 6 && std::memcmp(bytes.data(), magic, 4) == 0 &&
-                (bytes[4] == 0xFE && bytes[5] == 0xFF) == big_endian) ||
+        return (bytes.size() >= 6 && std::memcmp(bytes.data(), magic, 4) == 0 && BigEndianMark(bytes) == big_endian) ||
                (ctr && AdtsFrames(bytes) > 0);
     };
     return StreamsBeside(archive, path, is_stream);
@@ -269,6 +269,7 @@ std::optional<AacStream> AacStreamOf(const sar::SoundArchive& archive, uint32_t 
     {
         return std::nullopt;
     }
+
     if (sound >= model.sounds.size() || !model.sounds[sound].stream_extension ||
         (model.sounds[sound].stream_extension->stream_type & 0xFF) != kAac)
     {
@@ -312,26 +313,13 @@ sar::Pcm DecodeStreamFile(std::span<const uint8_t> stream, const AacStream& aac)
     }
     catch (const xsflib::FormatError& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't decode the stream. ") + error.what());
+        throw std::runtime_error(std::string("Can't decode the stream. ") + error.what());
     }
 }
 
 std::vector<uint8_t> StreamAsWav(std::span<const uint8_t> stream, const AacStream& aac)
 {
-    sar::Pcm decoded = DecodeStreamFile(stream, aac);
-    seqlib::Pcm pcm;
-    pcm.loop = decoded.loop;
-    pcm.loop_start = decoded.loop_start;
-    pcm.loop_end = decoded.loop_end;
-    pcm.channels = std::move(decoded.channels);
-    try
-    {
-        return seqlib::WavFile(pcm, decoded.sample_rate);
-    }
-    catch (const std::invalid_argument& error)
-    {
-        throw std::runtime_error(std::string("Hokuto can't write the stream as a WAV file. ") + error.what());
-    }
+    return PcmAsWav(DecodeStreamFile(stream, aac), "the stream");
 }
 
 std::vector<uint8_t> ConvertStreamFile(std::span<const uint8_t> stream, sar::Flavor to, uint32_t version,
@@ -348,9 +336,10 @@ std::vector<uint8_t> ConvertStreamFile(std::span<const uint8_t> stream, sar::Fla
         }
         catch (const std::invalid_argument& error)
         {
-            throw std::runtime_error(std::string("Hokuto can't convert the stream. ") + error.what());
+            throw std::runtime_error(std::string("Can't convert the stream. ") + error.what());
         }
     }
+
     if (IsWiiStream(stream))
     {
         const rsar::StreamFile file = ReadWiiStream(stream);
@@ -360,7 +349,7 @@ std::vector<uint8_t> ConvertStreamFile(std::span<const uint8_t> stream, sar::Fla
         }
         catch (const std::invalid_argument& error)
         {
-            throw std::runtime_error(std::string("Hokuto can't convert the stream. ") + error.what());
+            throw std::runtime_error(std::string("Can't convert the stream. ") + error.what());
         }
     }
 
@@ -371,7 +360,7 @@ std::vector<uint8_t> ConvertStreamFile(std::span<const uint8_t> stream, sar::Fla
     }
     catch (const std::invalid_argument& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't convert the stream. ") + error.what());
+        throw std::runtime_error(std::string("Can't convert the stream. ") + error.what());
     }
 }
 
@@ -379,7 +368,7 @@ std::vector<uint8_t> WiiStreamFile(std::span<const uint8_t> stream, const AacStr
 {
     if (IsWiiStream(stream))
     {
-        throw std::runtime_error("The stream is a stream of the Wii already.");
+        throw std::runtime_error("The stream is already a Wii stream.");
     }
 
     try
@@ -396,7 +385,7 @@ std::vector<uint8_t> WiiStreamFile(std::span<const uint8_t> stream, const AacStr
     }
     catch (const std::invalid_argument& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't convert the stream for the Wii. ") + error.what());
+        throw std::runtime_error(std::string("Can't convert the stream for the Wii. ") + error.what());
     }
 }
 
@@ -407,8 +396,6 @@ std::vector<uint8_t> PlayableStream(std::span<const uint8_t> stream, const AacSt
         return std::vector<uint8_t>(stream.begin(), stream.end());
     }
 
-    // The 3DS's tools write stream files of 2.0.0.0 and later.
-    constexpr uint32_t kCtrStreamVersion = 0x02000000;
     const sar::Pcm pcm = DecodeStreamFile(stream, aac);
     try
     {
@@ -418,7 +405,7 @@ std::vector<uint8_t> PlayableStream(std::span<const uint8_t> stream, const AacSt
     }
     catch (const std::invalid_argument& error)
     {
-        throw std::runtime_error(std::string("Hokuto can't play the stream. ") + error.what());
+        throw std::runtime_error(std::string("Can't play the stream. ") + error.what());
     }
 }
 

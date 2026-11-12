@@ -12,6 +12,7 @@
 #include <span>
 
 #include "app/lanes.h"
+#include "app/time_text.h"
 
 namespace hokuto::app
 {
@@ -177,6 +178,47 @@ OpenEditors ApplyView(const format::EditorView& view, std::span<const int> numbe
     }
 
     return editors;
+}
+
+Locators SongLocators(const song::Sequence& sequence)
+{
+    const double quarter = sequence.timebase;
+    if (sequence.loop)
+    {
+        return {sequence.loop->start / quarter, sequence.loop->end / quarter};
+    }
+    if (sequence.notes_end > 0)
+    {
+        return {0.0, std::ceil(sequence.notes_end / quarter)};
+    }
+
+    return {0.0, sequence.length / quarter};
+}
+
+Locators LocatorsAfter(const Locators& now, const song::Sequence& shown, const song::Sequence& next)
+{
+    // The ticks of the shown sequence that the locators fall on. A locator that a file's view kept as a float falls on
+    // its tick too.
+    const double quarter = shown.timebase;
+    const auto tick = [quarter](double quarters)
+    {
+        return std::llround(quarters * quarter);
+    };
+    const Locators before = SongLocators(shown);
+    const bool from_showing = tick(now.start) == tick(before.start) &&
+                              (shown.loop ? tick(now.end) == tick(before.end) : tick(now.end) >= tick(before.end));
+
+    // Locators that showing the sound set go round the new loop. Without one, they only grow.
+    const Locators after = SongLocators(next);
+    if (from_showing)
+    {
+        return next.loop ? after : Locators{after.start, std::max(now.end, after.end)};
+    }
+
+    // The user's locators stay while playback reaches them.
+    const bool unreached = now.start * next.timebase >= next.length;
+
+    return unreached ? after : now;
 }
 
 } // namespace hokuto::app

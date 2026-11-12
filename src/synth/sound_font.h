@@ -8,19 +8,16 @@
 #include <array>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
+
+#include "seqlib/sf2/soundfont.h"
 
 namespace hokuto::synth
 {
 
 // The generator operators, the unused and reserved ones included (section 8.1.2).
-inline constexpr int kGeneratorCount = 61;
-
-// The operators that the renderer reads by name. seqlib's sf2::Gen has every one.
-inline constexpr int kInstrumentGenerator = 41;
-inline constexpr int kKeyRangeGenerator = 43;
-inline constexpr int kVelRangeGenerator = 44;
-inline constexpr int kSampleIdGenerator = 53;
+inline constexpr int kGeneratorCount = seqlib::sf2::kEndOper + 1;
 
 // A modulator as a file holds it (section 8.2). Two modulators are identical when their sources, destination and
 // transform match. Their amounts may differ (section 9.5.1).
@@ -53,6 +50,7 @@ struct InstrumentRecord
 
 struct PresetRecord
 {
+    std::string name;
     int program = 0;
     int bank = 0;
     ZoneRecord global;

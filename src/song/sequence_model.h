@@ -3,16 +3,15 @@
 // The model that plays a sequence, with snapshots of its state. A Switch archive plays on ntdlib's model of nn::atk and
 // the audio renderer, the model that HSF's archive mode plays. A Wii U archive plays on ntdlib's model of nw::snd and
 // AX, the model that CSF's archive mode plays. A 3DS archive plays on ntdlib's archive mode of the 3DS: models of
-// nw::snd and nn::snd, and a model of the DSP's audio firmware (song/ctr_model.h). 3SF's archive mode runs the firmware
-// itself, in Teakra. The 3DS's DSP mixes every frame. The 3DS's effects run in nn::snd's aux callbacks, on ntdlib's
-// models of the libraries' ARM11 effects (ntdlib::ctr_fx). A Wii archive plays on ntdlib's model of NW4R SND and AX,
-// the model that WSF's archive mode plays, with ntdlib's model of AX's microcode of the game's build, December or
-// October 2006, in place of the DSP (ntdlib::rvl::ax::Renderer), and the effects of the SDK's AXFX library on its aux
-// buses. A seek returns the model to the latest snapshot before the target and runs it on from there. The model takes a
-// snapshot every 2 s of its output, the first time it runs that far. Past 128 snapshots, it keeps every other one and
-// takes them half as often. xsflib's playback does the same for the players. Snapshots cover the sequence's first pass,
-// the part that the arrangement shows. On the Switch's music, a snapshot takes about 300 KB. After a run that mixed
-// every frame, a seek runs at most 2 s of the model, in about 8 ms.
+// nw::snd and nn::snd, and a model of the DSP's audio firmware (song/ctr_model.h). The 3DS's DSP mixes every frame. The
+// 3DS's effects run in nn::snd's aux callbacks, on ntdlib's models of the libraries' ARM11 effects (ntdlib::ctr_fx). A
+// Wii archive plays on ntdlib's model of NW4R SND and AX, the model that WSF's archive mode plays, with ntdlib's model
+// of AX's microcode of the game's build, December or October 2006, in place of the DSP (ntdlib::rvl::ax::Renderer), and
+// the effects of the SDK's AXFX library on its aux buses. A seek returns the model to the latest snapshot before the
+// target and runs it on from there. The model takes a snapshot every 2 s of its output, the first time it runs that
+// far. Past 128 snapshots, it keeps every other one and takes them half as often. xsflib's playback does the same for
+// the players. Snapshots cover the sequence's first pass, the part that the arrangement shows. On the Switch's music, a
+// snapshot takes about 300 KB. After a run that mixed every frame, a seek runs at most 2 s of the model, in about 8 ms.
 //
 // Frames without mixing reach a place quickly (SetMixing). Such a frame plays the sequence and moves the voices on as a
 // mixed frame does. Its output is silent, and the effects and the voices' filters miss it (ntdlib's Renderer::SetMixing
@@ -34,6 +33,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <variant>
 #include <vector>
 
@@ -44,6 +44,7 @@
 #include "ntdlib/rvl/snd/effect_setup.h"
 #include "ntdlib/sar/formats.h"
 
+#include "song/played.h"
 #include "song/sequence.h"
 
 namespace ntdlib::nx::atk
@@ -64,6 +65,9 @@ namespace hokuto::song
 {
 
 class CtrModel;
+struct DsArchive;
+struct GbaRom;
+class DriverRom;
 
 // An effect of the Wii U on an aux bus of the TV: nw::snd's class, and the words of its parameter structure. A float
 // takes its bits, and a reverb's mode its whole number (see ntdlib::cafe::snd::EffectSetup).
@@ -172,35 +176,64 @@ void CopyOutput(const ntdlib::nx::atk::ArchiveModel& model, std::span<float> out
 void CopyOutput(const ntdlib::cafe::snd::ArchiveModel& model, std::span<float> out);
 void CopyOutput(const CtrModel& model, std::span<float> out);
 
-// A console's model of its sound library, with the player of a sequence, and a copy of its state (sequence_model.cpp).
+// A console's model of its sound library, with the player of a sequence, and a copy of its state
+// (song/console_model.h).
 class ConsoleModel;
 struct ConsoleSnapshot;
+
+// The length of a model's frames, the stereo samples in each, and its sample rate.
+struct FrameFacts
+{
+    FrameMs frame_ms;
+    std::size_t frame_samples = 0;
+    int sample_rate = 0;
+};
+
+// How a SequenceModel plays. Each console uses what it supports and ignores the rest: the effects on the aux buses on
+// the later consoles and the Wii, the mixing everywhere but on the Wii, and `dry` on the DS and the GBA's other
+// drivers. The Wii mixes strictly.
+struct ModelOptions
+{
+    AuxEffects effects;
+    Mixing mixing = Mixing::kStrict;
+    uint64_t snapshot_interval = 0; // the frames from one snapshot to the next at first; 0 stands for 2 s of frames
+    bool dry = false;               // without the effects of the DS's capture units or the echo of a GBA driver
+};
 
 // The players of a sequence share its model. Only the render worker's thread may use it.
 class SequenceModel
 {
 public:
-    // The tracks of the consoles' sequence players.
-    static constexpr int kTracks = 16;
+    // The tracks of the consoles' sequence players: as many as ntdlib's player of DSE mutes and meters.
+    static constexpr int kTracks = 32;
 
     // The frames from one snapshot to the next at first. 0 stands for 2 s of the model's frames.
     static constexpr uint64_t kSnapshotInterval = 0;
 
-    // Plays sequence `sequence` of `archive` with `effects` on the aux buses, in `mixing`, and keeps all three. The
-    // archive's flavor selects the console's model. The sequence's variables start at its starting values, and its
-    // changes come at the starts of their frames. The model starts at the first Seek. A test can give a shorter
-    // interval between snapshots. Throws std::invalid_argument for an archive of a console that Hokuto doesn't play.
-    SequenceModel(std::shared_ptr<const ntdlib::sar::SoundArchive> archive, std::shared_ptr<const Sequence> sequence,
-                  AuxEffects effects = {}, Mixing mixing = Mixing::kStrict,
-                  uint64_t snapshot_interval = kSnapshotInterval);
-
-    // Plays sequence `sequence` of the Wii's `archive` with `effects` on the aux buses, and keeps all three. The
-    // archive has to be read by ntdlib::rvl::snd::kRsarOptions. Without the fields of playback, the sequence doesn't
-    // start. The model follows the sequence's build of NW4R SND, the game's, or else the build that the archive's
-    // version gives (SettingsOf). Its effects follow that build's AXFX library. Every frame mixes. A mute sets the
-    // track's volume to 0 through the sound's handle.
-    SequenceModel(std::shared_ptr<const ntdlib::rsar::SoundArchive> archive, std::shared_ptr<const Sequence> sequence,
-                  AuxEffects effects = {}, uint64_t snapshot_interval = kSnapshotInterval);
+    // Plays sequence `sequence` of `played` with `options`, and keeps all three. The kind of what plays selects the
+    // console's model, and the console uses the options that it supports (ModelOptions). The sequence's variables start
+    // at its starting values, and its changes come at the starts of their frames. The model starts at the first Seek. A
+    // test can give a shorter interval between snapshots. Throws std::invalid_argument for an archive of a console that
+    // Hokuto doesn't play, and std::logic_error when nothing plays.
+    // - A later console's archive: the archive's flavor selects the console's model.
+    // - The Wii's archive has to be read by ntdlib::rvl::snd::kRsarOptions. Without the fields of playback, the
+    //   sequence doesn't start. The model follows the sequence's build of NW4R SND, the game's, or else the build that
+    //   the archive's version gives (SettingsOf). Its effects follow that build's AXFX library. Every frame mixes. A
+    //   mute sets the track's volume to 0 through the sound's handle.
+    // - A song of the GBA's MP2K: MP2K has no aux buses. In strict mixing, a frame contains a 64th of a second of the
+    //   console's output: 512 samples at 32,768 Hz, or 1,024 at 65,536 Hz. In enhanced mixing, a frame is a frame of
+    //   the console: 804 samples at about 48,022 Hz (ntdlib::agb::kEnhancedRate). Every frame mixes.
+    // - A sound of one of the drivers of song/driver.h, such as Konami's driver: the frames are those of the GBA, a
+    //   64th of a second of the driver's output in strict mixing, such as 1,024 samples at 65,536 Hz. The song's
+    //   commands set the driver's echo. The model has no aux buses. With `dry`, the model leaves the driver's echo out
+    //   (DriverPlayer::SetEcho).
+    // - A sound of the DS's archive: the DS has no aux buses. A frame contains two frames of the driver, about
+    //   10.42 ms: 341 samples at 32,728 Hz in strict mixing, and 500 at about 47,989 Hz in enhanced mixing
+    //   (ntdlib::ntr::kEnhancedRate). The sound starts with the profile of its game (DsProfileOf). With `dry`, it
+    //   leaves out the profile's reverb and output effect (DryDsProfile). Enhanced mixing leaves out the output effect
+    //   in any case (ntdlib::ntr::ArchivePlayerOptions::enhanced).
+    // - A sound of a set of DSE, the DSE sounds of a DS cartridge image: the frames are those of the DS.
+    SequenceModel(Played played, std::shared_ptr<const Sequence> sequence, ModelOptions options = {});
 
     SequenceModel(const SequenceModel&) = delete;
     SequenceModel& operator=(const SequenceModel&) = delete;
@@ -209,11 +242,11 @@ public:
 
     const Sequence& GetSequence() const;
 
-    // The model's output rate, and the stereo frames in each of its frames: 240 at 48 kHz on the Switch, a frame of
-    // 5 ms, 144 at 48 kHz on the Wii U, a frame of 3 ms, 160 at 32,728 Hz on the 3DS, a frame of about 4.889 ms, and 96
-    // at 32 kHz on the Wii, a frame of 3 ms. The 3DS's DSP runs at 268111856 / 8192 Hz, and its players report
-    // 32,728 Hz. In enhanced mixing, the 3DS's frame holds 235 at about 48,070 Hz. The other consoles' frames stay the
-    // same in both modes.
+    // The model's output rate, and the stereo frames in each of its frames: 240 at 48 kHz on the Switch, a frame of 5
+    // ms, 144 at 48 kHz on the Wii U, a frame of 3 ms, 160 at 32,728 Hz on the 3DS, a frame of about 4.889 ms, and 96
+    // at 32 kHz on the Wii, a frame of 3 ms. The 3DS's DSP runs at 268111856 / 8192 Hz, and its players report 32,728
+    // Hz. In enhanced mixing, the 3DS's frame holds 235 at about 48,070 Hz. The frames of the Switch, the Wii U and the
+    // Wii stay the same in both modes. The constructors of the GBA and the DS set their frames.
     int SampleRate() const;
     std::size_t FrameSamples() const;
 
@@ -253,9 +286,9 @@ public:
     // silent, or if the model fails. The effects' tails sound on after the last channel. The 3DS's reverbs can leave a
     // constant offset of a step or two in the output. A delay that feeds back on the Wii U or the Wii can leave samples
     // of ±1 for ever. With an effect of the 3DS, an effect of the Wii U that rings or an effect on a bus of the Wii, a
-    // frame within ±8 therefore counts as silent once the output has stayed there for a while (see sequence_model.cpp).
-    // Otherwise a silent frame holds only zeros. So does one on the Switch. Damaged data in the archive makes the model
-    // fail.
+    // frame within ±8 therefore counts as silent once the output has stayed there for a while (see
+    // ConsoleModel::Silent). Otherwise a silent frame holds only zeros. So does one on the Switch. Damaged data in the
+    // archive makes the model fail.
     bool RunFrame();
 
     // Mutes the tracks in `tracks`, a bit for each track's number, and unmutes the others. A muted track plays on, and
@@ -307,6 +340,13 @@ public:
 
     std::size_t SnapshotCount() const;
 
+    // What stopped the model, or nothing: ntdlib's reason, such as a track on the DS or the GBA that loops without a
+    // wait. Read it once the thread that runs the model has stopped.
+    const std::string& Failure() const
+    {
+        return failure_;
+    }
+
 private:
     // A snapshot before frame `frame`, counted from the model's start, when the player's tick count was `ticks`. Each
     // frame before it from frame `mixed_from` on mixed. The player's tick count was `mixed_from_ticks` before that
@@ -322,6 +362,9 @@ private:
 
     // Past this many snapshots, the interval doubles.
     static constexpr std::size_t kMaxSnapshots = 128;
+
+    // The constructor from Played, with the options that the console supports and the facts of its frames.
+    SequenceModel(Played played, std::shared_ptr<const Sequence> sequence, ModelOptions options, FrameFacts facts);
 
     // Starts the model and the sequence, and takes the first snapshot. Returns false if the sequence can't start.
     bool Start();
@@ -348,18 +391,19 @@ private:
     void ApplyMutes();
     void ApplyBusVolumes();
 
-    std::shared_ptr<const ntdlib::sar::SoundArchive> archive_;
-    std::shared_ptr<const ntdlib::rsar::SoundArchive> wii_archive_; // in place of archive_ on the Wii
+    Played played_;
     std::shared_ptr<const Sequence> sequence_;
     AuxEffects effects_;
     Mixing mixing_;
-    ntdlib::sar::Flavor flavor_;
+    bool dry_ = false; // without the effects of the DS's capture units or the echo of a GBA driver
     FrameMs frame_ms_; // the length of the console's frames
     std::size_t frame_samples_;
+    int sample_rate_;
     std::unique_ptr<ConsoleModel> model_;
     bool playing_ = false; // the sequence started
     bool started_ = false;
     bool failed_ = false;
+    std::string failure_;           // what stopped the model, from the frame that failed
     uint64_t frame_ = 0;            // the frames run since the model's start
     bool mixes_ = true;             // whether the next frames mix
     uint64_t mixed_from_ = 0;       // each frame from this one on has mixed

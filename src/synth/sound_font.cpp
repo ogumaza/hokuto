@@ -4,23 +4,17 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstring>
 #include <stdexcept>
 #include <string>
 
 #include "seqlib/sf2/reader.h"
+#include "xsflib/bytes.h"
 
 namespace hokuto::synth
 {
 namespace
 {
-
-// The sizes of the records of the pdta list (section 7).
-constexpr std::size_t kPresetHeaderSize = 38;
-constexpr std::size_t kBagSize = 4;
-constexpr std::size_t kModulatorSize = 10;
-constexpr std::size_t kGeneratorSize = 4;
-constexpr std::size_t kInstrumentHeaderSize = 22;
-constexpr std::size_t kSampleHeaderSize = 46;
 
 // A key or velocity range that holds every value.
 constexpr int32_t kFullRange = 0x7F00;
@@ -28,22 +22,11 @@ constexpr int32_t kFullRange = 0x7F00;
 // The sample types of ROM samples (section 7.10). The file holds none of their points.
 constexpr uint16_t kRomSample = 0x8000;
 
-uint16_t ReadU16(const uint8_t* bytes)
-{
-    return static_cast<uint16_t>(bytes[0] | bytes[1] << 8);
-}
-
-uint32_t ReadU32(const uint8_t* bytes)
-{
-    return static_cast<uint32_t>(bytes[0]) | static_cast<uint32_t>(bytes[1]) << 8 |
-           static_cast<uint32_t>(bytes[2]) << 16 | static_cast<uint32_t>(bytes[3]) << 24;
-}
-
 // Whether generator `oper` takes an unsigned amount: a range or an index.
 bool IsUnsigned(int oper)
 {
-    return oper == kInstrumentGenerator || oper == kKeyRangeGenerator || oper == kVelRangeGenerator ||
-           oper == kSampleIdGenerator;
+    return oper == seqlib::sf2::kInstrument || oper == seqlib::sf2::kKeyRange || oper == seqlib::sf2::kVelRange ||
+           oper == seqlib::sf2::kSampleId;
 }
 
 // Whether a preset's zones may set generator `oper` (section 8.1.2). The address offsets, keynum, velocity,
@@ -53,23 +36,23 @@ bool AddsAtPresetLevel(int oper)
 {
     switch (oper)
     {
-    case 0:
-    case 1:
-    case 2:
-    case 3:
-    case 4:
-    case 12:
-    case 45:
-    case 50:
-    case 46:
-    case 47:
-    case 54:
-    case 57:
-    case 58:
-    case kInstrumentGenerator:
-    case kKeyRangeGenerator:
-    case kVelRangeGenerator:
-    case kSampleIdGenerator:
+    case seqlib::sf2::kStartAddrsOffset:
+    case seqlib::sf2::kEndAddrsOffset:
+    case seqlib::sf2::kStartloopAddrsOffset:
+    case seqlib::sf2::kEndloopAddrsOffset:
+    case seqlib::sf2::kStartAddrsCoarseOffset:
+    case seqlib::sf2::kEndAddrsCoarseOffset:
+    case seqlib::sf2::kStartloopAddrsCoarseOffset:
+    case seqlib::sf2::kKeynum:
+    case seqlib::sf2::kVelocity:
+    case seqlib::sf2::kEndloopAddrsCoarseOffset:
+    case seqlib::sf2::kSampleModes:
+    case seqlib::sf2::kExclusiveClass:
+    case seqlib::sf2::kOverridingRootKey:
+    case seqlib::sf2::kInstrument:
+    case seqlib::sf2::kKeyRange:
+    case seqlib::sf2::kVelRange:
+    case seqlib::sf2::kSampleId:
         return false;
     default:
         return oper < kGeneratorCount;
@@ -84,21 +67,22 @@ void ReadZones(const seqlib::sf2::Records& records, const char* bags, const char
 {
     for (std::size_t bag = first; bag < last; bag++)
     {
-        const uint8_t* record = records.Record(bags, kBagSize, bag);
-        const uint8_t* next = records.Record(bags, kBagSize, bag + 1);
+        const uint8_t* record = records.Record(bags, seqlib::sf2::kBagSize, bag);
+        const uint8_t* next = records.Record(bags, seqlib::sf2::kBagSize, bag + 1);
 
         // The generators up to the terminal one. Those after it don't count.
         ZoneRecord zone;
-        for (std::size_t g = ReadU16(record); g < ReadU16(next); g++)
+        for (std::size_t g = xsflib::LoadLe16(record); g < xsflib::LoadLe16(next); g++)
         {
-            const uint8_t* gen = records.Record(generators, kGeneratorSize, g);
-            const int oper = ReadU16(gen);
-            const uint16_t raw = ReadU16(gen + 2);
+            const uint8_t* gen = records.Record(generators, seqlib::sf2::kGeneratorSize, g);
+            const int oper = xsflib::LoadLe16(gen);
+            const uint16_t raw = xsflib::LoadLe16(gen + 2);
             if (oper == terminal)
             {
                 zone.target = raw;
                 break;
             }
+
             if (oper < kGeneratorCount)
             {
                 zone.amounts[oper] = IsUnsigned(oper) ? raw : static_cast<int16_t>(raw);
@@ -106,11 +90,12 @@ void ReadZones(const seqlib::sf2::Records& records, const char* bags, const char
             }
         }
 
-        for (std::size_t m = ReadU16(record + 2); m < ReadU16(next + 2); m++)
+        for (std::size_t m = xsflib::LoadLe16(record + 2); m < xsflib::LoadLe16(next + 2); m++)
         {
-            const uint8_t* mod = records.Record(modulators, kModulatorSize, m);
-            zone.modulators.push_back({ReadU16(mod), ReadU16(mod + 2), static_cast<int16_t>(ReadU16(mod + 4)),
-                                       ReadU16(mod + 6), ReadU16(mod + 8)});
+            const uint8_t* mod = records.Record(modulators, seqlib::sf2::kModulatorSize, m);
+            zone.modulators.push_back({xsflib::LoadLe16(mod), xsflib::LoadLe16(mod + 2),
+                                       static_cast<int16_t>(xsflib::LoadLe16(mod + 4)), xsflib::LoadLe16(mod + 6),
+                                       xsflib::LoadLe16(mod + 8)});
         }
 
         if (zone.target >= 0)
@@ -134,7 +119,7 @@ bool InRanges(const ZoneRecord& zone, const ZoneRecord& global, int key, int vel
                                                  : kFullRange;
         return value >= (range & 0xFF) && value <= (range >> 8 & 0xFF);
     };
-    return holds(kKeyRangeGenerator, key) && holds(kVelRangeGenerator, velocity);
+    return holds(seqlib::sf2::kKeyRange, key) && holds(seqlib::sf2::kVelRange, velocity);
 }
 
 // Puts each of `zone`'s modulators in `list`, in the place of an identical one (section 9.5.1).
@@ -171,52 +156,118 @@ SoundFontData ReadData(std::span<const uint8_t> file)
         font.points.resize(bytes.size() / 2);
         for (std::size_t i = 0; i < font.points.size(); i++)
         {
-            font.points[i] = static_cast<int16_t>(ReadU16(&bytes[2 * i]));
+            font.points[i] = static_cast<int16_t>(xsflib::LoadLe16(&bytes[2 * i]));
         }
     }
 
     // The samples, without the terminal record.
-    const std::size_t samples = records.Count("shdr", kSampleHeaderSize);
+    const std::size_t samples = records.Count("shdr", seqlib::sf2::kSampleHeaderSize);
     for (std::size_t s = 0; s + 1 < samples; s++)
     {
-        const uint8_t* header = records.Record("shdr", kSampleHeaderSize, s);
+        const uint8_t* header = records.Record("shdr", seqlib::sf2::kSampleHeaderSize, s);
         SampleRecord sample;
-        sample.start = ReadU32(header + 20);
-        sample.end = ReadU32(header + 24);
-        sample.loop_start = ReadU32(header + 28);
-        sample.loop_end = ReadU32(header + 32);
-        sample.rate = ReadU32(header + 36);
+        sample.start = xsflib::LoadLe32(header + 20);
+        sample.end = xsflib::LoadLe32(header + 24);
+        sample.loop_start = xsflib::LoadLe32(header + 28);
+        sample.loop_end = xsflib::LoadLe32(header + 32);
+        sample.rate = xsflib::LoadLe32(header + 36);
         sample.original_key = header[40];
         sample.correction = static_cast<int8_t>(header[41]);
-        sample.type = ReadU16(header + 44);
+        sample.type = xsflib::LoadLe16(header + 44);
         font.samples.push_back(std::move(sample));
     }
 
-    const std::size_t instruments = records.Count("inst", kInstrumentHeaderSize);
+    const std::size_t instruments = records.Count("inst", seqlib::sf2::kInstrumentHeaderSize);
     for (std::size_t i = 0; i + 1 < instruments; i++)
     {
-        const uint8_t* header = records.Record("inst", kInstrumentHeaderSize, i);
-        const uint8_t* next = records.Record("inst", kInstrumentHeaderSize, i + 1);
+        const uint8_t* header = records.Record("inst", seqlib::sf2::kInstrumentHeaderSize, i);
+        const uint8_t* next = records.Record("inst", seqlib::sf2::kInstrumentHeaderSize, i + 1);
         InstrumentRecord instrument;
-        ReadZones(records, "ibag", "igen", "imod", ReadU16(header + 20), ReadU16(next + 20), kSampleIdGenerator,
-                  instrument.global, instrument.zones);
+        ReadZones(records, "ibag", "igen", "imod", xsflib::LoadLe16(header + 20), xsflib::LoadLe16(next + 20),
+                  seqlib::sf2::kSampleId, instrument.global, instrument.zones);
         font.instruments.push_back(std::move(instrument));
     }
 
-    const std::size_t presets = records.Count("phdr", kPresetHeaderSize);
+    const std::size_t presets = records.Count("phdr", seqlib::sf2::kPresetHeaderSize);
     for (std::size_t p = 0; p + 1 < presets; p++)
     {
-        const uint8_t* header = records.Record("phdr", kPresetHeaderSize, p);
-        const uint8_t* next = records.Record("phdr", kPresetHeaderSize, p + 1);
+        const uint8_t* header = records.Record("phdr", seqlib::sf2::kPresetHeaderSize, p);
+        const uint8_t* next = records.Record("phdr", seqlib::sf2::kPresetHeaderSize, p + 1);
         PresetRecord preset;
-        preset.program = ReadU16(header + 20);
-        preset.bank = ReadU16(header + 22);
-        ReadZones(records, "pbag", "pgen", "pmod", ReadU16(header + 24), ReadU16(next + 24), kInstrumentGenerator,
-                  preset.global, preset.zones);
+        preset.name.assign(reinterpret_cast<const char*>(header), strnlen(reinterpret_cast<const char*>(header), 20));
+        preset.program = xsflib::LoadLe16(header + 20);
+        preset.bank = xsflib::LoadLe16(header + 22);
+        ReadZones(records, "pbag", "pgen", "pmod", xsflib::LoadLe16(header + 24), xsflib::LoadLe16(next + 24),
+                  seqlib::sf2::kInstrument, preset.global, preset.zones);
         font.presets.push_back(std::move(preset));
     }
 
     return font;
+}
+
+// The instrument's local zone overrides its global zone. The global zone overrides the defaults. The
+// preset's local zone adds to the instrument's values. Where the local zone sets nothing, the preset's
+// global zone adds instead (section 9.4).
+std::array<double, kGeneratorCount> MergedGenerators(const PresetRecord& preset, const InstrumentRecord& instrument,
+                                                     const ZoneRecord& preset_zone, const ZoneRecord& zone)
+{
+    std::array<double, kGeneratorCount> generators = DefaultGenerators();
+    for (int oper = 0; oper < kGeneratorCount; oper++)
+    {
+        if (zone.set[oper])
+        {
+            generators[oper] = zone.amounts[oper];
+        }
+        else if (instrument.global.set[oper])
+        {
+            generators[oper] = instrument.global.amounts[oper];
+        }
+
+        if (AddsAtPresetLevel(oper) && preset_zone.set[oper])
+        {
+            generators[oper] += preset_zone.amounts[oper];
+        }
+        else if (AddsAtPresetLevel(oper) && preset.global.set[oper])
+        {
+            generators[oper] += preset.global.amounts[oper];
+        }
+    }
+
+    return generators;
+}
+
+// At each level, the local zone's modulators supersede identical ones of the global zone. The instrument's
+// modulators supersede identical defaults. A modulator of the preset adds its amount to an identical one.
+// Without one, the modulator joins the list (section 9.5.1).
+std::vector<ModulatorRecord> MergedModulators(const PresetRecord& preset, const InstrumentRecord& instrument,
+                                              const ZoneRecord& preset_zone, const ZoneRecord& zone)
+{
+    std::vector<ModulatorRecord> modulators;
+    const std::span<const ModulatorRecord> defaults = DefaultModulators();
+    modulators.assign(defaults.begin(), defaults.end());
+    Supersede(modulators, instrument.global.modulators);
+    Supersede(modulators, zone.modulators);
+    std::vector<ModulatorRecord> preset_modulators;
+    Supersede(preset_modulators, preset.global.modulators);
+    Supersede(preset_modulators, preset_zone.modulators);
+    for (const ModulatorRecord& modulator : preset_modulators)
+    {
+        const auto same = [&](const ModulatorRecord& other)
+        {
+            return other.IsIdentical(modulator);
+        };
+        const auto found = std::find_if(modulators.begin(), modulators.end(), same);
+        if (found != modulators.end())
+        {
+            found->amount = static_cast<int16_t>(std::clamp(found->amount + modulator.amount, -32768, 32767));
+        }
+        else
+        {
+            modulators.push_back(modulator);
+        }
+    }
+
+    return modulators;
 }
 
 } // namespace
@@ -235,7 +286,7 @@ SoundFontData ReadSoundFont(std::span<const uint8_t> file)
     }
     catch (const std::exception& e)
     {
-        throw std::runtime_error(std::string("The SoundFont can't be read: ") + e.what());
+        throw std::runtime_error(std::string("Can't read the SoundFont: ") + e.what());
     }
 }
 
@@ -258,64 +309,17 @@ std::vector<VoiceSetup> VoicesFor(const SoundFontData& font, const PresetRecord&
             {
                 continue;
             }
+
             const SampleRecord& sample = font.samples[static_cast<std::size_t>(zone.target)];
             if ((sample.type & kRomSample) != 0)
             {
                 continue;
             }
 
-            // The instrument's local zone overrides its global zone. The global zone overrides the defaults. The
-            // preset's local zone adds to the instrument's values. Where the local zone sets nothing, the preset's
-            // global zone adds instead (section 9.4).
             VoiceSetup voice;
             voice.sample = &sample;
-            voice.generators = DefaultGenerators();
-            for (int oper = 0; oper < kGeneratorCount; oper++)
-            {
-                if (zone.set[oper])
-                {
-                    voice.generators[oper] = zone.amounts[oper];
-                }
-                else if (instrument.global.set[oper])
-                {
-                    voice.generators[oper] = instrument.global.amounts[oper];
-                }
-                if (AddsAtPresetLevel(oper) && preset_zone.set[oper])
-                {
-                    voice.generators[oper] += preset_zone.amounts[oper];
-                }
-                else if (AddsAtPresetLevel(oper) && preset.global.set[oper])
-                {
-                    voice.generators[oper] += preset.global.amounts[oper];
-                }
-            }
-
-            // At each level, the local zone's modulators supersede identical ones of the global zone. The instrument's
-            // modulators supersede identical defaults. A modulator of the preset adds its amount to an identical one.
-            // Without one, the modulator joins the list (section 9.5.1).
-            const std::span<const ModulatorRecord> defaults = DefaultModulators();
-            voice.modulators.assign(defaults.begin(), defaults.end());
-            Supersede(voice.modulators, instrument.global.modulators);
-            Supersede(voice.modulators, zone.modulators);
-            std::vector<ModulatorRecord> preset_modulators;
-            Supersede(preset_modulators, preset.global.modulators);
-            Supersede(preset_modulators, preset_zone.modulators);
-            for (const ModulatorRecord& modulator : preset_modulators)
-            {
-                const auto same = [&](const ModulatorRecord& other)
-                {
-                    return other.IsIdentical(modulator);
-                };
-                const auto found = std::find_if(voice.modulators.begin(), voice.modulators.end(), same);
-                if (found != voice.modulators.end())
-                {
-                    found->amount = static_cast<int16_t>(std::clamp(found->amount + modulator.amount, -32768, 32767));
-                }
-                else
-                {
-                    voice.modulators.push_back(modulator);
-                }
-            }
+            voice.generators = MergedGenerators(preset, instrument, preset_zone, zone);
+            voice.modulators = MergedModulators(preset, instrument, preset_zone, zone);
 
             voices.push_back(std::move(voice));
         }
@@ -341,15 +345,19 @@ const std::array<double, kGeneratorCount>& DefaultGenerators()
     static const std::array<double, kGeneratorCount> kDefaults = []
     {
         std::array<double, kGeneratorCount> defaults{};
-        defaults[8] = 13500.0;
-        for (const int time : {21, 23, 25, 26, 27, 28, 30, 33, 34, 35, 36, 38})
+        namespace sf2 = seqlib::sf2;
+        defaults[sf2::kInitialFilterFc] = 13500.0;
+        for (const sf2::Gen time : {sf2::kDelayModLfo, sf2::kDelayVibLfo, sf2::kDelayModEnv, sf2::kAttackModEnv,
+                                    sf2::kHoldModEnv, sf2::kDecayModEnv, sf2::kReleaseModEnv, sf2::kDelayVolEnv,
+                                    sf2::kAttackVolEnv, sf2::kHoldVolEnv, sf2::kDecayVolEnv, sf2::kReleaseVolEnv})
         {
-            defaults[static_cast<std::size_t>(time)] = -12000.0;
+            defaults[time] = -12000.0;
         }
-        defaults[46] = -1.0;
-        defaults[47] = -1.0;
-        defaults[56] = 100.0;
-        defaults[58] = -1.0;
+
+        defaults[sf2::kKeynum] = -1.0;
+        defaults[sf2::kVelocity] = -1.0;
+        defaults[sf2::kScaleTuning] = 100.0;
+        defaults[sf2::kOverridingRootKey] = -1.0;
 
         return defaults;
     }();

@@ -6,9 +6,17 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <span>
+#include <stdexcept>
 #include <utility>
+#include <vector>
+
+#include "ntdlib/agb/rom.h"
+#include "ntdlib/mp2k/song.h"
 
 #include "audio/resampler.h"
+#include "song/gba.h"
 
 namespace hokuto::song
 {
@@ -40,23 +48,56 @@ DryRender Render(SequenceModel& model, double seconds, const std::atomic<bool>& 
     return render;
 }
 
+// A copy of `rom` whose song `sound` has no reverb. A song's header sets the reverb with bit 7 of its reverb byte, and
+// otherwise uses the reverb of the driver. The copy sets 0 there.
+std::shared_ptr<const GbaRom> WithoutReverb(const GbaRom& rom, uint32_t sound)
+{
+    auto dry = std::make_shared<GbaRom>(rom);
+    dry->info.reverb = 0;
+    ntdlib::mp2k::SongHeader header;
+    if (ntdlib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(sound), header))
+    {
+        const uint8_t* start = rom.rom.Ptr(ntdlib::agb::kRomBase);
+        std::vector<uint8_t> image(start, start + rom.rom.Size());
+        image[header.address + 3 - ntdlib::agb::kRomBase] = 0x80;
+        dry->rom.Assign(std::move(image));
+    }
+
+    return dry;
+}
+
 } // namespace
 
-// A render runs once from the start and never seeks. A snapshot would only take memory.
-DryRender RenderDry(std::shared_ptr<const ntdlib::sar::SoundArchive> archive, std::shared_ptr<const Sequence> sequence,
-                    Mixing mixing, double seconds, const std::atomic<bool>& cancel)
+// A render runs once from the start and never seeks. A snapshot would only take memory. On the Switch, the buses'
+// volumes go to 0. The buses of the Wii U and the Wii reach the output only through effects, and the render sets no
+// effects on them.
+DryRender RenderDry(const Played& played, std::shared_ptr<const Sequence> sequence, Mixing mixing, double seconds,
+                    const std::atomic<bool>& cancel)
 {
-    SequenceModel model(std::move(archive), std::move(sequence), {}, mixing, std::numeric_limits<uint32_t>::max());
-    model.SetBusVolumes({0.0f, 0.0f, 0.0f});
+    const Played dry = played.Gba() ? Played(WithoutReverb(*played.Gba(), sequence->sound)) : played;
+    SequenceModel model(
+        dry, std::move(sequence),
+        ModelOptions{.mixing = mixing, .snapshot_interval = std::numeric_limits<uint32_t>::max(), .dry = true});
+    if (played.Sar())
+    {
+        model.SetBusVolumes({0.0f, 0.0f, 0.0f});
+    }
 
     return Render(model, seconds, cancel);
 }
 
-DryRender RenderDry(std::shared_ptr<const ntdlib::rsar::SoundArchive> archive, std::shared_ptr<const Sequence> sequence,
-                    double seconds, const std::atomic<bool>& cancel)
+DrySource DryOf(const Played& played, std::shared_ptr<const Sequence> sequence, Mixing mixing)
 {
-    SequenceModel model(std::move(archive), std::move(sequence), {}, std::numeric_limits<uint32_t>::max());
-    return Render(model, seconds, cancel);
+    if (!played)
+    {
+        throw std::invalid_argument("Nothing is open to render.");
+    }
+
+    auto render = [played, sequence, mixing](double seconds, const std::atomic<bool>& cancel)
+    {
+        return RenderDry(played, sequence, mixing, seconds, cancel);
+    };
+    return {std::move(sequence), std::move(render)};
 }
 
 DryRender AtRate(const DryRender& render, int rate)

@@ -14,12 +14,15 @@
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/layout.h"
 
 #include "edit/bytecode.h"
+#include "edit/mp2k.h"
 #include "edit/timelines.h"
+#include "song/driver.h"
 
 namespace hokuto::edit
 {
@@ -39,8 +42,8 @@ const Sequence& ProgramToEdit(const format::File& file, uint32_t sequence)
     if (IsTimeline(file, sequence))
     {
         throw std::invalid_argument(
-            "A timeline's labels and subroutines come from the converter. The Program button of the inspector's "
-            "Sequence section lets the sequence take this edit.");
+            "In a timeline, the converter sets the labels and subroutines. To make this edit, click Program in "
+            "the Sequence section of the inspector.");
     }
 
     return commands;
@@ -50,9 +53,13 @@ const Sequence& ProgramToEdit(const format::File& file, uint32_t sequence)
 const Sequence& MovableProgram(const format::File& file, uint32_t sequence)
 {
     const Sequence& commands = ProgramToEdit(file, sequence);
-    if (Fixed(commands))
+    if (KeepsPlaces(file, commands))
     {
-        throw std::invalid_argument("This sequence's commands can't move. Hokuto can't change its subroutines.");
+        throw std::invalid_argument("Can't change subroutines. Commands in this sequence must keep their positions.");
+    }
+    if (const std::optional<std::string> refused = SubroutinesRefused(ConsoleOf(file)))
+    {
+        throw std::invalid_argument(*refused);
     }
 
     return commands;
@@ -71,7 +78,7 @@ uint32_t ItemOrEnd(const Sequence& commands, const song::Console& console, uint3
     const std::optional<uint32_t> item = ItemAtOffset(offsets, offset);
     if (!item)
     {
-        throw std::invalid_argument("The command isn't where the List Editor shows it.");
+        throw std::invalid_argument("The command isn't at the position that the List Editor shows.");
     }
 
     return *item;
@@ -141,6 +148,7 @@ void MoveEntries(std::vector<Command>& items, std::vector<Label>& labels, const 
             command.target = entries[command.target];
         }
     }
+
     for (Label& label : labels)
     {
         label.item = entries.at(label.item);
@@ -164,6 +172,7 @@ bool EnteredBetween(const format::File& file, uint32_t sequence, uint32_t first,
             return true;
         }
     }
+
     for (const Label& label : commands.labels)
     {
         if (inside(label.item))
@@ -171,6 +180,7 @@ bool EnteredBetween(const format::File& file, uint32_t sequence, uint32_t first,
             return true;
         }
     }
+
     bool entered = false;
     ForEachItemPlace(*file.native, sequence,
                      [&](const ntdlib::sar::Place& place) { entered = entered || inside(place.offset); });
@@ -181,12 +191,20 @@ bool EnteredBetween(const format::File& file, uint32_t sequence, uint32_t first,
 // The calls and loops that the stack of a track of `console` holds at most.
 int StackDepthOf(const song::Console& console)
 {
+    if (console.engine == format::Engine::kGba)
+    {
+        return kMp2kPatternDepth;
+    }
     if (console.wii)
     {
         return ntdlib::nwsnd::RevolutionPolicy::kCallStackDepth;
     }
+    if (console.engine == format::Engine::kDs)
+    {
+        return ntdlib::ntr::snd::kCallDepth;
+    }
 
-    switch (console.flavor)
+    switch (FlavorOf(console))
     {
     case ntdlib::sar::Flavor::kCafe:
         return ntdlib::nwsnd::CafePolicy::kCallStackDepth;
@@ -212,7 +230,7 @@ std::pair<uint32_t, uint32_t> CallAt(const Sequence& commands, const song::Conso
     const Command& command = commands.items[item];
     if (command.target_outside || command.target >= commands.items.size())
     {
-        throw std::invalid_argument("The call doesn't go to a command of the sequence.");
+        throw std::invalid_argument("The call doesn't point to a command in this sequence.");
     }
 
     return {item, command.target};
@@ -220,7 +238,7 @@ std::pair<uint32_t, uint32_t> CallAt(const Sequence& commands, const song::Conso
 
 // The return that ends the subroutine at item `first` of `commands`: the first command that the subroutine reaches
 // without a jump, an end or a return that runs only if the last comparison held. Every loop that the subroutine opens
-// closes before it. Throws with a message for the user for any other subroutine.
+// closes before it, and every repeat jumps back inside it. Throws with a message for the user for any other subroutine.
 uint32_t StraightReturn(const Sequence& commands, uint32_t first)
 {
     int loops = 0;
@@ -229,13 +247,22 @@ uint32_t StraightReturn(const Sequence& commands, uint32_t first)
         const Command& command = commands.items[item];
         switch (command.kind)
         {
+        case Kind::kRepeat:
+            if (command.target_outside || command.target < first)
+            {
+                throw std::invalid_argument(
+                    "Can't dissolve the call. The subroutine repeats commands before its first command.");
+            }
+            break;
+
         case Kind::kReturn:
             if (command.conditional || loops > 0)
             {
                 throw std::invalid_argument(
-                    "The subroutine returns only if a comparison held, or from inside a loop. Its commands can't take "
-                    "the call's place.");
+                    "Can't dissolve the call. The subroutine returns from inside a loop, or only if a comparison "
+                    "is true.");
             }
+
             return item;
 
         case Kind::kJump:
@@ -243,17 +270,18 @@ uint32_t StraightReturn(const Sequence& commands, uint32_t first)
         case Kind::kData:
         case Kind::kAllocateTracks:
             throw std::invalid_argument(
-                "The subroutine jumps, ends or holds bytes that no command reads before its "
-                "return. Its commands can't take the call's place.");
+                "Can't dissolve the call. Before its return, the subroutine jumps, ends, allocates tracks or "
+                "reaches bytes that aren't a command.");
 
         case Kind::kLoopStart:
         case Kind::kLoopEnd:
             if (command.conditional || (command.kind == Kind::kLoopEnd && loops == 0))
             {
                 throw std::invalid_argument(
-                    "The subroutine ends a loop that it doesn't open, or opens or ends a loop "
-                    "only if a comparison held. Its commands can't take the call's place.");
+                    "Can't dissolve the call. The subroutine ends a loop that it doesn't start, or starts or "
+                    "ends a loop only if a comparison is true.");
             }
+
             loops += command.kind == Kind::kLoopStart ? 1 : -1;
             break;
 
@@ -262,12 +290,12 @@ uint32_t StraightReturn(const Sequence& commands, uint32_t first)
         }
     }
 
-    throw std::invalid_argument("The subroutine runs on to the end of the sequence without a return.");
+    throw std::invalid_argument("The subroutine runs to the end of the sequence with no return.");
 }
 
 // The last item of the subroutine at item `first` of `commands`: the subroutine reaches each item from `first` to it,
-// and no other, through its jumps and loops. A call goes on to the command after it, and a return or an end stops the
-// subroutine. Throws with a message for the user for a subroutine whose commands aren't in one piece.
+// and no other, through its jumps, loops and repeats. A call goes on to the command after it, and a return or an end
+// stops the subroutine. Throws with a message for the user for a subroutine whose commands aren't in one piece.
 uint32_t LastOfSubroutine(const Sequence& commands, uint32_t first)
 {
     std::vector<bool> reached(commands.items.size(), false);
@@ -278,7 +306,7 @@ uint32_t LastOfSubroutine(const Sequence& commands, uint32_t first)
         next.pop_back();
         if (item >= commands.items.size())
         {
-            throw std::invalid_argument("The subroutine runs on to the end of the sequence without a return.");
+            throw std::invalid_argument("The subroutine runs to the end of the sequence with no return.");
         }
         if (reached[item])
         {
@@ -289,16 +317,19 @@ uint32_t LastOfSubroutine(const Sequence& commands, uint32_t first)
         const Command& command = commands.items[item];
         if (command.kind == Kind::kData)
         {
-            throw std::invalid_argument("The subroutine reaches bytes that no command reads. Hokuto can't copy it.");
+            throw std::invalid_argument("Can't copy the subroutine. It reaches bytes that aren't a command.");
         }
-        if (command.kind == Kind::kJump)
+
+        if (command.kind == Kind::kJump || command.kind == Kind::kRepeat)
         {
             if (command.target_outside)
             {
-                throw std::invalid_argument("The subroutine jumps to a byte offset. Hokuto can't copy it.");
+                throw std::invalid_argument("Can't copy the subroutine. It jumps to a byte offset.");
             }
+
             next.push_back(command.target);
         }
+
         if (RunsOn(command))
         {
             next.push_back(item + 1);
@@ -309,13 +340,28 @@ uint32_t LastOfSubroutine(const Sequence& commands, uint32_t first)
     if (!std::all_of(reached.begin() + first, reached.begin() + last + 1, [](bool item) { return item; }) ||
         std::any_of(reached.begin(), reached.begin() + first, [](bool item) { return item; }))
     {
-        throw std::invalid_argument("The subroutine's commands aren't in one piece. Hokuto can't copy it.");
+        throw std::invalid_argument("Can't copy the subroutine. Its commands aren't in one continuous block.");
     }
 
     return last;
 }
 
 } // namespace
+
+std::optional<std::string> SubroutinesRefused(const song::Console& console)
+{
+    if (console.driver != nullptr)
+    {
+        return "Hokuto doesn't support editing calls or subroutines in songs of " +
+               std::string(console.driver->Title()) + ".";
+    }
+    if (console.engine == format::Engine::kDse)
+    {
+        return "DSE tracks have no calls or subroutines.";
+    }
+
+    return std::nullopt;
+}
 
 std::optional<std::string> LabelRefusal(const Sequence& commands, std::string_view name)
 {
@@ -329,15 +375,17 @@ std::optional<std::string> LabelRefusal(const Sequence& commands, std::string_vi
     };
     if (name.empty() || !letter(name.front()) || !std::all_of(name.begin(), name.end(), letter_or_digit))
     {
-        return "A label's name starts with a letter or an underscore, and holds only letters, digits and underscores.";
+        return "A label name must start with a letter or an underscore, and contain only letters, digits and "
+               "underscores.";
     }
+
     const auto same = [name](const Label& label)
     {
         return label.name == name;
     };
     if (std::any_of(commands.labels.begin(), commands.labels.end(), same))
     {
-        return "The sequence has a label named " + std::string(name) + " already.";
+        return "The sequence already has a label named " + std::string(name) + ".";
     }
 
     return std::nullopt;
@@ -363,6 +411,7 @@ Edited RenameLabel(const format::File& file, uint32_t sequence, const std::strin
     {
         return WithSequence(file, sequence, commands, SameItems(commands));
     }
+
     CheckName(commands, new_name);
 
     // The label takes its place among the others by its new name.
@@ -407,6 +456,7 @@ Edited MoveLabel(const format::File& file, uint32_t sequence, const std::string&
             item.target = to;
         }
     }
+
     Edited edited = WithSequence(file, sequence, std::move(result), SameItems(commands));
     if (from < commands.items.size())
     {
@@ -452,39 +502,14 @@ std::vector<uint32_t> CallsTo(const Sequence& commands, uint32_t item)
     return calls;
 }
 
-Edited ToSubroutine(const format::File& file, uint32_t sequence, std::span<const uint32_t> selected, int depth,
-                    const std::string& name)
+namespace
 {
-    const Sequence& commands = MovableProgram(file, sequence);
-    const song::Console console = ConsoleOf(file);
-    CheckName(commands, name);
-    if (selected.empty())
-    {
-        throw std::invalid_argument("Select the commands that become the subroutine.");
-    }
 
-    // The commands follow each other in the bytecode.
-    const std::vector<uint32_t> offsets = Offsets(commands, console);
-    std::vector<uint32_t> chosen;
-    for (const uint32_t offset : selected)
-    {
-        const std::optional<uint32_t> item = ItemAtOffset(offsets, offset);
-        if (!item)
-        {
-            throw std::invalid_argument("The command isn't where the List Editor shows it.");
-        }
-        chosen.push_back(*item);
-    }
-    std::sort(chosen.begin(), chosen.end());
-    chosen.erase(std::unique(chosen.begin(), chosen.end()), chosen.end());
-    const uint32_t first = chosen.front();
-    const uint32_t last = chosen.back();
-    if (last - first + 1 != chosen.size())
-    {
-        throw std::invalid_argument("The commands of a subroutine have to follow each other in the sequence.");
-    }
-
-    // Nothing but the call leads into the commands, and they run on to the command after them.
+// Throws std::invalid_argument with a message for the user when items `first` to `last` of `commands`, sequence
+// `sequence` of `file`, can't become a subroutine that runs at call depth `depth` + 1 on `console` (ToSubroutine).
+void CheckSelection(const format::File& file, uint32_t sequence, const Sequence& commands, const song::Console& console,
+                    uint32_t first, uint32_t last, int depth)
+{
     int loops = 0;
     for (uint32_t item = first; item <= last; item++)
     {
@@ -497,18 +522,28 @@ Edited ToSubroutine(const format::File& file, uint32_t sequence, std::span<const
         case Kind::kAllocateTracks:
         case Kind::kData:
             throw std::invalid_argument(
-                "A subroutine can't hold a jump, a return, an end, an allocation of tracks or "
-                "bytes that no command reads.");
+                "A subroutine can't contain a jump, a return, an end, a track allocation or "
+                "bytes that aren't a command.");
 
         case Kind::kLoopStart:
         case Kind::kLoopEnd:
             if (command.conditional || (command.kind == Kind::kLoopEnd && loops == 0))
             {
                 throw std::invalid_argument(
-                    "A subroutine has to hold the start and the end of each of its loops, and "
-                    "neither can run only if a comparison held.");
+                    "A subroutine must contain both the start and the end of each loop, and "
+                    "neither can depend on a comparison.");
             }
+
             loops += command.kind == Kind::kLoopStart ? 1 : -1;
+            break;
+
+        case Kind::kRepeat:
+            if (command.target_outside || command.target < first)
+            {
+                throw std::invalid_argument(
+                    "A subroutine must contain the commands that each of its repeats jumps back "
+                    "to.");
+            }
             break;
 
         default:
@@ -518,20 +553,74 @@ Edited ToSubroutine(const format::File& file, uint32_t sequence, std::span<const
     if (loops != 0)
     {
         throw std::invalid_argument(
-            "A subroutine has to hold the start and the end of each of its loops, and neither "
-            "can run only if a comparison held.");
+            "A subroutine must contain both the start and the end of each loop, and neither "
+            "can depend on a comparison.");
     }
     if (last > first && EnteredBetween(file, sequence, first + 1, last))
     {
         throw std::invalid_argument(
-            "A jump, a call, a track start, a label or a sound's start goes into the middle of "
-            "these commands. Only their first command can take the call's place.");
+            "A jump, call, track start, label or sound start points into the middle of these "
+            "commands. Only the first of them can be a target.");
     }
     if (depth + 1 > StackDepthOf(console))
     {
-        throw std::invalid_argument("The call would take the track's stack of calls and loops past the " +
-                                    std::to_string(StackDepthOf(console)) + " that the console holds.");
+        throw std::invalid_argument("The call would nest calls and loops deeper than the console allows (" +
+                                    std::to_string(StackDepthOf(console)) + " levels).");
     }
+}
+
+// Points each command of items `first` to `last` of `commands` whose target is `first` at `start` in `result`, where
+// those commands start at `start` (ToSubroutine).
+void RetargetFirst(const Sequence& commands, uint32_t first, uint32_t last, uint32_t start, Sequence& result)
+{
+    for (uint32_t item = first; item <= last; item++)
+    {
+        const Command& command = commands.items[item];
+        if (ntdlib::commands::HasTarget(command.kind) && !command.target_outside && command.target == first)
+        {
+            result.items[start + (item - first)].target = start;
+        }
+    }
+}
+
+} // namespace
+
+Edited ToSubroutine(const format::File& file, uint32_t sequence, std::span<const uint32_t> selected, int depth,
+                    const std::string& name)
+{
+    const Sequence& commands = MovableProgram(file, sequence);
+    const song::Console console = ConsoleOf(file);
+    CheckName(commands, name);
+    if (selected.empty())
+    {
+        throw std::invalid_argument("Select the commands for the new subroutine.");
+    }
+
+    // The commands follow each other in the bytecode.
+    const std::vector<uint32_t> offsets = Offsets(commands, console);
+    std::vector<uint32_t> chosen;
+    for (const uint32_t offset : selected)
+    {
+        const std::optional<uint32_t> item = ItemAtOffset(offsets, offset);
+        if (!item)
+        {
+            throw std::invalid_argument("The command isn't at the position that the List Editor shows.");
+        }
+
+        chosen.push_back(*item);
+    }
+
+    std::sort(chosen.begin(), chosen.end());
+    chosen.erase(std::unique(chosen.begin(), chosen.end()), chosen.end());
+    const uint32_t first = chosen.front();
+    const uint32_t last = chosen.back();
+    if (last - first + 1 != chosen.size())
+    {
+        throw std::invalid_argument("The commands of a subroutine must be consecutive in the sequence.");
+    }
+
+    // Nothing but the call leads into the commands, and they run on to the command after them.
+    CheckSelection(file, sequence, commands, console, first, last, depth);
 
     // The call takes the place of the commands. They go after the sequence's commands, with a return after them. Code
     // that entered at the first command enters at the call.
@@ -546,6 +635,7 @@ Edited ToSubroutine(const format::File& file, uint32_t sequence, std::span<const
         items[item] = item < first ? item : inside ? start + (item - first) : item - count + 1;
         entries[item] = item == first ? first : *items[item];
     }
+
     entries[size] = size + 2;
 
     Sequence result;
@@ -564,8 +654,13 @@ Edited ToSubroutine(const format::File& file, uint32_t sequence, std::span<const
     result.items[first].target = start;
     PutLabel(result.labels, Label{name, start});
 
+    // Any of the commands with a target, such as a repeat or a jump, that jumps back to the first of them then jumps
+    // back to the first command of the subroutine. The call would start the subroutine again, a level deeper.
+    RetargetFirst(commands, first, last, start, result);
+
     Edited edited = WithSequence(file, sequence, std::move(result), std::move(items), {first});
     MoveItemPlaces(edited.file, sequence, [&entries](uint32_t item) { return entries.at(item); });
+    edited = Writable(file, std::move(edited), sequence);
     Offsets(*edited.file.sequences[sequence], console);
 
     return edited;
@@ -578,10 +673,9 @@ Edited DissolveCall(const format::File& file, uint32_t sequence, uint32_t call)
     const auto [at, first] = CallAt(commands, console, call);
     if (commands.items[at].conditional)
     {
-        throw std::invalid_argument(
-            "The call runs only if the last comparison held. Its subroutine's commands can't "
-            "take its place.");
+        throw std::invalid_argument("Can't dissolve the call. It runs only if the last comparison is true.");
     }
+
     const uint32_t end = StraightReturn(commands, first);
     if (at >= first && at <= end)
     {
@@ -608,6 +702,17 @@ Edited DissolveCall(const format::File& file, uint32_t sequence, uint32_t call)
     result.items.insert(result.items.end(), commands.items.begin() + at + 1, commands.items.end());
     result.labels = commands.labels;
     MoveEntries(result.items, result.labels, entries);
+
+    // A repeat of the copy jumps back to the commands of the copy.
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const Command& command = commands.items[first + i];
+        if (command.kind == Kind::kRepeat)
+        {
+            result.items[at + i].target = at + (command.target - first);
+        }
+    }
+
     std::vector<uint32_t> added;
     for (uint32_t i = 0; i < count; i++)
     {
@@ -616,6 +721,7 @@ Edited DissolveCall(const format::File& file, uint32_t sequence, uint32_t call)
 
     Edited edited = WithSequence(file, sequence, std::move(result), std::move(items), std::move(added));
     MoveItemPlaces(edited.file, sequence, [&entries](uint32_t item) { return entries.at(item); });
+    edited = Writable(file, std::move(edited), sequence);
     Offsets(*edited.file.sequences[sequence], console);
 
     return edited;
@@ -645,10 +751,12 @@ Edited CopySubroutine(const format::File& file, uint32_t sequence, uint32_t call
             command.target = entered(command.target);
         }
     }
+
     for (Label& label : result.labels)
     {
         label.item = entered(label.item);
     }
+
     for (uint32_t item = first; item <= last; item++)
     {
         Command copy = commands.items[item];
@@ -657,8 +765,10 @@ Edited CopySubroutine(const format::File& file, uint32_t sequence, uint32_t call
             const bool inside = copy.target >= first && copy.target <= last;
             copy.target = inside ? size + (copy.target - first) : entered(copy.target);
         }
+
         result.items.push_back(std::move(copy));
     }
+
     result.items[at].target = size;
 
     // Each label of the subroutine names its command's copy too, with a number after the name.
@@ -681,8 +791,10 @@ Edited CopySubroutine(const format::File& file, uint32_t sequence, uint32_t call
     {
         added.push_back(size + i);
     }
+
     Edited edited = WithSequence(file, sequence, std::move(result), SameItems(commands), std::move(added));
     MoveItemPlaces(edited.file, sequence, [size, count](uint32_t item) { return item == size ? size + count : item; });
+    edited = Writable(file, std::move(edited), sequence);
     Offsets(*edited.file.sequences[sequence], console);
 
     return edited;

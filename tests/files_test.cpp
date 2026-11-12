@@ -12,197 +12,50 @@
 // exported archive. Small archives of the Wii take files of the Wii in the place of their banks, wave data and waves.
 // Files of the 3DS, the Wii U and the Switch go into them converted.
 
-#include "edit/files.h"
+#include <numbers>
 
-#include <algorithm>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <map>
-#include <memory>
-#include <optional>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
+#include "ntdlib/sar/groups.h"
 
-#include "ntdlib/rsar/archive_model.h"
-#include "ntdlib/rsar/bank_file.h"
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/rsar/layout.h"
-#include "ntdlib/rsar/sequence_file.h"
-#include "ntdlib/rsar/wave_file.h"
-#include "ntdlib/rsar/wsd_file.h"
-#include "ntdlib/rvl/snd/rsar_options.h"
-#include "ntdlib/sar/decode.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sar/layout.h"
-#include "ntdlib/sar/wave_file.h"
-#include "ntdlib/testing/rsar_files.h"
-#include "ntdlib/testing/rsar_tools.h"
-#include "ntdlib/testing/sar_files.h"
-#include "ntdlib/wave/adpcm.h"
-#include "seqlib/pcm.h"
-#include "seqlib/wav.h"
-#include "xsflib/binary.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
-
-#include "edit/waves.h"
-#include "format/archive.h"
-#include "format/file.h"
-#include "song/archive.h"
-#include "song/items.h"
-#include "song/preview.h"
-
-using hokuto::edit::FileChanges;
-using hokuto::edit::FileKind;
-using hokuto::edit::IncomingFile;
-using hokuto::edit::IncomingWave;
-using hokuto::edit::LackedWaves;
-using hokuto::edit::ProgramFix;
-using hokuto::edit::WaveChanges;
-using hokuto::format::File;
-using hokuto::song::FileVersions;
+#include "files_fixtures.h"
 
 namespace
 {
-
-namespace sar = ntdlib::sar;
-namespace sar_files = ntdlib::testing::sar_files;
-
-// The archive's files, sounds, banks and wave archives.
-constexpr uint32_t kSequenceFile = 0;
-constexpr uint32_t kBankFile = 1;
-constexpr uint32_t kFirstWavesFile = 2;
-constexpr uint32_t kSecondWavesFile = 3;
-constexpr uint32_t kWaveSoundsFile = 4;
-constexpr uint32_t kOutsideFile = 5;
-constexpr uint32_t kGroupFile = 6;
-constexpr uint32_t kSong = 0;
-constexpr uint32_t kFirstWaveSound = 1;
-constexpr uint32_t kSecondWaveSound = 2;
-constexpr uint32_t kBank = 0;
-constexpr uint32_t kFirstWaves = 0;
-constexpr uint32_t kSecondWaves = 1;
-
-// The item IDs of the wave archives, and of one that the archive lacks.
-constexpr uint32_t kFirstWavesId = 0x05000000;
-constexpr uint32_t kSecondWavesId = 0x05000001;
-constexpr uint32_t kLackedWavesId = 0x05000002;
-
-// A short wave of the console's PCM16 samples.
-std::vector<uint8_t> Wave(sar::Flavor flavor, uint8_t value)
-{
-    sar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.loop_end = 4;
-    wave.channels = {{value, value, value, value, value, value, value, value}};
-
-    return sar_files::Wave(flavor, wave);
-}
-
-// An instrument whose one region plays wave `wave` of its bank.
-sar_files::KeyTable Instrument(uint32_t wave)
-{
-    sar_files::Region region;
-    region.wave = wave;
-    const sar_files::VelocityTable velocities{sar_files::VelocityTable::kDirect, 0, {{0, region}}};
-    return sar_files::KeyTable{sar_files::KeyTable::kDirect, 0, {{0, velocities}}};
-}
-
-// A bank that names `waves` and has an instrument at each of `programs`. The instruments play the bank's waves in turn.
-std::vector<uint8_t> Bank(sar::Flavor flavor, const std::vector<std::pair<uint32_t, uint32_t>>& waves,
-                          const std::vector<uint32_t>& programs)
-{
-    sar_files::BankSpec bank;
-    bank.waves = waves;
-    for (std::size_t i = 0; i < programs.size(); i++)
-    {
-        bank.instruments.resize(std::max<std::size_t>(bank.instruments.size(), programs[i] + 1));
-        bank.instruments[programs[i]] = Instrument(static_cast<uint32_t>(i % waves.size()));
-    }
-
-    return sar_files::Bank(flavor, bank);
-}
-
-// A wave sound file that names `waves`, with a wave sound for each of `plays`: the wave that its one note plays.
-std::vector<uint8_t> WaveSounds(sar::Flavor flavor, const std::vector<std::pair<uint32_t, uint32_t>>& waves,
-                                const std::vector<uint32_t>& plays)
-{
-    sar_files::WaveSoundFileSpec file;
-    file.waves = waves;
-    for (const uint32_t wave : plays)
-    {
-        sar_files::WaveSoundSpec sound;
-        sound.tracks = {{{0.0f, 0.0f, 0}}};
-        sar_files::Region note;
-        note.wave = wave;
-        sound.notes = {note};
-        file.sounds.push_back(sound);
-    }
-
-    return sar_files::WaveSoundFile(flavor, file);
-}
-
-// The song's bytecode: program 0 of the bank in slot 0, and a note.
-const std::vector<uint8_t> kSongBytecode = {0xB0, 48, 0x81, 0, 60, 100, 24, 0xFF};
-
-// The test archive. The song plays `song_bytecode` with the banks of `song_banks` in its slots. With `placed`, the
-// group's copy of the bank names the bank's waves at other places: the first wave archive's second wave, and the second
-// wave archive's wave. The group then also holds a copy of the wave sound file that names the file's two waves in each
-// other's places.
-std::vector<uint8_t> TestArchive(sar::Flavor flavor, const std::vector<uint8_t>& song_bytecode = kSongBytecode,
-                                 const std::vector<uint32_t>& song_banks = {0}, bool placed = false)
-{
-    sar_files::SoundSpec song;
-    song.name = "SEQ_SONG";
-    song.banks = song_banks;
-    sar_files::SoundSpec first;
-    first.name = "WSD_FIRST";
-    first.kind = sar_files::SoundSpec::kWaveSound;
-    first.file = kWaveSoundsFile;
-    sar_files::SoundSpec second = first;
-    second.name = "WSD_SECOND";
-    second.wave_sound_index = 1;
-
-    sar_files::ArchiveSpec spec;
-    spec.sounds = {song, first, second};
-    spec.banks = {{"BANK_TEST", kBankFile}, {"BANK_TWIN", kBankFile}};
-    spec.wave_archives = {{"WARC_FIRST", kFirstWavesFile}, {"WARC_SECOND", kSecondWavesFile}};
-    spec.players = {{"PLAYER_TEST", 1}};
-    spec.groups = {{"GROUP_TEST", kGroupFile}};
-    const std::vector<uint8_t> waves = sar_files::WaveArchive(flavor, {Wave(flavor, 1), Wave(flavor, 2)});
-    const std::vector<uint8_t> group_bank = placed ? Bank(flavor, {{kFirstWavesId, 1}, {kSecondWavesId, 0}}, {0, 2})
-                                                   : Bank(flavor, {{kSecondWavesId, 0}}, {0, 2});
-    std::vector<std::pair<uint32_t, std::vector<uint8_t>>> group = {{kBankFile, group_bank}, {kFirstWavesFile, waves}};
-    if (placed)
-    {
-        group.emplace_back(kWaveSoundsFile, WaveSounds(flavor, {{kSecondWavesId, 0}, {kFirstWavesId, 1}}, {0, 1}));
-    }
-    spec.files = {{.bytes = sar_files::Sequence(flavor, song_bytecode, {{"Song", 0}})},
-                  {.bytes = Bank(flavor, {{kFirstWavesId, 0}, {kFirstWavesId, 1}}, {0, 2})},
-                  {.bytes = waves},
-                  {.bytes = sar_files::WaveArchive(flavor, {Wave(flavor, 3)})},
-                  {.bytes = WaveSounds(flavor, {{kFirstWavesId, 1}, {kSecondWavesId, 0}}, {0, 1})},
-                  {.external = "stream.bfstm"},
-                  {.bytes = sar_files::Group(flavor, group)}};
-
-    return sar_files::Archive(flavor, spec);
-}
-
-// The archive `bytes`. The program opens an archive the same way.
-std::shared_ptr<const sar::SoundArchive> Read(std::vector<uint8_t> bytes)
-{
-    return hokuto::song::LoadArchive(std::move(bytes), "test.bfsar");
-}
 
 // The bytes of file `id` of `archive`.
 std::vector<uint8_t> FileOf(const sar::SoundArchive& archive, uint32_t id)
 {
     const std::span<const uint8_t> data = archive.FileData(id);
     return {data.begin(), data.end()};
+}
+
+// The copies of file `id` in `file`'s exported archive of `flavor`, read from the archive's bytes: the copy that the
+// file table names, then each copy that a group file in the archive contains, in the order of the group table. ntdlib
+// reads the group table under its strict rules only.
+std::vector<std::vector<uint8_t>> CopiesInExport(const File& file, sar::Flavor flavor, uint32_t id)
+{
+    const sar::SoundArchive archive = sar::SoundArchive::Load(
+        hokuto::format::ExportArchive(file), {.flavor = flavor, .rules = sar::Rules::kStopAtFirstProblem});
+    std::vector<std::vector<uint8_t>> copies;
+    if (!archive.FileData(id).empty())
+    {
+        copies.push_back(FileOf(archive, id));
+    }
+    for (const sar::GroupInfo& group : archive.Groups())
+    {
+        if (group.file_id == sar::kExternalGroupFile)
+        {
+            continue;
+        }
+        for (const sar::GroupMember& member : sar::ReadGroupFile(archive.FileData(group.file_id), flavor).files)
+        {
+            if (member.file == id && member.copy)
+            {
+                copies.push_back(*member.copy);
+            }
+        }
+    }
+
+    return copies;
 }
 
 // The test archive with other versions in the second wave archive's file and in its wave: 1.0.1 and 1.1.1.
@@ -223,7 +76,7 @@ std::vector<uint8_t> NewerSecondWaves(sar::Flavor flavor)
 // A sine of `frequency` cycles a sample, `count` samples long, at `amplitude`.
 std::vector<int16_t> Sine(double frequency, double amplitude, std::size_t count)
 {
-    constexpr double kPi = 3.14159265358979323846;
+    constexpr double kPi = std::numbers::pi;
     std::vector<int16_t> samples(count);
     for (std::size_t i = 0; i < count; i++)
     {
@@ -261,22 +114,6 @@ double SignalToNoise(std::span<const int16_t> input, std::span<const int16_t> de
     }
 
     return noise == 0.0 ? 200.0 : 10.0 * std::log10(signal / noise);
-}
-
-// The message of the std::invalid_argument that `call` throws, or nothing when it throws none.
-template <class Call>
-std::string RefusalOf(const Call& call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return "";
 }
 
 // The other console of the two: the Wii U for the Switch, and the Switch for the Wii U.
@@ -348,7 +185,7 @@ void TestRead(sar::Flavor flavor)
 
     const auto refusal = [&](const std::vector<uint8_t>& bytes, FileKind kind, sar::Flavor console)
     {
-        return RefusalOf([&] { hokuto::edit::ReadIncomingFile(bytes, kind, console); });
+        return ErrorOf<std::invalid_argument>([&] { hokuto::edit::ReadIncomingFile(bytes, kind, console); });
     };
 
     XSFLIB_CHECK(read.kind == FileKind::kBank && read.bytes == bank && read.version == r.U32(0x08));
@@ -360,15 +197,15 @@ void TestRead(sar::Flavor flavor)
                  "It's a wave archive file of the " + console + ", not a bank file.");
     XSFLIB_CHECK(refusal(unknown, FileKind::kBank, flavor) == "It isn't a bank file.");
     XSFLIB_CHECK(refusal(shorter, FileKind::kBank, flavor) ==
-                 "Its header gives a size of " + std::to_string(bank.size()) + " bytes. The file holds " +
+                 "Its header gives a size of " + std::to_string(bank.size()) + " bytes, but the file has " +
                      std::to_string(shorter.size()) + " bytes.");
     XSFLIB_CHECK(refusal(tiny, FileKind::kBank, flavor) ==
-                 "Its header gives a size of 8 bytes. The file holds " + std::to_string(bank.size()) + " bytes.");
-    XSFLIB_CHECK(refusal(damage(bank), FileKind::kBank, flavor).starts_with("Hokuto can't read it. "));
-    XSFLIB_CHECK(refusal(waves, FileKind::kWaveArchive, flavor).starts_with("Hokuto can't read it. "));
+                 "Its header gives a size of 8 bytes, but the file has " + std::to_string(bank.size()) + " bytes.");
+    XSFLIB_CHECK(refusal(damage(bank), FileKind::kBank, flavor).starts_with("Can't read the file. "));
+    XSFLIB_CHECK(refusal(waves, FileKind::kWaveArchive, flavor).starts_with("Can't read the file. "));
     XSFLIB_CHECK(refusal(WaveSounds(flavor, {}, {}), FileKind::kWaveSoundFile, flavor).empty());
     XSFLIB_CHECK(refusal(damage(WaveSounds(flavor, {{kFirstWavesId, 0}}, {0})), FileKind::kWaveSoundFile, flavor)
-                     .starts_with("Hokuto can't read it. "));
+                     .starts_with("Can't read the file. "));
 }
 
 // A bank, a wave sound file and a wave archive of the other console go in converted for the archive's console. The bank
@@ -401,15 +238,16 @@ void TestConversion(sar::Flavor flavor)
     std::vector<uint8_t> big_ctr = ctr;
     big_ctr[4] = 0xFE;
     big_ctr[5] = 0xFF;
-    const std::string refusal =
-        RefusalOf([&] { hokuto::edit::ReadIncomingFile(big_ctr, FileKind::kBank, flavor, FileVersions{}); });
+    const std::string refusal = ErrorOf<std::invalid_argument>(
+        [&] { hokuto::edit::ReadIncomingFile(big_ctr, FileKind::kBank, flavor, FileVersions{}); });
     const IncomingFile newer =
         hokuto::edit::ReadIncomingFile(bank, FileKind::kBank, flavor, FileVersions{0x00010001, 0});
     std::vector<uint8_t> damaged = bank;
     const xsflib::Reader other_reader(bank, other == sar::Flavor::kCafe);
     (other == sar::Flavor::kCafe ? xsflib::StoreBe32 : xsflib::StoreLe32)(&damaged[other_reader.U32(0x18) + 8 + 4],
                                                                           0x00FFFFF0);
-    const std::string unreadable = RefusalOf([&] { hokuto::edit::ReadIncomingFile(damaged, FileKind::kBank, flavor); });
+    const std::string unreadable =
+        ErrorOf<std::invalid_argument>([&] { hokuto::edit::ReadIncomingFile(damaged, FileKind::kBank, flavor); });
 
     XSFLIB_CHECK(read_bank.bytes == Bank(flavor, {{kFirstWavesId, 0}}, {0, 2}) && read_bank.version == 0x00010000);
     XSFLIB_CHECK(read_bank.converted && read_bank.converted->flavor == other &&
@@ -433,7 +271,7 @@ void TestConversion(sar::Flavor flavor)
     XSFLIB_CHECK(refusal == "It isn't a bank file.");
     XSFLIB_CHECK(newer.version == 0x00010001 &&
                  xsflib::Reader(newer.bytes, flavor == sar::Flavor::kCafe).U32(0x08) == 0x00010001);
-    XSFLIB_CHECK(unreadable.starts_with("Hokuto can't read it. "));
+    XSFLIB_CHECK(unreadable.starts_with("Can't read the file. "));
 }
 
 // A file of the archive's console with a later version than the given versions goes in with them. A bank file and a
@@ -529,7 +367,7 @@ void TestChanges(sar::Flavor flavor)
 
     const auto refusal = [&](FileKind kind, uint32_t item)
     {
-        return RefusalOf([&] { hokuto::edit::FileIdOf(*archive, kind, item); });
+        return ErrorOf<std::invalid_argument>([&] { hokuto::edit::FileIdOf(*archive, kind, item); });
     };
 
     // The new bank lacks program 2, two waves of the first wave archive, one of them named twice, and a third wave
@@ -579,10 +417,10 @@ void TestChanges(sar::Flavor flavor)
         XSFLIB_CHECK(sounds.lacked[0].wave_archive == 1 && sounds.lacked[0].count == 1);
         XSFLIB_CHECK(sounds.lacked[0].waves == std::vector<uint32_t>{3});
     }
-    XSFLIB_CHECK(refusal(FileKind::kBank, 2) == "The archive has no bank there.");
-    XSFLIB_CHECK(refusal(FileKind::kWaveArchive, 2) == "The archive has no wave archive there.");
-    XSFLIB_CHECK(refusal(FileKind::kWaveSoundFile, kSong) == "The archive has no wave sound file there.");
-    XSFLIB_CHECK(refusal(FileKind::kWaveSoundFile, 3) == "The archive has no wave sound file there.");
+    XSFLIB_CHECK(refusal(FileKind::kBank, 2) == "The archive has no such bank.");
+    XSFLIB_CHECK(refusal(FileKind::kWaveArchive, 2) == "The archive has no such wave archive.");
+    XSFLIB_CHECK(refusal(FileKind::kWaveSoundFile, kSong) == "The archive has no such wave sound file.");
+    XSFLIB_CHECK(refusal(FileKind::kWaveSoundFile, 3) == "The archive has no such wave sound file.");
 }
 
 // The sounds that play each item, for the Replace window's Play: the song plays the bank in its slot, and with it the
@@ -638,7 +476,7 @@ void TestProgramFixes(sar::Flavor flavor)
 
     const auto refusal = [&](std::vector<ProgramFix> fixes)
     {
-        return RefusalOf([&] { hokuto::edit::WithProgramFixes(*archive, kBank, next, fixes); });
+        return ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithProgramFixes(*archive, kBank, next, fixes); });
     };
 
     const hokuto::edit::BankSelections selections = hokuto::edit::ProgramsOfBank(file, *archive, places, kBank);
@@ -663,10 +501,10 @@ void TestProgramFixes(sar::Flavor flavor)
         XSFLIB_CHECK(!bank.instruments[2]);
     }
     XSFLIB_CHECK(FileOf(*after, kBankFile) == both);
-    XSFLIB_CHECK(refusal({{1, std::nullopt}}).starts_with("Hokuto can't copy the instruments into the new bank."));
-    XSFLIB_CHECK(refusal({{0, 3}, {0, std::nullopt}}).starts_with("Hokuto can't copy the instruments"));
-    XSFLIB_CHECK(refusal({{0, 2}}).starts_with("Hokuto can't copy the instruments"));
-    XSFLIB_CHECK(refusal({{1, 1}}).starts_with("Hokuto can't copy the instruments"));
+    XSFLIB_CHECK(refusal({{1, std::nullopt}}).starts_with("Can't copy the instruments into the new bank."));
+    XSFLIB_CHECK(refusal({{0, 3}, {0, std::nullopt}}).starts_with("Can't copy the instruments"));
+    XSFLIB_CHECK(refusal({{0, 2}}).starts_with("Can't copy the instruments"));
+    XSFLIB_CHECK(refusal({{1, 1}}).starts_with("Can't copy the instruments"));
 }
 
 // A longer bank and a shorter wave archive go in, in each copy, and the archive's other files keep their bytes. The
@@ -698,36 +536,34 @@ void TestReplace(sar::Flavor flavor)
 
     const auto refusal = [&](const File& from, uint32_t id)
     {
-        return RefusalOf([&] { hokuto::edit::ReplaceFile(from, id, bank); });
+        return ErrorOf<std::invalid_argument>([&] { hokuto::edit::ReplaceFile(from, id, bank); });
     };
 
     const auto copies = [&](uint32_t id)
     {
-        const hokuto::format::NativeArchive& native = *new_waves.native;
-        return sar::FileCopies(flavor, hokuto::format::CopySequences(new_waves), *native.pieces, native.fields, id);
+        return CopiesInExport(new_waves, flavor, id);
     };
 
     XSFLIB_CHECK(FileOf(*after, kBankFile) == bank && FileOf(*after, kFirstWavesFile) == waves);
     XSFLIB_CHECK(copies(kBankFile).size() == 2 && copies(kFirstWavesFile).size() == 2);
-    for (const sar::FileCopy& copy : copies(kBankFile))
+    for (const std::vector<uint8_t>& copy : copies(kBankFile))
     {
-        XSFLIB_CHECK(copy.bytes == bank);
+        XSFLIB_CHECK(copy == bank);
     }
-    for (const sar::FileCopy& copy : copies(kFirstWavesFile))
+    for (const std::vector<uint8_t>& copy : copies(kFirstWavesFile))
     {
-        XSFLIB_CHECK(copy.bytes == waves);
+        XSFLIB_CHECK(copy == waves);
     }
     for (const uint32_t id : {kSequenceFile, kSecondWavesFile, kWaveSoundsFile})
     {
         XSFLIB_CHECK(FileOf(*after, id) == FileOf(*before, id));
     }
     XSFLIB_CHECK(hokuto::format::ExportArchive(file) == original && *file.native->pieces != *new_bank.native->pieces);
-    XSFLIB_CHECK(refusal(without, kBankFile) == "The file holds no archive of a game.");
-    XSFLIB_CHECK(refusal(one_run, kBankFile).starts_with("The old file lies among the archive's other bytes."));
+    XSFLIB_CHECK(refusal(without, kBankFile) == "The file contains no game archive.");
+    XSFLIB_CHECK(refusal(one_run, kBankFile).starts_with("The old file is mixed in with other data in the archive."));
     XSFLIB_CHECK(refusal(shared, kFirstWavesFile) ==
-                 "Another file of the archive holds the same bytes. That file would change too.");
-    XSFLIB_CHECK(refusal(file, kOutsideFile) ==
-                 "The old file lies outside the archive. Hokuto can't replace it there.");
+                 "Another file in the archive shares the same bytes. That file would change too.");
+    XSFLIB_CHECK(refusal(file, kOutsideFile) == "The old file is outside the archive. Can't replace it there.");
 }
 
 // The group's copies of the bank and the wave sound file name their files' waves at other places. A new bank and a new
@@ -752,15 +588,7 @@ void TestCopyPlaces(sar::Flavor flavor)
     const File new_sounds = hokuto::edit::ReplaceFile(new_bank, kWaveSoundsFile, sounds);
     const auto copies = [&](uint32_t id)
     {
-        const hokuto::format::NativeArchive& native = *new_sounds.native;
-        std::vector<std::vector<uint8_t>> bytes;
-        for (const sar::FileCopy& copy :
-             sar::FileCopies(flavor, hokuto::format::CopySequences(new_sounds), *native.pieces, native.fields, id))
-        {
-            bytes.push_back(copy.bytes);
-        }
-
-        return bytes;
+        return CopiesInExport(new_sounds, flavor, id);
     };
 
     const auto placed = [&](const std::vector<uint8_t>& bytes, const std::vector<sar::WaveId>& waves)
@@ -794,12 +622,12 @@ void TestCopyPlaces(sar::Flavor flavor)
     const FileChanges other_changes = hokuto::edit::ChangesOf(
         other, *Read(differing), kBank, hokuto::edit::ReadIncomingFile(bank, FileKind::kBank, flavor));
     const File other_bank = hokuto::edit::ReplaceFile(other, kBankFile, bank);
-    const hokuto::format::NativeArchive& replaced = *other_bank.native;
     XSFLIB_CHECK(other_changes.other_copies == 1 && other_changes.placed_copies == 0);
-    for (const sar::FileCopy& copy : sar::FileCopies(flavor, hokuto::format::CopySequences(other_bank),
-                                                     *replaced.pieces, replaced.fields, kBankFile))
+    const std::vector<std::vector<uint8_t>> other_copies = CopiesInExport(other_bank, flavor, kBankFile);
+    XSFLIB_CHECK(other_copies.size() == 2);
+    for (const std::vector<uint8_t>& copy : other_copies)
     {
-        XSFLIB_CHECK(copy.bytes == bank);
+        XSFLIB_CHECK(copy == bank);
     }
 }
 
@@ -839,7 +667,8 @@ void TestWave(sar::Flavor flavor)
 
     const auto refusal = [&](const std::vector<uint8_t>& bytes, uint32_t wave_archive, uint32_t wave)
     {
-        return RefusalOf([&] { hokuto::edit::ReadIncomingWave(bytes, *before, wave_archive, wave); });
+        return ErrorOf<std::invalid_argument>([&]
+                                              { hokuto::edit::ReadIncomingWave(bytes, *before, wave_archive, wave); });
     };
 
     const sar::Wave wave = sar::Wave::Parse(incoming.bytes, strict);
@@ -865,25 +694,26 @@ void TestWave(sar::Flavor flavor)
     XSFLIB_CHECK(sar::WaveArchiveFile::Read(waves).waves[0] == Wave(flavor, 1));
     XSFLIB_CHECK(sar::WaveArchiveFile::Read(waves).waves[1] == incoming.bytes);
     XSFLIB_CHECK(FileOf(*after, kFirstWavesFile) == waves && FileOf(*after, kBankFile) == FileOf(*before, kBankFile));
-    for (const sar::FileCopy& copy :
-         sar::FileCopies(flavor, hokuto::format::CopySequences(replaced), *replaced.native->pieces,
-                         replaced.native->fields, kFirstWavesFile))
+    const std::vector<std::vector<uint8_t>> wave_copies = CopiesInExport(replaced, flavor, kFirstWavesFile);
+    XSFLIB_CHECK(wave_copies.size() == 2);
+    for (const std::vector<uint8_t>& copy : wave_copies)
     {
-        XSFLIB_CHECK(copy.bytes == waves);
+        XSFLIB_CHECK(copy == waves);
     }
     XSFLIB_CHECK(decoded.sample_rate == 22050 && decoded.loop && decoded.loop_start == 2 && decoded.loop_end == 5);
     XSFLIB_CHECK((decoded.channels == std::vector<std::vector<int16_t>>{{100, -200, 300, -400, 500}, {1, 2, 3, 4, 5}}));
-    XSFLIB_CHECK(refusal({1, 2, 3}, kFirstWaves, 1) == "Hokuto can't read it as a WAV file: not a RIFF WAVE file.");
+    XSFLIB_CHECK(refusal({1, 2, 3}, kFirstWaves, 1) == "Can't read it as a WAV file: not a RIFF WAVE file.");
     XSFLIB_CHECK(refusal(seqlib::WavFile(three, 8000), kFirstWaves, 1) ==
-                 "It holds 3 channels. A wave holds one or two.");
-    XSFLIB_CHECK(refusal(seqlib::WavFile(empty, 8000), kFirstWaves, 1) == "It holds no samples.");
-    XSFLIB_CHECK(refusal(wav, kFirstWaves, 2) == "The wave archive holds 2 waves. It has no wave 2.");
-    XSFLIB_CHECK(refusal(wav, 2, 0) == "The archive has no wave archive there.");
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::WaveArchiveWith(*before, 1, 1, incoming.bytes); }) ==
-                 "The wave archive holds 1 wave. It has no wave 1.");
+                 "It has 3 channels. A wave can have only one or two.");
+    XSFLIB_CHECK(refusal(seqlib::WavFile(empty, 8000), kFirstWaves, 1) == "It has no samples.");
+    XSFLIB_CHECK(refusal(wav, kFirstWaves, 2) == "The wave archive has 2 waves. There's no wave 2.");
+    XSFLIB_CHECK(refusal(wav, 2, 0) == "The archive has no such wave archive.");
     XSFLIB_CHECK(
-        RefusalOf([&] { hokuto::edit::ReadIncomingWave(wav, *before, kFirstWaves, 1, sar::WaveEncoding::kPcm8); }) ==
-        "Hokuto makes a wave in DSP-ADPCM or in 16-bit PCM only.");
+        ErrorOf<std::invalid_argument>([&] { hokuto::edit::WaveArchiveWith(*before, 1, 1, incoming.bytes); }) ==
+        "The wave archive has 1 wave. There's no wave 1.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&] { hokuto::edit::ReadIncomingWave(wav, *before, kFirstWaves, 1, sar::WaveEncoding::kPcm8); }) ==
+                 "Hokuto can encode waves only as DSP-ADPCM or 16-bit PCM.");
 }
 
 // A stereo WAV file of a sine and of noise, 1000 samples long, with a loop from sample 101 to 990, takes the place of
@@ -1001,14 +831,14 @@ void TestResampledWave(sar::Flavor flavor)
     XSFLIB_CHECK(!kept.loop_from_present && kept.loops == 1 && kept.rate == 48000);
     XSFLIB_CHECK(shorter.rate == 48000 && shorter.loop_start == 1200 && shorter.frames == 4000);
     XSFLIB_CHECK(shorter.after_loop == 800 && shorter.wav_frames == 4000 && shorter.loop_from_present);
-    XSFLIB_CHECK(RefusalOf([&] { read(wav, hokuto::edit::WaveLoop{0, 4801}, std::nullopt); }) ==
-                 "The loop from sample 0 to 4801 doesn't lie inside the WAV file's 4800 samples.");
-    XSFLIB_CHECK(RefusalOf([&] { read(wav, hokuto::edit::WaveLoop{1200, 1200}, std::nullopt); }) ==
-                 "The loop from sample 1200 to 1200 doesn't lie inside the WAV file's 4800 samples.");
-    XSFLIB_CHECK(RefusalOf([&] { read(wav, std::nullopt, 48000); }) ==
-                 "A wave takes a rate lower than the WAV file's 48000 Hz only.");
-    XSFLIB_CHECK(RefusalOf([&] { read(wav, std::nullopt, 0); }) ==
-                 "A wave takes a rate lower than the WAV file's 48000 Hz only.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { read(wav, hokuto::edit::WaveLoop{0, 4801}, std::nullopt); }) ==
+                 "The loop from sample 0 to 4801 isn't valid for the 4800 samples of the WAV file.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { read(wav, hokuto::edit::WaveLoop{1200, 1200}, std::nullopt); }) ==
+                 "The loop from sample 1200 to 1200 isn't valid for the 4800 samples of the WAV file.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { read(wav, std::nullopt, 48000); }) ==
+                 "The new sample rate must be lower than the WAV file's 48000 Hz.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { read(wav, std::nullopt, 0); }) ==
+                 "The new sample rate must be lower than the WAV file's 48000 Hz.");
 }
 
 // A mono WAV file goes in as a new wave after the first wave archive's two waves: wave 2, in 16-bit PCM with the
@@ -1048,24 +878,44 @@ void TestNewWave(sar::Flavor flavor)
     {
         XSFLIB_CHECK(FileOf(*after, id) == FileOf(*before, id));
     }
-    for (const sar::FileCopy& copy :
-         sar::FileCopies(flavor, hokuto::format::CopySequences(imported), *imported.native->pieces,
-                         imported.native->fields, kFirstWavesFile))
+    const std::vector<std::vector<uint8_t>> wave_copies = CopiesInExport(imported, flavor, kFirstWavesFile);
+    XSFLIB_CHECK(wave_copies.size() == 2);
+    for (const std::vector<uint8_t>& copy : wave_copies)
     {
-        XSFLIB_CHECK(copy.bytes == waves);
+        XSFLIB_CHECK(copy == waves);
     }
     XSFLIB_CHECK(decoded.sample_rate == 16000 && !decoded.loop);
     XSFLIB_CHECK((decoded.channels == std::vector<std::vector<int16_t>>{{100, -200, 300, -400}}));
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::WaveArchiveWith(*before, 2, std::nullopt, incoming.bytes); }) ==
-                 "The archive has no wave archive there.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&] { hokuto::edit::WaveArchiveWith(*before, 2, std::nullopt, incoming.bytes); }) ==
+                 "The archive has no such wave archive.");
 }
 
-// A looped wave file of the archive's console goes in as it is. It becomes a new wave after the second wave archive's
-// wave. Bytes past the size in its header stay out. A wave file of the other console or of the 3DS goes in converted,
-// with the version of the wave archive's wave, and its samples decode as that console reads them. Bytes that aren't a
-// wave file, a file of another family, a file of the 3DS in the Wii U's byte order, a size past the end or inside the
-// header, and a wave that ntdlib can't read or convert are refused.
-void TestNewWaveFile(sar::Flavor flavor)
+// The values that the tests of a new wave from a wave file share.
+struct NewWaveFileFixture
+{
+    sar::Flavor other;
+    std::shared_ptr<const sar::SoundArchive> before;
+    std::vector<uint8_t> same;
+    std::vector<uint8_t> converted;
+    std::vector<uint8_t> shorter;
+    std::vector<uint8_t> unknown;
+    std::vector<uint8_t> tiny;
+    std::vector<uint8_t> cut;
+    std::vector<uint8_t> cut_other;
+    std::vector<uint8_t> ctr;
+    std::vector<uint8_t> big_ctr;
+    std::string console;
+    IncomingWave read;
+    IncomingWave from_other;
+    IncomingWave from_ctr;
+    std::vector<uint8_t> waves;
+    std::shared_ptr<const sar::SoundArchive> after;
+    sar::Pcm decoded;
+};
+
+// The fixture of the tests of a new wave from a wave file of `flavor`.
+NewWaveFileFixture MakeNewWaveFileFixture(sar::Flavor flavor)
 {
     const sar::Flavor other = OtherConsole(flavor);
     const std::vector<uint8_t> original = NewerSecondWaves(flavor);
@@ -1107,19 +957,44 @@ void TestNewWaveFile(sar::Flavor flavor)
     const File imported = hokuto::edit::ReplaceFile(file, kSecondWavesFile, waves);
     const std::shared_ptr<const sar::SoundArchive> after = Read(hokuto::format::ExportArchive(imported));
     const sar::Pcm decoded = hokuto::song::DecodeItemWave(*after, kSecondWaves, 1);
+    return {other, before,  same,    converted, shorter,    unknown,  tiny,  cut,   cut_other,
+            ctr,   big_ctr, console, read,      from_other, from_ctr, waves, after, decoded};
+}
 
-    const auto refusal = [&](const std::vector<uint8_t>& bytes)
-    {
-        return RefusalOf([&] { hokuto::edit::ReadIncomingWaveFile(bytes, *before, kSecondWaves); });
-    };
+// The message with which a new wave from wave file `bytes` is refused in the second wave archive of `before`.
+std::string NewWaveFileRefusal(const sar::SoundArchive& before, const std::vector<uint8_t>& bytes)
+{
+    return ErrorOf<std::invalid_argument>([&] { hokuto::edit::ReadIncomingWaveFile(bytes, before, kSecondWaves); });
+}
+
+// A looped wave file of the archive's console goes in as it is. Bytes past the size in its header stay out.
+void TestNewWaveFileSameConsole(sar::Flavor flavor)
+{
+    const NewWaveFileFixture fixture = MakeNewWaveFileFixture(flavor);
+    const std::vector<uint8_t>& same = fixture.same;
+    const IncomingWave& read = fixture.read;
+    XSFLIB_CHECK(read.bytes == same && read.version == 0x00010100 && !read.converted);
+    XSFLIB_CHECK(read.encoding == sar::WaveEncoding::kPcm16 && read.channels == 1 && read.rate == 24000);
+    XSFLIB_CHECK(read.frames == 4 && read.loop && read.loop_start == 1);
+}
+
+// A wave file of the other console or of the 3DS goes in converted, with the version of the wave archive's wave, and
+// its samples decode as that console reads them. It becomes a new wave after the second wave archive's wave.
+void TestNewWaveFileOtherConsole(sar::Flavor flavor)
+{
+    const NewWaveFileFixture fixture = MakeNewWaveFileFixture(flavor);
+    const sar::Flavor other = fixture.other;
+    const std::shared_ptr<const sar::SoundArchive>& before = fixture.before;
+    const std::vector<uint8_t>& converted = fixture.converted;
+    const IncomingWave& from_other = fixture.from_other;
+    const std::vector<uint8_t>& waves = fixture.waves;
+    const std::shared_ptr<const sar::SoundArchive>& after = fixture.after;
+    const sar::Pcm& decoded = fixture.decoded;
 
     // The other console's 16-bit samples, in its byte order.
     const std::vector<int16_t> samples = other == sar::Flavor::kCafe
                                              ? std::vector<int16_t>{0x0102, 0x0304, 0x0506, 0x0708}
                                              : std::vector<int16_t>{0x0201, 0x0403, 0x0605, 0x0807};
-    XSFLIB_CHECK(read.bytes == same && read.version == 0x00010100 && !read.converted);
-    XSFLIB_CHECK(read.encoding == sar::WaveEncoding::kPcm16 && read.channels == 1 && read.rate == 24000);
-    XSFLIB_CHECK(read.frames == 4 && read.loop && read.loop_start == 1);
     XSFLIB_CHECK(from_other.converted && from_other.converted->flavor == other &&
                  from_other.converted->version == 0x00010100 && from_other.converted->size == converted.size() &&
                  !from_other.converted->wave_version);
@@ -1131,10 +1006,36 @@ void TestNewWaveFile(sar::Flavor flavor)
                  FileOf(*after, kFirstWavesFile) == FileOf(*before, kFirstWavesFile));
     XSFLIB_CHECK(decoded.sample_rate == 24000 && decoded.loop && decoded.loop_start == 1 && decoded.loop_end == 4);
     XSFLIB_CHECK((decoded.channels == std::vector<std::vector<int16_t>>{samples}));
+}
+
+// Bytes that aren't a wave file are refused. So is a bank file.
+void TestNewWaveFileOtherKinds(sar::Flavor flavor)
+{
+    const NewWaveFileFixture fixture = MakeNewWaveFileFixture(flavor);
+    const std::shared_ptr<const sar::SoundArchive>& before = fixture.before;
+    const std::vector<uint8_t>& unknown = fixture.unknown;
+    const auto refusal = [&](const std::vector<uint8_t>& bytes)
+    {
+        return NewWaveFileRefusal(*before, bytes);
+    };
     XSFLIB_CHECK(refusal({1, 2, 3}) == "It isn't a wave file.");
     XSFLIB_CHECK(refusal(Bank(flavor, {{kFirstWavesId, 0}}, {0})) ==
                  "It's a bank file of the " + hokuto::song::ConsoleName(flavor) + ", not a wave file.");
     XSFLIB_CHECK(refusal(unknown) == "It isn't a wave file.");
+}
+
+// A wave file of the 3DS is converted on import. A file of the 3DS in the Wii U's byte order is refused.
+void TestNewWaveFileFromCtr(sar::Flavor flavor)
+{
+    const NewWaveFileFixture fixture = MakeNewWaveFileFixture(flavor);
+    const std::shared_ptr<const sar::SoundArchive>& before = fixture.before;
+    const std::vector<uint8_t>& ctr = fixture.ctr;
+    const std::vector<uint8_t>& big_ctr = fixture.big_ctr;
+    const IncomingWave& from_ctr = fixture.from_ctr;
+    const auto refusal = [&](const std::vector<uint8_t>& bytes)
+    {
+        return NewWaveFileRefusal(*before, bytes);
+    };
     sar::Options options;
     options.flavor = flavor;
     XSFLIB_CHECK(from_ctr.converted && from_ctr.converted->flavor == sar::Flavor::kCtr &&
@@ -1142,12 +1043,30 @@ void TestNewWaveFile(sar::Flavor flavor)
     XSFLIB_CHECK((sar::DecodeWave(from_ctr.bytes, options).channels ==
                   std::vector<std::vector<int16_t>>{{0x0201, 0x0403, 0x0605, 0x0807}}));
     XSFLIB_CHECK(refusal(big_ctr) == "It isn't a wave file.");
+}
+
+// Bytes that aren't a wave file, a file of another family, a file of the 3DS in the Wii U's byte order, a size past the
+// end or inside the header, and a wave that ntdlib can't read or convert are refused.
+void TestNewWaveFileDamaged(sar::Flavor flavor)
+{
+    const NewWaveFileFixture fixture = MakeNewWaveFileFixture(flavor);
+    const std::shared_ptr<const sar::SoundArchive>& before = fixture.before;
+    const std::vector<uint8_t>& same = fixture.same;
+    const std::vector<uint8_t>& shorter = fixture.shorter;
+    const std::vector<uint8_t>& tiny = fixture.tiny;
+    const std::vector<uint8_t>& cut = fixture.cut;
+    const std::vector<uint8_t>& cut_other = fixture.cut_other;
+    const std::string& console = fixture.console;
+    const auto refusal = [&](const std::vector<uint8_t>& bytes)
+    {
+        return NewWaveFileRefusal(*before, bytes);
+    };
     XSFLIB_CHECK(refusal(shorter) == "Its header gives a size of " + std::to_string(same.size()) +
-                                         " bytes. The file holds " + std::to_string(shorter.size()) + " bytes.");
+                                         " bytes, but the file has " + std::to_string(shorter.size()) + " bytes.");
     XSFLIB_CHECK(refusal(tiny) ==
-                 "Its header gives a size of 8 bytes. The file holds " + std::to_string(same.size()) + " bytes.");
-    XSFLIB_CHECK(refusal(cut).starts_with("Hokuto can't read the wave. "));
-    XSFLIB_CHECK(refusal(cut_other).starts_with("Hokuto can't convert it for the " + console + ". "));
+                 "Its header gives a size of 8 bytes, but the file has " + std::to_string(same.size()) + " bytes.");
+    XSFLIB_CHECK(refusal(cut).starts_with("Can't read the wave. "));
+    XSFLIB_CHECK(refusal(cut_other).starts_with("Can't convert it for the " + console + ". "));
 }
 
 // A wave file takes the place of the first wave archive's second wave. A wave file of the archive's console goes in as
@@ -1174,7 +1093,8 @@ void TestWaveFileInPlace(sar::Flavor flavor)
 
     const auto refusal = [&](uint32_t wave_archive, uint32_t wave)
     {
-        return RefusalOf([&] { hokuto::edit::ReadIncomingWaveFile(same, *archive, wave_archive, wave); });
+        return ErrorOf<std::invalid_argument>(
+            [&] { hokuto::edit::ReadIncomingWaveFile(same, *archive, wave_archive, wave); });
     };
 
     const IncomingWave in_place = hokuto::edit::ReadIncomingWaveFile(same, *archive, kFirstWaves, 1);
@@ -1199,590 +1119,42 @@ void TestWaveFileInPlace(sar::Flavor flavor)
                  sar::WaveFile::Read(later_new.bytes).version == 0x00010100);
     XSFLIB_CHECK((sar::WaveArchiveFile::Read(waves).waves ==
                   std::vector<std::vector<uint8_t>>{Wave(flavor, 1), from_other.bytes}));
-    XSFLIB_CHECK(refusal(kFirstWaves, 2) == "The wave archive holds 2 waves. It has no wave 2.");
-    XSFLIB_CHECK(refusal(2, 0) == "The archive has no wave archive there.");
+    XSFLIB_CHECK(refusal(kFirstWaves, 2) == "The wave archive has 2 waves. There's no wave 2.");
+    XSFLIB_CHECK(refusal(2, 0) == "The archive has no such wave archive.");
     XSFLIB_CHECK(hokuto::edit::IsWaveFile(same) && hokuto::edit::IsWaveFile(converted));
     XSFLIB_CHECK(!hokuto::edit::IsWaveFile(Bank(flavor, {{kFirstWavesId, 0}}, {0})));
     XSFLIB_CHECK(!hokuto::edit::IsWaveFile(seqlib::WavFile(pcm, 8000)) &&
                  !hokuto::edit::IsWaveFile(std::span<const uint8_t>(same).first(3)));
 }
 
-// The copies of file `id` in the groups of `archive`, an archive of the Wii, and of its wave data with `wave_data`.
-std::vector<std::vector<uint8_t>> WiiCopies(std::span<const uint8_t> archive, uint32_t id, bool wave_data)
-{
-    const ntdlib::rsar::SoundArchive read = ntdlib::rsar::SoundArchive::Load(
-        std::vector<uint8_t>(archive.begin(), archive.end()), {.playback_fields = true});
-    std::vector<std::vector<uint8_t>> copies;
-    for (const ntdlib::rsar::SoundArchive::Group& group : read.Groups())
-    {
-        for (const ntdlib::rsar::SoundArchive::Group::Item& item : group.items)
-        {
-            if (item.file_id == id)
-            {
-                const std::size_t start =
-                    wave_data ? group.wave_data_offset + item.wave_data_offset : group.offset + item.offset;
-                const std::size_t size = wave_data ? item.wave_data_size : item.size;
-                copies.emplace_back(archive.begin() + start, archive.begin() + start + size);
-            }
-        }
-    }
-
-    return copies;
-}
-
-// A Wii archive holds a song, and a bank with its wave data in both of its groups. A new bank of 0x50 bytes takes the
-// old bank's place in both, with zeros up to 0x60, and keeps the wave data. New wave data then takes the place of the
-// bank's, and the bank keeps its bytes. The song stays as it was. A new file in the song's place is refused: the song's
-// file lies among the archive's other bytes. Wave data for a file of a later console is refused too.
-void TestWiiReplace()
-{
-    ntdlib::rsar::SequenceFile song;
-    song.data = {0xC1, 0x64, 0x3C, 0x64, 0x30, 0x80, 0x30, 0xFF};
-    song.labels = {{"SEQ_SONG", 0}};
-    const std::vector<uint8_t> kBankBytes(0x40, 0x5A);
-    const std::vector<uint8_t> kWaveBytes(0x20, 0xA5);
-    const std::vector<uint8_t> original = ntdlib::testing::rsar_tools::MakeArchive(
-        0x0104, {{song.Write()}, {kBankBytes, kWaveBytes}}, {{"SEQ_SONG", 0, 0}}, {{0, 1}, {1}});
-    const File file = hokuto::format::ImportWiiArchive(original);
-
-    const std::vector<uint8_t> kNewBankBytes(0x50, 0x3C);
-    std::vector<uint8_t> padded = kNewBankBytes;
-    padded.resize(0x60, 0);
-    const std::vector<uint8_t> kNewWaveBytes(0x40, 0x7E);
-    const File replaced = hokuto::edit::ReplaceFile(file, 1, kNewBankBytes);
-    const File rewaved = hokuto::edit::ReplaceFile(replaced, 1, padded, kNewWaveBytes);
-    const std::vector<uint8_t> after = hokuto::format::ExportArchive(replaced);
-    const std::vector<uint8_t> after_waves = hokuto::format::ExportArchive(rewaved);
-
-    const auto refusal = [](const File& from, uint32_t id, std::span<const uint8_t> bytes)
-    {
-        return RefusalOf([&] { hokuto::edit::ReplaceFile(from, id, bytes, bytes); });
-    };
-
-    XSFLIB_CHECK(hokuto::format::ExportArchive(file) == original);
-    XSFLIB_CHECK((WiiCopies(after, 1, false) == std::vector<std::vector<uint8_t>>(2, padded)));
-    XSFLIB_CHECK((WiiCopies(after, 1, true) == std::vector<std::vector<uint8_t>>(2, kWaveBytes)));
-    XSFLIB_CHECK((WiiCopies(after_waves, 1, false) == std::vector<std::vector<uint8_t>>(2, padded)));
-    XSFLIB_CHECK((WiiCopies(after_waves, 1, true) == std::vector<std::vector<uint8_t>>(2, kNewWaveBytes)));
-    XSFLIB_CHECK(after.size() == original.size() + 2 * 0x20 && after_waves.size() == after.size() + 2 * 0x20);
-    XSFLIB_CHECK(WiiCopies(after_waves, 0, false) == WiiCopies(original, 0, false));
-    XSFLIB_CHECK(refusal(file, 0, kBankBytes).starts_with("The old file lies among the archive's other bytes."));
-    XSFLIB_CHECK(refusal(hokuto::format::ImportArchive(TestArchive(sar::Flavor::kNx), sar::Flavor::kNx), kBankFile,
-                         kBankBytes) == "Only a file of the Wii has wave data beside it.");
-}
-
-// A stereo WAV file with a loop from sample 2 to 5 and one sample after it goes in as a wave of the Wii: 16-bit PCM,
-// big-endian, with the loop and the rate, in an RWAV file of the given version. As DSP-ADPCM, the loop moves to the
-// next frame of 14 samples, and the samples between repeat after the loop's end. The model keeps the samples before the
-// encoding.
-void TestWiiWave()
-{
-    seqlib::Pcm pcm;
-    pcm.channels = {{100, -200, 300, -400, 500, -600}, {1, 2, 3, 4, 5, 6}};
-    pcm.loop = true;
-    pcm.loop_start = 2;
-    pcm.loop_end = 5;
-    const std::vector<uint8_t> wav = seqlib::WavFile(pcm, 22050);
-
-    const IncomingWave pcm16 = hokuto::edit::ReadIncomingWiiWave(wav, 0x0102, sar::WaveEncoding::kPcm16);
-    const ntdlib::rsar::WaveFile read = ntdlib::rsar::WaveFile::Read(pcm16.bytes);
-    XSFLIB_CHECK(read.version == 0x0102 && read.encoding == ntdlib::rsar::WaveEncoding::kPcm16 && read.loop);
-    XSFLIB_CHECK(read.sample_rate == 22050 && read.loop_start == 2 && read.loop_end == 5 && read.channels.size() == 2);
-    XSFLIB_CHECK(read.channels[0].samples.size() >= 10 && read.channels[0].samples[0] == 0x00 &&
-                 read.channels[0].samples[1] == 0x64 && !read.channels[0].adpcm);
-    XSFLIB_CHECK(
-        pcm16.version == 0x0102 && pcm16.frames == 5 && pcm16.after_loop == 1 && pcm16.model &&
-        (pcm16.model->samples == std::vector<std::vector<int16_t>>{{100, -200, 300, -400, 500}, {1, 2, 3, 4, 5}}));
-
-    const IncomingWave adpcm = hokuto::edit::ReadIncomingWiiWave(wav, 0x0102);
-    const ntdlib::rsar::WaveFile encoded = ntdlib::rsar::WaveFile::Read(adpcm.bytes);
-    XSFLIB_CHECK(encoded.encoding == ntdlib::rsar::WaveEncoding::kDspAdpcm && encoded.loop_start == 14 &&
-                 adpcm.loop_moved == 12 && encoded.channels.size() == 2 && encoded.channels[1].adpcm);
-    XSFLIB_CHECK(adpcm.model && adpcm.model->loop_start == 14 && adpcm.model->length == encoded.loop_end);
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::ReadIncomingWiiWave(wav, 0x0102, sar::WaveEncoding::kPcm8); }) ==
-                 "Hokuto makes a wave in DSP-ADPCM or in 16-bit PCM only.");
-}
-
-// A file's bytes with zeros up to a multiple of 32 bytes. NW4R's tools lay a file out that way in an archive of the
-// Wii.
-std::vector<uint8_t> PaddedForWii(std::vector<uint8_t> bytes)
-{
-    bytes.resize((bytes.size() + 31) & ~std::size_t{31}, 0);
-
-    return bytes;
-}
-
-// A Wii archive as NW4R's tools lay one out: a song, a bank of version 1.2 with an RWAR of two waves, and a wave sound
-// file of version 1.3 with an RWAR of one wave. Two groups hold the bank.
-std::vector<uint8_t> WiiItemsArchive()
-{
-    namespace rsar = ntdlib::rsar;
-    namespace rsar_files = ntdlib::testing::rsar_files;
-    rsar::SequenceFile song;
-    song.data = {0xFF};
-    song.labels = {{"SEQ_SONG", 0}};
-    rsar_files::WaveSoundSpec spec;
-    spec.notes.push_back({});
-    rsar::ArchiveModel model;
-    model.players = {{"PLAYER_TEST", 1, 0}};
-    model.sounds.resize(2);
-    model.sounds[0].name = "SEQ_SONG";
-    model.sounds[1] = {.name = "WSD_ONE", .type = rsar::SoundType::kWaveSound, .file_id = 2};
-    model.banks = {{"BANK_TEST", 1}};
-    model.groups = {{"GROUP_A", {0, 1, 2}}, {"GROUP_B", {1}}};
-    model.files = {{PaddedForWii(song.Write())},
-                   {PaddedForWii(rsar_files::MakeNewBank()), PaddedForWii(rsar_files::MakeRwar())},
-                   {PaddedForWii(rsar_files::MakeWaveSoundFile(0x0103, {spec})),
-                    PaddedForWii(rsar_files::MakeRwarOf({rsar_files::MakeRwav(0x33)}))}};
-
-    return rsar::BuildArchive(model);
-}
-
-// The archive that `from` exports, read as a game of the Wii reads it.
-std::shared_ptr<const ntdlib::rsar::SoundArchive> ReadWii(const File& from)
-{
-    return hokuto::song::LoadWiiArchive(hokuto::format::ExportArchive(from), "test.brsar",
-                                        ntdlib::rvl::snd::kRsarOptions);
-}
-
-// The archive of WiiItemsArchive. The bank's file goes in again, and the archive comes back. A bank of version 1.1
-// describes its waves in a WAVE block. Such a bank can't take the place of a bank with an RWAR. An RWAR of one wave
-// takes the place of the bank's RWAR in both groups, and the bank names a wave past its end. A bank of the Switch is
-// refused, and so is a bank read as a wave sound file.
-void TestWiiFiles()
-{
-    namespace rsar = ntdlib::rsar;
-    namespace rsar_files = ntdlib::testing::rsar_files;
-    const std::vector<uint8_t> bank = rsar_files::MakeNewBank();
-    const std::vector<uint8_t> original = WiiItemsArchive();
-    const File file = hokuto::format::ImportWiiArchive(original);
-
-    const std::shared_ptr<const rsar::SoundArchive> before = ReadWii(file);
-
-    // The items' files, and the sounds that play them.
-    XSFLIB_CHECK(hokuto::edit::FileIdOf(*before, FileKind::kBank, 0) == 1);
-    XSFLIB_CHECK(hokuto::edit::FileIdOf(*before, FileKind::kWaveArchive, 2) == 2);
-    XSFLIB_CHECK(hokuto::edit::FileIdOf(*before, FileKind::kWaveSoundFile, 1) == 2);
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::FileIdOf(*before, FileKind::kWaveArchive, 0); }) ==
-                 "The archive has no wave archive there.");
-    XSFLIB_CHECK((hokuto::edit::SoundsPlaying(*before, FileKind::kBank, 0) == std::vector<uint32_t>{0}));
-    XSFLIB_CHECK((hokuto::edit::SoundsPlaying(*before, FileKind::kWaveArchive, 1) == std::vector<uint32_t>{0}));
-    XSFLIB_CHECK((hokuto::edit::SoundsPlaying(*before, FileKind::kWaveSoundFile, 1) == std::vector<uint32_t>{1}));
-
-    // The same bank, and a bank with a WAVE block.
-    const IncomingFile same = hokuto::edit::ReadWiiIncomingFile(bank, FileKind::kBank);
-    XSFLIB_CHECK(same.version == 0x0102 && same.bytes == bank);
-    XSFLIB_CHECK(hokuto::format::ExportArchive(hokuto::edit::ReplaceWiiFile(file, *before, 0, same)) == original);
-    const FileChanges unchanged = hokuto::edit::ChangesOf(file, *before, 0, same);
-    XSFLIB_CHECK(unchanged.lacked.empty() && unchanged.programs.empty() && unchanged.sharing.empty() &&
-                 unchanged.version == 0x0102 && unchanged.size == bank.size());
-    const IncomingFile old = hokuto::edit::ReadWiiIncomingFile(rsar_files::MakeOldBank(), FileKind::kBank);
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::ReplaceWiiFile(file, *before, 0, old); })
-                     .starts_with("The present bank keeps its waves in an RWAR beside it."));
-
-    // An RWAR of one wave beside the bank.
-    const std::vector<uint8_t> one = rsar_files::MakeRwarOf({rsar_files::MakeRwav(0x34)});
-    const IncomingFile waves = hokuto::edit::ReadWiiIncomingFile(one, FileKind::kWaveArchive);
-    const FileChanges changes = hokuto::edit::ChangesOf(file, *before, 1, waves);
-    XSFLIB_CHECK(changes.count == 1 && (changes.past_banks == std::vector<uint32_t>{0}) && changes.past_sounds.empty());
-    const File rewaved = hokuto::edit::ReplaceWiiFile(file, *before, 1, waves);
-    const std::shared_ptr<const rsar::SoundArchive> after = ReadWii(rewaved);
-    XSFLIB_CHECK(std::ranges::equal(after->WaveData(1), PaddedForWii(one)));
-    XSFLIB_CHECK(std::ranges::equal(after->FileData(1), PaddedForWii(bank)));
-    XSFLIB_CHECK(std::ranges::equal(after->WaveData(2), before->WaveData(2)));
-    for (const sar::FileCopy& copy :
-         rsar::FileCopies(hokuto::format::BuildOfWiiArchive(*rewaved.native), hokuto::format::CopySequences(rewaved),
-                          *rewaved.native->pieces, rewaved.native->fields, 1, true))
-    {
-        XSFLIB_CHECK(copy.bytes == PaddedForWii(one));
-    }
-    const FileChanges past = hokuto::edit::ChangesOf(rewaved, *after, 0, same);
-    SEQLIB_REQUIRE(past.lacked.size() == 1);
-    XSFLIB_CHECK((past.lacked[0].waves == std::vector<uint32_t>{1}));
-
-    // Files of another console, and a bank read as a wave sound file.
-    const auto read_nx_bank = []
-    {
-        hokuto::edit::ReadWiiIncomingFile(Bank(sar::Flavor::kNx, {{kFirstWavesId, 0}}, {0}), FileKind::kBank);
-    };
-    XSFLIB_CHECK(RefusalOf(read_nx_bank).starts_with("It's a bank file of the 3DS, the Wii U or the Switch."));
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::ReadWiiIncomingFile(bank, FileKind::kWaveSoundFile); }) ==
-                 "It's a bank file of the Wii, not a wave sound file of the Wii.");
-}
-
-// A wave of the Wii in 16-bit PCM at `rate`, of one channel with `samples`.
-ntdlib::rsar::WaveFile WiiPcm16(const std::vector<int16_t>& samples, uint32_t rate)
-{
-    ntdlib::rsar::WaveFile made;
-    made.encoding = ntdlib::rsar::WaveEncoding::kPcm16;
-    made.sample_rate = rate;
-    made.loop_end = static_cast<uint32_t>(samples.size());
-    ntdlib::rsar::WaveFile::Channel& channel = made.channels.emplace_back();
-    for (const int16_t sample : samples)
-    {
-        channel.samples.push_back(static_cast<uint8_t>(static_cast<uint16_t>(sample) >> 8));
-        channel.samples.push_back(static_cast<uint8_t>(sample & 0xFF));
-    }
-
-    return made;
-}
-
-// An archive of the Wii: a song, a bank with two waves, and a wave sound file with one. Two groups hold the bank. With
-// `old`, both describe their waves in WAVE blocks: a bank of version 1.1 and a wave sound file of version 1.2.
-// Otherwise they keep their waves in RWARs: a bank of 1.2 and a wave sound file of 1.3. ntdlib lays both out as the
-// tools do. `bank` and `wave_sounds` give the two files.
-std::vector<uint8_t> ModelWiiItemsArchive(bool old, ntdlib::rsar::BankFile::Files& bank,
-                                          ntdlib::rsar::WsdFile::Files& wave_sounds)
-{
-    namespace rsar = ntdlib::rsar;
-    rsar::BankFile::Instrument instrument;
-    instrument.key_regions = {{0, 127, {{0, 127, rsar::Region{}}}}};
-    const std::vector<std::optional<rsar::BankFile::Instrument>> instruments = {instrument};
-    bank = rsar::BankFile::FromInstruments(old ? 0x0101 : 0x0102, instruments,
-                                           {WiiPcm16({1, 2, 3}, 32000), WiiPcm16({4, 5}, 32000)})
-               .Write();
-    rsar::WsdFile sounds;
-    sounds.version = old ? 0x0102 : 0x0103;
-    rsar::WsdFile::WaveSound& sound = sounds.sounds.emplace_back();
-    sound.tracks = {{{{0.0f, 0.0f, 0}}}};
-    sound.notes = {{.wave_index = 0}};
-    sounds.waves = {WiiPcm16({7, 8}, 32000)};
-    wave_sounds = sounds.Write();
-    rsar::SequenceFile song;
-    song.data = {0xFF};
-    song.labels = {{"SEQ_SONG", 0}};
-    rsar::ArchiveModel model;
-    model.sounds = {{.name = "SEQ_SONG", .file_id = 0},
-                    {.name = "WSD_ONE", .type = rsar::SoundType::kWaveSound, .file_id = 2}};
-    model.banks = {{.name = "BANK_TEST", .file_id = 1}};
-    model.players = {{.name = "PLAYER_TEST"}};
-    model.groups = {{.name = "GROUP_A", .file_ids = {0, 1, 2}}, {.name = "GROUP_B", .file_ids = {1}}};
-    model.files = {{.bytes = song.Write()},
-                   {.bytes = bank.file, .wave_data = bank.wave_data},
-                   {.bytes = wave_sounds.file, .wave_data = wave_sounds.wave_data}};
-
-    return rsar::BuildArchive(model);
-}
-
-// A wave of the wave data of a file of the Wii takes a wave file of the Wii in its place, and a WAV file's wave goes
-// after the waves. The archive's bank keeps two waves in an RWAR, and its program 0 plays the first. Its wave sound
-// file keeps the one wave that its wave sound plays. The other waves keep their values, and the bank's file and the
-// wave sound file's wave data keep their bytes. The new wave takes the present wave's version. A wave file of another
-// console goes in converted. A new wave plays through a preview with its samples.
-void TestWiiWaves()
-{
-    namespace rsar = ntdlib::rsar;
-    rsar::BankFile::Files bank;
-    rsar::WsdFile::Files wave_sounds;
-    const File file = hokuto::format::ImportWiiArchive(ModelWiiItemsArchive(false, bank, wave_sounds));
-
-    const std::shared_ptr<const rsar::SoundArchive> before = ReadWii(file);
-    const std::vector<rsar::WaveFile> present = hokuto::edit::WavesOf(*before, 1);
-
-    // The present waves, and what plays them.
-    const hokuto::edit::WaveChanges changes = hokuto::edit::ChangesOfWiiWave(*before, 1, 0);
-    XSFLIB_CHECK(changes.channels == 1 && changes.rate == 32000 && !changes.loop && changes.loop_end == 3 &&
-                 changes.encoding == sar::WaveEncoding::kPcm16);
-    XSFLIB_CHECK((changes.banks == std::vector<uint32_t>{0}) && changes.sounds.empty());
-    XSFLIB_CHECK(hokuto::edit::ChangesOfWiiWave(*before, 1, 1).banks.empty());
-    const hokuto::edit::WaveChanges played = hokuto::edit::ChangesOfWiiWave(*before, 2, 0);
-    XSFLIB_CHECK(played.banks.empty() && (played.sounds == std::vector<uint32_t>{1}));
-
-    // A wave file of the Wii in the place of the bank's second wave.
-    rsar::WaveFile other = WiiPcm16({9, 10, 11, 12}, 22050);
-    other.version = 0x0100;
-    const std::vector<uint8_t> rwav = other.Write();
-    const hokuto::edit::IncomingWave incoming = hokuto::edit::ReadIncomingWiiWaveFile(rwav);
-    XSFLIB_CHECK(incoming.bytes == rwav && incoming.version == 0x0100 && incoming.channels == 1 &&
-                 incoming.rate == 22050 && incoming.frames == 4 && !incoming.loop);
-    const std::shared_ptr<const rsar::SoundArchive> after =
-        ReadWii(hokuto::edit::WithIncomingWiiWave(file, *before, 1, 1, incoming));
-    const std::vector<rsar::WaveFile> waves = hokuto::edit::WavesOf(*after, 1);
-    SEQLIB_REQUIRE(present.size() > 1);
-    other.version = present[1].version;
-    XSFLIB_CHECK(waves.size() == 2 && waves[0] == present[0] && waves[1] == other);
-    XSFLIB_CHECK(std::ranges::equal(after->FileData(1), before->FileData(1)));
-    XSFLIB_CHECK(std::ranges::equal(after->WaveData(2), before->WaveData(2)));
-
-    // A WAV file's wave in 16-bit PCM after the waves.
-    seqlib::Pcm pcm;
-    pcm.channels = {{100, -200, 300}};
-    const hokuto::edit::IncomingWave pcm16 =
-        hokuto::edit::ReadIncomingWiiWave(seqlib::WavFile(pcm, 16000), 0x0102, sar::WaveEncoding::kPcm16);
-    const std::vector<rsar::WaveFile> three =
-        hokuto::edit::WavesOf(*ReadWii(hokuto::edit::WithIncomingWiiWave(file, *before, 1, std::nullopt, pcm16)), 1);
-    XSFLIB_CHECK(three.size() == 3 && three[0] == present[0] && three[1] == present[1]);
-    XSFLIB_CHECK(three[2].sample_rate == 16000 &&
-                 (hokuto::edit::DecodedSamples(three[2], 3) == std::vector<std::vector<int16_t>>{{100, -200, 300}}));
-
-    // The Replace and Import windows' Play plays a new wave of the Wii through a preview: the wave's samples at its
-    // rate, up to its length. A preview without the length played nothing.
-    const ntdlib::wave::Pcm previewed = hokuto::edit::WavePcm(rsar::WaveFile::Read(pcm16.bytes));
-    hokuto::song::WavePreview preview(previewed);
-    std::vector<float> out(8 * 2, 1.0f);
-    const std::size_t rendered = preview.Render(out.data(), 8);
-    XSFLIB_CHECK(preview.SampleRate() == 16000 && previewed.Length() == 3 && !previewed.loop && rendered == 3);
-    XSFLIB_CHECK(out[0] == 100.0f / 32768.0f && out[1] == out[0] && out[2] == -200.0f / 32768.0f &&
-                 out[4] == 300.0f / 32768.0f && out[5] == out[4]);
-    const ntdlib::wave::Pcm replacing = hokuto::edit::WavePcm(rsar::WaveFile::Read(rwav));
-    XSFLIB_CHECK(replacing.sample_rate == 22050 &&
-                 (replacing.channels == std::vector<std::vector<int16_t>>{{9, 10, 11, 12}}));
-    const rsar::WaveFile looped = rsar::WaveFile::Read(ntdlib::testing::rsar_files::MakeRwav(0x31));
-    const ntdlib::wave::Pcm round = hokuto::edit::WavePcm(looped);
-    const uint32_t length = std::min(looped.loop_end, hokuto::edit::HeldSamples(looped));
-    XSFLIB_CHECK(length > 0 && round.Length() == length && round.loop == (looped.loop_start < length) &&
-                 round.loop_start == looped.loop_start &&
-                 round.channels == hokuto::edit::DecodedSamples(looped, length));
-
-    // Refusals.
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::WithIncomingWiiWave(file, *before, 1, 5, incoming); }) ==
-                 "The wave data holds no wave 5.");
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::ReadIncomingWiiWaveFile(bank.file); }) ==
-                 "It's a bank file of the Wii, not a wave file.");
-
-    // A wave file of the Switch goes in converted, with its samples.
-    const std::vector<uint8_t> later = Wave(sar::Flavor::kNx, 1);
-    const hokuto::edit::IncomingWave converted = hokuto::edit::ReadIncomingWiiWaveFile(later);
-    XSFLIB_CHECK(converted.converted && converted.converted->flavor == sar::Flavor::kNx &&
-                 converted.converted->size == later.size());
-    const rsar::WaveFile wii = rsar::WaveFile::Read(converted.bytes);
-    XSFLIB_CHECK(converted.version == wii.version && converted.channels == 1 && converted.frames == 4);
-    XSFLIB_CHECK(hokuto::edit::DecodedSamples(wii, 4) == hokuto::edit::DecodedSamples(sar::WaveFile::Read(later), 4));
-}
-
-// The copies of file `file_id` of `file`, a file of the Wii, in the groups of the archive that it builds: of its bytes,
-// or of its wave data with `wave_data`.
-std::vector<std::vector<uint8_t>> WiiCopiesOf(const File& file, uint32_t file_id, bool wave_data)
-{
-    std::vector<std::vector<uint8_t>> copies;
-    for (const sar::FileCopy& copy :
-         ntdlib::rsar::FileCopies(hokuto::format::BuildOfWiiArchive(*file.native), hokuto::format::CopySequences(file),
-                                  *file.native->pieces, file.native->fields, file_id, wave_data))
-    {
-        copies.push_back(copy.bytes);
-    }
-
-    return copies;
-}
-
-// Files of the 3DS, the Wii U and the Switch go into an archive of the Wii converted. Their magic and byte order mark
-// tell them from the Wii's files. A wave archive of the Switch goes in as an RWAR of its waves. A bank of the Switch
-// names the waves of its wave archives. WiiFileOf gives it the waves of the Wii archive's wave data in their place: in
-// an RWAR for a bank of version 1.2, and in a WAVE block for one of 1.1. A wave sound file of the Switch goes in the
-// same way. The converted bank takes the place of the archive's bank with its wave data, in both groups. A bank of the
-// Wii takes the wave data of a file of the archive. Into an archive whose bank holds version 1.1, a bank of 1.2 goes in
-// written again. An RWAR's waves take the place of the waves of a bank with a WAVE block. The RWAR that Export… writes
-// for wave data that a WAVE block describes gives the file and its wave data back. A bank of version 1.1 whose WAVE
-// block describes other waves than the present wave data holds takes an RWAR of its waves.
-void TestWiiLaterFiles()
-{
-    namespace rsar = ntdlib::rsar;
-    namespace rsar_files = ntdlib::testing::rsar_files;
-
-    // The consoles of the files.
-    const std::vector<uint8_t> later_bank = Bank(sar::Flavor::kNx, {{kFirstWavesId, 1}, {kSecondWavesId, 0}}, {0, 2});
-    XSFLIB_CHECK(hokuto::edit::LaterConsoleOf(later_bank, FileKind::kBank) == sar::Flavor::kNx);
-    XSFLIB_CHECK(hokuto::edit::LaterConsoleOf(Bank(sar::Flavor::kCafe, {{kFirstWavesId, 0}}, {0}), FileKind::kBank) ==
-                 sar::Flavor::kCafe);
-    XSFLIB_CHECK(hokuto::edit::LaterConsoleOf(Bank(sar::Flavor::kCtr, {{kFirstWavesId, 0}}, {0}), FileKind::kBank) ==
-                 sar::Flavor::kCtr);
-    XSFLIB_CHECK(!hokuto::edit::LaterConsoleOf(later_bank, FileKind::kWaveArchive));
-    XSFLIB_CHECK(!hokuto::edit::LaterConsoleOf(rsar_files::MakeNewBank(), FileKind::kBank));
-
-    // A wave archive of the Switch, as an RWAR of its waves.
-    const std::vector<uint8_t> later_waves =
-        sar_files::WaveArchive(sar::Flavor::kNx, {Wave(sar::Flavor::kNx, 1), Wave(sar::Flavor::kNx, 2)});
-    const IncomingFile rwar = hokuto::edit::ReadWiiIncomingFile(later_waves, FileKind::kWaveArchive);
-    XSFLIB_CHECK(rwar.kind == FileKind::kWaveArchive && rwar.converted && rwar.converted->flavor == sar::Flavor::kNx &&
-                 rwar.converted->size == later_waves.size() && rwar.wave_data.empty());
-    const rsar::WaveArchiveFile rwar_file = rsar::WaveArchiveFile::Read(rwar.bytes);
-    XSFLIB_CHECK(rwar_file.waves.size() == 2);
-    for (std::size_t i = 0; i < rwar_file.waves.size(); i++)
-    {
-        const std::vector<uint8_t> wave = Wave(sar::Flavor::kNx, static_cast<uint8_t>(i + 1));
-        XSFLIB_CHECK(hokuto::edit::DecodedSamples(rsar::WaveFile::Read(rwar_file.waves[i]), 4) ==
-                     hokuto::edit::DecodedSamples(sar::WaveFile::Read(wave), 4));
-    }
-
-    // The versions of the archive's files.
-    rsar::BankFile::Files bank;
-    rsar::WsdFile::Files wave_sounds;
-    const File file = hokuto::format::ImportWiiArchive(ModelWiiItemsArchive(false, bank, wave_sounds));
-    const std::shared_ptr<const rsar::SoundArchive> before = ReadWii(file);
-    XSFLIB_CHECK(std::ranges::equal(before->FileData(1), PaddedForWii(bank.file)) &&
-                 std::ranges::equal(before->WaveData(2), PaddedForWii(wave_sounds.wave_data)));
-    XSFLIB_CHECK(hokuto::edit::NewWiiFileVersion(*before, FileKind::kBank) == 0x0102 &&
-                 hokuto::edit::NewWiiFileVersion(*before, FileKind::kWaveSoundFile) == 0x0103 &&
-                 hokuto::edit::NewWiiFileVersion(*before, FileKind::kWaveArchive) == 0x0100);
-    XSFLIB_CHECK(hokuto::edit::PresentWiiVersion(*before, FileKind::kBank, 0) == 0x0102 &&
-                 hokuto::edit::PresentWiiVersion(*before, FileKind::kWaveSoundFile, 1) == 0x0103);
-
-    // The Switch's bank with the second wave of the bank's wave data, and the wave of the wave sound file's.
-    const IncomingFile incoming = hokuto::edit::ReadIncomingFile(later_bank, FileKind::kBank, sar::Flavor::kNx);
-    const std::map<uint32_t, uint32_t> kMap = {{kFirstWavesId, 1}, {kSecondWavesId, 2}};
-    SEQLIB_REQUIRE(hokuto::edit::WavesOf(*before, 1).size() > 1 && !hokuto::edit::WavesOf(*before, 2).empty());
-    const std::vector<rsar::WaveFile> expected = {hokuto::edit::WavesOf(*before, 1)[1],
-                                                  hokuto::edit::WavesOf(*before, 2)[0]};
-    const IncomingFile converted = hokuto::edit::WiiFileOf(incoming, sar::Flavor::kNx, *before, kMap, 0x0102);
-    XSFLIB_CHECK(converted.kind == FileKind::kBank && converted.version == 0x0102 && converted.converted &&
-                 converted.converted->flavor == sar::Flavor::kNx && converted.converted->size == later_bank.size());
-    const rsar::BankFile wii_bank = rsar::BankFile::Read(converted.bytes, converted.wave_data);
-    XSFLIB_CHECK(wii_bank.version == 0x0102 && wii_bank.waves == expected && wii_bank.instruments.size() == 3);
-    const IncomingFile old = hokuto::edit::WiiFileOf(incoming, sar::Flavor::kNx, *before, kMap, 0x0101);
-    XSFLIB_CHECK(old.version == 0x0101 && rsar::BankFile::Read(old.bytes, old.wave_data).waves == expected &&
-                 old.wave_data == rsar::RawWaveData(expected));
-    XSFLIB_CHECK(
-        RefusalOf([&]
-                  { hokuto::edit::WiiFileOf(incoming, sar::Flavor::kNx, *before, {{kFirstWavesId, 1}}, 0x0102); }) ==
-        "Choose wave data of the archive for wave archive 1.");
-
-    // A wave sound file of the Switch with the same wave of the bank's wave data.
-    const IncomingFile later_sounds = hokuto::edit::ReadIncomingFile(
-        WaveSounds(sar::Flavor::kNx, {{kFirstWavesId, 1}}, {0}), FileKind::kWaveSoundFile, sar::Flavor::kNx);
-    const IncomingFile wsd =
-        hokuto::edit::WiiFileOf(later_sounds, sar::Flavor::kNx, *before, {{kFirstWavesId, 1}}, 0x0103);
-    const rsar::WsdFile wii_sounds = rsar::WsdFile::Read(wsd.bytes, wsd.wave_data);
-    XSFLIB_CHECK(wsd.kind == FileKind::kWaveSoundFile && wii_sounds.version == 0x0103 &&
-                 wii_sounds.sounds.size() == 1 && (wii_sounds.waves == std::vector<rsar::WaveFile>{expected[0]}));
-
-    // The converted bank in the place of the archive's bank, with its wave data.
-    const File replaced = hokuto::edit::ReplaceWiiFile(file, *before, 0, converted);
-    const std::shared_ptr<const rsar::SoundArchive> after = ReadWii(replaced);
-    XSFLIB_CHECK(std::ranges::equal(after->FileData(1), PaddedForWii(converted.bytes)) &&
-                 std::ranges::equal(after->WaveData(1), PaddedForWii(converted.wave_data)));
-    XSFLIB_CHECK(hokuto::edit::WavesOf(*after, 1) == expected);
-    XSFLIB_CHECK(std::ranges::equal(after->FileData(2), before->FileData(2)) &&
-                 std::ranges::equal(after->WaveData(2), before->WaveData(2)));
-    XSFLIB_CHECK(WiiCopiesOf(replaced, 1, false) ==
-                 std::vector<std::vector<uint8_t>>(2, PaddedForWii(converted.bytes)));
-    XSFLIB_CHECK(WiiCopiesOf(replaced, 1, true) ==
-                 std::vector<std::vector<uint8_t>>(2, PaddedForWii(converted.wave_data)));
-
-    // The converted bank as a bank of the Wii, with the bank's wave data and the wave sound file's. The bank names two
-    // waves, and the wave sound file's wave data holds one.
-    const IncomingFile wii = hokuto::edit::ReadWiiIncomingFile(converted.bytes, FileKind::kBank);
-    const IncomingFile again = hokuto::edit::WiiFileWithWaves(wii, hokuto::edit::WiiWaveDataOf(*after, 1), 0x0102);
-    XSFLIB_CHECK(again.bytes == converted.bytes && again.wave_data == PaddedForWii(converted.wave_data) &&
-                 !again.converted);
-    XSFLIB_CHECK(hokuto::format::ExportArchive(hokuto::edit::ReplaceWiiFile(replaced, *after, 0, again)) ==
-                 hokuto::format::ExportArchive(replaced));
-    XSFLIB_CHECK(
-        RefusalOf([&] { hokuto::edit::WiiFileWithWaves(wii, hokuto::edit::WiiWaveDataOf(*after, 2), 0x0102); }) ==
-        "The bank names wave 1, and its wave data holds 1 wave.");
-
-    // An archive whose bank and wave sound file describe their waves in WAVE blocks.
-    rsar::BankFile::Files old_bank;
-    rsar::WsdFile::Files old_sounds;
-    const std::vector<uint8_t> old_original = ModelWiiItemsArchive(true, old_bank, old_sounds);
-    const File old_file = hokuto::format::ImportWiiArchive(old_original);
-    const std::shared_ptr<const rsar::SoundArchive> old_before = ReadWii(old_file);
-    XSFLIB_CHECK(hokuto::edit::NewWiiFileVersion(*old_before, FileKind::kBank) == 0x0101 &&
-                 hokuto::edit::NewWiiFileVersion(*old_before, FileKind::kWaveSoundFile) == 0x0102);
-
-    // The RWARs that Export… writes for the wave data give the files and their wave data back.
-    const std::vector<rsar::WaveFile> old_waves = hokuto::edit::WavesOf(*old_before, 1);
-    const hokuto::edit::WiiWaveData exported = hokuto::edit::ReadWiiWaveData(
-        hokuto::song::ItemBytes(*old_before, {.kind = hokuto::song::ItemKind::kWaveArchive, .index = 1}));
-    XSFLIB_CHECK(exported.rwar && old_waves.size() == 2 && exported.waves == old_waves);
-    const IncomingFile bank_back = hokuto::edit::WiiFileWithWaves(
-        hokuto::edit::ReadWiiIncomingFile(old_bank.file, FileKind::kBank), exported, 0x0101);
-    XSFLIB_CHECK(bank_back.bytes == old_bank.file && bank_back.wave_data == old_bank.wave_data && !bank_back.converted);
-    XSFLIB_CHECK(hokuto::format::ExportArchive(hokuto::edit::ReplaceWiiFile(old_file, *old_before, 0, bank_back)) ==
-                 old_original);
-    const hokuto::edit::WiiWaveData sounds_exported = hokuto::edit::ReadWiiWaveData(
-        hokuto::song::ItemBytes(*old_before, {.kind = hokuto::song::ItemKind::kWaveArchive, .index = 2}));
-    const IncomingFile sounds_back = hokuto::edit::WiiFileWithWaves(
-        hokuto::edit::ReadWiiIncomingFile(old_sounds.file, FileKind::kWaveSoundFile), sounds_exported, 0x0102);
-    XSFLIB_CHECK(sounds_back.bytes == old_sounds.file && sounds_back.wave_data == old_sounds.wave_data);
-
-    // A bank of version 1.2 goes in written again in 1.1, the present bank's version.
-    rsar::BankFile model = rsar::BankFile::Read(old_bank.file, old_bank.wave_data);
-    model.version = 0x0102;
-    const rsar::BankFile::Files newer = model.Write();
-    const IncomingFile rewritten = hokuto::edit::WiiFileWithWaves(
-        hokuto::edit::ReadWiiIncomingFile(newer.file, FileKind::kBank), hokuto::edit::WiiWaveDataOf(*old_before, 1),
-        hokuto::edit::PresentWiiVersion(*old_before, FileKind::kBank, 0));
-    XSFLIB_CHECK(rewritten.version == 0x0101 && rewritten.converted && rewritten.converted->wii &&
-                 rewritten.converted->version == 0x0102 && rewritten.converted->size == newer.file.size());
-    XSFLIB_CHECK(rewritten.bytes == old_bank.file && rewritten.wave_data == old_bank.wave_data);
-
-    // An RWAR of one wave gives the bank with the WAVE block its waves, in both groups.
-    const std::vector<uint8_t> one = rsar_files::MakeRwarOf({rsar_files::MakeRwav(0x34)});
-    const File rewaved = hokuto::edit::ReplaceWiiFile(old_file, *old_before, 1,
-                                                      hokuto::edit::ReadWiiIncomingFile(one, FileKind::kWaveArchive));
-    const std::shared_ptr<const rsar::SoundArchive> old_after = ReadWii(rewaved);
-    XSFLIB_CHECK((hokuto::edit::WavesOf(*old_after, 1) ==
-                  std::vector<rsar::WaveFile>{rsar::WaveFile::Read(rsar_files::MakeRwav(0x34))}));
-    XSFLIB_CHECK(hokuto::edit::PresentWiiVersion(*old_after, FileKind::kBank, 0) == 0x0101);
-    const std::span<const uint8_t> new_file = old_after->FileData(1);
-    const std::span<const uint8_t> new_data = old_after->WaveData(1);
-    XSFLIB_CHECK(WiiCopiesOf(rewaved, 1, false) ==
-                 std::vector<std::vector<uint8_t>>(2, std::vector<uint8_t>(new_file.begin(), new_file.end())));
-    XSFLIB_CHECK(WiiCopiesOf(rewaved, 1, true) ==
-                 std::vector<std::vector<uint8_t>>(2, std::vector<uint8_t>(new_data.begin(), new_data.end())));
-    XSFLIB_CHECK(std::ranges::equal(old_after->WaveData(2), old_before->WaveData(2)));
-
-    // A bank of version 1.1 alone in the place of the bank keeps the present wave data. Its WAVE block describes longer
-    // waves, and Hokuto can't read it with that wave data. An RWAR of its waves then gives it its waves.
-    rsar::BankFile::Instrument instrument;
-    instrument.key_regions = {{0, 127, {{0, 127, rsar::Region{}}}}};
-    std::vector<int16_t> first(64);
-    std::vector<int16_t> second(48);
-    for (std::size_t i = 0; i < first.size(); i++)
-    {
-        first[i] = static_cast<int16_t>(i * 100);
-        second[i % second.size()] = static_cast<int16_t>(-static_cast<int>(i));
-    }
-    const std::vector<rsar::WaveFile> longer = {WiiPcm16(first, 32000), WiiPcm16(second, 32000)};
-    const std::vector<std::optional<rsar::BankFile::Instrument>> one_instrument = {instrument};
-    const rsar::BankFile::Files other = rsar::BankFile::FromInstruments(0x0101, one_instrument, longer).Write();
-    const File alone = hokuto::edit::ReplaceWiiFile(old_file, *old_before, 0,
-                                                    hokuto::edit::ReadWiiIncomingFile(other.file, FileKind::kBank));
-    const std::shared_ptr<const rsar::SoundArchive> alone_after = ReadWii(alone);
-    XSFLIB_CHECK(alone_after->FileData(1).size() == other.file.size() &&
-                 std::ranges::equal(alone_after->WaveData(1), old_bank.wave_data));
-    XSFLIB_CHECK(RefusalOf([&] { hokuto::edit::WavesOf(*alone_after, 1); }).starts_with("Hokuto can't read the bank."));
-    std::vector<std::vector<uint8_t>> rwavs;
-    for (const rsar::WaveFile& wave : longer)
-    {
-        rwavs.push_back(wave.Write());
-    }
-    const File given = hokuto::edit::ReplaceWiiFile(
-        alone, *alone_after, 1,
-        hokuto::edit::ReadWiiIncomingFile(rsar_files::MakeRwarOf(rwavs), FileKind::kWaveArchive));
-    const std::shared_ptr<const rsar::SoundArchive> given_after = ReadWii(given);
-    XSFLIB_CHECK(hokuto::edit::WavesOf(*given_after, 1) == longer);
-    XSFLIB_CHECK(std::ranges::equal(given_after->FileData(1), other.file) &&
-                 std::ranges::equal(given_after->WaveData(1), other.wave_data));
-}
-
 } // namespace
 
 int main()
 {
-    for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe})
-    {
-        TestRead(flavor);
-        TestConversion(flavor);
-        TestLaterVersions(flavor);
-        TestIncomingVersions(flavor);
-        TestChanges(flavor);
-        TestSoundsPlaying(flavor);
-        TestProgramFixes(flavor);
-        TestReplace(flavor);
-        TestCopyPlaces(flavor);
-        TestWave(flavor);
-        TestDspAdpcmWave(flavor);
-        TestResampledWave(flavor);
-        TestNewWave(flavor);
-        TestNewWaveFile(flavor);
-        TestWaveFileInPlace(flavor);
-    }
-    TestWiiReplace();
-    TestWiiWave();
-    TestWiiFiles();
-    TestWiiWaves();
-    TestWiiLaterFiles();
-
-    return xsflib::testing::Summary("files");
+    return xsflib::testing::RunTest("files",
+                                    []
+                                    {
+                                        for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe})
+                                        {
+                                            TestRead(flavor);
+                                            TestConversion(flavor);
+                                            TestLaterVersions(flavor);
+                                            TestIncomingVersions(flavor);
+                                            TestChanges(flavor);
+                                            TestSoundsPlaying(flavor);
+                                            TestProgramFixes(flavor);
+                                            TestReplace(flavor);
+                                            TestCopyPlaces(flavor);
+                                            TestWave(flavor);
+                                            TestDspAdpcmWave(flavor);
+                                            TestResampledWave(flavor);
+                                            TestNewWave(flavor);
+                                            TestNewWaveFileSameConsole(flavor);
+                                            TestNewWaveFileOtherConsole(flavor);
+                                            TestNewWaveFileOtherKinds(flavor);
+                                            TestNewWaveFileFromCtr(flavor);
+                                            TestNewWaveFileDamaged(flavor);
+                                            TestWaveFileInPlace(flavor);
+                                        }
+                                    });
 }

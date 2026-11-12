@@ -43,6 +43,7 @@
 #include "song/archive.h"
 #include "song/biquads.h"
 #include "song/items.h"
+#include "sound_places.h"
 
 using hokuto::edit::Incoming;
 using hokuto::edit::Program;
@@ -57,10 +58,12 @@ using hokuto::edit::SoundPlace;
 using hokuto::edit::SoundStarts;
 using hokuto::edit::StartingSound;
 using hokuto::format::File;
+using hokuto::testing::PlacesOf;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Source;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -159,15 +162,6 @@ Archive Read(std::vector<uint8_t> bytes)
     return hokuto::song::LoadArchive(std::move(bytes), "test.bfsar");
 }
 
-// Where each sound plays in `file`. The program finds the places the same way.
-std::vector<std::optional<SoundPlace>> PlacesOf(const File& file)
-{
-    const std::vector<uint8_t> built = hokuto::format::ExportArchive(file);
-    const Archive archive = Read(built);
-    return hokuto::edit::SoundPlaces(*archive, hokuto::format::SequencesOfFiles(file, built, *archive),
-                                     hokuto::format::StartFieldsOfSounds(file, built));
-}
-
 // The bytecode of sound `sound`'s file in `archive`, without the zeros that pad it.
 std::vector<uint8_t> BytecodeOf(const Archive& archive, uint32_t sound)
 {
@@ -220,32 +214,7 @@ Archive Replaced(const File& file, uint32_t sound, uint32_t start, const Program
 template <typename Call>
 bool Refused(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
-}
-
-// The message of the refusal that `call` throws, or nothing.
-template <typename Call>
-std::string RefusalOf(Call call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return {};
+    return !ErrorOf<std::invalid_argument>(call).empty();
 }
 
 // A file of each console reads into the same commands. Its padding stays out, and its labels name their items. Like the
@@ -271,7 +240,7 @@ void TestRead()
     XSFLIB_CHECK(Refused([] { ReadIncoming(std::vector<uint8_t>(64, 0x55)); }));
     XSFLIB_CHECK(Refused([] { ReadIncoming(sar_files::Sequence(false, {0x89, 1, 0, 0, 0xFF}, {{"Into", 0}})); }));
     const std::vector<uint8_t> kWave = {'F', 'W', 'A', 'V', 0xFF, 0xFE, 0x40, 0};
-    XSFLIB_CHECK(RefusalOf([&kWave] { ReadIncoming(kWave); }) ==
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&kWave] { ReadIncoming(kWave); }) ==
                  "It's a wave file of the Switch, not a sequence file.");
     const Incoming from_ctr = ReadIncoming(ctr);
     XSFLIB_CHECK(from_ctr.flavor == sar::Flavor::kCtr && from_ctr.size == ctr.size());
@@ -712,7 +681,8 @@ void TestWii()
     const std::vector<uint8_t> archive = ntdlib::testing::rsar_tools::MakeArchive(
         0x0104, {{WiiSequence(kAloneBytecode, {{"SEQ_SONG", 0}})}}, {{"SEQ_SONG", 0, 0}}, {{0}});
     const File file = hokuto::format::ImportWiiArchive(archive);
-    const hokuto::song::Console build{.wii = hokuto::format::BuildOfWiiArchive(*file.native)};
+    const hokuto::song::Console build{.engine = hokuto::format::Engine::kWii,
+                                      .wii = hokuto::format::BuildOfWiiArchive(*file.native)};
     const std::vector<uint8_t> bytes = WiiSequence(kWiiNewBytecode, {{"Intro", 0}, {"Main", 8}});
     const Incoming incoming = ReadIncoming(bytes, build);
 
@@ -720,11 +690,11 @@ void TestWii()
     XSFLIB_CHECK(incoming.sequence.labels.size() == 2 && incoming.sequence.labels[1].item == kMain);
     XSFLIB_CHECK(incoming.sequence.items[kMain + 1].kind == Kind::kCall);
     XSFLIB_CHECK(Refused([&bytes] { ReadIncoming(bytes); }));
-    const std::string refusal =
-        RefusalOf([&build] { ReadIncoming(sar_files::Sequence(false, kNewBytecode, {{"Intro", 0}}), build); });
+    const std::string refusal = ErrorOf<std::invalid_argument>(
+        [&build] { ReadIncoming(sar_files::Sequence(false, kNewBytecode, {{"Intro", 0}}), build); });
     XSFLIB_CHECK(refusal ==
-                 "The sequence file's commands have to keep their places. Hokuto can't put such a sequence "
-                 "into an archive of the Wii yet.");
+                 "The commands in the sequence file must stay at their offsets. Hokuto can't put such a sequence "
+                 "into a Wii archive yet.");
 
     // The Switch's sequence, converted.
     const Incoming later = ReadIncoming(sar_files::Sequence(false, kNewBytecode, {{"Intro", 0}, {"Main", 8}}), build);
@@ -745,29 +715,31 @@ void TestWii()
     XSFLIB_CHECK(global.sequence.items[3].kind == Kind::kTimebase);
     const std::vector<uint8_t> timed = sar_files::Sequence(false, kTimedBytecode, {{"Song", 0}});
     const Incoming june = ReadIncoming(timed, build);
-    const Incoming older = ReadIncoming(timed, hokuto::song::Console{.wii = ntdlib::SndBuild{.date = 20070608}});
+    const Incoming older = ReadIncoming(timed, hokuto::song::Console{.engine = hokuto::format::Engine::kWii,
+                                                                     .wii = ntdlib::SndBuild{.date = 20070608}});
     XSFLIB_CHECK(june.sequence.items.size() == 5 && june.sequence.items[1].kind == Kind::kVolume &&
                  june.sequence.items[1].time && june.sequence.items[2].kind == Kind::kVolume2 &&
                  !june.sequence.items[2].time && june.warnings.size() == 1);
     XSFLIB_CHECK(older.sequence.items.size() == 5 && !older.sequence.items[1].time && !older.sequence.items[2].time);
     XSFLIB_CHECK(older.warnings.size() == 2 &&
                  older.warnings[1] ==
-                     "NW4R SND's builds before March 2008 have no times for settings. 1 other "
-                     "setting of the sequence loses its time, and changes at once.");
+                     "NW4R SND builds before March 2008 apply every setting at once. The ramp time of 1 other "
+                     "change is dropped.");
 
     // Without volume2's warning before it, the warning of the older builds counts no "other" setting.
     const std::vector<uint8_t> volume_only(kTimedBytecode.begin(), kTimedBytecode.begin() + 7);
     std::vector<uint8_t> volume_bytecode = volume_only;
     volume_bytecode.insert(volume_bytecode.end(), kTimedBytecode.begin() + 12, kTimedBytecode.end());
-    const Incoming volume = ReadIncoming(sar_files::Sequence(false, volume_bytecode, {{"Song", 0}}),
-                                         hokuto::song::Console{.wii = ntdlib::SndBuild{.date = 20070608}});
+    const Incoming volume = ReadIncoming(
+        sar_files::Sequence(false, volume_bytecode, {{"Song", 0}}),
+        hokuto::song::Console{.engine = hokuto::format::Engine::kWii, .wii = ntdlib::SndBuild{.date = 20070608}});
     XSFLIB_CHECK(volume.warnings.size() == 1 &&
                  volume.warnings[0] ==
-                     "NW4R SND's builds before March 2008 have no times for settings. 1 setting of the sequence loses "
-                     "its time, and changes at once.");
+                     "NW4R SND builds before March 2008 apply every setting at once. The ramp time of 1 change is "
+                     "dropped.");
     XSFLIB_CHECK(hokuto::edit::LaterGlobalsWarning(globals) ==
-                 "The sound reads global variable 20 before it sets it. NW4R SND starts the global variables at 0, and "
-                 "the later consoles start them at -1. Commands at the sound's start set it to -1 while it holds 0.");
+                 "The sound reads global variable 20 before setting it. NW4R SND starts global variables at 0. Later "
+                 "consoles start them at -1. New commands at the start of the sound set it to -1 if it is 0.");
 
     const File replaced = ReplaceSequence(file, WiiPlacesOf(file), 0, incoming.sequence, kMain, {}, "Main", 0);
     const std::shared_ptr<const ntdlib::rsar::SoundArchive> after = hokuto::song::LoadWiiArchive(
@@ -813,7 +785,8 @@ void TestWiiSweep()
     const std::vector<uint8_t> archive = ntdlib::testing::rsar_tools::MakeArchive(
         0x0103, {{WiiSequence(kAloneBytecode, {{"SEQ_SONG", 0}})}}, {{"SEQ_SONG", 0, 0}}, {{0}});
     const File file = hokuto::format::ImportWiiArchive(archive);
-    const hokuto::song::Console build{.wii = hokuto::format::BuildOfWiiArchive(*file.native)};
+    const hokuto::song::Console build{.engine = hokuto::format::Engine::kWii,
+                                      .wii = hokuto::format::BuildOfWiiArchive(*file.native)};
 
     const Incoming incoming = ReadIncoming(sar_files::Sequence(false, kSweepBytecode, {{"Song", 0}}), build);
     const File replaced = ReplaceSequence(file, WiiPlacesOf(file), 0, incoming.sequence, 0, {}, "Song", 0);
@@ -873,8 +846,8 @@ void TestBiquads()
     const File file = hokuto::format::ImportSwitchArchive(sar_files::Archive(false, spec));
     const Archive archive = Read(hokuto::format::ExportArchive(file));
     const std::vector<uint8_t> for_wii_u = hokuto::song::OtherConsoleSequenceFile(*archive, 0, sar::Flavor::kCafe).file;
-    const hokuto::song::Console kOnSwitch{.flavor = sar::Flavor::kNx};
-    const hokuto::song::Console kOnWiiU{.flavor = sar::Flavor::kCafe};
+    const hokuto::song::Console kOnSwitch{.engine = hokuto::format::Engine::kSwitch};
+    const hokuto::song::Console kOnWiiU{.engine = hokuto::format::Engine::kWiiU};
     const int64_t nearest = hokuto::song::NearestBiquadValue(2, 70, kOnWiiU) * kOne;
 
     const Incoming there = ReadIncoming(nx, kOnWiiU);
@@ -886,11 +859,11 @@ void TestBiquads()
     XSFLIB_CHECK(items[1].kind == Kind::kBiquadType && items[1].value.value == 2 * kOne);
     XSFLIB_CHECK(items[2].kind == Kind::kBiquadValue && items[2].value.value == nearest && nearest != 70 * kOne);
     XSFLIB_CHECK(there.warnings.size() == 1 &&
-                 there.warnings[0].ends_with(" 1 setting of the value of a filter of types 1 to 5 took the "
-                                             "value whose passband on the Wii U lies nearest."));
+                 there.warnings[0].ends_with(" 1 value of types 1–5 changed to the value with the nearest "
+                                             "passband on the Wii U."));
     XSFLIB_CHECK(back.sequence.items[1].value.value == 7 * kOne && back.sequence.items[2].value.value == nearest);
     XSFLIB_CHECK(back.warnings.size() == 1 &&
-                 back.warnings[0].ends_with(" 1 setting of types 1 to 5 took types 6 to 10."));
+                 back.warnings[0].ends_with(" 1 setting changed from types 1–5 to types 6–10."));
     XSFLIB_CHECK(same.warnings.empty() && same.sequence == ReadIncoming(nx).sequence);
     XSFLIB_CHECK(same.sequence.items[2].value.value == 70 * kOne);
 
@@ -905,23 +878,25 @@ void TestBiquads()
 
 int main()
 {
-    TestRead();
-    TestPrograms();
-    TestAlone();
-    TestWiderPrograms();
-    TestPlain();
-    TestEntry();
-    TestSharedStart();
-    TestReturnRunsOn();
-    TestSameFile();
-    TestSoundStarts();
-    TestTracks();
-    TestBankSlots();
-    TestPlaces();
-    TestRefusals();
-    TestBiquads();
-    TestWii();
-    TestWiiSweep();
-
-    return xsflib::testing::Summary("replace");
+    return xsflib::testing::RunTest("replace",
+                                    []
+                                    {
+                                        TestRead();
+                                        TestPrograms();
+                                        TestAlone();
+                                        TestWiderPrograms();
+                                        TestPlain();
+                                        TestEntry();
+                                        TestSharedStart();
+                                        TestReturnRunsOn();
+                                        TestSameFile();
+                                        TestSoundStarts();
+                                        TestTracks();
+                                        TestBankSlots();
+                                        TestPlaces();
+                                        TestRefusals();
+                                        TestBiquads();
+                                        TestWii();
+                                        TestWiiSweep();
+                                    });
 }

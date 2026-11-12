@@ -70,7 +70,8 @@ struct Model
 // The model of `file`'s archive: the model of the archive that `file`'s native archive builds, with the sequences
 // without the encoder's choices. Throws std::invalid_argument for a file without a native archive, for a sound that
 // starts inside a command, and the exceptions of ExportArchive. Throws xsflib::FormatError for an archive that ntdlib's
-// model doesn't hold, such as one that NintendoWare's tools didn't lay out.
+// model doesn't hold, such as one that NintendoWare's tools didn't lay out, and for a GBA ROM, a DS archive or a set of
+// DSE files.
 Model ModelOf(const File& file);
 
 // `file` with the archive of `model`: the native archive that the model builds with `file`'s sequences, and the form
@@ -92,11 +93,23 @@ File InModelForm(File file);
 // The name of a new file's player.
 inline constexpr std::string_view kDefaultPlayer = "PLAYER_DEFAULT";
 
-// A new file for `engine`, in the model form, with strict mixing. Its archive holds one player, kDefaultPlayer, and
+// The names of the empty bank and the stream player of a new file of the DS.
+inline constexpr std::string_view kDefaultDsBank = "BANK_DEFAULT";
+inline constexpr std::string_view kDefaultDsStreamPlayer = "STRM_PLAYER_DEFAULT";
+
+// A new file for `engine`, with strict mixing, in the model form. Its archive holds one player, kDefaultPlayer, and
 // nothing else. The player plays one sound at a time. The archive takes FSAR 2.2.0 on the Switch and 2.0.0 on the Wii
 // U, and CSAR 2.0.0.0 on the 3DS: the oldest versions of the archives of each console that Hokuto lays out. On the Wii,
 // it takes RSAR 1.4, and the archive's version gives the build of NW4R SND: a build of June 2008. That is the latest
 // version and build that Hokuto models, with the most of the later consoles' commands and banks' values.
+//
+// A new file of the DS keeps a bare sound archive (SDAT) that ntdlib's sdat::BuildArchive lays out, in no cartridge,
+// and has no model form. An export writes the SDAT. The archive also contains kDefaultDsBank, a bank without
+// instruments, and a stream player, kDefaultDsStreamPlayer: a sound of the DS names a bank, and a stream plays on a
+// stream player.
+//
+// Throws std::invalid_argument on the GBA, on each of the GBA's other drivers and on DSE: their files come from a
+// game's ROM or image.
 File NewFile(Engine engine);
 
 // `sequences` without the encoder's choices. A sequence without choices stays shared.

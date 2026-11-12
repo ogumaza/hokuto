@@ -29,6 +29,7 @@
 #include "format/file.h"
 #include "song/archive.h"
 #include "song/sequence.h"
+#include "sound_places.h"
 
 using hokuto::edit::MappedVariables;
 using hokuto::edit::UsesOf;
@@ -36,6 +37,7 @@ using hokuto::edit::VariableReaders;
 using hokuto::edit::VariableUses;
 using hokuto::edit::WithVariables;
 using hokuto::format::File;
+using hokuto::testing::PlacesOf;
 using ntdlib::commands::Argument;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
@@ -43,6 +45,7 @@ using ntdlib::commands::kOne;
 using ntdlib::commands::Label;
 using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -127,15 +130,6 @@ Archive Read(std::vector<uint8_t> bytes)
     return hokuto::song::LoadArchive(std::move(bytes), "test.bfsar");
 }
 
-// Where each sound plays in `file`. The program finds the places the same way.
-std::vector<std::optional<hokuto::edit::SoundPlace>> PlacesOf(const File& file)
-{
-    const std::vector<uint8_t> built = hokuto::format::ExportArchive(file);
-    const Archive archive = Read(built);
-    return hokuto::edit::SoundPlaces(*archive, hokuto::format::SequencesOfFiles(file, built, *archive),
-                                     hokuto::format::StartFieldsOfSounds(file, built));
-}
-
 // The commands of kNewBytecode as Replace… reads them.
 Sequence NewSequence()
 {
@@ -163,16 +157,7 @@ std::vector<uint8_t> Keys(const MappedVariables& mapped, const hokuto::song::Sta
 template <typename Call>
 bool Refused(Call call)
 {
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::invalid_argument>(call).empty();
 }
 
 // The bit of variable `number` in a mask of variables.
@@ -377,12 +362,14 @@ void TestReaders()
 
 int main()
 {
-    TestUses();
-    TestMoves();
-    TestFixed();
-    TestOpening();
-    TestPlayed();
-    TestReaders();
-
-    return xsflib::testing::Summary("variables");
+    return xsflib::testing::RunTest("variables",
+                                    []
+                                    {
+                                        TestUses();
+                                        TestMoves();
+                                        TestFixed();
+                                        TestOpening();
+                                        TestPlayed();
+                                        TestReaders();
+                                    });
 }

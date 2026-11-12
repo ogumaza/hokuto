@@ -283,14 +283,29 @@ NewStream MakeNewWiiStream(const ntdlib::rsar::SoundArchive& archive, uint32_t m
 format::File AddWiiStreamSound(const format::File& file, uint32_t model, const std::string& name,
                                const NewStream& stream);
 
-// Why the archive of `file`, a file of the Wii, takes no new item: the message of the edits for an archive that
-// NintendoWare for Revolution's tools didn't lay out as Hokuto reads it. Nothing when it takes new items. The check
-// exports the archive and reads its model.
+// Why the archive of `file`, a file of the Wii, takes no new item: the message of the edits for an archive that is cut
+// short, or that NintendoWare for Revolution's tools didn't lay out as Hokuto reads it. Nothing when it takes new
+// items. The check exports the archive and reads its model.
 std::optional<std::string> WiiAdditionsRefused(const format::File& file);
 
 // The groups with names of `file`'s archive of the Wii, with the files that each one holds, in order, by their IDs. A
 // group's index here is its index in the archive's group table. The archive's last group stays out. None for an archive
 // that the tools didn't lay out.
 std::vector<Group> WiiGroupsOf(const format::File& file);
+
+// The groups with names of an archive of the Wii (WiiGroupsOf), and why the archive accepts no new item
+// (WiiAdditionsRefused), from one read of its model.
+struct WiiAdditions
+{
+    std::vector<Group> groups;
+    std::optional<std::string> refused;
+};
+
+// WiiGroupsOf and WiiAdditionsRefused of `file` together. The check exports the archive and reads its model once.
+WiiAdditions WiiAdditionsOf(const format::File& file);
+
+// WiiAdditionsOf for `archive`, an archive that `file` builds, such as the archive that an export writes after
+// edit::FoldTimelines. The Import window reads the model of the archive that it measures, and builds no other.
+WiiAdditions WiiAdditionsOf(const format::File& file, std::span<const uint8_t> archive);
 
 } // namespace hokuto::edit

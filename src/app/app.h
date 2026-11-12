@@ -30,15 +30,17 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/convert.h"
 
+#include "app/app_work.h"
 #include "app/audio_output.h"
 #include "app/bank_editor.h"
-#include "app/editor_view.h"
 #include "app/effect_editor.h"
 #include "app/export_window.h"
+#include "app/item_views.h"
 #include "app/key_edits.h"
 #include "app/list_editor.h"
 #include "app/list_edits.h"
 #include "app/menus.h"
+#include "app/replace_flow.h"
 #include "app/replace_window.h"
 #include "app/song_view.h"
 #include "app/sound_section.h"
@@ -51,13 +53,20 @@
 #include "edit/files.h"
 #include "edit/history.h"
 #include "edit/new_items.h"
+#include "edit/notes.h"
 #include "edit/other_console.h"
 #include "edit/replace.h"
+#include "edit/sound_font_imports.h"
 #include "edit/tracks.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "song/catch_up.h"
+#include "song/driver.h"
+#include "song/ds.h"
+#include "song/dse.h"
+#include "song/gba.h"
 #include "song/items.h"
+#include "song/played.h"
 #include "song/player.h"
 #include "song/sequence.h"
 #include "song/sequence_reader.h"
@@ -101,277 +110,61 @@ public:
     void ExecuteListed(Command command, std::size_t index) override;
 
 private:
-    // How the tracks take their colours: each the next colour of the rainbow, all one grey, or each the colour that the
-    // user gave it in the file. A track without one takes its rainbow colour.
-    enum class TrackColours
-    {
-        kRainbow,
-        kStandard,
-        kCustom,
-    };
-
-    // The settings that the program keeps between runs. They share a file with Dear ImGui's layout, in the user's
-    // settings folder. The window's size is its size when it isn't maximised, in SDL3's window coordinates. The
-    // layout's version is the version of the default layout that the saved one started from. The arrangement keeps the
-    // track list's width. File > Recent Projects lists the recent projects (app/recent_projects.h).
-    struct Settings
-    {
-        std::string device;
-        int window_width = 0;
-        int window_height = 0;
-        int layout_version = 0;
-        TrackColours track_colours = TrackColours::kRainbow;
-        std::vector<std::string> recent_projects;
-    };
-
-    // A message box's kind: an error shows the error icon, and a note, such as why nothing plays, the information icon.
-    enum class MessageKind
-    {
-        kError,
-        kNote,
-    };
-
-    // The system's dialogs: File > Open gives a Hokuto file, File > Save As the file to save to, File > Import > Sound
-    // Archive a sound archive, File > Import > Sequence, Bank, Wave Archive, Wave, Wave Sound File, Audio File and
-    // Stream a file to bring in as new items, and the Export window the file to export to, or the folder for a wave
-    // archive's WAV files and a bank's SFZ files. The browser's Replace… gives the file to put in the place of a
-    // sound's sequence, of a bank's, a wave archive's or a wave sound's file, of a wave or of a stream.
-    enum class Dialog
-    {
-        kOpen,
-        kSaveAs,
-        kImport,
-        kImportSequence,
-        kImportBank,
-        kImportWaveArchive,
-        kImportWave,
-        kImportWaveSoundFile,
-        kImportAudioFile,
-        kImportStream,
-        kExport,
-        kExportFolder,
-        kReplace,
-    };
-
-    // What the user chose in the question about a document's changes (AskToSave).
-    enum class SaveChoice
-    {
-        kSave,
-        kDontSave,
-        kCancel,
-    };
-
-    // What an export makes away from the program's thread: the archive's bytes, the sequence's files, a bank's
-    // instruments, or an item's files by their names, and the warnings. An archive's group files that the edits changed
-    // wait for the folder that the user chooses. An error stops the export.
-    struct ExportWork
-    {
-        std::vector<uint8_t> archive;
-        std::optional<ntdlib::sequence_export::Conversion> conversion;
-        std::optional<ntdlib::sequence_export::BankConversion> bank;
-        std::vector<std::pair<std::string, std::vector<uint8_t>>> files;
-        std::vector<format::ChangedGroupFile> group_files;
-        std::vector<std::string> warnings;
-        std::string error;
-
-        // Of a song for the 3DS: whether the sound plays stereo waves, and whether they went in as mono.
-        bool stereo_waves = false;
-        bool mono_waves = false;
-
-        // Of an export to MIDI of a sound that the zones don't show: the sound's sequence in the file's archive, and
-        // the archive and the sequence that the measure plays, on the sound's engine.
-        std::shared_ptr<const song::Sequence> sequence;
-        std::shared_ptr<const ntdlib::sar::SoundArchive> played;
-        std::shared_ptr<const ntdlib::rsar::SoundArchive> played_wii;
-        std::shared_ptr<const song::Sequence> played_sequence;
-    };
-
-    // An export from File > Export or the browser's Export… until its files are written or the user cancels it: what
-    // the Export window shows, the item that the export comes from, the name of the file that the dialog offers, the
-    // folder of the file that the user opened, and the work, then what the work made.
-    struct Export
-    {
-        ExportTarget Target() const
-        {
-            return view.targets[view.chosen];
-        }
-
-        ExportView view;
-        std::optional<song::Item> item;
-
-        // The program of a bank's instrument that goes out by itself, for a bank's item, and the bank's last program
-        // with an instrument.
-        std::optional<uint32_t> program;
-        uint32_t last_program = 0;
-
-        std::string file_name;
-        std::filesystem::path source_folder;
-        std::future<ExportWork> work;
-        std::optional<ExportWork> done;
-
-        // The mono waves of a song for the 3DS: the choice of the window's check box, or Hokuto's.
-        edit::MonoWaves mono = edit::MonoWaves::kAuto;
-
-        // The measure of an export to MIDI, once the work is done: its work, a flag that cancels it, and what it found.
-        std::future<MeasuredView> measure;
-        std::shared_ptr<std::atomic<bool>> cancel_measure;
-        std::optional<MeasuredView> measured;
-    };
-
-    // What an import makes away from the program's thread: the new version of the file, or why the edit can't be made.
-    struct EditWork
-    {
-        std::optional<format::File> result;
-        std::string error;
-    };
-
-    // What File > Open or File > Import makes away from the program's thread: the file with its timelines laid out for
-    // editing, the archive that it builds for playback, the sequences of its files and the field of each sound's start.
-    // A file of the Wii builds its archive for the Wii's model. An imported sound archive gives a file that stays
-    // untitled until it's saved. `error` gives the message when the file can't open.
-    struct OpenWork
-    {
-        std::shared_ptr<const format::File> document;
-        std::shared_ptr<const ntdlib::sar::SoundArchive> archive;
-        std::shared_ptr<const ntdlib::rsar::SoundArchive> wii;
-        std::vector<std::optional<uint32_t>> sequences;
-        std::optional<std::vector<std::optional<uint32_t>>> start_fields;
-        bool imported = false;
-        bool text_form = false;
-        std::string error;
-    };
-
-    // An open or an import while its work runs: the work, and the path and the name of the file.
-    struct Opening
-    {
-        std::future<OpenWork> work;
-        std::string path;
-        std::string name;
-    };
-
-    // An import that the user confirmed, while its work runs: the work, the action and the details that the Undo
-    // History shows for the new version, and the sound that the browser selects once it lists it. A replacement that
-    // puts files into groups runs the same way. `replaced` gives the sequences whose commands it replaces.
-    struct PendingEdit
-    {
-        std::future<EditWork> work;
-        std::string action;
-        std::string details;
-        std::optional<uint32_t> select;
-        std::vector<uint32_t> replaced;
-        std::optional<uint32_t> open_bank;
-    };
-
-    // A replacement from the browser's Replace…, or an import from File > Import, until the user makes it or cancels
-    // it: what it starts from, what the Replace window shows, and for a file in the place of another, the file's kind.
-    // For a WAV file in the place of a wave, `wave` gives the wave's index in the wave archive of `source.sound`, and
-    // `wav` holds the WAV file's bytes for another encoding. A bank, a wave archive or a wave sound file that comes in
-    // as new items, or in the place of an item's file, is `new_item`. `new_item` holds the item as it was read. For a
-    // bank or a wave sound file, `named` lists the wave archives that its waves name.
-    // A WAV file or a wave file that comes in as a new wave sets `new_wave`. `wave` then gives the new wave's index,
-    // and `wav` holds the file's bytes for another wave archive or encoding. For a stream file or a WAV file in the
-    // place of a stream sound's stream, `stream` gives the stream's file ID, `source.sound` gives the sound, and `wav`
-    // holds the file's bytes for another encoding. An import builds the whole archive again once the user confirms it.
-    // `pending` holds its work until it's done.
-    struct Replacement
-    {
-        ReplaceSource source;
-        ReplaceView view;
-        std::optional<edit::FileKind> file;
-        std::optional<uint32_t> wave;
-        std::vector<uint8_t> wav;
-        std::optional<edit::IncomingFile> new_item;
-        std::vector<edit::NamedWaveArchive> named;
-        bool new_wave = false;
-        std::optional<PendingEdit> pending = std::nullopt;
-        std::optional<uint32_t> stream = std::nullopt;
-
-        // File > Import > Stream…: the stream of the stream file or the WAV file in `wav`, and the new sound's stream.
-        std::optional<edit::IncomingStream> incoming_stream = std::nullopt;
-        std::optional<edit::NewStream> new_stream = std::nullopt;
-    };
-
-    // What the Replace window's Play plays in the version that the mapping makes: sound `sound`, or else a note of the
-    // first instrument of bank `bank`, or else the first wave of wave archive `wave_archive`. A sequence sound and a
-    // wave sound play on the console's model.
-    struct PreviewTarget
-    {
-        std::optional<uint32_t> sound;
-        std::optional<uint32_t> bank;
-        std::optional<uint32_t> wave_archive;
-        format::Mixing mixing = format::Mixing::kStrict;
-    };
-
-    // What the Replace window's Play makes away from the program's thread: the preview, or why it can't play.
-    struct PreviewWork
-    {
-        std::unique_ptr<audio::Renderer> renderer;
-        std::string error;
-        std::string note; // why nothing plays, when nothing went wrong
-    };
-
-    // The item whose file Replace… replaces: a bank, a wave archive or a wave sound, by its place in the archive's
-    // list.
-    struct FileTarget
-    {
-        edit::FileKind kind = edit::FileKind::kBank;
-        uint32_t item = 0;
-    };
-
-    // The wave whose place a WAV file takes: its wave archive, by its place in the archive's list, and its index there.
-    struct WaveTarget
-    {
-        friend bool operator==(const WaveTarget&, const WaveTarget&) = default;
-
-        uint32_t wave_archive = 0;
-        uint32_t wave = 0;
-    };
-
-    // The Key Editor's selection before an action of the history, and the selection that the action left for its
-    // version. The List Editor's selections around the action follow. Undo puts back the selections before, and redo
-    // the selections after.
-    struct ActionSelections
-    {
-        std::optional<KeySelection> before;
-        std::optional<KeySelection> after;
-        std::optional<KeySelection> list_before;
-        std::optional<KeySelection> list_after;
-    };
-
-    // An action that the mixer's engine switch made: how many actions were done after it, and the sound and the engine
-    // that it set.
-    struct EngineEdit
-    {
-        std::size_t done = 0;
-        uint32_t sound = 0;
-        format::Engine engine = format::Engine::kSwitch;
-    };
-
-    // A command or a drop that came while a text field was being typed in, and Dear ImGui's frame at the time. `run`
-    // gives the command or the drop again.
-    struct WaitingCommand
-    {
-        std::function<void()> run;
-        int frame = 0;
-    };
-
-    // Files that the system dropped on the Bank Editor while a text field was being typed in, and where the first of
-    // them landed.
-    struct WaitingBankDrop
-    {
-        std::vector<std::string> paths;
-        BankDrop drop;
-    };
-
     explicit App(bool preview);
 
     bool Init();
+
+    // The steps of Init that can fail: the main window at the display's `scale`, the GPU device that draws it, and Dear
+    // ImGui's back ends with the program's look. Each returns false after an error. A message box shows the error.
+    bool CreateMainWindow(float scale);
+    bool CreateGpu();
+    bool StartImGuiBackends(float scale);
+
     void LoadFonts();
+
+    // The files of a drop (HandleEvent). Each file that lands on the Bank Editor waits with the place where the first
+    // one landed. The others wait for the window. Once the drop is complete, the files go to the bank or the window.
+    void TakeDroppedFile(const SDL_DropEvent& drop);
+    void FinishDrop();
 
     // The settings' part of the settings file. Dear ImGui reads and writes the file.
     void AddSettingsHandler();
     void ReadSetting(std::string_view line);
     void WriteSettings(ImGuiTextBuffer& out) const;
+
+    // Opens the file that a dialog chose, or saves or exports to it (Iterate).
+    void OpenChosenFile();
+
+    // Shows the sequence that the reader has read, with the archive of the version that a read built (Iterate).
+    void TakeReadSequence();
+
+    // Starts what the browser's rows asked for in this frame: an export, a replacement or an editor (Iterate).
+    void ApplyBrowserRequests();
+
+    // Applies what the arrangement asked for in this frame: an editor, a marker, a tempo point, a move or an edit
+    // (Iterate).
+    void ApplyArrangementRequests();
+
+    // Shows the effects on the aux buses in the mixer's FX channels (Iterate). Returns the effects, or nullptr without
+    // them.
+    const BusEffects* UpdateMixerEffects();
+
+    // Shows the shown sound's mixing mode, engine and sends in the mixer's switches and strips (Iterate).
+    void UpdateMixerSwitches(SongView& song);
+
+    // The space in which the zones dock, with the default layout where none is saved (Iterate).
+    void DrawZoneSpace();
+
+    // The hint that an empty arrangement shows (Iterate).
+    std::string ArrangementHint() const;
+
+    // Updates and draws the mixer, and applies its moves of faders and effects (Iterate). `song` is the shown song, if
+    // any. The controls wait while the program is `busy`.
+    void UpdateMixer(SongView* song, bool busy);
+
+    // Draws the windows that float over the zones: the setup windows, Export, Replace and the progress of work
+    // (Iterate).
+    void DrawWindows();
 
     void HandleShortcuts();
 
@@ -385,16 +178,32 @@ private:
 
     void DrawMenus();
     void DrawMenuItems(const std::vector<MenuItem>& items);
+    void DrawListedMenu(const MenuItem& item);
     void DrawControlBar();
     void DrawStudioSetup();
+
+    // The sections of Studio Setup: the audio device with its format and a test tone, and the DSi's digest key.
+    void DrawAudioSection();
+    void DrawDsKeySection();
+
+    // Keeps `path` as the file of the DSi's digest key in the program's settings, or no file for an empty path. A file
+    // that doesn't contain a key leaves the setting as it was, and a message says why.
+    void SetDsiKey(const std::string& path);
     void DrawPreferences();
 
     // Project Setup shows the file's engine, gives every sound a mixing mode, and edits the file's tags.
     void DrawProjectSetup();
 
+    // The Tags section of Project Setup: a box of text for each key that the program offers. Returns the tag that the
+    // user changed, by its key.
+    std::optional<std::pair<std::string, std::string>> DrawTagsSection(const format::File* document);
+
     // File > New Project… opens a window for the console of a new file. Create then shows the new file (NewDocument),
     // and Cancel closes the window.
     void DrawNewProject();
+
+    // The Project section of New Project: a menu of the consoles of a new file, and what the new file contains.
+    void DrawNewProjectEngine();
 
     // The window that shows in the lower zone: the window in front, if it's open, or else the Key Editor, the List
     // Editor or the mixer, the first that's open.
@@ -413,6 +222,9 @@ private:
     // Ends a preview that plays outside the transport: the browser's, a window's Play, an Export clip or the test tone.
     // Playback that follows the transport goes on.
     void StopPreview();
+
+    // Marks every preview as stopped: the previews of the browser, the Wave window and the Replace window.
+    void ForgetPreviews();
 
     // Plays `renderer` over the sequence's playback, in place of the last audition: a note that the Key Editor sounds.
     // While playback is stopped, it takes the place of a preview.
@@ -436,25 +248,41 @@ private:
     void SetWaiting(bool waiting);
     void Wake() const;
 
-    // Shows a message for the user in a box over the main window, with the icon of its kind.
+    // Logs a message for the user and shows it in a box over the main window, with the icon of its kind. The box opens
+    // at the end of the first frame in which no mouse button is down (MessageQueue). Messages keep their order. One
+    // that already waits isn't added or logged again.
     void ShowMessage(const std::string& message, MessageKind kind = MessageKind::kError);
+    void ShowWaitingMessages();
+
+    // Shows the waiting messages before a direct box or a system dialog opens, so that they keep their order. Those
+    // open only from controls that act at the release, keys, the window's close and dialogs: with no button down. A
+    // button that is down all the same goes to the log.
+    void ShowMessagesBeforeBox();
+    void OpenMessageBoxes(bool button_down);
+
+    // Reads a file that the user chose or dropped into `bytes`. Shows a message and returns false when the file can't
+    // be read.
+    bool ReadChosenFile(const std::filesystem::path& file, std::vector<uint8_t>& bytes);
 
     // Shows a dialog. SDL3 may call the dialog's callback on another thread. The program acts on the chosen file in its
     // next frame.
     void ShowDialog(Dialog dialog);
-    static void SDLCALL OpenChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL SaveChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportSequenceChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportBankChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportWaveArchiveChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportWaveChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportWaveSoundFileChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportAudioFileChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ImportStreamChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ExportChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ExportFolderChosen(void* user_data, const char* const* files, int filter);
-    static void SDLCALL ReplaceChosen(void* user_data, const char* const* files, int filter);
+
+    // The filters of `dialog`'s files. ImportDialogFilters returns the filters of File > Import, and
+    // ReplaceDialogFilters the filters of Replace…, by the item that the user replaces.
+    std::span<const SDL_DialogFileFilter> DialogFilters(Dialog dialog) const;
+    std::span<const SDL_DialogFileFilter> ImportDialogFilters(Dialog dialog) const;
+    std::span<const SDL_DialogFileFilter> ReplaceDialogFilters() const;
+
+    // Where Save As starts: the file's place, or beside the sound archive that it came from, with the archive's name.
+    std::filesystem::path SaveAsLocation() const;
+
+    // Where an export starts, beside the sound archive or the file that the document came from, or nothing.
+    std::optional<std::filesystem::path> ExportLocation(bool folder) const;
+
+    // The callback of the file dialog of `kDialog`. SDL3 calls it with the chosen file, on any thread.
+    template <Dialog kDialog>
+    static void SDLCALL Chosen(void* user_data, const char* const* files, int filter);
     void Choose(Dialog dialog, const char* const* files);
 
     // Opens the file at `path`, a UTF-8 path, on a thread of its own: a Hokuto file in either form, or else a sound
@@ -465,11 +293,14 @@ private:
 
     // The work of OpenOrImport for the file at `path`. It reads the file. A Hokuto file of `name` with `bytes` opens,
     // and the program builds the archive that the file holds in memory. A sound archive at `file` of the Switch, the
-    // Wii U or the 3DS, or of the Wii, comes in as a new file.
+    // Wii U or the 3DS, or of the Wii, comes in as a new file. So does a GBA ROM whose songs MusicPlayer2000 plays, and
+    // a sound archive of the DS or a DS cartridge image that contains one.
     static OpenWork Opened(const std::string& path, bool import);
     static OpenWork OpenedFile(const std::string& name, std::span<const uint8_t> bytes);
     static OpenWork ImportedArchive(const std::filesystem::path& file, std::vector<uint8_t> bytes);
     static OpenWork ImportedWiiArchive(const std::filesystem::path& file, std::vector<uint8_t> bytes);
+    static OpenWork ImportedGbaRom(const std::filesystem::path& file, std::vector<uint8_t> bytes);
+    static OpenWork ImportedDs(const std::filesystem::path& file, std::vector<uint8_t> bytes);
 
     // Once an open's work is done, shows the file that it made, or the message that says why the file can't open.
     void FinishOpening();
@@ -480,20 +311,32 @@ private:
     // The window that waits while an open's work runs. Cancel drops the work.
     void DrawOpening();
 
+    // The window that shows while the program prepares an Import or Replace window for a file from a dialog
+    // (OpenChosenFile). The preparation runs on the program's thread. The window therefore has no Cancel.
+    void DrawPreparing();
+
     // Shows a new file for `engine` (format::NewFile). The file stays untitled until it's saved.
     void NewDocument(format::Engine engine);
 
-    // Shows the Hokuto file `document`, called `name`, and plays `archive`, the archive that it holds. `sequences`
-    // gives the sequence of the file that each of the archive's files holds (format::SequencesOfFiles), and
-    // `start_fields` the field that holds each sound's start (format::StartFieldsOfSounds). Without the fields, no
-    // sequence can be replaced. The browser lists the archive's sounds, sequences, banks and wave archives. The file
-    // starts a new history. A file of the Wii comes with `wii`, its archive, in place of `archive`. The browser then
-    // lists the archive's sounds and sequences.
-    void ShowDocument(std::shared_ptr<const format::File> document,
-                      std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
+    // Shows the Hokuto file `document`, called `name`, and plays `played`, the archive, the ROM or the set that it
+    // contains. `sequences` gives the sequence of the file that each of the archive's files contains
+    // (format::SequencesOfFiles), and `start_fields` the field that contains each sound's start
+    // (format::StartFieldsOfSounds). Without the fields, no sequence can be replaced. The browser lists the archive's
+    // sounds, sequences, banks and wave archives. The file starts a new history. For the Wii's archive, the browser
+    // lists the archive's sounds and sequences. For a GBA ROM, it lists the ROM's songs. For a DS archive, it lists the
+    // archive's sequences.
+    void ShowDocument(std::shared_ptr<const format::File> document, song::Played played,
                       std::vector<std::optional<uint32_t>> sequences,
-                      std::optional<std::vector<std::optional<uint32_t>>> start_fields, const std::string& name,
-                      std::shared_ptr<const ntdlib::rsar::SoundArchive> wii = nullptr);
+                      std::optional<std::vector<std::optional<uint32_t>>> start_fields, const std::string& name);
+
+    // Ends the work on the last file: playback, a preview, an export, a replacement, a read and the worker.
+    void EndLastFileWork();
+
+    // Lists the items of the new file in the browser, with nothing chosen or shown and no search.
+    void ResetBrowser();
+
+    // Selects the sound of the view that the file keeps, or drops the view when the browser doesn't list the sound.
+    void SelectKeptViewSound();
 
     // File > Save saves to the file that the document came from, or asks where. SaveTo saves to `path`, a UTF-8 path,
     // in the form that the file was opened in. An imported archive saves in the binary form. The file keeps the view of
@@ -524,6 +367,46 @@ private:
     void DrawExport();
     void ExportTo(const std::string& path);
 
+    // Takes the files and the warnings of the export work once the work is done, and offers the option that they call
+    // for.
+    void TakeExportWork();
+
+    // Drops the work for the old target or option after `choice`, and starts the work again.
+    void RestartExportWork(ExportChoice choice);
+
+    // Writes the exported archive at `path`, with the streams and the group files beside it. Returns false when the
+    // user keeps the files that the export would replace.
+    bool WriteArchiveExport(const std::string& path, const ExportWork& work);
+
+    // Writes the MIDI file at `path`, with its SoundFont or its SFZ files. Returns false when the user keeps the files
+    // that the export would replace.
+    bool WriteMidiExport(const std::string& path, const ExportWork& work);
+
+    // Writes the new file of the other console at `path`. Returns false when the user keeps the file there.
+    bool WriteSongExport(const std::string& path, const ExportWork& work);
+
+    // Writes the item's file, or the wave's WAV file, at `path`, with the files beside it. Returns false when the user
+    // keeps the files that the export would replace.
+    bool WriteItemExport(const std::string& path, const ExportWork& work);
+
+    // Writes the bank's SoundFont at `path`, or its SoundFonts beside it. Returns false when the user keeps the files
+    // that the export would replace.
+    bool WriteSoundFontExport(const std::string& path, const ExportWork& work);
+
+    // Writes the bank's SFZ files into the folder at `path`. Returns false when the user keeps the files that the
+    // export would replace.
+    bool WriteSfzExport(const std::string& path, const ExportWork& work);
+
+    // File > Export's archive, or its GBA ROM. A GBA ROM without room for the songs that their edits make longer offers
+    // the file's choice for them as the window's option (format::NativeArchive::gba_filler). Without it, their edits
+    // stay out of the ROM. With it, the songs go into the ROM's filler runs. A click on the option changes the choice
+    // with an edit, and starts the work again.
+    void StartArchiveWork(Export& job);
+
+    // The names of the sounds of `version` that play on another console's engine. The file's tables name them, or
+    // else the archive or the ROM that the zones play.
+    std::vector<std::string> EngineSoundNames(const format::File& version) const;
+
     // File > Export > Another Console… offers a target for each other console. The work sends the shown sequence's
     // sound to the chosen target's console, and a choice of another target starts it again.
     void StartSongWork(Export& job);
@@ -532,18 +415,82 @@ private:
     // reads a sound that the zones don't show for the warnings and the measure.
     void StartMidiWork(Export& job, uint32_t sound);
 
+    // The name of the MIDI file of `sound`: the sound's name made safe for a file.
+    std::string MidiFileName(uint32_t sound) const;
+
+    // File > Export's MIDI file and SoundFont of song `song` of a GBA ROM (song::ConvertToMidi).
+    void StartGbaMidiWork(Export& job, uint32_t song);
+
+    // The browser's export of a GBA song as assembly, in the form of the GBA decompilations' songs
+    // (song::GbaSongAssembly).
+    void StartGbaAssemblyWork(Export& job);
+
+    // The same for a voice group as assembly, or a voice's sample as the ROM contains it or as an AIFF file. The file's
+    // name follows the voice group's SoundFont.
+    void StartGbaBankFileWork(Export& job);
+
+    // File > Export's MIDI file with its SoundFont or its SFZ files of sound `sound` of a DS archive. ntdlib's
+    // converter of NITRO-Composer sequences converts the sound (song::ConvertToMidi).
+    void StartDsMidiWork(Export& job, uint32_t sound);
+    void StartDseMidiWork(Export& job, uint32_t sound);
+
+    // The same for sound `sound` of a ROM with another of the GBA's drivers: a MIDI file with its SoundFont.
+    void StartDriverMidiWork(Export& job, uint32_t sound);
+
+    // The work of StartGbaMidiWork, StartDsMidiWork, StartDseMidiWork and StartDriverMidiWork, from `source`. The
+    // source that the zones play serves when it came from the version. Otherwise the work first builds the version's
+    // source. The MIDI file takes the tags. A sound that the zones don't show gives the warnings from its sequence, and
+    // the measure plays that sequence.
+    template <typename Source>
+    void StartSourceMidiWork(Export& job, uint32_t sound, MidiSource<Source> source);
+
+    // The browser's export of a bank, an instrument, a wave archive, a wave or a stream of a DS archive: its file, a
+    // bank's instruments as SoundFont 2 or SFZ files, or the waves and a stream as WAV files.
+    void StartDsItemWork(Export& job);
+
+    // The browser's export of a bank, an instrument, a bank with samples or a wave of DSE's files: its file, a bank's
+    // instruments as SoundFont 2 or SFZ files, or the waves as WAV files.
+    void StartDseItemWork(Export& job);
+
+    // The browser's export of the samples of a ROM with another of the GBA's drivers, or of one of them: a SoundFont 2
+    // file or WAV files.
+    void StartDriverItemWork(Export& job);
+
     // The browser's Export… exports the item at `place` the same way. The Export window offers the item's targets, and
     // a choice of another target starts the work again (StartItemWork). A wave archive's WAV files and a bank's SFZ
-    // files go into a folder from the system's dialog. An item of a file of the Wii takes StartWiiItemWork.
+    // files go into a folder from the system's dialog. An item of a file of the Wii takes StartWiiItemWork. A voice
+    // group of a GBA ROM, or a voice of it, uses StartGbaVoiceGroupWork. The four that follow start the export of an
+    // item of a ROM with another of the GBA's drivers, of DSE's files, of a DS archive and of a GBA ROM.
     void StartItemExport(const BrowserPlace& place);
+    void StartDriverItemExport(const BrowserPlace& place);
+    void StartDseItemExport(const BrowserPlace& place);
+    void StartDsItemExport(const BrowserPlace& place);
+    void StartGbaItemExport(const BrowserPlace& place);
     void StartItemWork(Export& job);
+
+    // The export of an item of a sound archive of the 3DS, the Wii U, the Switch or the Wii (StartItemExport), and the
+    // item at `place`, at index `index` of group `group` of the browser.
+    void StartSarItemExport(const BrowserPlace& place);
+    song::Item SarItemAt(const BrowserPlace& place, std::size_t group, std::size_t index) const;
+
+    // The work of an item of the archive of the 3DS, the Wii U or the Switch (StartItemWork), and the name of its file
+    // that the dialog offers.
+    void StartSarItemWork(Export& job);
+    std::string SarItemFileName(const Export& job) const;
+
+    // The work of an item of the Wii's archive (StartItemWork), and the name of its file that the dialog offers.
     void StartWiiItemWork(Export& job);
+    std::string WiiItemFileName(const Export& job) const;
+
+    void StartGbaVoiceGroupWork(Export& job);
 
     // Writes `files` into `folder`, each under its name. When the folder holds some of them already, the user chooses
     // to replace them or to cancel (AskToReplace). Returns false when the user cancels. Throws std::runtime_error with
     // a message for the user when a file can't be written.
+    // The question leaves out the first `asked` files: a save dialog asked about them.
     bool WriteIntoFolder(const std::filesystem::path& folder,
-                         const std::vector<std::pair<std::string, std::span<const uint8_t>>>& files);
+                         const std::vector<std::pair<std::string, std::span<const uint8_t>>>& files,
+                         std::size_t asked = 0);
     bool AskToReplace(const std::string& message);
 
     // Whether a save or an export may write `file`: the name `chosen` that the save dialog gave, with the extension
@@ -553,6 +500,10 @@ private:
 
     // Ends the export that the Export window shows. Its work runs on until it's done. Its measure stops early.
     void DropExport();
+
+    // Moves the unfinished work of `job` and its measure into the lists of dropped work (dropped_exports_ and
+    // dropped_measures_). The work runs on until it's done. The measure stops early.
+    void DropExportWork(Export& job);
 
     // Starts the measure of an export to MIDI or to another console whose work is done (measure/measure.h).
     void StartMeasure(Export& job);
@@ -571,9 +522,62 @@ private:
     void OpenStreamReplacement(const std::string& path);
     void DrawReplace();
 
-    // Ends the replacement or the import that the Replace window shows. The work of a confirmed import runs on until
-    // it's done.
-    void DropReplace();
+    // The Replace… of the sequence of the sound in `replace_.sound` with the file at `path` (OpenReplacement).
+    void OpenSequenceReplacement(const std::string& path);
+
+    // The steps of DrawReplace: a preview whose work is done plays, or its message shows. A confirmed import whose work
+    // is done is added to the history, or the window shows why it failed. A choice in the window is passed to the
+    // handler for the console of the file.
+    void TakeDonePreview();
+    void FinishPendingEdit();
+    void ApplyReplaceChoice(ReplaceChoice choice);
+
+    // The handlers of the user's choice in the Replace window (DrawReplace), by the incoming file: a SoundFont in a GBA
+    // file, a SoundFont, a MIDI file in a GBA file, a file for DSE's files, a file for the DS, and the other files.
+    void ApplyGbaSoundFontChoice(ReplaceChoice choice);
+    void ApplySoundFontChoice(ReplaceChoice choice);
+    void ApplyGbaMidiChoice(ReplaceChoice choice);
+    void ApplyDseChoice(ReplaceChoice choice);
+    void ApplyDsChoice(ReplaceChoice choice);
+
+    // Plays the DS's wave or stream that the Replace window makes from the incoming file (ApplyDsChoice).
+    void PlayNewDsWave();
+
+    // Makes the view of a new DS item again from the choices in the Replace window.
+    void ChangeDsNewItem();
+
+    // Starts the edit that imports a new DS item.
+    void ImportDsNewItem();
+
+    // Makes a DS replacement an action in the history.
+    void ReplaceDsItem();
+    void ApplyArchiveChoice(ReplaceChoice choice);
+
+    // Plays, makes again or imports a new stream from the Replace window's choice. Returns whether the choice was
+    // one of these.
+    bool ApplyArchiveStreamChoice(ReplaceChoice choice);
+
+    // Plays the new stream of the Replace window on the Wii or on a later console (ApplyArchiveStreamChoice).
+    void PlayNewWiiStream();
+    void PlayNewSarStream();
+
+    // Plays, makes again or imports a new wave from the Replace window's choice. Returns whether the choice was one of
+    // these.
+    bool ApplyArchiveWaveChoice(ReplaceChoice choice);
+
+    // Makes the import's view again, or makes the import, from the Replace window's choice. Returns whether the
+    // choice was one of these.
+    bool ApplyArchiveImportChoice(ReplaceChoice choice);
+
+    // Makes a stream's replacement again, or replaces the stream, from the Replace window's choice. Returns whether
+    // the choice was one of these.
+    bool ApplyStreamReplacementChoice(ReplaceChoice choice);
+
+    // Makes a file's replacement again from another choice in its rows. Returns whether the choice was one of these.
+    bool ApplyArchiveFileChoice(ReplaceChoice choice);
+
+    // Makes the replacement an action in the history. A replacement that joins groups starts an edit for them.
+    void FinishArchiveReplace();
 
     // Starts the work of a confirmed import on a thread of its own (`make`). The Replace window waits for it, and the
     // Undo History then takes its version as `action` with `details`. The browser then selects sound `select`. The
@@ -586,6 +590,9 @@ private:
     // the sound on a thread of its own (StartPreview). The preview then takes the place of playback. A change in the
     // window, Cancel or the edit drops a preview that hasn't started.
     void PlayMapping();
+
+    // Starts the work of the Replace window's Play on a thread. The work builds the version that `make` makes and
+    // prepares `target` to play.
     void StartPreview(std::function<format::File()> make, PreviewTarget target);
 
     // File > Import > Sequence… brings a sequence file in as a new sound of the archive (edit::AddSequenceSound). The
@@ -595,6 +602,17 @@ private:
     void StartSequenceImport();
     void OpenSequenceImport(const std::string& path);
     void MakeImport();
+
+    // In a file of the GBA, File > Import > Sequence… replaces the commands of a song with a MIDI file, `midi`, named
+    // `name` (edit::WithGbaMidiSong). The Import window offers the songs, the shown song first, and pairs each
+    // instrument with a voice of the song's voice group. Play plays the song from the new commands. Import makes the
+    // edit, and the file's instrument map of the voice group keeps the pairings for the next import.
+    void OpenGbaMidiImport(std::vector<uint8_t> midi, const std::string& name,
+                           std::optional<uint32_t> first = std::nullopt);
+
+    // Reads the file that the dialog chose for a GBA song or voice group. A song's file opens the MIDI import's window
+    // with that song. A file for a voice group replaces the voice group at once.
+    void OpenGbaReplacement(const std::string& path);
 
     // Opens the Import window for `source`. The incoming sequence of `source` holds the new commands. `name` names the
     // commands' file in the window and gives the new sound's first name. A file in the model form without a sequence
@@ -612,9 +630,11 @@ private:
     // sound's name, and the program edits it as a timeline.
     void StartSoundAddition();
 
-    // The edit that File > Import > Bank…, Wave Archive… or Wave Sound File… makes with the Import window's choices.
-    // With `join`, the new items join the groups chosen in the window.
-    std::function<format::File()> ItemImportEdit(bool join) const;
+    // File > Import > Bank… on a SoundFont 2 file or an SFZ file.
+    void OpenSfzImport(const std::filesystem::path& file);
+    void OpenSoundFontImport(std::vector<uint8_t> bytes, const std::string& name,
+                             std::vector<std::string> warnings = {});
+    void OpenGbaSoundFontImport(std::vector<uint8_t> bytes, const std::string& name, std::vector<std::string> warnings);
 
     // File > Import > Bank…, Wave Archive… and Wave Sound File… bring a bank file, a wave archive file or a wave sound
     // file of the archive's console in as new items (edit::AddBank, edit::AddWaveArchive and edit::AddWaveSounds). The
@@ -683,12 +703,88 @@ private:
                                                const std::string& name, ntdlib::sar::WaveEncoding encoding,
                                                std::optional<edit::IncomingStream> incoming = std::nullopt);
 
+    // The browser's Replace… of a GBA song or voice group: asks for the file.
+    void StartGbaReplace(const BrowserPlace& place);
+
     // Replace… of an item of a file of the Wii: the dialog for a file of the item's kind.
     void StartWiiReplace(const BrowserPlace& place);
+
+    // On the DS, a sequence sound is replaced with a sequence file, a bank with a bank file and a wave archive with a
+    // wave archive file. A wave takes a WAV file or a wave file.
+    void StartDsReplace(const BrowserPlace& place);
+
+    // Replace… of a sample of Konami's driver, and of an item of the archive of the 3DS, the Wii U or the Switch. Each
+    // follows the checks of the place in StartReplace.
+    void StartDriverReplace(const BrowserPlace& place);
+    void StartSarReplace(const BrowserPlace& place);
+
+    // Puts the WAV file at `path` in the place of the sample of Konami's driver that `replace_.wave` names
+    // (edit::WithKonamiSample).
+    void OpenDriverReplacement(const std::string& path);
+
+    // Reads the file that the dialog chose for the DS's item, and opens the Replace window.
+    void OpenDsReplacement(const std::string& path);
+
+    // On DSE, a sound is replaced with a song file or a MIDI file, and a bank with a wave bank file. A wave of a bank
+    // with samples is replaced with a WAV file (edit/dse_files.h).
+    void StartDseReplace(const BrowserPlace& place);
+
+    // Reads the file that the dialog chose for DSE's item, and opens the Replace window.
+    void OpenDseReplacement(const std::string& path);
+
+    // The Replace window of `bytes`, a WAV file, in the place of `target` on DSE: wave `wave` of the bank at place
+    // `wave_archive` of the set's banks. The new wave uses `encoding`, or else the encoding of the current wave.
+    // Returns nothing after a message for a file that can't be read.
+    std::optional<Replacement> DseWaveReplacement(std::vector<uint8_t> bytes, const std::string& name,
+                                                  const WaveTarget& target,
+                                                  std::optional<ntdlib::sar::WaveEncoding> encoding = std::nullopt,
+                                                  std::optional<uint32_t> rate = std::nullopt,
+                                                  std::optional<edit::WaveLoop> loop = std::nullopt);
+
+    // Opens the Import window of a new item of the DS's archive, from a file's bytes. With `new_song`, the bytes
+    // contain an empty song.
+    void OpenDsImport(std::vector<uint8_t> bytes, const std::string& name, edit::DsNewItem kind, bool new_song = false,
+                      edit::Incoming incoming = {}, std::vector<uint8_t> midi = {});
+
+    // The window of a WAV file or a wave file of the DS as a new wave after the waves of `wave_archive`.
+    std::optional<Replacement> DsWaveImport(std::vector<uint8_t> bytes, const std::string& name, uint32_t wave_archive,
+                                            std::optional<ntdlib::sar::WaveEncoding> encoding = std::nullopt,
+                                            std::optional<uint32_t> rate = std::nullopt);
+
+    // The Replace window of DS stream `stream`, and the Import window of a new one, with the WAV file or the stream
+    // file `bytes`. A stream from a WAV file uses `encoding`, `rate` and `loop`.
+    std::optional<Replacement> DsStreamReplacement(std::vector<uint8_t> bytes, const std::string& name, uint32_t stream,
+                                                   std::optional<ntdlib::sar::WaveEncoding> encoding,
+                                                   std::optional<uint32_t> rate = std::nullopt,
+                                                   std::optional<edit::WaveLoop> loop = std::nullopt);
+    std::optional<Replacement> DsStreamImport(std::vector<uint8_t> bytes, const std::string& name,
+                                              std::optional<uint32_t> model,
+                                              std::optional<ntdlib::sar::WaveEncoding> encoding,
+                                              std::optional<uint32_t> rate, const std::string& new_name);
+
+    // The Replace window of `bytes`, a WAV file or a wave file of the DS, in the place of `target`. A WAV file is
+    // encoded with `encoding`, or else with the encoding of the current wave. Returns nothing after a message for a
+    // file that can't be read.
+    std::optional<Replacement> DsWaveReplacement(std::vector<uint8_t> bytes, const std::string& name,
+                                                 const WaveTarget& target,
+                                                 std::optional<ntdlib::sar::WaveEncoding> encoding,
+                                                 std::optional<uint32_t> rate = std::nullopt,
+                                                 std::optional<edit::WaveLoop> loop = std::nullopt);
+
+    // Builds the archive, the ROM or the set of the version that the history has reached, unless the program has it
+    // already (BuildArchive). On the DS, an edit of the archive's files follows its FAT, and a read of the version may
+    // still be running. A version whose archive is the one that the program has (SameArchive), such as one that only
+    // changes a track's colour, builds nothing.
+    void FollowArchiveVersion();
 
     // The replacement of `target` of a file of the Wii by the file at `path`. Shows a message when the file can't be
     // read. The Replace window says why a file that ntdlib reads can't go in.
     void OpenWiiFileReplacement(const std::string& path, const FileTarget& target);
+
+    // The replacement of `target`, the item named `item`, by `bytes`, a file named `name` of console `later`
+    // (OpenWiiFileReplacement).
+    void OpenWiiLaterFileReplacement(const std::vector<uint8_t>& bytes, const std::string& name,
+                                     const std::string& item, const FileTarget& target, ntdlib::sar::Flavor later);
 
     // The replacement of the file of `target` of a file of the Wii by `incoming`, a bank file or a wave sound file of
     // console `later` among the 3DS, the Wii U and the Switch, from the file named `name`. The file goes in converted,
@@ -755,6 +851,9 @@ private:
     // effects make a file too.
     const format::File* Document() const;
 
+    // Whether an archive or a ROM is open, on any console.
+    bool ArchiveOpen() const;
+
     // The effects on the aux buses: the document's, or the made-up song's. nullptr while neither is open.
     const BusEffects* Effects() const;
 
@@ -778,6 +877,58 @@ private:
     void UpdateBankEditor();
     void ApplyBankEdit(const BankEdit& bank_edit);
 
+    // UpdateBankEditor on the Wii and the later consoles.
+    void UpdateSarBankEditor();
+
+    // Opens the Bank Editor on the bank that Project > Add Bank… added (`bank_to_open_`) once the program has the
+    // archive of the version that the history has reached, on every console.
+    void OpenAddedBank();
+
+    // The same for a GBA voice group, by its address in `bank_editor_`. An edit changes a voice's bytes, or a wave's
+    // pattern, in place (edit/gba_voices.h). The editor shows the new values at once.
+    void UpdateGbaBankEditor();
+    void ApplyGbaBankEdit(const BankEdit& bank_edit);
+
+    // ApplyGbaBankEdit for an edit of one voice or one wave's pattern, or a cleared voice.
+    void ApplyGbaVoiceEdit(const BankEdit& bank_edit);
+
+    // The same for a DS bank, by its index in `bank_editor_`. An edit changes a region's bytes in place
+    // (edit/ds_banks.h). The editor shows the new values at once.
+    void UpdateDsBankEditor();
+    void ApplyDsBankEdit(const BankEdit& bank_edit);
+    void UpdateDseBankEditor();
+    void ApplyDseBankEdit(const BankEdit& bank_edit);
+    // The samples of a ROM with another of the GBA's drivers. On Konami's driver, an edit changes a sample's rate or
+    // loop in the sample table (edit/konami_samples.h).
+    void UpdateDriverBankEditor();
+    void ApplyDriverBankEdit(const BankEdit& bank_edit);
+    // Builds `driver_bank_view_` from the ROM that the program has built, with the songs of the last ROM. A thread
+    // reads the songs of the new ROM (SongsOfDriverSamples). TakeDriverSampleSongs shows them once they're ready.
+    // DropDriverSampleSongs drops the read. A read that still runs goes on to its end in `dropped_sample_songs_`.
+    void FollowDriverBankView();
+    void TakeDriverSampleSongs();
+    void DropDriverSampleSongs();
+
+    // Builds the Bank Editor's view again when the program has the archive of another version. Returns false, with
+    // the editor closed, when the bank can't be edited.
+    bool FollowBankArchive();
+
+    // Builds the Bank Editor's view again by `make` when the program has the archive of another version. A failed build
+    // shows `refusal` with the reason, where the reason doesn't start with it, and closes the editor. Returns false
+    // then.
+    bool FollowBankView(const std::function<void()>& make, std::string_view refusal);
+
+    // Drops the files that waited for a field's text on the open bank, once the reader has stopped.
+    void TakeWaitingBankDrop();
+
+    // Sounds the key that the Bank Editor's keyboard sounds on the selected program, while `sounds`, when it isn't the
+    // last note, and lets the last note go. `make` makes the preview of a note, a program and its key, with the flag
+    // that releases it. A preview that can't be made or played shows `refusal` with the reason.
+    void SoundBankNote(bool sounds,
+                       const std::function<std::unique_ptr<audio::Renderer>(std::pair<uint32_t, int>,
+                                                                            std::shared_ptr<std::atomic<bool>>)>& make,
+                       std::string_view refusal);
+
     // Makes `file`, the version with `model` as the Bank Editor's bank, an action in the history by `name` and
     // `details`. The editor shows the model at once, before the program has built the version's archive.
     void DoBankEdit(std::string name, std::string details, format::File file, ntdlib::sar::BankFile model);
@@ -795,14 +946,41 @@ private:
     // keeps its text first. The files then wait in `waiting_bank_drop_` while the reader builds and reads another
     // version (`reading_version_`), such as that of the field's edit.
     void DropFilesOnBank(const std::vector<std::string>& paths, const BankDrop& drop);
+    void DropFilesOnWiiBank(const std::vector<std::string>& paths, const BankDrop& drop);
+    void DropWaveOnBank(const BrowserPlace& place, const BankDrop& drop);
+
+    // The drop of files on a bank of the archive of the 3DS, the Wii U or the Switch (DropFilesOnBank). The drop edits
+    // `document`.
+    void DropFilesOnSarBank(const std::vector<std::string>& paths, const BankDrop& drop, const format::File& document);
 
     // Opens the first of `paths`, the files that the system dropped on the window outside the Bank Editor or that
     // Finder opened with the program, once the user has decided about the document's changes. A text field that's being
-    // typed in keeps its text first. A file that is neither a Hokuto file nor a sound archive shows a message, and the
-    // document stays. So does a drop while a window waits for an answer (WindowWaits).
+    // typed in keeps its text first. A file that is neither a Hokuto file, a sound archive nor a GBA ROM shows a
+    // message, and the document stays. So does a drop while a window waits for an answer (WindowWaits).
     void DropFilesOnWindow(const std::vector<std::string>& paths);
-    void DropFilesOnWiiBank(const std::vector<std::string>& paths, const BankDrop& drop);
-    void DropWaveOnBank(const BrowserPlace& place, const BankDrop& drop);
+
+    // The same on a DS bank. Each file is a WAV file or a wave file of the DS (SWAV), and its wave goes after the waves
+    // of the wave archive in the bank's first slot that names one. A wave of the browser has to be in a wave archive of
+    // the bank's slots. DoDsBankDrop makes `file`, the version with the bank of `dropped`, an action in the history.
+    void DropFilesOnDsBank(const std::vector<std::string>& paths, const BankDrop& drop);
+    void DropWaveOnDsBank(const BrowserPlace& place, const BankDrop& drop);
+    void DoDsBankDrop(edit::DroppedDsWaves dropped, format::File file);
+
+    // On the GBA, one file of assembly replaces the voice group. Otherwise each file is a WAV file or a sample's file
+    // (edit::ReadIncomingGbaSample). It is written into the ROM's free space as a new sample. One file on a voice sets
+    // the sample of the voice, and each file on the list of programs makes a voice at a free program. A new voice can
+    // move the voice group's table (edit::WithGbaVoicesAt). DoGbaGroupVersion makes `version`, an edit of the voice
+    // group at `from`, an action. Where the table moved, the action's details name the group's new address, and so do
+    // the tracks. The move is recorded, and a Bank Editor on the group follows the table, then and through Undo and
+    // Redo.
+    void DropFilesOnGbaBank(const std::vector<std::string>& paths, const BankDrop& drop);
+    void DoGbaGroupVersion(std::string name, std::string details, uint32_t from, edit::GbaGroupVersion version);
+
+    // Steps of DropFilesOnGbaBank. DropGbaAssembly puts a dropped file of assembly in the voice group's place and
+    // returns true, or returns false for files of another kind. ReadDroppedGbaSamples reads the samples of the files
+    // at `paths`, or shows why one can't be read and returns nothing.
+    bool DropGbaAssembly(const std::vector<std::string>& paths);
+    std::optional<std::vector<std::vector<uint8_t>>> ReadDroppedGbaSamples(const std::vector<std::string>& paths);
 
     // Opens the properties of a wave, by its wave archive's place in the archive's list and its index there, or of the
     // stream of stream sound `sound`. CloseProperties closes them.
@@ -817,8 +995,17 @@ private:
     // for the browser's row of the item (PropertiesPlace).
     void UpdateProperties();
     void ApplyWaveEdit(const WaveEdit& wave_edit);
+    format::File FileWithWaveValues(const format::File& document, const WaveValues& values);
     void PlayProperties();
     std::optional<BrowserPlace> PropertiesPlace() const;
+
+    // Makes the view of the properties again for the archive of the current version. Returns false, with the window
+    // closed, when the version has no such wave or stream, or the view fails.
+    bool RebuildWaveView(bool wii, bool wii_stream, bool ds, bool ds_stream, bool dse);
+
+    // RebuildWaveView on the DS and DSE, and on the Wii and the later consoles. Each throws when the view fails.
+    bool RebuildDsWaveView(bool ds_stream, bool dse);
+    bool RebuildSarWaveView(bool wii, bool wii_stream);
 
     // Starts a measure of the sizes of the groups that load file `file_id` of the archive that the program has built,
     // on a thread of its own (GroupSizeLines). `sizes` takes its future, and the editors show the lines once they're
@@ -852,6 +1039,9 @@ private:
     // version's effect.
     void FollowHistory(std::size_t from, const format::File& left);
 
+    // Moves in the history by `move`, a call of Undo, Redo or GoTo, and follows the move (FollowHistory).
+    void MoveInHistory(const std::function<void(edit::History&)>& move);
+
     // Opens the item chosen in the browser. A sequence is read away from the program's thread. Once it's read, it opens
     // in the zones. An error that stopped the read shows in a message box. A click on a bank's instrument or a wave
     // archive's wave plays it, or stops it while it plays.
@@ -864,6 +1054,19 @@ private:
     // archive is built on the program's thread, for the browser's previews.
     void ReadShown();
 
+    // The sound of the sequence that the zones show next: the sound of the browsed sequence, or else that of the shown
+    // sequence.
+    uint32_t ShownSequenceSound(bool browsed) const;
+
+    // The functions that ReadShown calls to read `sound`, one for each console: the GBA, the other drivers of the GBA,
+    // the DS, DSE, the Wii and the later consoles.
+    void ReadShownGba(const std::shared_ptr<const format::File>& version, uint32_t sound);
+    void ReadShownDriver(const std::shared_ptr<const format::File>& version, uint32_t sound);
+    void ReadShownDs(const std::shared_ptr<const format::File>& version, uint32_t sound);
+    void ReadShownDse(const std::shared_ptr<const format::File>& version, uint32_t sound);
+    void ReadShownWii(const std::shared_ptr<const format::File>& version, uint32_t sound);
+    void ReadShownSar(const std::shared_ptr<const format::File>& version, uint32_t sound);
+
     // Builds the archive of `version` on the program's thread, and lists the browser's programs and waves again from
     // it. An error shows in a message box.
     void BuildArchive(const std::shared_ptr<const format::File>& version);
@@ -872,9 +1075,48 @@ private:
     void ListChildren();
 
     // Lists the open archive's sounds, sequences, banks and wave archives in the browser, with each item's children. A
-    // file of the Wii lists its items through ListWiiBrowser.
+    // file of the Wii lists its items through ListWiiBrowser, a file of the GBA its songs and voice groups through
+    // ListGbaBrowser, a file of the DS its sequences, streams, banks and wave archives through ListDsBrowser, and a
+    // file of DSE's files its songs, sound effects, banks and waves through ListDseBrowser.
     void ListBrowser();
+
+    // The browser's items of an archive of the 3DS, the Wii U or the Switch (ListBrowser): its sounds, its banks, its
+    // wave archives and its wave sound files, and the items whose files are in group files missing from the file.
+    void ListSarBrowser();
+    void ListSarSounds(const format::File& version);
+    void MarkMissingGroupItems();
+
+    // Every item exports but a stream sound whose stream the file lacks, and Export… says why. A wave archive's waves
+    // export too, and so do a wave sound file's wave sounds.
+    void AddSarBrowserItem(std::size_t group, const std::string& item_name, std::size_t index,
+                           std::vector<uint32_t> children, bool exports);
     void ListWiiBrowser();
+    void ListGbaBrowser();
+    void ListDsBrowser();
+    void ListDseBrowser();
+
+    // The same for a ROM with another of the GBA's drivers: its songs and its samples.
+    void ListDriverBrowser();
+
+    // The voice groups that the songs of `played_.Gba()` play (song::GbaVoiceGroups), worked out once for each ROM. The
+    // browser lists them, and the inspector's Program menu offers each group's programs.
+    const std::vector<song::GbaVoiceGroup>& GbaGroups();
+
+    // The one bank slot of GBA song `song`: its voice group, with the programs that the ROM's songs select there.
+    std::vector<SlotView> GbaSlotsOf(uint32_t song);
+
+    // The one bank slot of DS sound `sound`: the bank that its entry names, with the programs that contain instruments.
+    std::vector<SlotView> DsSlotsOf(uint32_t sound) const;
+
+    // The bank slots of DSE's sound `sound`: its banks, each with the programs that contain instruments.
+    std::vector<SlotView> DseSlotsOf(uint32_t sound) const;
+
+    // The slot that the inspector's instrument menus show for a song of another of the GBA's drivers: the driver's one
+    // table, with the samples that the songs play. The samples and the PSG tracks' programs stay for each ROM.
+    // ShowDriverPrograms sets the programs of the PSG tracks of the song.
+    const std::vector<int>& DriverSampleList();
+    std::vector<SlotView> DriverSlots();
+    void ShowDriverPrograms();
 
     // Follows the items of the open archive once the archive of another version has come in, on every console. The
     // browser lists the items again: a version can change what an item offers, such as a stream that Replace… or Undo
@@ -883,6 +1125,11 @@ private:
     // stay. A sound that an import added is selected.
     void FollowItems();
 
+    // Steps of FollowItems: the places of the sequences and of the starts in the archive's version, and the browser's
+    // choices of items that are no longer listed.
+    void ReadFileSequences();
+    void DropUnlistedChoices();
+
     // Stops playback and empties the zones. A file that has just opened shows them the same way.
     void CloseSequence();
 
@@ -890,12 +1137,40 @@ private:
     // version, and keep their selection and each track's mute and solo. A new model catches up with playback, and
     // playback goes on without a stop.
     void FollowSequence(song::SequenceReader::Result read);
+
+    // The slots of the shown sequence, from the archive, the ROM or the set that the program has open.
+    std::vector<SlotView> ShownSlots();
+
+    // Sets the mute, the solo and the meters of each track of the shown song to those of the track with its number in
+    // `kept`.
+    void KeepTrackStates(const std::map<int, TrackView>& kept);
+
     void PlayPreview(const BrowserPlace& place);
     void PlayWiiPreview(const BrowserPlace& place);
+    void PlayGbaPreview(const BrowserPlace& place);
+    void PlayDsPreview(const BrowserPlace& place);
+    void PlayDsePreview(const BrowserPlace& place);
+    void PlayDriverPreview(const BrowserPlace& place);
+    void PlaySarPreview(const BrowserPlace& place);
+
+    // The item that the browser lists at `place`, or nothing when the place names no listed item.
+    std::optional<ListedPlace> ListedAt(const BrowserPlace& place) const;
+
+    // The mixing mode of the current version, or strict mixing without a file.
+    format::Mixing FileMixing() const;
+
+    // Plays the preview that `make` makes by itself, as the item at `place` (PlayAlone). An error of `make` shows in a
+    // message box, after `what`.
+    void PlayBrowserPreview(const BrowserPlace& place, const char* what,
+                            const std::function<std::unique_ptr<audio::Renderer>()>& make);
 
     // Gives each track of the zones' song what else an edit of its mix or its instrument changes, for the tooltips of
     // the mixer and the inspector (edit::ReachOfTracks).
     void ShowReach();
+
+    // Whether the zones can show the reach of an edit: the open file is one whose sounds Hokuto can edit. ShowReach and
+    // ShowTempo test it.
+    bool ReachShown() const;
 
     // Gives the zones' song the places where its tracks read variables or branch, for the marker row (LogicMarkers).
     void ShowLogic();
@@ -903,6 +1178,20 @@ private:
     // Gives each track of the zones' song without notes the instrument that its opening selects, such as a new track's
     // (edit::OpeningInstrument). A note that goes in at the track's start plays it.
     void ShowOpeningInstruments();
+
+    // What a first note of `track`, a track of the shown sequence, requires: the instrument that its opening has to
+    // select for the note to sound, or why no instrument can.
+    struct FirstNote
+    {
+        std::optional<edit::Program> instrument;
+        std::string refused;
+    };
+    FirstNote FirstNoteOf(const song::Track& track) const;
+
+    // Whether the channel of `track`, a DSE track of the shown sequence, has a bank: a track of the channel plays
+    // notes, or its opening selects a bank (edit::DseOpeningSelectsBank). A track whose commands the edits can't follow
+    // counts as one with a bank.
+    bool DseChannelHasBank(const song::Track& track) const;
 
     // Gives the zones' song the commands that set the tempo, for the tempo row (TempoPoints).
     void ShowTempo();
@@ -930,12 +1219,17 @@ private:
     // Hokuto can't play the sound on the sound's (edit::EngineRefused).
     format::Engine ShownEngine() const;
 
+    // The number of sends, from FX A, that the strips show: the sends that the tracks of both the file's console and
+    // the shown engine have. A file in the model form shows every send.
+    std::size_t ShownSends() const;
+
     // The engine whose model plays the shown sequence, and the archive and the sequence that it plays: the conversion's
     // while the shown sound plays on another console's engine, and otherwise the file's. A sound of the Wii, or a sound
     // on the Wii's engine, plays from the Wii's archive. PlayedArchive then gives nothing.
     format::Engine PlayedEngine() const;
     std::shared_ptr<const ntdlib::sar::SoundArchive> PlayedArchive() const;
     std::shared_ptr<const ntdlib::rsar::SoundArchive> PlayedWiiArchive() const;
+    std::shared_ptr<const song::DsArchive> PlayedDsArchive() const;
     const song::Sequence& PlayedSequence() const;
 
     // The conversion of sequence sound `sound` of `version` for the sound's engine, for the reader, or nothing when the
@@ -974,10 +1268,29 @@ private:
     void OpenKeyEditor();
     void CloseKeyEditor();
 
+    // Drops the Key Editor's selected notes, its gesture and the selection that waits for a version.
+    void ClearKeySelection();
+
     // Makes what the Key Editor shows of its track from the sequence that the zones show, with what an edit can change
     // in each of the track's notes, and the commands of the track's settings for the controller lanes. A track that the
     // sequence no longer has shows no notes. The selections follow the version of the sequence (FollowedSelection).
     void UpdateKeyTrack();
+
+    // Fills the Key Editor's notes from `track`, for UpdateKeyTrack, and adds the place of each note's command that
+    // isn't in `commands` yet to `places`.
+    void FillKeyNotes(const song::Track* track, std::vector<edit::NotePlace>& places, std::set<uint32_t>& commands);
+
+    // Fills the Key Editor's notes that the driver never started on `track`, for UpdateKeyTrack.
+    void FillUnstartedKeyNotes(const song::Track* track);
+
+    // Fills the Key Editor's lane of channels with every track's notes on the PSG channels, for UpdateKeyTrack. The
+    // notes of `track` show as the notes of the shown track.
+    void FillPsgChannelNotes(const song::Track* track);
+
+    // Fills the controller lanes of `track` in `sequence` and the limits of each command in `places`, for
+    // UpdateKeyTrack. The controls' commands join `places` and `commands`.
+    void FillKeyControlsAndLimits(const std::optional<uint32_t>& sequence, const song::Track* track,
+                                  std::vector<edit::NotePlace>& places, std::set<uint32_t>& commands);
 
     // The Key Editor's selection after `edited`, an edit of sequence `sequence` of `file`: the notes of the commands at
     // `kept` in the new version, then the new notes. A selection of another version's commands keeps nothing.
@@ -988,6 +1301,17 @@ private:
     // the new version. A command that the edit removed leaves the selection. A selection of another version's commands
     // keeps nothing.
     KeySelection ListSelectionAfter(const format::File& file, uint32_t sequence, const edit::Edited& edited) const;
+
+    // The index of the shown sequence among the sequences of the current version, or nothing. An edit of the shown
+    // sequence is applied to the version that built the open archive: the zones' notes and commands lead to its
+    // commands. With any other version, the result is nothing. Document() isn't null when the result has a value.
+    std::optional<uint32_t> EditedSequence() const;
+
+    // Makes `edited`, an edit of sequence `sequence` of the current version, the next version (Do). The history lists
+    // the action by `name` and `details`. The Key Editor keeps the notes of the commands at `kept` (SelectionAfter),
+    // and the List Editor keeps its selected commands (ListSelectionAfter).
+    void DoSequenceEdit(std::string name, std::string details, uint32_t sequence, edit::Edited edited,
+                        const std::set<uint32_t>& kept);
 
     // Draws the Key Editor while it's open. Each edit that its gestures make becomes an action in the history. An edit
     // in the controller lanes changes, adds or removes commands of the track's settings (ApplyControlEdit).
@@ -1001,6 +1325,13 @@ private:
     void OpenListEditor();
     std::pair<int, std::optional<int32_t>> ListEditorChoice() const;
     void CloseListEditor();
+
+    // Drops the List Editor's selected rows and label, its anchor, its typing and the selection that waits for a
+    // version.
+    void ClearListSelection();
+
+    // Shows track `track` in the List Editor, from its first row, with nothing selected and no subroutine shown.
+    void ShowListTrack(int track);
 
     // Opens the List Editor on the track of the first command of a place where the tracks read variables or branch. The
     // place's commands on that track are selected, and the editor scrolls to the first.
@@ -1031,6 +1362,24 @@ private:
     void UpdateListEditor();
     void ApplyListEdit(const ListEdit& edit);
 
+    // The version that `edit` makes of the commands of `sequence` in `document`, from the place of the first row.
+    edit::Edited ListEditOf(const ListEdit& edit, const format::File& document, uint32_t sequence,
+                            const edit::CommandPlace& place, std::size_t first) const;
+
+    // Selects in the List Editor what `edit` changed, moved or added in `edited`, whose commands are `commands` at
+    // `offsets`.
+    void SelectListAfter(const ListEdit& edit, const edit::Edited& edited, const format::File& document,
+                         uint32_t sequence, const edit::CommandPlace& place, const ntdlib::commands::Sequence& commands,
+                         const std::vector<uint32_t>& offsets);
+
+    // Keeps the List Editor on the subroutine that it shows after `edit`.
+    void FollowListSubroutine(const ListEdit& edit, const edit::Edited& edited, const format::File& document,
+                              uint32_t sequence, const ntdlib::commands::Sequence& commands,
+                              const std::vector<uint32_t>& offsets);
+
+    // What the Undo History names after the track for `edit`: the command, or the label or subroutine.
+    std::string ListEditName(const ListEdit& edit, std::size_t first) const;
+
     // Shows the subroutine of `choice` by itself in the List Editor, from the run that it names, or else from its first
     // run on the shown track, or else from its first run. A subroutine that no call of the shown sound runs doesn't
     // show.
@@ -1048,6 +1397,26 @@ private:
     // stays the same, and the last note is let go when another or none takes its place.
     void PlayFeedback(const std::optional<KeyNote>& note);
 
+    // Starts the audition of `note` for PlayFeedback on the shown sound's console, with `release` to let it go.
+    // Returns false when the note can't play.
+    bool PlayFeedbackPreview(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+
+    // Starts the audition of `note` on the DS's engine, for PlayFeedbackPreview. Returns false when the note can't
+    // play.
+    bool PlayEngineDsFeedback(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+
+    // Starts the audition of `note` on the GBA's other drivers, for PlayFeedbackPreview. Returns false when the note
+    // can't play.
+    bool PlayDriverFeedback(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+
+    // Starts the audition of `note` on the Wii's engine, for PlayFeedbackPreview.
+    void PlayEngineWiiFeedback(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+
+    // The same as PlayEngineDsFeedback on the GBA, the DS and DSE.
+    bool PlayGbaFeedback(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+    bool PlayDsFeedback(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+    bool PlayDseFeedback(const KeyNote& note, const std::shared_ptr<std::atomic<bool>>& release);
+
     // Writes each move of a track's control in the mixer into the sequence that the zones show. Each move becomes an
     // action in the history. A move that changes nothing, or that the sequence can't take, releases its control. The
     // control shows the song's value again.
@@ -1059,6 +1428,10 @@ private:
     // shows a message.
     void ApplyInstrumentChoices();
     void ApplyInstrumentChoice(const song::Track& track, const InstrumentChoice& choice);
+
+    // The stretches of the track before `track` in the shown sequence on Konami's driver, where a note of that track
+    // can play on `track`. Other drivers give none.
+    std::span<const song::Stretch> PreviousTrackStretches(const song::Track& track) const;
 
     // Takes the values that the user chose in the Variables zone for the variables of the sequence that the zones show.
     // The sequence is read again with them, and a new model catches up with playback. Playback goes on without a stop.
@@ -1096,6 +1469,10 @@ private:
     // stop.
     void ApplySoundChange(SoundSection& section);
 
+    // Shows `sound` of the current version in `section`. The values of a DS sound are stored in the archive's bytes.
+    // While the reader's thread builds the version's archive, the section keeps its view.
+    void ShowSoundIn(SoundSection& section, std::optional<uint32_t> sound);
+
     // Takes the tag that the user typed in `section`. The edit changes the file's tags alone.
     void ApplyTagChange(SoundSection& section);
 
@@ -1121,17 +1498,31 @@ private:
     // The sound that the zones show: the sequence's sound, or 0 for the made-up song.
     std::optional<uint32_t> ShownSound() const;
 
+    // The version that the history has reached, and `shown`, the bank, the wave or the sound that an editor shows in
+    // it. A value that the user types into the editor while the program is busy waits for its item there (ShownItem).
+    ShownItem ItemShown(std::optional<uint64_t> shown) const;
+
     // The index among the file's sequences of the sequence that the zones show, or nothing.
     std::optional<uint32_t> ShownSequence() const;
+
+    // Sequence `sequence` in the version that built the open archive, or nothing.
+    format::Shared<ntdlib::commands::Sequence> VersionSequence(std::optional<uint32_t> sequence) const;
+
+    // The labels that name the parts of the shown song, by their offsets (app::PartLabels): on the GBA, the DS and with
+    // Konami's driver, those of the version that the zones show.
+    std::map<uint32_t, std::string> PartLabels() const;
 
     // The index among the file's sequences of the sequence that a sound of the open archive plays, or nothing.
     std::optional<uint32_t> SequenceOfSound(uint32_t sound) const;
 
     // Where each sound of the open archive plays in the version that built it (edit::SoundPlaces), on the Wii too.
-    // Empty without the fields of the sounds' starts.
+    // Empty there without the fields of the sounds' starts. On the GBA, where each song of the ROM plays
+    // (edit::GbaSoundPlaces), and with the GBA's other drivers through edit::DriverSoundPlaces. On the DS and DSE,
+    // where each sound's sequence starts (edit::DsSoundPlaces).
     std::vector<std::optional<edit::SoundPlace>> Places() const;
 
-    // The names of the sounds of the open archive, by their places in the sound table.
+    // The names of the sounds of the open archive, by their places in the sound table, or of a GBA ROM's songs, by
+    // their numbers.
     std::vector<std::string> SoundNames() const;
 
     // The track of the sequence that the zones show whose number is `number`, or nullptr.
@@ -1155,6 +1546,13 @@ private:
     // action in the history. Copy Track changes nothing.
     void EditTracks(TrackAction action);
 
+    // Adds a track to `sound` with the instrument of the first note of the `selected` track, for EditTracks.
+    void AddSelectedTrack(const format::File& document, const std::vector<std::optional<edit::SoundPlace>>& places,
+                          uint32_t sound, const song::Track* selected);
+
+    // The name of the sound that the copied track came from, for the details of Paste Track.
+    std::string CopiedTrackSoundName(const format::File& document) const;
+
     // Playback follows the transport: it starts and stops with it, and starts again from where the position moves to.
     // The position follows the sample that the device plays. Without a sequence, the transport runs on the frames'
     // clock.
@@ -1166,6 +1564,15 @@ private:
     // that the device plays, or else that position.
     uint32_t ChangeOverTick() const;
 
+    // The transport's position in the ticks of the sequence that the model plays (song::PlayedTickOf).
+    double PositionInModel() const;
+
+    // How many ticks the model that a catch-up makes counts for each tick of the model that plays
+    // (song::CountedTicksOn), at the clock's count. A model of `other_engine` plays a conversion, or the sound itself
+    // in place of one. On the same engine, only a conversion's catch-up maps the ticks. The ticks of a conversion of a
+    // sound of Konami's driver follow the beat of its MIDI file, and an edit can move that beat.
+    double CatchUpScale(bool other_engine) const;
+
     // The stereo frames of the playback's output that the device has played, and those that it hasn't played yet: the
     // frames in the ring and in the device's buffer, at the player's rate.
     uint64_t HeardSamples() const;
@@ -1173,6 +1580,9 @@ private:
 
     // The transport's cycle in the sequence's ticks, for the playback clock.
     song::PlaybackClock::CycleRange CycleInTicks() const;
+
+    // A mask of the numbers of the tracks of the model that plays that play track `number` of the shown sound.
+    uint32_t PlayedTracks(int number) const;
 
     // The tracks that mute and solo silence, a bit for each track's number, for the playback clock.
     uint32_t MutedTracks() const;
@@ -1213,25 +1623,28 @@ private:
     std::vector<BrowserGroup> browser_;
     BrowserState browser_state_;
 
-    // The open sound archive, each browser item's index among the archive's sounds, banks or wave archives, and the
-    // numbers of each item's children: a bank's programs, or a wave archive's waves. The archive came from
-    // `archive_version_`, a version of the file. While the reader builds the archive of another version, that version
-    // is `reading_version_`.
-    std::shared_ptr<const ntdlib::sar::SoundArchive> archive_;
+    // The open sound archive, ROM or set. It came from `archive_version_`, a version of the file. While the reader
+    // builds the archive of another version, that version is `reading_version_`.
+    song::Played played_;
     std::shared_ptr<const format::File> archive_version_;
     std::shared_ptr<const format::File> reading_version_;
 
-    // The archive of a file of the Wii, read for playback (ntdlib::rvl::snd::kRsarOptions), in place of `archive_`. It
-    // came from `archive_version_` too.
-    std::shared_ptr<const ntdlib::rsar::SoundArchive> wii_archive_;
+    // The samples of the ROM of another of the GBA's drivers, the programs of its PSG tracks, and the ROM that they
+    // belong to (DriverSampleList).
+    std::vector<int> driver_samples_;
+    std::map<int, std::vector<uint32_t>> driver_psg_programs_; // by the PSG tracks' numbers
+    std::weak_ptr<const song::DriverRom> driver_samples_rom_;
 
-    // The sequence of the file that each of the archive's files holds, by the file's ID, and the field of the native
-    // layout that holds each sound's start, by the sound's index. Edits leave both as they are. The fields are missing
-    // when the archive's tables can't be read.
+    // GbaGroups's voice groups, and the ROM that they belong to.
+    std::vector<song::GbaVoiceGroup> gba_groups_;
+    std::weak_ptr<const song::GbaRom> gba_groups_rom_;
+
+    // The sequence of the file that each of the archive's files contains, by the file's ID, or that each song of a GBA
+    // ROM is, by its number. Then the field of the native layout that contains each sound's start, by the sound's
+    // index. Edits leave both as they are. The fields are missing when the archive's tables can't be read, on the GBA,
+    // the DS and DSE, and with the GBA's other drivers.
     std::vector<std::optional<uint32_t>> file_sequences_;
     std::optional<std::vector<std::optional<uint32_t>>> start_fields_;
-    std::array<std::vector<uint32_t>, 5> browser_items_;
-    std::array<std::vector<std::vector<uint32_t>>, 5> browser_children_;
 
     // The number of the track that the track list selects once the reader has read the version of a track's edit.
     std::optional<int> track_to_select_;
@@ -1305,6 +1718,11 @@ private:
     // `converting_version_`. `model_engine_` is the engine whose model plays.
     std::optional<song::SequenceReader::EngineSound> engine_sound_;
     std::shared_ptr<const song::Sequence> engine_sequence_;
+
+    // The tracks of a conversion of a song of the GBA or of Konami's driver, a sequence of the DS or a sound of DSE
+    // that play each of the sound's tracks (song::TracksOfConversion). Elsewhere, a conversion's tracks keep the
+    // sound's numbers.
+    std::optional<std::array<uint32_t, 32>> engine_tracks_;
     std::shared_ptr<const format::File> engine_version_;
     std::string engine_error_;
     std::optional<format::Engine> engine_failed_;
@@ -1366,10 +1784,22 @@ private:
     // in `bank_drops_` until the drop completes, and `bank_drop_` holds where the first of them landed. Files dropped
     // while a field was being typed in then wait in `waiting_bank_drop_` while the reader builds and reads another
     // version (`reading_version_`). The sizes of the groups that load the bank follow from a thread. `bank_to_open_`
-    // holds the bank that Project > Add Bank… added, until the program has built the archive that holds it.
+    // holds the bank that Project > Add Bank… added, until the program has built the archive that holds it. On the
+    // GBA, `bank_editor_` contains the voice group's address, and `gba_bank_view_` replaces `bank_view_`. On the
+    // DS, `ds_bank_view_` does, and on DSE `dse_bank_view_`, with `bank_editor_` holding an index in the set's banks.
+    // With the GBA's other drivers, `driver_bank_view_` shows the samples that the ROM's songs play.
+    // `driver_sample_songs_` contains the songs that the view shows. A thread reads the songs of a new ROM into
+    // `reading_sample_songs_`.
     std::optional<uint32_t> bank_editor_;
     std::optional<BankView> bank_view_;
+    std::optional<GbaBankView> gba_bank_view_;
+    std::optional<DsBankView> ds_bank_view_;
+    std::optional<DseBankView> dse_bank_view_;
+    std::optional<DriverBankView> driver_bank_view_;
     std::shared_ptr<const format::File> bank_view_version_;
+    DriverSampleSongs driver_sample_songs_;
+    std::future<DriverSampleSongs> reading_sample_songs_;
+    std::vector<std::future<DriverSampleSongs>> dropped_sample_songs_;
     BankEditorState bank_state_;
     std::optional<std::pair<uint32_t, int>> bank_note_;
     std::shared_ptr<std::atomic<bool>> bank_release_;
@@ -1378,6 +1808,10 @@ private:
     std::optional<WaitingBankDrop> waiting_bank_drop_;
     std::future<std::vector<std::string>> bank_group_sizes_;
     std::optional<uint32_t> bank_to_open_;
+
+    // Every move of a voice group's table in the file's history, by both of its addresses: the Bank Editor follows a
+    // group through Undo and Redo (FollowedGbaGroup).
+    GbaGroupMoves gba_moved_groups_;
 
     // The files that the system drops on the window outside the Bank Editor, until the drop completes. The first opens.
     std::vector<std::string> window_drops_;
@@ -1400,6 +1834,11 @@ private:
     std::mutex chosen_mutex_;
     std::optional<std::pair<Dialog, std::string>> chosen_;
 
+    // A file from a dialog for an Import or Replace window, and the frames that DrawPreparing has drawn for it. The
+    // preparation starts once that window shows.
+    std::optional<std::pair<Dialog, std::string>> preparing_;
+    int preparing_frames_ = 0;
+
     // What waits for the Save As dialog that AfterChanges showed.
     std::function<void()> after_save_;
 
@@ -1416,27 +1855,8 @@ private:
     // The centre of the Export window where the user last dragged it. The window opens there until Hokuto quits.
     std::optional<ImVec2> export_place_;
 
-    // What the dialog of Replace… gives a file for: a sound's sequence, an item's file, a wave or a stream sound's
-    // stream. Then the replacement that the Replace window shows.
-    std::optional<uint32_t> replace_sound_;
-    std::optional<FileTarget> replace_file_;
-    std::optional<WaveTarget> replace_wave_;
-    std::optional<uint32_t> replace_stream_;
-    std::optional<Replacement> replace_;
-
-    // The centre of the Replace window where the user last dragged it. The window opens there until Hokuto quits.
-    std::optional<ImVec2> replace_place_;
-
-    // The work of a cancelled import runs on to its end. It waits in `dropped_edits_` until then.
-    std::vector<std::future<EditWork>> dropped_edits_;
-
-    // The work of the Replace window's Play, until the preview starts. A dropped preview's work waits in
-    // `dropped_previews_` until it's done.
-    std::optional<std::future<PreviewWork>> preview_work_;
-    std::vector<std::future<PreviewWork>> dropped_previews_;
-
-    // Whether the worker plays the Replace or Import window's Play.
-    bool replace_previewing_ = false;
+    // The state of Replace… and of the imports, from the file dialog to the work of the window's Play.
+    ReplaceFlow replace_;
 
     // The transport's presses of Stop while stopped that the program has acted on (Transport::IdleStops).
     uint64_t idle_stops_ = 0;
@@ -1451,12 +1871,19 @@ private:
     // lacks shows once (song::MissingBanksNote).
     std::set<uint32_t> told_missing_banks_;
 
+    // The songs of the GBA's other drivers that have shown while the file is open. The message that a song can't be
+    // edited because its commands can't move shows once for each.
+    std::set<uint32_t> told_unrelocatable_;
+
     // Whether SDL3 waits for an event before the next frame, whether the last frame drew for work that moves (see
     // Pace), when the last event came, in SDL3's nanoseconds, and the type of the event that Wake sends.
     bool waiting_ = false;
     bool moving_ = false;
     uint64_t last_event_ = 0;
     uint32_t wake_event_ = 0;
+
+    // The messages that wait for a frame with no mouse button down (ShowMessage).
+    MessageQueue messages_;
 
     ArrangementState arrangement_;
     MasterBus master_;

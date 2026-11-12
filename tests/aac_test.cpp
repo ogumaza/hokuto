@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -30,6 +31,8 @@
 namespace
 {
 
+using xsflib::testing::ErrorOf;
+
 namespace sar = ntdlib::sar;
 
 constexpr std::size_t kFrames = 49;
@@ -37,7 +40,7 @@ constexpr std::size_t kStart = 4800;
 constexpr std::size_t kBurst = 9600;
 constexpr std::size_t kPriming = 2112;
 constexpr double kPeak = 8000.0;
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kPi = std::numbers::pi;
 
 // The bytes of tests/aac/burst.adts. Throws std::runtime_error when the test can't read the file.
 std::vector<uint8_t> Burst()
@@ -69,16 +72,7 @@ std::vector<double> Noise()
 template <class Call>
 bool Refused(const Call& call)
 {
-    try
-    {
-        call();
-    }
-    catch (const std::runtime_error&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::runtime_error>(call).empty();
 }
 
 // The largest sample of `channel` from `from` up to `to`.
@@ -107,15 +101,11 @@ void TestDecoding()
 
     const ntdlib::wave::Pcm pcm = hokuto::song::DecodeAdts(bytes);
     SEQLIB_CHECK_EQ(pcm.sample_rate, uint32_t{48000});
-    SEQLIB_CHECK_EQ(pcm.channels.size(), std::size_t{2});
+    SEQLIB_REQUIRE(pcm.channels.size() == 2);
     XSFLIB_CHECK(!pcm.loop);
     SEQLIB_CHECK_EQ(pcm.loop_end, uint32_t{kFrames * 1024});
-    SEQLIB_CHECK_EQ(pcm.channels[0].size(), std::size_t{kFrames * 1024});
-    SEQLIB_CHECK_EQ(pcm.channels[1].size(), std::size_t{kFrames * 1024});
-    if (pcm.channels.size() != 2 || pcm.channels[1].size() != kFrames * 1024)
-    {
-        return;
-    }
+    SEQLIB_REQUIRE_EQ(pcm.channels[0].size(), std::size_t{kFrames * 1024});
+    SEQLIB_REQUIRE_EQ(pcm.channels[1].size(), std::size_t{kFrames * 1024});
 
     // The noise lines up best with the priming's delay.
     const std::vector<double> noise = Noise();
@@ -335,10 +325,12 @@ void TestRefusals()
 
 int main()
 {
-    TestDecoding();
-    TestStreams();
-    TestEncoding();
-    TestRefusals();
-
-    return xsflib::testing::Summary("aac");
+    return xsflib::testing::RunTest("aac",
+                                    []
+                                    {
+                                        TestDecoding();
+                                        TestStreams();
+                                        TestEncoding();
+                                        TestRefusals();
+                                    });
 }

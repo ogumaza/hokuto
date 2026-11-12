@@ -11,63 +11,14 @@
 // stream file beside it, and three stream sounds play it with different tracks. The Bank Editor shows the bank of the
 // same archive of the 3DS too. Another archive of the Wii holds the sine and the ramp in the wave data of its bank and
 // of a wave sound file. The views show that archive's bank, waves and wave sounds by the rules of the file's build of
-// NW4R SND.
+// NW4R SND. After an edit of a program's structure, the Bank Editor selects a row of the new model.
 
-#include "app/item_views.h"
-
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <map>
-#include <memory>
-#include <optional>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "ntdlib/rsar/archive_model.h"
-#include "ntdlib/rsar/bank_file.h"
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/rsar/sequence_file.h"
-#include "ntdlib/rsar/stream_file.h"
-#include "ntdlib/rsar/wave_file.h"
-#include "ntdlib/rsar/wsd_file.h"
-#include "ntdlib/rvl/snd/rsar_options.h"
-#include "ntdlib/sar/archive_model.h"
-#include "ntdlib/sar/bank_file.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sar/stream_file.h"
-#include "ntdlib/sar/wave_file.h"
-#include "ntdlib/sound_build.h"
-#include "ntdlib/testing/sar_files.h"
-#include "ntdlib/wave/encode.h"
-#include "xsflib/bytes.h"
-#include "xsflib/testing/check.h"
-
-#include "app/key_edits.h"
-#include "edit/banks.h"
-#include "edit/groups.h"
-#include "edit/new_items.h"
-#include "edit/waves.h"
-#include "format/archive.h"
-#include "format/file.h"
-#include "song/archive.h"
-
-using hokuto::app::DroppedWaves;
-using hokuto::app::LoopMarkerPlace;
-using hokuto::app::WaveValues;
-using hokuto::app::WaveView;
-using hokuto::format::File;
-using xsflib::testing::ErrorOf;
+#include "item_views_fixtures.h"
 
 namespace
 {
 
-namespace rsar = ntdlib::rsar;
-namespace sar = ntdlib::sar;
-namespace wave = ntdlib::wave;
-namespace sar_files = ntdlib::testing::sar_files;
+using hokuto::app::Grouped;
 
 // The archive's items and files.
 constexpr uint32_t kBank = 0;
@@ -89,9 +40,6 @@ constexpr uint32_t kMonoSound = 1;
 constexpr uint32_t kMissingSound = 2;
 constexpr uint32_t kStreamFile = 0;
 constexpr std::size_t kStreamLength = 20000;
-
-// A run's least and most sample.
-using Peak = std::pair<int16_t, int16_t>;
 
 // The bank: program 0 plays the sine over every key, and program 2 the ramp over keys 60 to 127.
 sar::BankFile TestBank(sar::Flavor flavor)
@@ -213,18 +161,6 @@ std::vector<uint8_t> TestArchive(sar::Flavor flavor, bool twin = false)
 std::shared_ptr<const sar::SoundArchive> Load(const File& file)
 {
     return hokuto::song::LoadArchive(hokuto::format::ExportArchive(file), "test.bfsar");
-}
-
-// A number with a comma between each group of three digits.
-std::string Grouped(uint64_t number)
-{
-    std::string digits = std::to_string(number);
-    for (std::size_t at = digits.size(); at > 3; at -= 3)
-    {
-        digits.insert(at - 3, ",");
-    }
-
-    return digits;
 }
 
 // The stream's two channels: a ramp, and a square wave.
@@ -389,6 +325,23 @@ void TestFreeProgram()
     XSFLIB_CHECK(!hokuto::app::FreeProgram(full, 0) && !hokuto::app::FreeProgram(bank, 0x10000));
 }
 
+// The Bank Editor's Add outside the Wii: an instrument without regions at the first free program from a program up. A
+// bank without a free program refuses it.
+void TestAddedInstrument()
+{
+    sar::BankFile full;
+    full.instruments.resize(hokuto::edit::kHighestProgram + 1, sar::BankFile::Instrument());
+    const sar::BankFile bank = TestBank(sar::Flavor::kNx);
+
+    const hokuto::app::AddedInstrument added = hokuto::app::WithAddedInstrument(bank, 2, false);
+
+    SEQLIB_REQUIRE(added.bank.instruments.size() == 4 && added.bank.instruments[3].has_value());
+    XSFLIB_CHECK(added.program == 3 && added.bank.instruments[3]->key_regions.empty() &&
+                 added.bank.waves == bank.waves);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::app::WithAddedInstrument(full, 0, false); }) ==
+                 "The bank has no free program after the selected one.");
+}
+
 // Waves dropped on the list of programs, on a map without an instrument, on a region and on free keys.
 void TestDroppedWaves()
 {
@@ -454,8 +407,8 @@ void TestDroppedWaves()
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&] { hokuto::app::WithDroppedWaves(bank, {.program = 2, .key = 59}, {kFirst, kSecond}); }) ==
                  "Key " + hokuto::app::KeyName(60) +
-                     " has a region already. Drop one wave on a region to give it the wave, or drop waves on "
-                     "free keys.");
+                     " already has a region. To change the wave of a region, drop a single wave on it. Otherwise, "
+                     "drop the waves on free keys.");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&] { hokuto::app::WithDroppedWaves(low, {.program = 4, .key = 127}, {kFirst, kSecond}); }) ==
                  "The waves run past key 127. Drop them on a lower key.");
@@ -562,10 +515,10 @@ void TestBankView(sar::Flavor flavor)
     XSFLIB_CHECK(view.entries == std::vector<std::string>({"WARC_TEST, wave 0", "WARC_TEST, wave 1"}));
     XSFLIB_CHECK(view.waves == std::vector<sar::WaveId>({{kWavesId, kSine}, {kWavesId, kRamp}}) &&
                  view.wave_names.size() == 2);
-    XSFLIB_CHECK(view.interpolation == (flavor != sar::Flavor::kNx) && view.ctr == (flavor == sar::Flavor::kCtr));
+    XSFLIB_CHECK(view.interpolation == (flavor != sar::Flavor::kNx) && view.engine == hokuto::format::EngineOf(flavor));
     XSFLIB_CHECK(view.sounds == std::vector<std::string>({"SEQ_TEST"}) && view.lacking.empty());
     const std::size_t size = archive->FileData(kBankFile).size();
-    XSFLIB_CHECK(view.sizes == std::vector<std::string>({"The bank's file takes " + Grouped(size) + " bytes."}));
+    XSFLIB_CHECK(view.sizes == std::vector<std::string>({"Bank file: " + Grouped(size) + " bytes"}));
 }
 
 // The sizes of the groups that load the bank. A group that an edit added grows from nothing, and the game's group loads
@@ -597,8 +550,8 @@ void TestGroupSizes(sar::Flavor flavor)
     const uint64_t size = measured.native->game_sizes->groups.at(0);
     const std::string loads = "Group GROUP_TEST loads " + Grouped(size) + " bytes";
     XSFLIB_CHECK(size == archive->FileData(kBankFile).size() + archive->FileData(kWavesFile).size());
-    XSFLIB_CHECK(added == std::vector<std::string>({loads + ", " + Grouped(size) + " more than in the game."}));
-    XSFLIB_CHECK(same == std::vector<std::string>({loads + ", as in the game."}) && waves == same);
+    XSFLIB_CHECK(added == std::vector<std::string>({loads + ", " + Grouped(size) + " more than the original"}));
+    XSFLIB_CHECK(same == std::vector<std::string>({loads + ", the same as the original"}) && waves == same);
     XSFLIB_CHECK(playing->FileData(kBankFile).size() > archive->FileData(kBankFile).size() && exported == same);
     XSFLIB_CHECK(hokuto::app::GroupSizeLines(file, *archive, 0).empty());
 }
@@ -621,9 +574,9 @@ void TestWaveSoundView(sar::Flavor flavor)
     XSFLIB_CHECK(view->waves == std::vector<sar::WaveId>({{kWavesId, kSine}, {kWavesId, kRamp}}) &&
                  view->wave_names.size() == 2);
     const std::string size = Grouped(archive->FileData(kWaveSoundsFile).size());
-    XSFLIB_CHECK(view->reach == "No other sound plays the wave sound." &&
-                 view->sizes == std::vector<std::string>({"The wave sound file takes " + size + " bytes."}));
-    XSFLIB_CHECK(twin && twin->reach == "An edit changes the wave sound of 1 other sound too: WSD_TWIN.");
+    XSFLIB_CHECK(view->reach == "No other sound uses this wave sound." &&
+                 view->sizes == std::vector<std::string>({"Wave sound file: " + size + " bytes"}));
+    XSFLIB_CHECK(twin && twin->reach == "Edits also affect 1 other sound: WSD_TWIN.");
     XSFLIB_CHECK(!hokuto::app::MakeWaveSoundView(*archive, 0) && !hokuto::app::MakeWaveSoundView(*archive, 5));
 }
 
@@ -645,17 +598,30 @@ void TestWaveView(sar::Flavor flavor)
     const sar::WaveFile present = hokuto::edit::PresentWave(*archive, kWaves, kSine);
     XSFLIB_CHECK(!sine.stream && sine.values == WaveValues({sar::WaveEncoding::kDspAdpcm, 32000, false, 0, 280}));
     XSFLIB_CHECK(sine.held == kSineLength && sine.samples == hokuto::edit::DecodedSamples(present, kSineLength));
+    // The decoded sine follows the sine that the archive encodes. DSP-ADPCM keeps a sine of this level and rate more
+    // than 30 dB above the error. A wrong decoder gives about 0 dB or less.
+    SEQLIB_REQUIRE(sine.samples.size() == 1 && sine.samples[0].size() == kSineLength);
+    const std::vector<int16_t> encoded = SineSamples();
+    double signal = 0.0;
+    double error = 0.0;
+    for (std::size_t i = 0; i < kSineLength; ++i)
+    {
+        const double difference = static_cast<double>(encoded[i]) - sine.samples[0][i];
+        signal += static_cast<double>(encoded[i]) * encoded[i];
+        error += difference * difference;
+    }
+    XSFLIB_CHECK(error * 1000.0 < signal);
     XSFLIB_CHECK(sine.peaks.size() == 1 && sine.peaks[0].size() == 2 && sine.encodings.size() == 3);
     XSFLIB_CHECK(ramp.values == WaveValues({sar::WaveEncoding::kPcm16, 48000, true, 10, kRampLength}));
     SEQLIB_REQUIRE(ramp.samples.size() == 1 && ramp.samples[0].size() > 99);
     XSFLIB_CHECK(ramp.samples[0][99] == 9900);
 
     // What else plays each wave, and the sizes.
-    XSFLIB_CHECK(sine.reach == "An edit changes the wave in 1 bank (BANK_TEST).");
-    XSFLIB_CHECK(ramp.reach == "An edit changes the wave in 1 bank (BANK_TEST) and 1 wave sound (WSD_TEST).");
+    XSFLIB_CHECK(sine.reach == "Edits affect 1 bank (BANK_TEST).");
+    XSFLIB_CHECK(ramp.reach == "Edits affect 1 bank (BANK_TEST) and 1 wave sound (WSD_TEST).");
     const std::string archive_size = Grouped(archive->FileData(kWavesFile).size());
-    XSFLIB_CHECK(sine.sizes.size() == 2 && sine.sizes[0].starts_with("The wave takes ") &&
-                 sine.sizes[1] == "The wave archive's file takes " + archive_size + " bytes.");
+    XSFLIB_CHECK(sine.sizes.size() == 2 && sine.sizes[0].starts_with("Wave: ") &&
+                 sine.sizes[1] == "Wave archive file: " + archive_size + " bytes");
 
     // The edited wave plays up to its new end, and keeps the samples after it.
     XSFLIB_CHECK(ended.values.loop_end == 200 && ended.held == kSineLength);
@@ -679,16 +645,15 @@ void TestStreamView(sar::Flavor flavor)
     XSFLIB_CHECK(stereo.held == kStreamLength && stereo.samples == StreamChannels());
     XSFLIB_CHECK(stereo.encodings ==
                  std::vector<sar::WaveEncoding>({sar::WaveEncoding::kDspAdpcm, sar::WaveEncoding::kPcm16}));
-    XSFLIB_CHECK(stereo.tracks == std::vector<std::string>({"Track 1: channels 1 and 2, volume 100, pan the centre"}));
+    XSFLIB_CHECK(stereo.tracks == std::vector<std::string>({"Track 1: channels 1 and 2, volume 100, pan centre"}));
     XSFLIB_CHECK(mono.tracks == std::vector<std::string>({"Track 1: channel 1, volume 100, pan 64 left",
-                                                          "Track 2: channel 2, volume 100, pan 63 right. It doesn't "
-                                                          "play when the sound starts."}));
-    XSFLIB_CHECK(stereo.reach == "An edit changes the stream of 1 other stream sound too: STRM_SONG_MONO.");
-    XSFLIB_CHECK(stereo.sizes ==
-                 std::vector<std::string>({"The stream file takes " + Grouped(stream.size()) + " bytes."}));
+                                                          "Track 2: channel 2, volume 100, pan 63 right (off at "
+                                                          "start)"}));
+    XSFLIB_CHECK(stereo.reach == "Edits also affect 1 other stream sound: STRM_SONG_MONO.");
+    XSFLIB_CHECK(stereo.sizes == std::vector<std::string>({"Stream file: " + Grouped(stream.size()) + " bytes"}));
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::app::MakeStreamView(file, *archive, kMissingSound); }) ==
-                 "The file holds no stream of STRM_GONE. Its stream, STRM_GONE.bfstm, wasn't beside the archive when "
-                 "the archive was imported. Import the archive again with the stream beside it.");
+                 "The stream for STRM_GONE is missing: STRM_GONE.bfstm wasn't next to the archive at import. Put the "
+                 "file next to the archive and import the archive again.");
 }
 
 // The views of the Wii's bank, waves and wave sounds. The Wii reads no interpolation. A build before March 2008 reads
@@ -706,17 +671,27 @@ void TestWiiViews()
     const uint32_t kBankWaves = sar::ItemId(sar::kWaveArchiveItem, kWiiBankFile);
     const uint32_t kSoundWaves = sar::ItemId(sar::kWaveArchiveItem, kWiiWaveSoundsFile);
     XSFLIB_CHECK(bank.name == "BANK_TEST" && bank.model == hokuto::edit::BankModelOf(*archive, kBank));
+    // The model has the instruments that WiiArchive puts in the bank: program 0 plays wave 0 over every key, program 1
+    // is empty and program 2 plays wave 1 over keys 60 to 127.
+    const std::vector<std::optional<sar::BankFile::Instrument>>& programs = bank.model.instruments;
+    SEQLIB_REQUIRE(programs.size() == 3 && programs[0] && !programs[1] && programs[2]);
+    SEQLIB_REQUIRE(programs[0]->key_regions.size() == 1 && programs[2]->key_regions.size() == 1);
+    const sar::BankFile::KeyRegion& all_keys = programs[0]->key_regions[0];
+    const sar::BankFile::KeyRegion& upper_keys = programs[2]->key_regions[0];
+    SEQLIB_REQUIRE(all_keys.regions.size() == 1 && upper_keys.regions.size() == 1);
+    XSFLIB_CHECK(all_keys.first_key == 0 && all_keys.last_key == 127 && all_keys.regions[0].values.wave_id_index == 0);
+    XSFLIB_CHECK(upper_keys.first_key == 60 && upper_keys.last_key == 127 &&
+                 upper_keys.regions[0].values.wave_id_index == 1);
     XSFLIB_CHECK(bank.entries == std::vector<std::string>({"BANK_TEST, wave 0", "BANK_TEST, wave 1"}));
     XSFLIB_CHECK(bank.waves ==
                      std::vector<sar::WaveId>({{kBankWaves, 0}, {kBankWaves, 1}, {kSoundWaves, 0}, {kSoundWaves, 1}}) &&
                  bank.wave_names.size() == 4);
-    XSFLIB_CHECK(bank.wii && !bank.interpolation && bank.hold_and_groups);
+    XSFLIB_CHECK(bank.engine == hokuto::format::Engine::kWii && !bank.interpolation && bank.hold_and_groups);
     XSFLIB_CHECK(!hokuto::app::MakeBankView(old_build, *archive, kBank).hold_and_groups);
     XSFLIB_CHECK(bank.sounds == std::vector<std::string>({"SEQ_TEST"}));
-    XSFLIB_CHECK(bank.sizes ==
-                 std::vector<std::string>(
-                     {"The bank's file takes " + Grouped(archive->FileData(kWiiBankFile).size()) + " bytes.",
-                      "Its wave data takes " + Grouped(archive->WaveData(kWiiBankFile).size()) + " bytes."}));
+    XSFLIB_CHECK(bank.sizes == std::vector<std::string>(
+                                   {"Bank file: " + Grouped(archive->FileData(kWiiBankFile).size()) + " bytes",
+                                    "Wave data: " + Grouped(archive->WaveData(kWiiBankFile).size()) + " bytes"}));
 
     // The groups that hold the bank.
     std::vector<std::string> loads;
@@ -728,7 +703,7 @@ void TestWiiViews()
             if (item.file_id == kWiiBankFile)
             {
                 loads.push_back("Group " + std::to_string(g) + " loads " +
-                                Grouped(uint64_t{group.size} + group.wave_data_size) + " bytes.");
+                                Grouped(uint64_t{group.size} + group.wave_data_size) + " bytes");
                 break;
             }
         }
@@ -743,12 +718,12 @@ void TestWiiViews()
     XSFLIB_CHECK(sine.held == kSineLength && sine.encodings.size() == 3);
     XSFLIB_CHECK(ramp.values == WaveValues({sar::WaveEncoding::kPcm16, 32000, true, 10, kRampLength}));
     XSFLIB_CHECK(ramp.samples == std::vector<std::vector<int16_t>>({RampSamples()}));
-    XSFLIB_CHECK(sine.reach == "An edit changes the wave in 1 bank (BANK_TEST).");
-    XSFLIB_CHECK(sound_sine.reach == "An edit changes the wave in 1 wave sound (WSD_SINE).");
+    XSFLIB_CHECK(sine.reach == "Edits affect 1 bank (BANK_TEST).");
+    XSFLIB_CHECK(sound_sine.reach == "Edits affect 1 wave sound (WSD_SINE).");
     SEQLIB_REQUIRE(bank.sizes.size() > 1);
-    XSFLIB_CHECK(ramp.sizes.size() == 3 && ramp.sizes[0] == "The wave's samples take 200 bytes in the wave data." &&
+    XSFLIB_CHECK(ramp.sizes.size() == 3 && ramp.sizes[0] == "Wave samples: 200 bytes" &&
                  ramp.sizes[1] == bank.sizes[0] && ramp.sizes[2] == bank.sizes[1]);
-    XSFLIB_CHECK(sound_sine.sizes.size() == 3 && sound_sine.sizes[1].starts_with("The wave sound file takes "));
+    XSFLIB_CHECK(sound_sine.sizes.size() == 3 && sound_sine.sizes[1].starts_with("Wave sound file: "));
 
     // The wave sounds. A sequence sound has no view.
     const std::optional<hokuto::app::WaveSoundView> wave_sound =
@@ -757,13 +732,67 @@ void TestWiiViews()
     XSFLIB_CHECK(wave_sound->fields.wave == sar::WaveId({kSoundWaves, 0}) && wave_sound->fields.values.pan == 20 &&
                  !wave_sound->fields.places.filters);
     XSFLIB_CHECK(wave_sound->waves == std::vector<sar::WaveId>({{kSoundWaves, 0}, {kSoundWaves, 1}}) &&
-                 wave_sound->hold && wave_sound->reach == "No other sound plays the wave sound.");
-    XSFLIB_CHECK(wave_sound->sizes.size() == 2 && wave_sound->sizes[0].starts_with("The wave sound file takes "));
+                 wave_sound->hold && wave_sound->reach == "No other sound uses this wave sound.");
+    XSFLIB_CHECK(wave_sound->sizes.size() == 2 && wave_sound->sizes[0].starts_with("Wave sound file: "));
     const std::optional<hokuto::app::WaveSoundView> old_sine =
         hokuto::app::MakeWaveSoundView(old_build, *archive, kWiiSineSound);
     SEQLIB_REQUIRE(old_sine.has_value());
     XSFLIB_CHECK(!old_sine->hold);
     XSFLIB_CHECK(!hokuto::app::MakeWaveSoundView(file, *archive, 0));
+}
+
+// The Bank Editor's Add on the Wii. NW4R SND finds no instrument at a program without a region (ntdlib's rsar::Bank
+// reads a bank the same way as BankFileReader::ReadInstInfo). The Wii's bank has no instrument at program 1. Add after
+// program 0 makes one there. The instrument plays the bank's first wave, the sine, over every key and velocity at key
+// 60. Every other program plays as before. An empty bank made by Project > Add Bank… has no wave for an instrument, and
+// refuses Add.
+void TestWiiAddedInstrument()
+{
+    const File file = hokuto::format::ImportWiiArchive(WiiArchive());
+    const std::shared_ptr<const rsar::SoundArchive> archive = LoadWii(file);
+    const hokuto::app::BankView view = hokuto::app::MakeBankView(file, *archive, kBank);
+    const rsar::Bank before = rsar::Bank::Parse(archive->FileData(kWiiBankFile), ntdlib::rvl::snd::kRsarOptions);
+    const rsar::BankFile::Files empty = hokuto::edit::EmptyBank(*archive);
+    const File with_empty = hokuto::edit::AddWiiBank(file, "BANK_EMPTY", empty.file, empty.wave_data);
+    const std::shared_ptr<const rsar::SoundArchive> empty_archive = LoadWii(with_empty);
+    SEQLIB_REQUIRE(view.engine == hokuto::format::Engine::kWii && !before.Plays(1) &&
+                   empty_archive->Banks().size() == 2);
+    const hokuto::app::BankView empty_view = hokuto::app::MakeBankView(with_empty, *empty_archive, 1);
+
+    const hokuto::app::AddedInstrument added =
+        hokuto::app::WithAddedInstrument(view.model, 1, view.engine == hokuto::format::Engine::kWii);
+    const File edited = hokuto::edit::WithBankModel(file, *archive, kBank, added.bank);
+    const std::shared_ptr<const rsar::SoundArchive> after = LoadWii(edited);
+    const rsar::Bank played = rsar::Bank::Parse(after->FileData(kWiiBankFile), ntdlib::rvl::snd::kRsarOptions);
+
+    XSFLIB_CHECK(added.program == 1 && played.Plays(1) && played.InstrumentCount() == before.InstrumentCount());
+
+    for (uint32_t program = 0; program < before.InstrumentCount(); ++program)
+    {
+        for (const int key : {0, 40, 63, 64, 127})
+        {
+            for (const int velocity : {0, 63, 64, 127})
+            {
+                const rsar::Region* was = before.Find(program, key, velocity);
+                const rsar::Region* is = played.Find(program, key, velocity);
+                if (program == 1)
+                {
+                    XSFLIB_CHECK(is != nullptr && is->wave_index == 0 && is->original_key == 60 && is->volume == 127 &&
+                                 is->pan == 64);
+                }
+                else
+                {
+                    XSFLIB_CHECK((was == nullptr) == (is == nullptr) && (was == nullptr || *was == *is));
+                }
+            }
+        }
+    }
+
+    XSFLIB_CHECK(empty_view.engine == hokuto::format::Engine::kWii && empty_view.model.instruments.empty() &&
+                 empty_view.model.waves.empty());
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::app::WithAddedInstrument(empty_view.model, 0, true); }) ==
+                 "This bank has no waves, and a Wii bank can't keep an instrument without one. Drag WAV files or waves "
+                 "from the browser onto the list.");
 }
 
 // The properties of a Wii stream: its values, its samples, the tracks that each sound plays and the other stream sounds
@@ -793,43 +822,69 @@ void TestWiiStreamView()
     XSFLIB_CHECK(song.held == kStreamLength && song.samples == StreamChannels());
     XSFLIB_CHECK(song.encodings ==
                  std::vector<sar::WaveEncoding>({sar::WaveEncoding::kDspAdpcm, sar::WaveEncoding::kPcm16}));
-    XSFLIB_CHECK(song.tracks == std::vector<std::string>({"Track 1: channels 1 and 2, volume 100, pan the centre",
-                                                          "Track 2: channel 2, volume 90, pan 64 left. The sound "
-                                                          "doesn't play it."}));
+    XSFLIB_CHECK(song.tracks == std::vector<std::string>({"Track 1: channels 1 and 2, volume 100, pan centre",
+                                                          "Track 2: channel 2, volume 90, pan 64 left (not used by "
+                                                          "this sound)"}));
     XSFLIB_CHECK(hokuto::app::MakeStreamView(file, *archive, 1).tracks ==
-                 std::vector<std::string>({"Track 1: channels 1 and 2, volume 100, pan the centre",
+                 std::vector<std::string>({"Track 1: channels 1 and 2, volume 100, pan centre",
                                            "Track 2: channel 2, volume 90, pan 64 left"}));
     XSFLIB_CHECK(hokuto::app::MakeStreamView(file, *archive, 2).tracks.back() ==
-                 "The sound plays none of the tracks: its entry names a track or a channel that the stream lacks.");
-    XSFLIB_CHECK(song.reach == "An edit changes the stream of 2 other stream sounds too: STRM_BOTH and STRM_THIRD.");
-    XSFLIB_CHECK(song.sizes ==
-                 std::vector<std::string>({"The stream file takes " + Grouped(bytes.size()) + " bytes."}));
+                 "No track plays. The sound entry refers to a track or channel that the stream doesn't have.");
+    XSFLIB_CHECK(song.reach == "Edits also affect 2 other stream sounds: STRM_BOTH and STRM_THIRD.");
+    XSFLIB_CHECK(song.sizes == std::vector<std::string>({"Stream file: " + Grouped(bytes.size()) + " bytes"}));
     XSFLIB_CHECK(hokuto::app::MakeStreamView(old_build, *archive, 0).tracks ==
-                 std::vector<std::string>({"The game's build of NW4R SND plays channels 1 and 2 at full volume and in "
-                                           "the centre, whatever the stream's tracks."}));
+                 std::vector<std::string>({"This build of NW4R SND plays only channels 1 and 2, at full volume and "
+                                           "centred. The track settings are ignored."}));
+}
+
+// A DS wave's properties show its samples, its rate and its loop, and the banks that play it. The edits change the
+// wave's parameters in place: the rate with the timer, the loop's switch, its start and its length. The end stays.
+// Bank 2's slots name no wave archive, and its region of wave 0 doesn't count.
+// A program field accepts a number from 0 to the highest program. Text that isn't a number gets a message that says so.
+// Each message writes the highest program with commas.
+void TestProgramRefusal()
+{
+    using hokuto::app::ProgramRefusal;
+    const std::string range = "Programs range from 0 to 65,535.";
+
+    XSFLIB_CHECK(!ProgramRefusal("0", 65535) && !ProgramRefusal("65535", 65535) && !ProgramRefusal("007", 65535));
+    XSFLIB_CHECK(ProgramRefusal("abc", 65535) == "\"abc\" isn't a number. " + range);
+    XSFLIB_CHECK(ProgramRefusal("12a", 65535) == "\"12a\" isn't a number. " + range);
+    XSFLIB_CHECK(ProgramRefusal(" 5", 65535) == "\" 5\" isn't a number. " + range);
+    XSFLIB_CHECK(ProgramRefusal("-", 65535) == "\"-\" isn't a number. " + range);
+    XSFLIB_CHECK(ProgramRefusal("", 65535) == range);
+    XSFLIB_CHECK(ProgramRefusal("65536", 65535) == range);
+    XSFLIB_CHECK(ProgramRefusal("-1", 65535) == range);
+    XSFLIB_CHECK(ProgramRefusal("99999999999999999999999", 65535) == range);
+    XSFLIB_CHECK(ProgramRefusal("32768", 32767) == "Programs range from 0 to 32,767.");
 }
 
 } // namespace
 
 int main()
 {
-    TestFreeProgram();
-    TestDroppedWaves();
-    TestPeaks();
-    TestLoopSteps();
-    TestMarkerPlaces();
-    TestLoopSwitch();
-    TestBankView(sar::Flavor::kCtr);
-    for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe})
-    {
-        TestBankView(flavor);
-        TestGroupSizes(flavor);
-        TestWaveSoundView(flavor);
-        TestWaveView(flavor);
-        TestStreamView(flavor);
-    }
-    TestWiiViews();
-    TestWiiStreamView();
-
-    return xsflib::testing::Summary("item_views");
+    return xsflib::testing::RunTest("item_views",
+                                    []
+                                    {
+                                        TestFreeProgram();
+                                        TestAddedInstrument();
+                                        TestDroppedWaves();
+                                        TestPeaks();
+                                        TestLoopSteps();
+                                        TestMarkerPlaces();
+                                        TestLoopSwitch();
+                                        TestBankView(sar::Flavor::kCtr);
+                                        for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe})
+                                        {
+                                            TestBankView(flavor);
+                                            TestGroupSizes(flavor);
+                                            TestWaveSoundView(flavor);
+                                            TestWaveView(flavor);
+                                            TestStreamView(flavor);
+                                        }
+                                        TestWiiViews();
+                                        TestWiiAddedInstrument();
+                                        TestWiiStreamView();
+                                        TestProgramRefusal();
+                                    });
 }

@@ -25,26 +25,12 @@
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sound_build.h"
 
+#include "format/engine.h"
+#include "format/engines.h"
 #include "format/shared.h"
 
 namespace hokuto::format
 {
-
-// The rules that play a file's sounds: one console's, the Switch's, the Wii U's, the 3DS's or the Wii's. A sound can
-// play on another engine than its file's (File::sound_engines).
-enum class Engine : uint8_t
-{
-    kSwitch,
-    kWiiU,
-    k3ds,
-    kWii,
-};
-
-// The engine of the archives of `flavor`: the Switch's for kNx, the Wii U's for kCafe and the 3DS's for kCtr.
-Engine EngineOf(ntdlib::sar::Flavor flavor);
-
-// The flavor of the archives of `engine`'s console, or nothing for the Wii. Its archives are of another family.
-std::optional<ntdlib::sar::Flavor> FlavorOf(Engine engine);
 
 // How the engine mixes: as the console does, or with Hokuto's enhancements.
 enum class Mixing : uint8_t
@@ -97,6 +83,12 @@ struct Effect
 // The aux buses: A, B and C.
 inline constexpr std::size_t kAuxBuses = 3;
 
+// The name of aux bus `bus`: A, B or C.
+std::string BusName(std::size_t bus);
+
+// The words before "engine" that name `engine` in a message: GBA's, DSE's, or the engine name of a driver.
+std::string EngineWords(Engine engine);
+
 // The highest volume of an aux bus, as a gain: about +6 dB. AX's return volume holds a gain just below 2.
 inline constexpr float kMaxAuxVolume = 2.0f;
 
@@ -121,6 +113,8 @@ struct NativeSound
     uint32_t tracks = 1;         // the tracks that the sound allocates, a bit each
     uint8_t channel_priority = 64;
     bool release_priority_fix = false;
+
+    uint8_t reverb = 0; // the reverb byte in the header of a GBA song. Only the Sound sections read it
 };
 
 // A player of a native archive's tables: its name, and how many sounds it plays at once.
@@ -168,6 +162,20 @@ struct NativeStream
     bool from_game = true;
 };
 
+// A DS cartridge image that contains a sound archive of the DS (SDAT): a file in the file system of the image contains
+// the archive at an offset. An export writes the archive there and returns the image (ntdlib::ntr::WithFiles). A set of
+// DSE files consists of many files of the image, under their paths, and uses no file or offset. The image keeps its
+// bytes up to the last byte that isn't 0xFF. 0xFF bytes follow up to the image's size.
+struct Cartridge
+{
+    friend bool operator==(const Cartridge&, const Cartridge&) = default;
+
+    Shared<std::vector<uint8_t>> image = std::vector<uint8_t>();
+    uint32_t size = 0;   // the image's size
+    uint32_t file = 0;   // the file that contains the archive, by its ID in the file system
+    uint32_t offset = 0; // the archive's offset in the file
+};
+
 // A group file that the game keeps beside the archive, cut into ntdlib's pieces as the archive is
 // (ntdlib::sar::GroupFileLayout). Its sequence pieces name the file's sequences. A copy there of one of the archive's
 // sequence files therefore follows the edits of its sequence. The group's index in the archive's group table names the
@@ -184,6 +192,40 @@ struct NativeGroupFile
     std::vector<ntdlib::sar::Field> fields;
 };
 
+// A run of filler bytes inside a GBA ROM that a song can go into, where the user allows it (NativeArchive::gba_filler).
+struct FillerRun
+{
+    friend bool operator==(const FillerRun&, const FillerRun&) = default;
+
+    uint32_t start = 0;
+    uint32_t size = 0;
+};
+
+// The room of a list of songs that keeps its place in the ROM, such as on Quintet's driver. The list can grow up to the
+// room's end, and the room's fill follows its last song there.
+struct DriverRoom
+{
+    friend bool operator==(const DriverRoom&, const DriverRoom&) = default;
+
+    uint32_t piece = 0; // the first piece after the list: the piece at `end`
+    uint32_t end = 0;   // the room's end, from the ROM's start
+    uint8_t fill = 0;   // the byte that fills the room after the list
+};
+
+// What a ROM of one of the GBA's other drivers keeps beside its pieces (format/drivers.h): the driver's revision, and
+// where the songs that move can go. Only ntdlib's cut of the game's ROM can find those places. A driver without
+// revisions keeps 0. The native archive keeps the driver's engine.
+struct NativeDriver
+{
+    friend bool operator==(const NativeDriver&, const NativeDriver&) = default;
+
+    uint8_t revision = 0;
+    uint32_t free_start = 0;       // where the free space at the ROM's end starts
+    uint8_t padding = 0xFF;        // what fills the bytes that the ROM grows by, up to a song
+    std::vector<FillerRun> filler; // the runs of filler bytes that a song can go into
+    std::vector<DriverRoom> rooms; // the rooms of the lists of songs, on a driver whose songs are in lists
+};
+
 // The archive that a file came from, cut into ntdlib's pieces, with the fields of its tables that hold offsets and
 // sizes. A sequence piece names one of the file's sequences. The group files that the game keeps beside the archive
 // come in the order that ntdlib found them. The tables hold the values that an export writes into the archive. An
@@ -194,19 +236,57 @@ struct NativeArchive
 {
     friend bool operator==(const NativeArchive&, const NativeArchive&) = default;
 
-    ntdlib::sar::Flavor flavor = ntdlib::sar::Flavor::kNx;
+    // The engine of the console or the driver that the archive came from. ntdlib's module of the engine's family cuts
+    // the archive: sar on the later consoles, rsar for the Wii's RSAR, mp2k for a GBA ROM (ntdlib/mp2k/layout.h), sdat
+    // for a DS sound archive (ntdlib/sdat/cut.h), dse for a set of a DS image's DSE files (ntdlib/dse/layout.h), and
+    // the driver's module for a ROM of one of the GBA's other drivers (format/drivers.h).
+    Engine engine = Engine::kSwitch;
+
     Shared<std::vector<ntdlib::sar::Piece>> pieces = std::vector<ntdlib::sar::Piece>();
     std::vector<ntdlib::sar::Field> fields;
     std::vector<NativeGroupFile> group_files;
     std::optional<NativeTables> tables;
     std::optional<GameSizes> game_sizes;
     std::map<uint32_t, NativeStream> streams; // by the stream file's ID in the archive's file table
-    bool wii = false; // an archive of the Wii (RSAR). ntdlib's rsar module cuts it. `flavor` means nothing then.
+
+    // In a GBA ROM, whether a song that would make the ROM larger than 32 MiB moves into a run of filler bytes inside
+    // the ROM (ntdlib::mp2k::JoinOptions::filler, and the same option of the other drivers). Nothing shows that the
+    // game doesn't read such a run. The user chooses it.
+    bool gba_filler = false;
+
+    // In a GBA ROM, the bytes that a note of MusicPlayer2000 reads at most after its code
+    // (ntdlib::mp2k::NoteArguments): 3 for a key, a velocity and an extra length, or 2 for a key and a velocity alone.
+    // Metroid Fusion's sequencer reads only those 2. The import reads the count from ntdlib's cut
+    // (ntdlib::mp2k::Layout::note_arguments).
+    int gba_note_arguments = 3;
 
     // On the Wii, the game's build of NW4R SND, from the game's main.dol. Without it, the archive's version gives the
     // build (BuildOfWiiArchive).
     std::optional<ntdlib::SndBuild> wii_build = std::nullopt;
+
+    // On the DS, the cartridge image that contains the archive or the set. An archive that came alone has none.
+    std::optional<Cartridge> cartridge = std::nullopt;
+
+    // A GBA ROM with one of the other drivers of the GBA, such as Konami's. The driver's module of ntdlib cuts it
+    // (format/drivers.h).
+    std::optional<NativeDriver> driver = std::nullopt;
 };
+
+// The family of the engine of `native`.
+Family FamilyOf(const NativeArchive& native);
+
+// The flavor of the engine of `native`: a later console's flavor, and kNx for the other engines.
+ntdlib::sar::Flavor FlavorOf(const NativeArchive& native);
+
+// Throws xsflib::FormatError when `native` came from another engine than `engine`. A file names its engine twice: in
+// the ENGN chunk or the engine line, and as the type of its native archive. The readers of both forms refuse a file
+// whose two engines differ.
+void CheckNativeEngine(Engine engine, const NativeArchive& native);
+
+// Sets the engine of `native` to `engine`. For the engine of a driver, a driver of that engine stays as it is, and any
+// other driver is replaced with a new one at revision 0. Any other engine drops the driver. The readers of both forms
+// set the engine through this function.
+void SetEngine(NativeArchive& native, Engine engine);
 
 // A wave of a wave archive: the wave archive's file ID in the archive's file table, and the wave's index among the wave
 // archive's waves.
@@ -283,6 +363,41 @@ struct Colour
     uint8_t red = 0;
     uint8_t green = 0;
     uint8_t blue = 0;
+};
+
+// An instrument that a MIDI file's notes play: a program from 0 to 127, on MIDI's drum channel, 10, or on another
+// channel.
+struct MidiInstrument
+{
+    friend auto operator<=>(const MidiInstrument&, const MidiInstrument&) = default;
+
+    bool drums = false;
+    int program = 0;
+};
+
+// An instrument map: the voice of a GBA ROM's voice group, from 0 to 127, that each instrument of a MIDI file plays.
+using InstrumentMap = std::map<MidiInstrument, int>;
+
+// What plays a note of MIDI's drum channel: a program of a bank, and the key that the note uses.
+struct MidiDrumNote
+{
+    friend bool operator==(const MidiDrumNote&, const MidiDrumNote&) = default;
+
+    int program = 0;
+    int key = 0;
+};
+
+// What plays each note of MIDI's drum channel, by the note.
+using MidiDrumNotes = std::map<int, MidiDrumNote>;
+
+// The instrument map of a bank of the other consoles: the program of the bank that each program of a MIDI file plays,
+// and what plays each note of MIDI's drum channel.
+struct BankMidiMap
+{
+    friend bool operator==(const BankMidiMap&, const BankMidiMap&) = default;
+
+    std::map<int, int> programs;
+    MidiDrumNotes drum_notes;
 };
 
 // The tags of a file or of a sound, such as its title: each key with its value. A key holds lower-case ASCII letters,
@@ -451,7 +566,16 @@ struct File
     std::array<float, kAuxBuses> aux_volumes = {1.0f, 1.0f, 1.0f}; // each bus's gain as it joins the output
     std::vector<Scene> scenes;                                     // in the order that they were stored
     std::map<TrackPlace, Colour> track_colours;                    // the tracks that the user gave a colour
-    Tags tags;                                                     // the file's tags
+
+    // The instrument maps of the imports of MIDI files into the songs of a GBA ROM, by the address of the voice group
+    // that the songs play. The next import into a song of the voice group proposes the map's pairings.
+    std::map<uint32_t, InstrumentMap> instrument_maps;
+
+    // The instrument maps of the imports of MIDI files on the other consoles, by the bank's index in the archive's bank
+    // table. The next import that uses the bank proposes the map's pairings.
+    std::map<uint32_t, BankMidiMap> bank_maps;
+
+    Tags tags;                               // the file's tags
     std::map<uint32_t, Tags> sound_tags;     // each sound's tags, by the sound's index in the archive's sound table
     std::map<uint32_t, SoundLength> lengths; // the sounds' lengths, by their indexes in the archive's sound table
     std::vector<Shared<ntdlib::commands::Sequence>> sequences;
@@ -480,13 +604,17 @@ std::vector<Shared<ntdlib::commands::Sequence>> ShareSequences(std::vector<ntdli
 // Copies of the values of `file`'s sequences, for ntdlib's functions that take the sequences in one array.
 std::vector<ntdlib::commands::Sequence> CopySequences(const File& file);
 
-// The version that Write gives a file. Read takes every file of the major version. A minor version adds what older
-// readers can skip. The version stays 1.0 until the public release.
+// The version that Write gives a file. Read takes every file of the major version. A minor version adds chunks that
+// older readers can skip, and numbers that they refuse, such as a new engine. Version 1.0 went out with Hokuto 1.0.0.
+// Version 1.1 adds the GBA.
 inline constexpr uint16_t kMajorVersion = 1;
-inline constexpr uint16_t kMinorVersion = 0;
+inline constexpr uint16_t kMinorVersion = 1;
 
 // The first bytes of a file in the binary form.
 inline constexpr std::array<uint8_t, 8> kSignature = {0x89, 'H', 'O', 'K', 0x0D, 0x0A, 0x1A, 0x0A};
+
+// Whether Hokuto reads the chunk `id`. A file holds each such chunk once at most.
+bool IsHokutoChunk(std::string_view id);
 
 // The chunk that holds the native archive's group files, in both forms.
 inline constexpr std::string_view kGroupFilesChunk = "GRPF";
@@ -508,6 +636,18 @@ inline constexpr std::string_view kStreamsChunk = "STRM";
 // The bytes of the STRM chunk of `native`: the number of streams, then each one's file ID, its flags, its size and its
 // bytes, in the order of the file IDs. Flag 1 marks a stream that the game lacks.
 std::vector<uint8_t> StreamsChunk(const NativeArchive& native);
+
+// The chunk that contains the cartridge image of a DS archive, in both forms.
+inline constexpr std::string_view kCartridgeChunk = "CART";
+
+// The bytes of the CART chunk of `cartridge`: the ID of the file that contains the archive, the archive's offset in the
+// file, the image's size and a reserved 0, then the image's bytes up to the last byte that isn't 0xFF. Throws
+// std::invalid_argument for an image of more bytes than its size.
+std::vector<uint8_t> CartridgeChunk(const Cartridge& cartridge);
+
+// The cartridge image that the CART chunk `chunk` contains. Throws xsflib::FormatError with a message for the user if
+// the image's bytes run past its size or end with 0xFF.
+Cartridge ReadCartridge(std::span<const uint8_t> chunk);
 
 // The chunks that hold the models of the banks and the waves that the user edited, in both forms.
 inline constexpr std::string_view kBanksChunk = "BANK";
@@ -552,12 +692,37 @@ File Read(std::span<const uint8_t> bytes);
 bool IsBinary(std::span<const uint8_t> bytes);
 
 // Whether `item` holds the encoder's choices: its Encoding, but for a kOther command's opcode. The opcode is the
-// command. The choices belong to the native archive's sequence file of the item's sequence.
+// command. The choices belong to the native archive's sequence file of the item's sequence. On NintendoWare's consoles
+// and the Wii, an item can have the choices that HasNwsndChoices checks, and in a GBA ROM those of MP2K that
+// HasMp2kChoices checks. In a set of DSE's files, the choices are a note's arguments, whether the note leaves its
+// length out, and the bytes of its length.
 bool HasChoices(const ntdlib::commands::Command& item);
+bool HasNwsndChoices(const ntdlib::commands::Command& item);
+bool HasMp2kChoices(const ntdlib::commands::Command& item);
+
+// The choices of an encoder that an item can have, as bits of a set (EncodingChoicesOf): the fields of
+// ntdlib::commands::Encoding.
+namespace encoding_choices
+{
+inline constexpr uint8_t kValueBytes = 1 << 0;
+inline constexpr uint8_t kUnusedTime = 1 << 1;
+inline constexpr uint8_t kUnusedRandom = 1 << 2;
+inline constexpr uint8_t kUnusedVariable = 1 << 3;
+inline constexpr uint8_t kRepeated = 1 << 4;
+inline constexpr uint8_t kArguments = 1 << 5;
+inline constexpr uint8_t kLengthCode = 1 << 6;
+} // namespace encoding_choices
+
+// The set of the encoder's choices that `item` has (encoding_choices).
+uint8_t EncodingChoicesOf(const ntdlib::commands::Command& item);
 
 // The first of `file`'s sequences that holds the encoder's choices and that no sequence file of the native archive or
 // its group files names, or nothing. Neither form can hold such a sequence.
 std::optional<std::size_t> UnfiledChoices(const File& file);
+
+// The first sequence of `file` that has choices that the kind of its native archive can't store, or nothing: MP2K's
+// choices outside a GBA ROM, or the others in one. Neither form can hold such a sequence.
+std::optional<std::size_t> ForeignChoices(const File& file);
 
 // What's wrong with `effect`, or nothing. An effect has as many parameters as its kind has, and each one is a finite
 // number. A mode is one of its choices (see ChoicesOf).

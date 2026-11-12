@@ -65,14 +65,17 @@ struct ListRow
     bool entered = false;
     int depth = 0;
     std::string label;
+    std::optional<int> played_key = {}; // on Quintet's driver, the key of a note: the command stores only its pitch
 };
 
-// The commands of a sequence that go to an item: its calls, its jumps and its track starts.
+// The commands of a sequence that go to an item: its calls, its jumps, its track starts and its repeats. A jump on a
+// condition counts as a jump.
 struct Entries
 {
     int calls = 0;
     int jumps = 0;
     int starts = 0;
+    int repeats = 0;
 };
 
 // A run of a subroutine: the track that ran it, the stretch of the track's commands that a call started there, and the
@@ -169,6 +172,25 @@ int CallsOfRuns(const song::Sequence& song, std::span<const ListCall> runs);
 std::string CallsText(const ListSubroutine& subroutine);
 std::string CallsTooltip(const ListSubroutine& subroutine);
 
+// The text of an offset in a sequence's bytecode, such as 0x1A4. A target without a label shows it. So do a subroutine
+// and a part whose call goes to an offset without a label.
+std::string OffsetText(uint32_t offset);
+
+// The start that every label of a sequence shares, up to and with its last underscore. NintendoWare's converter names
+// the labels after the sequence, such as SMF_BGM_TITLE_Track_1_0. A sequence with one label shares nothing.
+std::size_t SharedLabelStart(const std::map<uint32_t, std::string>& labels);
+
+// The name of the subroutine at `offset` in a part of the arrangement: its label in `labels` without the first `shared`
+// characters, such as Track_1_0, or else the offset's text.
+std::string SubroutineName(const std::map<uint32_t, std::string>& labels, std::size_t shared, uint32_t offset);
+
+// The labels that name the parts of `song`, the sound of sequence `sequence` of `file`, by the offsets of their
+// commands. A song of the later consoles and the Wii reads its labels from the sequence file (song::Sequence::labels).
+// A song of the GBA, the DS or Konami's driver reads none (song::ReadSequence). The labels that the List Editor sets
+// for it stay in the .hok file. Such a song uses the first label at each command of the file's sequence, in the order
+// of the file. For a sequence that is missing from `file`, the labels come from the song.
+std::map<uint32_t, std::string> PartLabels(const song::Sequence& song, const format::File& file, uint32_t sequence);
+
 // `track` with the rows of run `subroutine.shown` of `subroutine` alone: from the stretch that the call started, up to
 // the return. The rows sit as far in as the subroutine's calls and loops take them. A track that didn't run the run, or
 // a run past the last, shows no rows.
@@ -189,17 +211,24 @@ bool Skipped(const ListTrack& track, const ListRow& row);
 // first, then the engine that plays the sound.
 const std::string& SkippingEngine(const ListTrack& track, const ListRow& row);
 
+// Where engine `engine` ignores a command, for the tooltips of rows that Skipped greys: " on the GBA", or " by DSE",
+// " by Krawall" and " by Konami's driver" for a driver. `engine` is a name that ListTrack::engine_name contains.
+std::string IgnoredOn(std::string_view engine);
+
 // The name of a command's kind in the Type column, such as Volume or Open Track.
 std::string_view KindName(ntdlib::commands::Kind kind);
 
 // Whether a command of `kind` turns something on or off. Its value shows as On or Off.
 bool Switches(ntdlib::commands::Kind kind);
 
-// A value of a command of `kind`: On or Off for a switch, or a number in the kind's unit, such as "120 BPM".
-std::string ValueText(ntdlib::commands::Kind kind, ntdlib::commands::Fixed value);
+// A value of a command of `kind` on `console`: On or Off for a switch, or a number in the kind's unit, such as "120
+// BPM". MusicPlayer2000's LFO speed and delay count in ticks. The tempo sets the length of a tick. They have no unit of
+// time.
+std::string ValueText(const song::Console& console, ntdlib::commands::Kind kind, ntdlib::commands::Fixed value);
 
-// An argument of a command of `kind`: its value, a random range, or a variable.
-std::string ArgumentText(ntdlib::commands::Kind kind, const ntdlib::commands::Argument& argument);
+// An argument of a command of `kind` on `console`: its value, a random range, or a variable.
+std::string ArgumentText(const song::Console& console, ntdlib::commands::Kind kind,
+                         const ntdlib::commands::Argument& argument);
 
 // The kinds of command that the toolbar's Insert menu offers, in groups.
 struct KindGroup
@@ -209,6 +238,10 @@ struct KindGroup
 };
 
 std::span<const KindGroup> InsertGroups();
+
+// The kind of command that Insert adds on `console` after the user chose `kind`: `kind` where the player of the console
+// runs it. Otherwise the volume, and where the player skips that too, the first kind of InsertGroups that it runs.
+ntdlib::commands::Kind InsertKindOn(const song::Console& console, ntdlib::commands::Kind kind);
 
 // The text of `column` for `row` of `track`.
 std::string CellText(const ListTrack& track, const ListRow& row, ListColumn column);
@@ -263,15 +296,15 @@ std::optional<ListEdit> TypedListEdit(const ListTrack& track, std::size_t index,
                                       std::string_view text);
 
 // `command` with the value typed as `text`. The List Editor's column of values reads the text the same way: a value
-// with or without its unit, "Random 0 to 127" or "Variable 3". `refused` says why `console` can't hold the value.
-// Nothing for text that the column can't read.
+// with or without its unit, "Random 0 to 127" or "Variable 3". `refused` says why track `track` of `console` can't
+// hold the value. Nothing for text that the column can't read.
 struct TypedArgument
 {
     ntdlib::commands::Command command;
     std::string refused;
 };
 
-std::optional<TypedArgument> TypedValueOf(const song::Console& console, ntdlib::commands::Command command,
+std::optional<TypedArgument> TypedValueOf(const song::Console& console, int track, ntdlib::commands::Command command,
                                           std::string_view text);
 
 // What a value takes, for the message that refuses text that TypedValueOf can't read.

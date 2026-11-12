@@ -100,6 +100,7 @@ States After(const Command& command, uint32_t item, const States& before, const 
             {
                 state.wii = Held{.item = kNumber, .number = *program};
             }
+
             after.push_back(state);
         }
     }
@@ -116,6 +117,7 @@ States After(const Command& command, uint32_t item, const States& before, const 
         {
             wii.number += *(*changes)[item].first;
         }
+
         for (TrackState state : before)
         {
             state.program = *program;
@@ -123,6 +125,7 @@ States After(const Command& command, uint32_t item, const States& before, const 
             {
                 state.wii = wii;
             }
+
             after.push_back(state);
         }
     }
@@ -130,6 +133,7 @@ States After(const Command& command, uint32_t item, const States& before, const 
     {
         return before;
     }
+
     std::sort(after.begin(), after.end());
     after.erase(std::unique(after.begin(), after.end()), after.end());
 
@@ -162,6 +166,7 @@ std::map<int, int64_t> TopsOf(const Sequence& sequence, const std::vector<States
                 top = std::max(top, state.program.number + 1);
                 continue;
             }
+
             const Command& setter = sequence.items[state.program.item];
             if (setter.value.source == Source::kRandom)
             {
@@ -203,16 +208,19 @@ std::map<int, std::optional<std::set<uint32_t>>> PlayedOf(const Sequence& sequen
                 programs->insert(static_cast<uint32_t>(state.program.number));
                 continue;
             }
+
             if (!drawn.insert({state.slot, state.program.item}).second)
             {
                 continue;
             }
+
             const Command& setter = sequence.items[state.program.item];
             if (setter.value.source != Source::kRandom)
             {
                 programs.reset();
                 continue;
             }
+
             const int64_t low = std::max<int64_t>(std::min(setter.value.value, setter.value.high) / kOne, 0);
             const int64_t high =
                 std::min<int64_t>(std::max(setter.value.value, setter.value.high) / kOne, kPrograms - 1);
@@ -224,6 +232,140 @@ std::map<int, std::optional<std::set<uint32_t>>> PlayedOf(const Sequence& sequen
     }
 
     return played;
+}
+
+// Sets the range of programs of each slot of `tops` in `result`: the programs of its bank, from `programs`, and as many
+// more as its notes select (WiiProgramsOf). Returns false when the ranges need more programs than a bank can contain.
+bool PlaceSlots(const std::map<int, int64_t>& tops, std::span<const uint32_t> programs, WiiPrograms& result)
+{
+    int64_t next = 0;
+    for (const auto& [slot, top] : tops)
+    {
+        const int64_t held =
+            static_cast<std::size_t>(slot) < programs.size() ? programs[static_cast<std::size_t>(slot)] : 0;
+        const int64_t count = std::max(held, top);
+        if (next + count > kPrograms)
+        {
+            return false;
+        }
+
+        result.slots[slot] = {.first = static_cast<uint32_t>(next), .count = static_cast<uint32_t>(count)};
+        next += count;
+    }
+
+    return true;
+}
+
+// The change of each item of `sequence`, whose items have the states of `source`, for the program ranges of `result`
+// (WiiProgramsOf).
+std::vector<Change> ChangesOf(const Sequence& sequence, const std::vector<States>& source, const WiiPrograms& result)
+{
+    std::vector<Change> changes(sequence.items.size());
+    if (result.slots.size() > 1)
+    {
+        for (uint32_t item = 0; item < sequence.items.size(); ++item)
+        {
+            const Command& command = sequence.items[item];
+            const States& before = source[item];
+            if (before.empty())
+            {
+                continue;
+            }
+
+            if (command.kind == Kind::kProgram && command.value.source != Source::kVariable)
+            {
+                std::set<int> slots;
+                for (const TrackState& state : before)
+                {
+                    slots.insert(state.slot);
+                }
+
+                const auto range = slots.size() == 1 ? result.slots.find(*slots.begin()) : result.slots.end();
+                if (range == result.slots.end() || range->second.first == 0)
+                {
+                    continue;
+                }
+
+                const int64_t highest =
+                    std::max(command.value.value,
+                             command.value.source == Source::kRandom ? command.value.high : command.value.value) /
+                    kOne;
+                if (highest < kPrograms && highest + range->second.first < kPrograms)
+                {
+                    changes[item].first = range->second.first;
+                }
+            }
+            else if (command.kind == Kind::kBankSelect && command.value.source == Source::kValue)
+            {
+                const auto range = result.slots.find(static_cast<int>((command.value.value / kOne) & 0xFF));
+                std::set<Held> held;
+                for (const TrackState& state : before)
+                {
+                    held.insert(state.program);
+                }
+                if (range == result.slots.end() || held.size() != 1 || held.begin()->item != kNumber)
+                {
+                    continue;
+                }
+
+                const int64_t program = range->second.first + held.begin()->number;
+                if (program < kPrograms)
+                {
+                    changes[item].program = program;
+                }
+            }
+        }
+    }
+
+    return changes;
+}
+
+// Counts in `result` the notes of `sequence` that the Wii may play with another instrument, with the states of `wii`
+// after the changes (WiiProgramsOf).
+void CountUnsureNotes(const Sequence& sequence, const std::vector<States>& wii, WiiPrograms& result)
+{
+    for (uint32_t item = 0; item < sequence.items.size(); ++item)
+    {
+        if (sequence.items[item].kind != Kind::kNote || wii[item].empty())
+        {
+            continue;
+        }
+
+        const auto in_range = [&result](const TrackState& state)
+        {
+            const auto range = result.slots.find(state.slot);
+            return range != result.slots.end() &&
+                   state.wii == Held{.item = state.program.item, .number = state.program.number + range->second.first};
+        };
+        const bool sure = std::ranges::all_of(wii[item], in_range);
+        result.unsure_notes += sure ? 0 : 1;
+    }
+}
+
+// Applies `changes` to `result.sequence` and counts them (WiiProgramsOf).
+void ApplyChanges(const std::vector<Change>& changes, WiiPrograms& result)
+{
+    for (uint32_t item = 0; item < result.sequence.items.size(); ++item)
+    {
+        Command& command = result.sequence.items[item];
+        if (const std::optional<uint32_t> first = changes[item].first)
+        {
+            command.value.value += *first * kOne;
+            if (command.value.source == Source::kRandom)
+            {
+                command.value.high += *first * kOne;
+            }
+
+            ++result.programs;
+        }
+        else if (const std::optional<int64_t> program = changes[item].program)
+        {
+            command = Command{.kind = Kind::kProgram,
+                              .conditional = command.conditional,
+                              .value = {.source = Source::kValue, .value = *program * kOne, .high = 0}};
+            ++result.bank_selects;
+        }
+    }
 }
 
 } // namespace
@@ -247,75 +389,14 @@ std::optional<WiiPrograms> WiiProgramsOf(const Sequence& sequence, uint32_t star
     WiiPrograms result;
     const std::map<int, int64_t> tops = TopsOf(sequence, *source, result.unknown_slots);
     result.played = PlayedOf(sequence, *source);
-    int64_t next = 0;
-    for (const auto& [slot, top] : tops)
+    if (!PlaceSlots(tops, programs, result))
     {
-        const int64_t held =
-            static_cast<std::size_t>(slot) < programs.size() ? programs[static_cast<std::size_t>(slot)] : 0;
-        const int64_t count = std::max(held, top);
-        if (next + count > kPrograms)
-        {
-            return std::nullopt;
-        }
-        result.slots[slot] = {.first = static_cast<uint32_t>(next), .count = static_cast<uint32_t>(count)};
-        next += count;
+        return std::nullopt;
     }
 
     // A program change takes the range of the one slot that it can run with. A bank select becomes a program change
     // where it can run with one program, a number.
-    std::vector<Change> changes(sequence.items.size());
-    if (result.slots.size() > 1)
-    {
-        for (uint32_t item = 0; item < sequence.items.size(); ++item)
-        {
-            const Command& command = sequence.items[item];
-            const States& before = (*source)[item];
-            if (before.empty())
-            {
-                continue;
-            }
-
-            if (command.kind == Kind::kProgram && command.value.source != Source::kVariable)
-            {
-                std::set<int> slots;
-                for (const TrackState& state : before)
-                {
-                    slots.insert(state.slot);
-                }
-                const auto range = slots.size() == 1 ? result.slots.find(*slots.begin()) : result.slots.end();
-                if (range == result.slots.end() || range->second.first == 0)
-                {
-                    continue;
-                }
-                const int64_t highest =
-                    std::max(command.value.value,
-                             command.value.source == Source::kRandom ? command.value.high : command.value.value) /
-                    kOne;
-                if (highest < kPrograms && highest + range->second.first < kPrograms)
-                {
-                    changes[item].first = range->second.first;
-                }
-            }
-            else if (command.kind == Kind::kBankSelect && command.value.source == Source::kValue)
-            {
-                const auto range = result.slots.find(static_cast<int>((command.value.value / kOne) & 0xFF));
-                std::set<Held> held;
-                for (const TrackState& state : before)
-                {
-                    held.insert(state.program);
-                }
-                if (range == result.slots.end() || held.size() != 1 || held.begin()->item != kNumber)
-                {
-                    continue;
-                }
-                const int64_t program = range->second.first + held.begin()->number;
-                if (program < kPrograms)
-                {
-                    changes[item].program = program;
-                }
-            }
-        }
-    }
+    const std::vector<Change> changes = ChangesOf(sequence, *source, result);
 
     // The notes that the Wii may play with another instrument.
     const auto after_changes = [&changes](const Command& command, uint32_t item, const States& before)
@@ -327,45 +408,12 @@ std::optional<WiiPrograms> WiiProgramsOf(const Sequence& sequence, uint32_t star
     {
         return std::nullopt;
     }
-    for (uint32_t item = 0; item < sequence.items.size(); ++item)
-    {
-        if (sequence.items[item].kind != Kind::kNote || (*wii)[item].empty())
-        {
-            continue;
-        }
 
-        const auto in_range = [&result](const TrackState& state)
-        {
-            const auto range = result.slots.find(state.slot);
-            return range != result.slots.end() &&
-                   state.wii == Held{.item = state.program.item, .number = state.program.number + range->second.first};
-        };
-        const bool sure = std::ranges::all_of((*wii)[item], in_range);
-        result.unsure_notes += sure ? 0 : 1;
-    }
+    CountUnsureNotes(sequence, *wii, result);
 
     // The sequence with its changes.
     result.sequence = sequence;
-    for (uint32_t item = 0; item < sequence.items.size(); ++item)
-    {
-        Command& command = result.sequence.items[item];
-        if (const std::optional<uint32_t> first = changes[item].first)
-        {
-            command.value.value += *first * kOne;
-            if (command.value.source == Source::kRandom)
-            {
-                command.value.high += *first * kOne;
-            }
-            ++result.programs;
-        }
-        else if (const std::optional<int64_t> program = changes[item].program)
-        {
-            command = Command{.kind = Kind::kProgram,
-                              .conditional = command.conditional,
-                              .value = {.source = Source::kValue, .value = *program * kOne, .high = 0}};
-            ++result.bank_selects;
-        }
-    }
+    ApplyChanges(changes, result);
 
     return result;
 }

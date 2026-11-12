@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: MIT
 
-// Tests the transport's commands that go to the locators and to the bounds of parts, its empty song, and the text of
-// times, positions and lengths, with the hints of what a typed position or length takes (src/app/transport.h), without
-// a window.
+// Tests the transport's commands that go to the locators, to the bounds of parts and to whole beats, its empty song,
+// the jumps of its position and the page turns that follow the playhead, and the text of times, positions and lengths,
+// with the hints of what a typed position or length takes (src/app/transport.h), without a window.
 
+#include "app/time_text.h"
 #include "app/transport.h"
 
 #include <cstdint>
 #include <optional>
-#include <string>
 #include <vector>
 
 #include "xsflib/testing/check.h"
 
+using hokuto::app::JumpWatch;
 using hokuto::app::LengthHint;
 using hokuto::app::LengthText;
+using hokuto::app::PageTurn;
+using hokuto::app::PageView;
 using hokuto::app::ParseLength;
 using hokuto::app::ParsePosition;
 using hokuto::app::ParseTime;
@@ -80,6 +83,82 @@ void TestLocate()
 
     SEQLIB_CHECK(next == 8.0 && back == 4.0 && previous == 0.0 && before_first == 0.0);
     SEQLIB_CHECK(last == 12.0 && after_last == 12.0);
+}
+
+// A step moves to the next whole beat, or to the one before. From between two beats, a step moves to the nearer one in
+// its direction. While bars show, a bar is the step.
+void TestStep()
+{
+    Transport transport;
+    const double step = hokuto::app::kShowBars ? transport.BeatsPerBar() : 1.0;
+    transport.SetPosition(3.5 * step);
+
+    transport.Step(-1);
+    const double back = transport.Position();
+    transport.Step(-1);
+    const double back_again = transport.Position();
+    transport.SetPosition(3.5 * step);
+    transport.Step(1);
+    const double forward = transport.Position();
+    transport.Step(2);
+    const double two_forward = transport.Position();
+
+    SEQLIB_CHECK(back == 3.0 * step && back_again == 2.0 * step);
+    SEQLIB_CHECK(forward == 4.0 * step && two_forward == 6.0 * step);
+}
+
+// A move for the user and a Stop while stopped are jumps of the position: Go to Project Start, a typed position and the
+// return to where playback started. Playback that moves the position on, Start, and Stop while playing aren't.
+// JumpWatch::Jumped returns true once for each jump.
+void TestJumpWatch()
+{
+    Transport transport;
+    JumpWatch watch;
+    transport.SetPosition(64.0);
+    const bool typed = watch.Jumped(transport);
+    const bool again = watch.Jumped(transport);
+
+    transport.Start();
+    transport.Follow(80.0);
+    transport.Advance(1.0);
+    transport.Stop();
+    const bool played = watch.Jumped(transport);
+    transport.Stop();
+    const bool back = watch.Jumped(transport);
+    const double returned = transport.Position();
+    transport.GoToStart();
+    const bool start = watch.Jumped(transport);
+
+    SEQLIB_CHECK(typed && !again);
+    SEQLIB_CHECK(!played);
+    SEQLIB_CHECK(back && returned == 64.0);
+    SEQLIB_CHECK(start && transport.Position() == 0.0);
+}
+
+// Playback turns the page once the playhead comes within the margin of the right edge or is left of the view. The new
+// page shows the playhead the lead from its left edge, and starts no earlier than the song's start. A jump turns the
+// page only when the playhead lands outside the view: Go to Project Start from far into the song shows the song's
+// start. Without playback or a jump, the view stays where the user scrolled it. The view runs from pixel 1,000 to
+// 1,500, with a margin of 16 and a lead of 32.
+void TestPageTurn()
+{
+    const PageView kView{1000.0f, 500.0f, 16.0f, 32.0f};
+
+    const std::optional<float> inside = PageTurn(kView, 1200.0f, true, false);
+    const std::optional<float> at_margin = PageTurn(kView, 1490.0f, true, false);
+    const std::optional<float> left = PageTurn(kView, 900.0f, true, false);
+    const std::optional<float> stopped = PageTurn(kView, 0.0f, false, false);
+    const std::optional<float> start = PageTurn(kView, 0.0f, false, true);
+    const std::optional<float> landed_inside = PageTurn(kView, 1490.0f, false, true);
+    const std::optional<float> landed_right = PageTurn(kView, 1600.0f, false, true);
+
+    SEQLIB_CHECK(!inside);
+    SEQLIB_CHECK(at_margin == 1458.0f);
+    SEQLIB_CHECK(left == 868.0f);
+    SEQLIB_CHECK(!stopped);
+    SEQLIB_CHECK(start == 0.0f);
+    SEQLIB_CHECK(!landed_inside);
+    SEQLIB_CHECK(landed_right == 1568.0f);
 }
 
 // A time shows hours, minutes, seconds and milliseconds. A typed time takes seconds, minutes and seconds, or hours,
@@ -173,12 +252,17 @@ void TestEmptySong()
 
 int main()
 {
-    TestGoToLocators();
-    TestLocate();
-    TestEmptySong();
-    TestTimeText();
-    TestPositionText();
-    TestHints();
-
-    return xsflib::testing::Summary("transport");
+    return xsflib::testing::RunTest("transport",
+                                    []
+                                    {
+                                        TestGoToLocators();
+                                        TestLocate();
+                                        TestStep();
+                                        TestEmptySong();
+                                        TestJumpWatch();
+                                        TestPageTurn();
+                                        TestTimeText();
+                                        TestPositionText();
+                                        TestHints();
+                                    });
 }

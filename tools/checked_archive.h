@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: MIT
 
 // The sound archive that a check opens the way the program opens it: an archive of the Switch, the Wii U or the 3DS
-// through ntdlib's sar, or an archive of the Wii through ntdlib's rsar. An archive of the Wii takes the game's build of
-// NW4R SND from the game's main.dol, as the program's import takes it. The checks of the edits play the sounds of
-// either kind through the same calls. With --model, a check keeps its file in the model form (CheckedForm), and the
-// files that its edits make have to save and open again (CheckSaved).
+// through ntdlib's sar, an archive of the Wii through ntdlib's rsar, a GBA ROM whose songs MusicPlayer2000 plays, or a
+// sound archive of the DS (SDAT), alone or in a cartridge image. An archive of the Wii takes the game's build of NW4R
+// SND from the game's main.dol, as the program's import takes it. A GBA ROM's sounds are the songs of its song table,
+// by their numbers, and each song is a sequence sound that uses its voice group. A DS archive's sounds are its
+// sequences (song::DsSounds), and each uses the bank that its entry names. From a cartridge image, the check uses the
+// largest archive, played by the driver of the ARM7 binary of the image. From a cartridge image with DSE files and no
+// sound archive, the check uses their songs and sound effects (song::DseSounds), played by the driver of its ARM9
+// binary. From a GBA ROM with another GBA driver, such as Konami's driver, the check uses the sounds of that driver
+// (song::DriverRom::Sounds). The checks of the edits play the sounds of every kind through the same calls. With
+// --model, a check keeps its file in the model form (CheckedForm), and the files that its edits make have to save and
+// open again (CheckSaved).
 
 #pragma once
 
@@ -14,28 +21,62 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/gba.h"
+#include "ntdlib/agb/rom.h"
+#include "ntdlib/brownie/commands.h"
+#include "ntdlib/brownie/driver.h"
+#include "ntdlib/commands/sequence.h"
+#include "ntdlib/commands/units.h"
+#include "ntdlib/dse/commands.h"
+#include "ntdlib/dse/formats.h"
+#include "ntdlib/dse/layout.h"
+#include "ntdlib/konami/commands.h"
+#include "ntdlib/konami/seqformat.h"
+#include "ntdlib/mp2k/commands.h"
+#include "ntdlib/mp2k/driver.h"
+#include "ntdlib/mp2k/layout.h"
+#include "ntdlib/mp2k/song.h"
+#include "ntdlib/rd2/sequencer.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sound_build.h"
 #include "xsflib/files.h"
 
+#include "edit/bytecode.h"
+#include "edit/ds_files.h"
 #include "edit/replace.h"
 #include "format/archive.h"
+#include "format/brownie_items.h"
+#include "format/drivers.h"
 #include "format/file.h"
 #include "format/model.h"
 #include "format/text.h"
 #include "song/archive.h"
+#include "song/brownie.h"
+#include "song/driver.h"
+#include "song/ds.h"
+#include "song/dse.h"
+#include "song/gba.h"
 #include "song/items.h"
+#include "song/konami.h"
+#include "song/krawall.h"
+#include "song/rare.h"
+#include "song/rd2.h"
 #include "song/sequence.h"
+#include "song/ubimilan.h"
 
 namespace hokuto::tools
 {
@@ -48,33 +89,42 @@ struct CheckedSound
     bool sequence = false;
 };
 
-// An archive of either kind: `sar` or `wii`. An archive of the Wii keeps the game's build of NW4R SND in `build`, or
-// nothing when the check found no main.dol. The archive's version then gives the build.
+// An archive of one kind: `sar`, `wii`, `gba`, `driver`, `ds` or `dse`. An archive of the Wii keeps the game's build of
+// NW4R SND in `build`, or nothing when the check found no main.dol. The archive's version then gives the build.
 struct CheckedArchive
 {
     // The number of sounds in the archive's table of sounds.
     std::size_t SoundCount() const
     {
-        return wii ? wii->Sounds().size() : sar->Sounds().size();
+        return dse             ? dse->sounds.size()
+               : ds            ? ds->sounds.size()
+               : gba || driver ? names.size()
+               : wii           ? wii->Sounds().size()
+                               : sar->Sounds().size();
     }
 
-    // Whether sound `sound` is a sequence sound.
+    // Whether sound `sound` is a sequence sound. On the GBA, it's a song that plays (song::GbaSongs), and on the DS an
+    // entry that contains a sequence. DSE's sounds all play a sequence. On another of the GBA's drivers, it's a sound
+    // of song::DriverRom::Sounds.
     bool IsSequence(uint32_t sound) const
     {
-        return wii ? wii->Sounds()[sound].type == ntdlib::rsar::SoundType::kSequence
-                   : sar->Sounds()[sound].type == ntdlib::sar::SoundType::kSequence;
+        return dse             ? true
+               : ds            ? ds->sounds[sound].has_value()
+               : gba || driver ? gba_plays[sound]
+               : wii           ? wii->Sounds()[sound].type == ntdlib::rsar::SoundType::kSequence
+                               : sar->Sounds()[sound].type == ntdlib::sar::SoundType::kSequence;
     }
 
-    // The ID of the file of sound `sound` in the archive's file table.
+    // The ID of the file of sound `sound` in the archive's file table. On the GBA and the DS, it's the sound's number.
     uint32_t FileOf(uint32_t sound) const
     {
-        return wii ? wii->Sounds()[sound].file_id : sar->Sounds()[sound].file_id;
+        return gba || driver || ds || dse ? sound : wii ? wii->Sounds()[sound].file_id : sar->Sounds()[sound].file_id;
     }
 
     // The name of sound `sound`.
     const std::string& NameOf(uint32_t sound) const
     {
-        return wii ? wii->Sounds()[sound].name : sar->Sounds()[sound].name;
+        return gba || driver || ds || dse ? names[sound] : wii ? wii->Sounds()[sound].name : sar->Sounds()[sound].name;
     }
 
     // What the checks read of sound `sound`.
@@ -88,6 +138,24 @@ struct CheckedArchive
     std::vector<std::optional<uint32_t>> BanksOf(uint32_t sound) const
     {
         std::vector<std::optional<uint32_t>> banks;
+        if (gba || driver)
+        {
+            return banks;
+        }
+        if (ds)
+        {
+            banks.push_back(song::DsBankOf(*ds, sound));
+            return banks;
+        }
+        if (dse)
+        {
+            for (const std::shared_ptr<const ntdlib::dse::WaveBank>& bank : dse->sounds[sound].banks)
+            {
+                banks.push_back(
+                    static_cast<uint32_t>(std::find(dse_banks.begin(), dse_banks.end(), bank) - dse_banks.begin()));
+            }
+            return banks;
+        }
         if (wii)
         {
             const uint32_t bank = wii->Sounds()[sound].bank;
@@ -104,334 +172,187 @@ struct CheckedArchive
         return banks;
     }
 
-    // The programs of bank `bank` (song::ProgramsOf).
+    // The programs of bank `bank` (song::ProgramsOf, song::DsBankPrograms on the DS or song::DseBankPrograms on DSE). A
+    // GBA ROM has no banks.
     std::vector<uint32_t> ProgramsOf(uint32_t bank) const
     {
-        return wii ? song::ProgramsOf(*wii, bank) : song::ProgramsOf(*sar, bank);
+        return dse             ? song::DseBankPrograms(*dse_banks.at(bank))
+               : ds            ? song::DsBankPrograms(*ds, bank)
+               : gba || driver ? std::vector<uint32_t>()
+               : wii           ? song::ProgramsOf(*wii, bank)
+                               : song::ProgramsOf(*sar, bank);
     }
 
     // The sound as ntdlib's performer plays it (song::ReadSequence). A sound of the Wii plays by the rules of `build`.
+    // A GBA song and a sound of DSE or another of the GBA's drivers play without starting values and changes, and a DS
+    // sequence without changes.
     song::Sequence Read(uint32_t sound, const song::StartValues& values = {}, const song::Changes& changes = {}) const
     {
-        return wii ? song::ReadSequence(*wii, sound, values, changes, build)
-                   : song::ReadSequence(*sar, sound, values, changes);
+        return dse      ? song::ReadSequence(*dse, sound)
+               : ds     ? song::ReadSequence(*ds, sound, values)
+               : gba    ? song::ReadSequence(*gba, static_cast<int>(sound))
+               : driver ? driver->ReadSequence(sound)
+               : wii    ? song::ReadSequence(*wii, sound, values, changes, build)
+                        : song::ReadSequence(*sar, sound, values, changes);
     }
 
     std::shared_ptr<const ntdlib::sar::SoundArchive> sar;
     std::shared_ptr<const ntdlib::rsar::SoundArchive> wii;
     std::optional<ntdlib::SndBuild> build;
+    std::shared_ptr<const song::GbaRom> gba;
+    std::shared_ptr<const song::DriverRom> driver;
+    std::shared_ptr<const song::DsArchive> ds;
+    std::shared_ptr<const song::DseSet> dse;
+    std::vector<std::shared_ptr<const ntdlib::dse::WaveBank>> dse_banks; // each bank of DSE's sounds, once
+    std::vector<std::string> names; // the name of each song of a GBA ROM, or of each sound of the DS or of DSE
+    std::vector<bool> gba_plays;    // whether each song of the GBA's song table plays, or each sound of `driver`
+
+    // The ROM of Konami's driver, or nothing for another kind of archive.
+    const song::KonamiRom* Konami() const
+    {
+        return song::KonamiOf(driver.get());
+    }
+
+    // The ROM of Nintendo R&D2's driver, or nothing for another kind of archive.
+    const song::Rd2Rom* Rd2() const
+    {
+        return song::Rd2Of(driver.get());
+    }
+
+    // The ROM of Brownie Brown's driver, or nothing for another kind of archive.
+    const song::BrownieRom* Brownie() const
+    {
+        return song::BrownieOf(driver.get());
+    }
+
+    // The ROM of Ubisoft Milan's driver, or nothing for another kind of archive.
+    const song::UbiMilanRom* UbiMilan() const
+    {
+        return song::UbiMilanOf(driver.get());
+    }
+
+    // The ROM of Rare's driver, or nothing for another kind of archive.
+    const song::RareRom* Rare() const
+    {
+        return song::RareOf(driver.get());
+    }
+
+    // The ROM of Krawall, or nothing for another kind of archive.
+    const song::KrawallRom* Krawall() const
+    {
+        return song::KrawallOf(driver.get());
+    }
 };
 
+// The GBA ROM `bytes` as a checked archive.
+CheckedArchive GbaChecked(std::vector<uint8_t> bytes);
+
+// A checked archive of the GBA ROM `bytes` with the driver of `engine`, another of the GBA's drivers. Its sounds run
+// from 0 to the driver's SoundCount, and those that the driver's Sounds leave out don't play. On Konami's driver, each
+// song comes twice: as the song, then as the game's live stage plays it.
+CheckedArchive DriverChecked(format::Engine engine, std::vector<uint8_t> bytes);
+
+// A checked archive of the DS archive `sdat` of `game`, played by `build` of the driver.
+CheckedArchive DsChecked(std::vector<uint8_t> sdat, const ntdlib::ntr::snd::Build& build,
+                         std::optional<song::DsGame> game);
+
+// A checked archive of the set of DSE's files `set`, played by `build` of the driver.
+CheckedArchive DseChecked(std::span<const uint8_t> set, ntdlib::dse::Build build);
+
+// Whether hok import treats `bytes` as a cartridge image with DSE's files and no sound archive.
+bool IsDseImage(std::span<const uint8_t> bytes);
+
+// The build of the driver that plays the archive of `file`, a DS file. The program finds the build the same way: from
+// the ARM7 binary of the cartridge image that the file keeps, or the default build for an archive alone.
+ntdlib::ntr::snd::Build DsBuildOfChecked(const format::File& file);
+
 // Whether `bytes` hold an archive of the Wii.
-inline bool IsWiiArchive(std::span<const uint8_t> bytes)
-{
-    return bytes.size() >= 4 && std::memcmp(bytes.data(), "RSAR", 4) == 0;
-}
+bool IsWiiArchive(std::span<const uint8_t> bytes);
 
 // The game's build of NW4R SND for the Wii archive at `path`, as the program's import reads it: from sys/main.dol of
 // the extracted disc that holds the archive (song::FindMainDol and song::ReadWiiBuild). Nothing when there's no such
 // main.dol, or when it gives no build.
-inline std::optional<ntdlib::SndBuild> GameBuildOf(const std::filesystem::path& path)
-{
-    const std::optional<std::filesystem::path> dol = song::FindMainDol(path);
-    std::vector<uint8_t> code;
-    return dol && xsflib::ReadFile(*dol, code) ? song::ReadWiiBuild(code) : std::nullopt;
-}
+std::optional<ntdlib::SndBuild> GameBuildOf(const std::filesystem::path& path);
+
+// The words that name `build`, the game's build of NW4R SND from GameBuildOf, in a summary.
+std::string BuildText(const std::optional<ntdlib::SndBuild>& build);
 
 // The archive at `path` with the bytes `bytes` and the group files beside it. As in the program, the Wii's archive is
 // read for its model (ntdlib::rvl::snd::kRsarOptions), and takes the game's build (GameBuildOf).
-inline CheckedArchive OpenChecked(const std::filesystem::path& path, std::span<const uint8_t> bytes)
-{
-    if (IsWiiArchive(bytes))
-    {
-        return {nullptr,
-                song::LoadWiiArchive(std::vector<uint8_t>(bytes.begin(), bytes.end()), xsflib::Utf8(path.filename()),
-                                     ntdlib::rvl::snd::kRsarOptions),
-                GameBuildOf(path)};
-    }
+CheckedArchive OpenChecked(const std::filesystem::path& path, std::span<const uint8_t> bytes);
 
-    return {song::OpenArchive(path), nullptr, std::nullopt};
-}
+// Whether the check runs with --filler (TakeFillerOption).
+inline bool filler_runs = false;
+
+// Removes --filler from `arguments`, wherever it is, and sets filler_runs when it was there.
+void TakeFillerOption(std::vector<std::string>& arguments);
+
+// `file` with the check's choice of filler runs. With --filler, the songs of a GBA ROM that don't fit after its data go
+// into its filler runs (format::NativeArchive::gba_filler). A file of another console stays as it is.
+format::File WithFillerChoice(format::File file);
 
 // The file that an import of `bytes`, an archive of the kind of `archive`, makes with `group_files` beside it, in the
 // order of those of `archive`. Each takes its group as the program's import gives it: on the 3DS, from the name under
 // which the reader found the group file of `archive` (ntdlib::sar::SoundArchive::GroupFileGroups). The Wii's archives
-// have none. An archive of the Wii takes the build of `archive`, as the program's import takes the game's build.
-inline format::File ImportChecked(std::span<const uint8_t> bytes, const CheckedArchive& archive,
-                                  std::vector<std::vector<uint8_t>> group_files)
-{
-    return archive.wii ? format::ImportWiiArchive(bytes, archive.build)
-                       : format::ImportArchive(bytes, archive.sar->ReadOptions().flavor, std::move(group_files), {},
-                                               archive.sar->GroupFileGroups());
-}
+// have none. An archive of the Wii takes the build of `archive`, as the program's import takes the game's build. A GBA
+// ROM uses the choice of filler runs of the check (WithFillerChoice).
+format::File ImportChecked(std::span<const uint8_t> bytes, const CheckedArchive& archive,
+                           std::vector<std::vector<uint8_t>> group_files);
 
 // The same, with the group files of `archive` beside `bytes`.
-inline format::File ImportChecked(std::span<const uint8_t> bytes, const CheckedArchive& archive)
-{
-    return ImportChecked(bytes, archive, archive.sar ? archive.sar->GroupFiles() : std::vector<std::vector<uint8_t>>());
-}
+format::File ImportChecked(std::span<const uint8_t> bytes, const CheckedArchive& archive);
 
 // The archive that `file` builds, called `name`, with the group files that the file builds. An archive of the Wii takes
 // the build that the file keeps.
-inline CheckedArchive BuildChecked(const format::File& file, const std::string& name)
+CheckedArchive BuildChecked(const format::File& file, const std::string& name);
+
+// The sequence of `file` that each file of `archive` holds (format::SequencesOfFiles). `bytes` are the archive's. On
+// the GBA, the sequence of each song, by the song's number (format::GbaSongSequence). On the DS, the sequence of each
+// sound, by its number (format::DsSoundSequences and format::DseSoundSequences), from the archive or the set that
+// `file` builds: `bytes` can be a cartridge image.
+std::vector<std::optional<uint32_t>> SequencesOfChecked(const format::File& file, std::span<const uint8_t> bytes,
+                                                        const CheckedArchive& archive);
+
+// Where each sound of `archive` is in `file` (edit::SoundPlaces, edit::GbaSoundPlaces on the GBA, or
+// edit::DsSoundPlaces on the DS and on DSE). `bytes` are the archive's.
+std::vector<std::optional<edit::SoundPlace>> PlacesOfChecked(const format::File& file, std::span<const uint8_t> bytes,
+                                                             const CheckedArchive& archive);
+
+// The sequence sounds that a check reads, by their sequence, with how many sounds it read and how many it couldn't.
+struct SequenceSounds
 {
-    std::vector<uint8_t> bytes = format::ExportArchive(file);
-    if (file.native && file.native->wii)
-    {
-        return {nullptr, song::LoadWiiArchive(std::move(bytes), name, ntdlib::rvl::snd::kRsarOptions),
-                file.native->wii_build};
-    }
+    std::map<uint32_t, std::vector<uint32_t>> by_sequence;
+    std::size_t read = 0;
+    std::size_t unreadable = 0;
+};
 
-    return {song::LoadArchive(bytes, name, format::ExportGroupFiles(file)), nullptr, std::nullopt};
-}
-
-// The sequence of `file` that each file of `archive` holds (format::SequencesOfFiles). `bytes` are the archive's.
-inline std::vector<std::optional<uint32_t>> SequencesOfChecked(const format::File& file, std::span<const uint8_t> bytes,
-                                                               const CheckedArchive& archive)
-{
-    return archive.wii ? format::SequencesOfFiles(file, bytes, *archive.wii)
-                       : format::SequencesOfFiles(file, bytes, *archive.sar);
-}
-
-// Where each sound of `archive` plays in `file` (edit::SoundPlaces). `bytes` are the archive's.
-inline std::vector<std::optional<edit::SoundPlace>> PlacesOfChecked(const format::File& file,
-                                                                    std::span<const uint8_t> bytes,
-                                                                    const CheckedArchive& archive)
-{
-    const std::vector<std::optional<uint32_t>> sequences = SequencesOfChecked(file, bytes, archive);
-    const std::vector<std::optional<uint32_t>> starts = format::StartFieldsOfSounds(file, bytes);
-    return archive.wii ? edit::SoundPlaces(*archive.wii, sequences, starts)
-                       : edit::SoundPlaces(*archive.sar, sequences, starts);
-}
-
-// Where two ranges `a` and `b` first differ, for a check's message: their sizes when those differ, or else the first
-// index at which their elements differ.
-template <class Range>
-std::string FirstDifference(const Range& a, const Range& b)
-{
-    if (a.size() != b.size())
-    {
-        return "sizes " + std::to_string(a.size()) + " and " + std::to_string(b.size());
-    }
-
-    std::size_t index = 0;
-    while (index < a.size() && a[index] == b[index])
-    {
-        ++index;
-    }
-
-    return "first at " + std::to_string(index);
-}
-
-// The parts in which files `a` and `b` differ, for a check's message: each part of the file and of its native archive
-// that differs, with where a list in it first differs.
-inline std::string PartsThatDiffer(const format::File& a, const format::File& b)
-{
-    std::string parts;
-    const auto add = [&parts](bool same, const std::string& part)
-    {
-        if (!same)
-        {
-            parts += (parts.empty() ? " " : "; ") + part;
-        }
-    };
-
-    add(a.engine == b.engine && a.sound_engines == b.sound_engines, "the engines");
-    add(a.mixing == b.mixing && a.sound_mixing == b.sound_mixing, "the mixing modes");
-    add(a.aux_effects == b.aux_effects && a.aux_volumes == b.aux_volumes, "the effects");
-    add(a.scenes == b.scenes, "the scenes");
-    add(a.track_colours == b.track_colours, "the colours");
-    add(a.tags == b.tags && a.sound_tags == b.sound_tags, "the tags");
-    add(a.lengths == b.lengths, "the lengths");
-    add(a.form == b.form, "the form");
-    add(a.other_chunks == b.other_chunks, "the other chunks");
-    add(a.view == b.view, "the view");
-    add(a.banks == b.banks, "the banks");
-    add(a.waves == b.waves, "the waves");
-    add(a.timelines == b.timelines, "the timelines");
-    add(a.sequences == b.sequences, "the sequences, " + FirstDifference(a.sequences, b.sequences));
-    if (!a.native || !b.native)
-    {
-        add(!a.native == !b.native, "the native archive");
-        return parts;
-    }
-
-    const format::NativeArchive& native_a = *a.native;
-    const format::NativeArchive& native_b = *b.native;
-    add(native_a.flavor == native_b.flavor && native_a.wii == native_b.wii, "the archive's kind");
-    add(native_a.pieces == native_b.pieces, "the pieces, " + FirstDifference(*native_a.pieces, *native_b.pieces));
-    add(native_a.fields == native_b.fields, "the fields, " + FirstDifference(native_a.fields, native_b.fields));
-    add(native_a.group_files == native_b.group_files,
-        "the group files, " + FirstDifference(native_a.group_files, native_b.group_files));
-    if (native_a.tables && native_b.tables)
-    {
-        add(native_a.tables->sounds == native_b.tables->sounds,
-            "the sounds' values, " + FirstDifference(native_a.tables->sounds, native_b.tables->sounds));
-        add(native_a.tables->banks == native_b.tables->banks &&
-                native_a.tables->wave_archives == native_b.tables->wave_archives &&
-                native_a.tables->players == native_b.tables->players &&
-                native_a.tables->groups == native_b.tables->groups,
-            "the other tables");
-    }
-    else
-    {
-        add(!native_a.tables == !native_b.tables, "the tables");
-    }
-    add(native_a.game_sizes == native_b.game_sizes, "the game's sizes");
-    add(native_a.streams == native_b.streams, "the streams");
-    add(native_a.wii_build == native_b.wii_build, "the build");
-
-    return parts;
-}
+// Reads each sound of `archive` with a place in `places` into `songs`, by their sequence. With `only`, only the sound
+// of that name.
+SequenceSounds ReadSequenceSounds(const CheckedArchive& archive,
+                                  std::span<const std::optional<edit::SoundPlace>> places, const std::string& only,
+                                  std::map<uint32_t, song::Sequence>& songs);
 
 // Whether the check runs with --model (TakeModelOption).
 inline bool model_form = false;
 
-// The saves that CheckSaved checked, the saves of samples that it saw, and those that it passed over.
-inline std::size_t checked_saves = 0;
-inline std::size_t sampled_saves = 0;
-inline std::size_t passed_saves = 0;
-
-// The saves of a sample that CheckSaved checks: the first kAllSampledSaves of the run, then every kSampleStep-th.
-inline constexpr std::size_t kAllSampledSaves = 64;
-inline constexpr std::size_t kSampleStep = 64;
-
 // Takes --model out of `arguments`, wherever it stands, and sets model_form when it was there.
-inline void TakeModelOption(std::vector<std::string>& arguments)
-{
-    model_form = std::erase(arguments, std::string("--model")) > 0;
-}
+void TakeModelOption(std::vector<std::string>& arguments);
 
 // `file` in the model form when the check runs with --model (format::InModelForm), or else `file`. An import of `bytes`
 // made `file`. The edits then work on the archive that the model builds. Throws std::runtime_error when that archive
 // differs from `bytes`, or its group files from `file`'s, and the exceptions of InModelForm.
-inline format::File CheckedForm(format::File file, std::span<const uint8_t> bytes)
+format::File CheckedForm(format::File file, std::span<const uint8_t> bytes);
+
+// The options of an edit check that takes --model, --filler and --timelines, an archive, and a sound's name.
+struct EditOptions
 {
-    if (!model_form)
-    {
-        return file;
-    }
-
-    const std::vector<std::vector<uint8_t>> group_files = format::ExportGroupFiles(file);
-    format::File model = format::InModelForm(std::move(file));
-    if (!std::ranges::equal(format::ExportArchive(model), bytes) || format::ExportGroupFiles(model) != group_files)
-    {
-        throw std::runtime_error("the archive that the model form builds differs from the game's");
-    }
-
-    return model;
-}
-
-// With --model, saves `file`, a file as the program saves it, in both forms, and opens each form again. Each form has
-// to open as `file`, and a save of the opened file has to give the same bytes again. Returns whether it checked the
-// save. In a `sample` of many saves, it checks the first kAllSampledSaves of the run, then every kSampleStep-th. Throws
-// std::runtime_error with what differs, and the exceptions of the saves and the opens.
-inline bool CheckSaved(const format::File& file, bool sample = false)
-{
-    if (!model_form)
-    {
-        return false;
-    }
-    if (sample && ++sampled_saves > kAllSampledSaves && sampled_saves % kSampleStep != 0)
-    {
-        ++passed_saves;
-        return false;
-    }
-
-    // The opened file cuts the archive that the model builds. The opened file's pieces hold the tables' values. An edit
-    // leaves the old values in the pieces. An edit that grows the tables also leaves the fields at their old places.
-    // The archives that the pieces build have to be the same.
-    const std::vector<uint8_t> binary = format::Write(file);
-    const format::File opened = format::Read(binary);
-    format::File compared = opened;
-    if (opened.native && file.native)
-    {
-        format::NativeArchive native = *opened.native;
-        native.pieces = file.native->pieces;
-        native.fields = file.native->fields;
-        for (std::size_t i = 0; i < native.group_files.size() && i < file.native->group_files.size(); ++i)
-        {
-            native.group_files[i].pieces = file.native->group_files[i].pieces;
-            native.group_files[i].fields = file.native->group_files[i].fields;
-        }
-        compared.native = std::move(native);
-    }
-    if (!(compared == file))
-    {
-        throw std::runtime_error("the saved file opens otherwise from the binary form:" +
-                                 PartsThatDiffer(compared, file));
-    }
-    if (format::ExportArchive(opened) != format::ExportArchive(file) ||
-        format::ExportGroupFiles(opened) != format::ExportGroupFiles(file))
-    {
-        throw std::runtime_error("the saved file opens from the binary form with another archive");
-    }
-    const format::File from_text = format::ReadText(format::WriteText(file));
-    if (!(from_text == opened))
-    {
-        throw std::runtime_error("the saved file opens otherwise from the text form:" +
-                                 PartsThatDiffer(from_text, opened));
-    }
-    if (format::Write(opened) != binary)
-    {
-        throw std::runtime_error("a save of the opened file gives other bytes");
-    }
-    ++checked_saves;
-
-    return true;
-}
-
-// With --model, prints the line of `name` that counts CheckSaved's saves.
-inline void PrintSaves(const std::string& name)
-{
-    if (!model_form)
-    {
-        return;
-    }
-
-    std::printf("%s: %zu files saved in the model form opened again in both forms.", name.c_str(), checked_saves);
-    if (passed_saves > 0)
-    {
-        std::printf(" %zu saves between the samples went unchecked.", passed_saves);
-    }
-    std::printf("\n");
-}
-
-// Prints PrintSaves's line of `name` when it goes out of scope: after the lines that a check prints on its way out,
-// whichever way it returns.
-class SavesLine
-{
-public:
-    // The line of the check `name`.
-    explicit SavesLine(std::string name) : name_(std::move(name))
-    {
-    }
-
-    SavesLine(const SavesLine&) = delete;
-    SavesLine& operator=(const SavesLine&) = delete;
-
-    // Prints the line.
-    ~SavesLine()
-    {
-        PrintSaves(name_);
-    }
-
-private:
-    std::string name_;
+    bool timelines = false;
+    std::filesystem::path path;
+    std::string only; // the sound to check alone, or empty for every sound
 };
 
-// Whether `file` saves and opens again as it was, in both forms. In the native form, each form has to open as `file`.
-// With --model, CheckSaved checks the save instead. When `sample` is true, the save counts as one of a sample.
-// CheckSaved's exceptions pass through. A save that the sample passes over counts as one that opens again.
-inline bool SavesAndOpens(const format::File& file, bool sample = false)
-{
-    if (model_form)
-    {
-        CheckSaved(file, sample);
-        return true;
-    }
-
-    return format::Read(format::Write(file)) == file && format::ReadText(format::WriteText(file)) == file;
-}
+// The options of an edit check in the command line's `arguments`. Removes --model and --filler first (TakeModelOption
+// and TakeFillerOption). Prints `usage` to stderr and returns nothing when the rest doesn't fit.
+std::optional<EditOptions> ParseEditOptions(std::vector<std::string> arguments, const char* usage);
 
 } // namespace hokuto::tools

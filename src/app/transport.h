@@ -7,59 +7,10 @@
 
 #include <cstdint>
 #include <optional>
-#include <string>
-#include <string_view>
 #include <vector>
 
 namespace hokuto::app
 {
-
-// Hokuto counts beats only (the maintainer, 2026-10-14). No sequence format stores a time signature, and a guess can't
-// be trusted. The code for bars stays behind this switch. The feature may come back.
-inline constexpr bool kShowBars = false;
-
-// The ticks to the quarter note that the display counts: 120 to the sixteenth.
-inline constexpr int kDisplayTicksPerQuarter = 480;
-
-// A position as the display shows it. With bars, it shows the bar, the beat, the sixteenth and the tick, with 120 ticks
-// to the sixteenth. Without them, it's the beat, the sixteenth and the tick. Figure spaces pad the first field and the
-// tick to three digits. A figure space is as wide as a digit. The fields then keep their places as the numbers change.
-std::string PositionText(double quarters, int beats_per_bar);
-
-// A length in the same form. Each field counts from 0.
-std::string LengthText(double quarters, int beats_per_bar);
-
-// `text` without the figure spaces that PositionText and LengthText pad their fields with, for a position or a length
-// in a sentence.
-std::string WithoutFigureSpaces(std::string text);
-
-// The quarter notes of a position that the user typed in PositionText's form, or of a length in LengthText's form. The
-// fields after the first can be left out: they then count as the start of the field before. "5" is the start of the
-// fifth beat, and "5. 3" the start of its third sixteenth. The figure spaces and spaces don't count. A beat or a
-// sixteenth past the bar's or the beat's last one, a tick past 119, and anything else can't be read.
-std::optional<double> ParsePosition(std::string_view text, int beats_per_bar);
-std::optional<double> ParseLength(std::string_view text, int beats_per_bar);
-
-// What a field of a position or a length takes, for the message that refuses text that ParsePosition or ParseLength
-// can't read. Each gives an example in the display's form. PositionHint("A start") gives "A start is a position, such
-// as 2. 1. 0.", and LengthHint gives "A length is a number of beats, sixteenths and ticks, such as 0. 1. 0." With bars,
-// the bar comes first.
-std::string PositionHint(std::string_view subject);
-std::string LengthHint();
-
-// A time as the display shows it: hours, minutes, seconds and milliseconds, such as 0:01:30.000.
-std::string TimeText(uint64_t ms);
-
-// The whole milliseconds that the display shows for a time of `ms`: the time rounded down, and 0 for a time before 0. A
-// time a millionth of a millisecond short of a whole one shows that one. A new change of a variable takes the same
-// time.
-uint64_t WholeMs(double ms);
-
-// The milliseconds of a time that the user typed: seconds, minutes and seconds, or hours, minutes and seconds, with a
-// colon between each two, such as 90, 1:30 or 0:01:30.000. The seconds take three decimals at most. After a colon, the
-// minutes and the seconds stay below 60. Spaces at either end don't count. Returns nothing for any other text, or for a
-// time past `limit`.
-std::optional<uint64_t> ParseTime(std::string_view text, uint64_t limit);
 
 class Transport
 {
@@ -126,5 +77,36 @@ private:
     double cycle_start_ = 0.0;
     double cycle_end_ = 16.0;
 };
+
+// Finds the jumps of a transport's position: its moves for the user (Transport::Moves) and its Stops while stopped
+// (Transport::IdleStops). Go to Project Start and another song from its start are such jumps. A view that keeps the
+// playhead in sight follows them (PageTurn).
+class JumpWatch
+{
+public:
+    // Whether the position has jumped since the last call, or since the watch was made.
+    bool Jumped(const Transport& transport);
+
+private:
+    uint64_t moves_ = 0;
+    uint64_t idle_stops_ = 0;
+};
+
+// A view of the song across, in its pixels from the song's start: it starts at `scroll` and is `width` wide. Playback
+// turns the page once the playhead comes within `margin` of the right edge. A new page shows the playhead `lead` from
+// its left edge.
+struct PageView
+{
+    float scroll = 0.0f;
+    float width = 0.0f;
+    float margin = 0.0f;
+    float lead = 0.0f;
+};
+
+// The scroll of `view` that turns the page to the playhead at `playhead`, in the same pixels, or nothing where the view
+// stays. While `playing`, the page turns once the playhead comes within the margin of the right edge, or is to the left
+// of the view. After a jump (`jumped`), the page turns once the playhead is outside the view. The new page starts no
+// earlier than the song's start.
+std::optional<float> PageTurn(const PageView& view, float playhead, bool playing, bool jumped);
 
 } // namespace hokuto::app

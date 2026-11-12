@@ -214,6 +214,20 @@ void TestReplaceWhileReading()
     SEQLIB_CHECK(CountsFrom(numbers, index, kSecond));
 }
 
+// The frames in `ring` once the worker has put more than `least` there and then had kTakeUp to settle. A busy machine
+// can take more than kTakeUp to start the worker's thread. The wait for `least` frames therefore lasts up to 10 s.
+std::size_t SettledFrames(FrameRing& ring, std::size_t least)
+{
+    const Clock::time_point give_up = Clock::now() + std::chrono::seconds(10);
+    while (ring.Available() <= least && Clock::now() < give_up)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::this_thread::sleep_for(kTakeUp);
+
+    return ring.Available();
+}
+
 // The worker keeps 100 ms in the ring at first: 4,800 frames at 48 kHz, less up to a block of 256. With 20 ms from
 // SetAhead, it keeps 960 frames, less up to a block. The reader empties the ring between the two.
 void TestSetAhead()
@@ -223,12 +237,10 @@ void TestSetAhead()
     std::vector<float> taken(16'384 * 2);
 
     worker.Play(std::make_unique<CountingRenderer>(0, 1'000'000));
-    std::this_thread::sleep_for(kTakeUp);
-    const std::size_t at_first = ring.Available();
+    const std::size_t at_first = SettledFrames(ring, 4800 - 256);
     worker.SetAhead(std::chrono::milliseconds(20));
     ring.Read(taken.data(), ring.Available());
-    std::this_thread::sleep_for(kTakeUp);
-    const std::size_t after = ring.Available();
+    const std::size_t after = SettledFrames(ring, 960 - 256);
 
     SEQLIB_CHECK(at_first > 4800 - 256 && at_first <= 4800);
     SEQLIB_CHECK(after > 960 - 256 && after <= 960);
@@ -238,11 +250,13 @@ void TestSetAhead()
 
 int main()
 {
-    TestWholeAndInOrder();
-    TestStop();
-    TestReplace();
-    TestReplaceWhileReading();
-    TestSetAhead();
-
-    return xsflib::testing::Summary("render_worker");
+    return xsflib::testing::RunTest("render_worker",
+                                    []
+                                    {
+                                        TestWholeAndInOrder();
+                                        TestStop();
+                                        TestReplace();
+                                        TestReplaceWhileReading();
+                                        TestSetAhead();
+                                    });
 }

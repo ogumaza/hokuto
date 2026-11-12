@@ -12,20 +12,24 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <numbers>
 #include <stdexcept>
 #include <vector>
 
 #include "xsflib/testing/check.h"
 
+#include "test_math.h"
+
 using hokuto::song::CompareLevels;
 using hokuto::song::LevelComparison;
 using hokuto::song::LevelPlace;
 using hokuto::song::WorstPlaces;
+using hokuto::testing::Near;
 
 namespace
 {
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kPi = std::numbers::pi;
 constexpr int kRate = 48000;
 
 // `seconds` of interleaved stereo silence.
@@ -129,12 +133,6 @@ std::vector<float> Steady()
     AddSine(samples, 1000.0, 0.25, 0.0, 10.0);
 
     return samples;
-}
-
-// Whether `value` lies within `tolerance` of `expected`.
-bool Near(double value, double expected, double tolerance)
-{
-    return std::abs(value - expected) <= tolerance;
 }
 
 // The same render, and the render at half its amplitude: no finding. Half the amplitude gives a gain of -6.02 dB. Every
@@ -340,15 +338,9 @@ void TestWorstPlaces()
 // A rate below 1,000 Hz is refused.
 void TestRefusal()
 {
-    bool refused = false;
-    try
-    {
-        CompareLevels(Silence(1.0), Silence(1.0), 999);
-    }
-    catch (const std::invalid_argument&)
-    {
-        refused = true;
-    }
+    const bool refused =
+        !xsflib::testing::ErrorOf<std::invalid_argument>([&] { CompareLevels(Silence(1.0), Silence(1.0), 999); })
+             .empty();
 
     XSFLIB_CHECK(refused);
 }
@@ -357,15 +349,17 @@ void TestRefusal()
 
 int main()
 {
-    TestGain();
-    TestSilentRender();
-    TestSpan();
-    TestRun();
-    TestOffset();
-    TestLag();
-    TestShortLag();
-    TestWorstPlaces();
-    TestRefusal();
-
-    return xsflib::testing::Summary("audibility");
+    return xsflib::testing::RunTest("audibility",
+                                    []
+                                    {
+                                        TestGain();
+                                        TestSilentRender();
+                                        TestSpan();
+                                        TestRun();
+                                        TestOffset();
+                                        TestLag();
+                                        TestShortLag();
+                                        TestWorstPlaces();
+                                        TestRefusal();
+                                    });
 }

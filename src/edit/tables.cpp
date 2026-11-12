@@ -21,15 +21,7 @@ namespace hokuto::edit
 namespace
 {
 
-constexpr int kBankSlots = 4;
 constexpr uint32_t kTrackFlags = 0xFFFF;
-
-// Whether only a sequence sound has `value`.
-bool OfSequenceSounds(SoundValue value)
-{
-    return value == SoundValue::kBank || value == SoundValue::kTracks || value == SoundValue::kChannelPriority ||
-           value == SoundValue::kReleasePriorityFix;
-}
 
 // Throws for `change` of a sound of `tables` that the value's range or the tables refuse.
 void CheckChange(const format::NativeTables& tables, const SoundChange& change)
@@ -40,14 +32,15 @@ void CheckChange(const format::NativeTables& tables, const SoundChange& change)
         if (ntdlib::sar::ItemType(change.to) != ntdlib::sar::kPlayerItem ||
             ntdlib::sar::ItemNumber(change.to) >= tables.players.size())
         {
-            throw std::invalid_argument("The archive's tables hold no such player.");
+            throw std::invalid_argument("The archive has no such player.");
         }
         break;
 
     case SoundValue::kBank:
         if (change.slot < 0 || change.slot >= kBankSlots)
         {
-            throw std::invalid_argument("A sound has four bank slots. Each holds one of the archive's banks, or none.");
+            throw std::invalid_argument(
+                "A sound has four bank slots. Each slot can contain a bank of the archive, or none.");
         }
 
         CheckBankSlots(tables, std::vector<uint32_t>{change.to});
@@ -56,14 +49,14 @@ void CheckChange(const format::NativeTables& tables, const SoundChange& change)
     case SoundValue::kTracks:
         if (change.to == 0 || change.to > kTrackFlags)
         {
-            throw std::invalid_argument("A sound allocates at least one track, of tracks 0 to 15.");
+            throw std::invalid_argument("A sound must allocate at least one of tracks 0–15.");
         }
         break;
 
     default:
         if (change.to > HighestOf(change.value))
         {
-            throw std::invalid_argument("The " + xsflib::AsciiLower(NameOf(change.value)) + " goes from 0 to " +
+            throw std::invalid_argument("The " + xsflib::AsciiLower(NameOf(change.value)) + " must be from 0 to " +
                                         std::to_string(HighestOf(change.value)) + ".");
         }
         break;
@@ -86,14 +79,14 @@ void CheckHeld(const format::File& file, const SoundChange& change)
     case SoundValue::kActorPlayer:
         if (!held.actor_player)
         {
-            throw std::invalid_argument("Hokuto reads no actor player in an archive of the Wii.");
+            throw std::invalid_argument("Hokuto doesn't read actor players in Wii archives.");
         }
         break;
 
     case SoundValue::kBank:
         if (change.slot < 0 || change.slot >= held.bank_slots)
         {
-            throw std::invalid_argument("A sound of the Wii plays one bank, in slot 0.");
+            throw std::invalid_argument("A Wii sound uses only one bank, in slot 0.");
         }
         break;
 
@@ -102,8 +95,7 @@ void CheckHeld(const format::File& file, const SoundChange& change)
         if (!held.pan)
         {
             throw std::invalid_argument(
-                "An archive of the Wii holds the pan mode and the pan curve from version 1.2 on. This archive holds "
-                "version " +
+                "Wii archives store the pan mode and pan curve from version 1.2 on. This archive is version " +
                 version + ".");
         }
         break;
@@ -112,9 +104,8 @@ void CheckHeld(const format::File& file, const SoundChange& change)
         if (!held.release_priority_fix)
         {
             throw std::invalid_argument(
-                "An archive of the Wii holds the release priority fix from version 1.3 on. This archive holds "
-                "version " +
-                version + ".");
+                "Wii archives store the release priority fix from version 1.3 on. This archive is version " + version +
+                ".");
         }
         break;
 
@@ -132,6 +123,7 @@ std::vector<uint32_t> WithBank(std::vector<uint32_t> banks, int slot, uint32_t b
     {
         banks.resize(at + 1, ntdlib::sar::kNoItem);
     }
+
     banks[at] = bank;
     while (banks.size() > 1 && banks.back() == ntdlib::sar::kNoItem)
     {
@@ -145,7 +137,7 @@ std::vector<uint32_t> WithBank(std::vector<uint32_t> banks, int slot, uint32_t b
 
 HeldValues HeldValuesOf(const format::File& file)
 {
-    if (!file.native || !file.native->wii)
+    if (!file.native || file.native->engine != format::Engine::kWii)
     {
         return {};
     }
@@ -169,6 +161,12 @@ HeldValues HeldValuesOf(const format::File& file)
     return held;
 }
 
+bool OfSequenceSounds(SoundValue value)
+{
+    return value == SoundValue::kBank || value == SoundValue::kTracks || value == SoundValue::kChannelPriority ||
+           value == SoundValue::kReleasePriorityFix;
+}
+
 uint32_t HighestOf(SoundValue value)
 {
     switch (value)
@@ -182,6 +180,7 @@ uint32_t HighestOf(SoundValue value)
         return 8;
     case SoundValue::kPlayerPriority:
     case SoundValue::kChannelPriority:
+    case SoundValue::kReverb:
         return 127;
     case SoundValue::kActorPlayer:
         return 3;
@@ -219,6 +218,8 @@ uint32_t ValueOf(const format::NativeSound& sound, SoundValue value, int slot)
         return sound.tracks;
     case SoundValue::kChannelPriority:
         return sound.channel_priority;
+    case SoundValue::kReverb:
+        return sound.reverb;
     case SoundValue::kReleasePriorityFix:
         break;
     }
@@ -248,6 +249,8 @@ std::string NameOf(SoundValue value)
         return "Tracks";
     case SoundValue::kChannelPriority:
         return "Channel Priority";
+    case SoundValue::kReverb:
+        return "Reverb";
     case SoundValue::kReleasePriorityFix:
         break;
     }
@@ -259,11 +262,15 @@ format::File ChangeSound(const format::File& file, uint32_t sound, const SoundCh
 {
     if (!file.native || !file.native->tables)
     {
-        throw std::invalid_argument("This file holds no tables of an archive.");
+        throw std::invalid_argument("This file contains no sound archive tables.");
     }
     if (sound >= file.native->tables->sounds.size())
     {
-        throw std::invalid_argument("The archive's tables hold no such sound.");
+        throw std::invalid_argument("The archive has no such sound.");
+    }
+    if (change.value == SoundValue::kReverb)
+    {
+        throw std::invalid_argument("Only GBA songs have a reverb setting.");
     }
 
     // The sound has to have the value.
@@ -272,13 +279,15 @@ format::File ChangeSound(const format::File& file, uint32_t sound, const SoundCh
     if (OfSequenceSounds(change.value) && old.kind != ntdlib::sar::SoundType::kSequence)
     {
         throw std::invalid_argument("Sound " + old.name +
-                                    " isn't a sequence sound. Only a sequence sound has bank slots, tracks, a "
+                                    " isn't a sequence sound. Only sequence sounds have bank slots, tracks, a "
                                     "channel priority and a release priority fix.");
     }
-    if (file.native->wii)
+
+    if (file.native->engine == format::Engine::kWii)
     {
         CheckHeld(file, change);
     }
+
     CheckChange(tables, change);
 
     format::File result = file;
@@ -318,6 +327,8 @@ format::File ChangeSound(const format::File& file, uint32_t sound, const SoundCh
         case SoundValue::kReleasePriorityFix:
             edited.release_priority_fix = change.to != 0;
             break;
+        case SoundValue::kReverb:
+            break;
         }
     };
     result.native.Edit(edit);
@@ -325,10 +336,11 @@ format::File ChangeSound(const format::File& file, uint32_t sound, const SoundCh
     // A value whose option the sound's entry leaves out takes a place in the entry at the export. The new version has
     // to export then. An archive that NintendoWare's tools didn't lay out can't take the place. Without the places of
     // the first piece, every value that requires a place counts. Each value of an archive of the Wii has a fixed place.
-    if (file.native->wii)
+    if (file.native->engine == format::Engine::kWii)
     {
         return result;
     }
+
     const std::optional<std::vector<ntdlib::sar::ValuePlaces>> places = format::TableValuePlacesOf(*file.native);
     const ntdlib::sar::ValuePlaces held =
         places && sound < places->size() ? (*places)[sound] : ntdlib::sar::ValuePlaces{};

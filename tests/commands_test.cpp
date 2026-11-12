@@ -5,7 +5,8 @@
 // Its volume comes from a variable before key 62, and a random wait comes before key 64. Track 1 sets its pan and plays
 // no notes. Each edit goes through an export of the archive. ntdlib's performer then plays the edited archive, and the
 // notes that it plays have to show the edit and nothing else. A small 3DS archive checks the commands that the 3DS's
-// player skips.
+// player skips. A small GBA ROM checks MusicPlayer2000's values and running status. A small DS archive checks that no
+// command is inserted before the allocation of tracks at a sequence's start.
 
 #include "edit/commands.h"
 
@@ -18,18 +19,30 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
+#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sdat/layout.h"
 #include "ntdlib/sound_build.h"
+#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
+#include "ntdlib/testing/sdat_files.h"
 #include "xsflib/testing/check.h"
 
+#include "cart_bytes.h"
+#include "edit/bytecode.h"
 #include "edit/notes.h"
 #include "format/archive.h"
+#include "format/engines.h"
 #include "format/file.h"
 #include "song/archive.h"
+#include "song/driver.h"
+#include "song/ds.h"
+#include "song/gba.h"
 #include "song/sequence.h"
+#include "sound_places.h"
 
 using hokuto::edit::ArgumentRange;
 using hokuto::edit::ChangeCommand;
@@ -56,11 +69,13 @@ using hokuto::song::Note;
 using hokuto::song::Sequence;
 using hokuto::song::Setting;
 using hokuto::song::Track;
+using hokuto::testing::PlayedSequence;
 using ntdlib::commands::Argument;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Source;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -175,14 +190,6 @@ std::vector<uint8_t> TestArchive(const std::vector<uint8_t>& bytecode = kBytecod
     return sar_files::Archive(false, spec);
 }
 
-// The sound as ntdlib's performer plays it from the archive that `file` builds.
-Sequence Played(const File& file)
-{
-    const std::shared_ptr<const sar::SoundArchive> archive =
-        hokuto::song::LoadArchive(hokuto::format::ExportArchive(file), "test.bfsar");
-    return hokuto::song::ReadSequence(*archive, 0);
-}
-
 // The start, length and key of each note of track 0 of `sequence`, up to `count` notes.
 std::vector<std::vector<uint32_t>> Notes(const Sequence& sequence, std::size_t count = 3)
 {
@@ -211,23 +218,14 @@ CommandPlace PlaceOf(const Sequence& sequence, uint32_t command, std::size_t str
 template <typename Edit>
 bool Refuses(Edit edit)
 {
-    try
-    {
-        edit();
-    }
-    catch (const std::invalid_argument&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::invalid_argument>(edit).empty();
 }
 
 // The rows follow the track through the call and back. A random wait leaves the ticks unknown until a note's start.
 void TestRows()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     const Track& track = song.tracks.at(0);
 
     const std::vector<CommandRow> rows = CommandRows(file, 0, track.stretches, track.notes, std::nullopt);
@@ -253,7 +251,7 @@ void TestRows()
 void TestRowsAfterUnknownWait()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive(kPollBytecode, {{"Song", 0}}));
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     const Track& track = song.tracks.at(0);
 
     const std::vector<CommandRow> rows = CommandRows(file, 0, track.stretches, track.notes, std::nullopt);
@@ -274,7 +272,7 @@ void TestRowsAfterUnknownWait()
 void TestRowsAfterHeldWait()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive(kHeldBytecode, {{"Song", 0}}));
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     const Track& track = song.tracks.at(0);
 
     const std::vector<CommandRow> rows = CommandRows(file, 0, track.stretches, track.notes, std::nullopt);
@@ -294,8 +292,8 @@ void TestDrawsRandom()
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
     const File poll = hokuto::format::ImportSwitchArchive(TestArchive(kPollBytecode, {{"Song", 0}}));
 
-    XSFLIB_CHECK(DrawsRandom(file, 0, Played(file)));
-    XSFLIB_CHECK(!DrawsRandom(poll, 0, Played(poll)));
+    XSFLIB_CHECK(DrawsRandom(file, 0, PlayedSequence(file, 0)));
+    XSFLIB_CHECK(!DrawsRandom(poll, 0, PlayedSequence(poll, 0)));
 }
 
 // The labels lead to their commands, and an offset to its item. The ranges follow the console's bytes. A tempo and a
@@ -312,15 +310,17 @@ void TestLabelsAndRanges()
 
     const auto range = [](const Command& command, Source source, bool time = false)
     {
-        return ArgumentRange(Console{.flavor = sar::Flavor::kNx}, command, source, time);
+        return ArgumentRange(Console{.engine = hokuto::format::Engine::kSwitch}, 0, command, source, time);
     };
 
     // The ranges of Wii Sports' build and of a build dated 20080610. No known build has that date. Such a build plays
     // as the builds from March 2008.
     const std::optional<ValueRange> early_wii =
-        ArgumentRange(Console{.wii = ntdlib::SndBuild{.date = 20070608}}, tempo, Source::kValue);
+        ArgumentRange(Console{.engine = hokuto::format::Engine::kWii, .wii = ntdlib::SndBuild{.date = 20070608}}, 0,
+                      tempo, Source::kValue);
     const std::optional<ValueRange> later_wii =
-        ArgumentRange(Console{.wii = ntdlib::SndBuild{.date = 20080610}}, tempo, Source::kValue);
+        ArgumentRange(Console{.engine = hokuto::format::Engine::kWii, .wii = ntdlib::SndBuild{.date = 20080610}}, 0,
+                      tempo, Source::kValue);
 
     XSFLIB_CHECK((LabelsOf(file, 0) == std::vector<LabelPlace>{{"Song", 0}, {"Track1", kTrack1}, {"Sub", kSub}}));
     XSFLIB_CHECK(ItemOf(file, 0, kSub) == 19 && ItemOf(file, 0, kEnd) == 22);
@@ -338,7 +338,7 @@ void TestLabelsAndRanges()
     XSFLIB_CHECK((range(NewCommand(Kind::kAllocateTracks, 48, 0), Source::kValue) == ValueRange{0, 65535 * kOne}));
     XSFLIB_CHECK(!range(NewCommand(Kind::kAllocateTracks, 48, 0), Source::kRandom));
     XSFLIB_CHECK(!range(NewCommand(Kind::kJump, 48, 0), Source::kValue));
-    XSFLIB_CHECK(Nearest(Console{.flavor = sar::Flavor::kNx}, pan).value.value == kOne);
+    XSFLIB_CHECK(Nearest(Console{.engine = hokuto::format::Engine::kSwitch}, pan).value.value == kOne);
     XSFLIB_CHECK((range(tempo, Source::kValue) == ValueRange{kOne, 1023 * kOne}) &&
                  (range(tempo, Source::kRandom) == ValueRange{kOne, 1023 * kOne}));
     XSFLIB_CHECK((range(NewCommand(Kind::kTimebase, 48, 0), Source::kValue) == ValueRange{kOne, 255 * kOne}));
@@ -364,7 +364,7 @@ void TestNewCommand()
 void TestChange()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command quieter = CommandAt(file, 0, kVolume);
     quieter.value.value = 90 * kOne;
     Command fixed = CommandAt(file, 0, kVariableVolume);
@@ -383,19 +383,19 @@ void TestChange()
     const Edited length = ChangeCommand(file, 0, PlaceOf(song, kKey60, 0), longer);
     const Edited elsewhere = ChangeCommand(file, 0, PlaceOf(song, kCall, 0), call);
 
-    const Sequence quiet_song = Played(quiet.file);
+    const Sequence quiet_song = PlayedSequence(quiet.file, 0);
     XSFLIB_CHECK(Notes(quiet_song) == kNotes && quiet_song.tracks[0].volume.at(0) == (Setting{0, 90}));
-    const Sequence value_song = Played(value.file);
+    const Sequence value_song = PlayedSequence(value.file, 0);
     XSFLIB_CHECK(Notes(value_song) == kNotes && value_song.tracks[0].volume.at(1) == (Setting{72, 110}));
     XSFLIB_CHECK(CommandAt(value.file, 0, kVariableVolume + 2).key == 62);
     XSFLIB_CHECK(value.file.sequences[0]->labels == file.sequences[0]->labels);
-    const Sequence key_song = Played(key.file);
+    const Sequence key_song = PlayedSequence(key.file, 0);
     XSFLIB_CHECK((Notes(key_song) == std::vector<std::vector<uint32_t>>{{0, 24, 61}, {48, 6, 67}, {72, 24, 62}}));
     SEQLIB_REQUIRE(!key_song.tracks.empty() && !key_song.tracks[0].notes.empty());
     XSFLIB_CHECK(key_song.tracks[0].notes[0].velocity == 90);
-    XSFLIB_CHECK(
-        (Notes(Played(length.file)) == std::vector<std::vector<uint32_t>>{{0, 36, 60}, {48, 6, 67}, {72, 24, 62}}));
-    XSFLIB_CHECK((Notes(Played(elsewhere.file)) == std::vector<std::vector<uint32_t>>{{0, 24, 60}}));
+    XSFLIB_CHECK((Notes(PlayedSequence(length.file, 0)) ==
+                  std::vector<std::vector<uint32_t>>{{0, 36, 60}, {48, 6, 67}, {72, 24, 62}}));
+    XSFLIB_CHECK((Notes(PlayedSequence(elsewhere.file, 0)) == std::vector<std::vector<uint32_t>>{{0, 24, 60}}));
 }
 
 // Several settings change in one edit, and each keeps its item. The value from a variable becomes a value, and the
@@ -403,7 +403,7 @@ void TestChange()
 void TestChangeSeveral()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command quieter = CommandAt(file, 0, kVolume);
     quieter.value.value = 90 * kOne;
     Command fixed = CommandAt(file, 0, kVariableVolume);
@@ -418,7 +418,7 @@ void TestChangeSeveral()
 
     const Edited changed = ChangeCommands(file, 0, places, std::vector<Command>{quieter, fixed});
 
-    const Sequence played = Played(changed.file);
+    const Sequence played = PlayedSequence(changed.file, 0);
     XSFLIB_CHECK(Notes(played) == kNotes);
     XSFLIB_CHECK(played.tracks[0].volume.at(0) == (Setting{0, 90}) &&
                  played.tracks[0].volume.at(1) == (Setting{72, 110}));
@@ -437,7 +437,7 @@ void TestChangeSeveral()
 void TestMoveAndChange()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command quieter = CommandAt(file, 0, kVolume);
     quieter.value.value = 90 * kOne;
     const std::vector<SettingMove> later = {{kVolume, song.tracks[0].stretches[0], 24}};
@@ -446,11 +446,12 @@ void TestMoveAndChange()
 
     const Edited moved = MoveAndChangeCommands(file, 0, later, volume, std::vector<Command>{quieter});
 
-    const Sequence played = Played(moved.file);
+    const Sequence played = PlayedSequence(moved.file, 0);
     const std::optional<uint32_t> item = moved.items.at(ItemOf(file, 0, kVolume));
     SEQLIB_REQUIRE(item && !played.tracks[0].volume.empty());
     XSFLIB_CHECK(Notes(played) == kNotes && played.tracks[0].volume.at(0) == (Setting{24, 90}));
-    XSFLIB_CHECK(moved.file.sequences[0]->items.at(*item) == Nearest(Console{.flavor = sar::Flavor::kNx}, quieter));
+    XSFLIB_CHECK(moved.file.sequences[0]->items.at(*item) ==
+                 Nearest(Console{.engine = hokuto::format::Engine::kSwitch}, quieter));
     XSFLIB_CHECK(Refuses([&] { MoveAndChangeCommands(file, 0, note, volume, std::vector<Command>{quieter}); }));
 }
 
@@ -458,7 +459,7 @@ void TestMoveAndChange()
 void TestConditionAndTime()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command conditional = CommandAt(file, 0, kVolume);
     conditional.conditional = true;
     Command ramp = CommandAt(file, 0, kVolume);
@@ -469,9 +470,9 @@ void TestConditionAndTime()
 
     XSFLIB_CHECK(CommandAt(condition.file, 0, kVolume).conditional &&
                  CommandAt(condition.file, 0, kKey60 + 1).key == 60);
-    XSFLIB_CHECK(Notes(Played(condition.file)) == kNotes);
+    XSFLIB_CHECK(Notes(PlayedSequence(condition.file, 0)) == kNotes);
     XSFLIB_CHECK(CommandAt(timed.file, 0, kVolume).time == ramp.time && CommandAt(timed.file, 0, kKey60 + 3).key == 60);
-    XSFLIB_CHECK(Notes(Played(timed.file)) == kNotes);
+    XSFLIB_CHECK(Notes(PlayedSequence(timed.file, 0)) == kNotes);
 }
 
 // A value past the console's bytes, a time on a wait, a command of another kind, and a target past the end are refused.
@@ -479,7 +480,7 @@ void TestConditionAndTime()
 void TestChangeRefusals()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command loud = CommandAt(file, 0, kVolume);
     loud.value.value = 300 * kOne;
     Command timed = CommandAt(file, 0, kWait48);
@@ -512,7 +513,7 @@ void TestChangeRefusals()
 void TestInsert()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command volume = NewCommand(Kind::kVolume, 48, 0);
     volume.value.value = 50 * kOne;
     const Command wait = NewCommand(Kind::kWait, 24, 0);
@@ -523,17 +524,17 @@ void TestInsert()
     const Edited passed = InsertCommand(file, 0, PlaceOf(song, kSub, 1), false, wait);
     const Edited started = InsertCommand(file, 0, PlaceOf(song, 0, 0), true, lead);
 
-    const Sequence louder_song = Played(louder.file);
+    const Sequence louder_song = PlayedSequence(louder.file, 0);
     XSFLIB_CHECK(Notes(louder_song) == kNotes && louder_song.tracks[0].volume.at(0) == (Setting{0, 50}));
     XSFLIB_CHECK(louder.added == std::vector<uint32_t>{6} && louder.items[5] == 5u && louder.items[6] == 7u);
     const std::vector<ntdlib::commands::Label> kLabels = {{"Song", 0}, {"Track1", 16}, {"Sub", 20}};
     XSFLIB_CHECK(louder.file.sequences[0]->labels == kLabels);
-    XSFLIB_CHECK(
-        (Notes(Played(entered.file)) == std::vector<std::vector<uint32_t>>{{0, 24, 60}, {72, 6, 67}, {96, 24, 62}}));
+    XSFLIB_CHECK((Notes(PlayedSequence(entered.file, 0)) ==
+                  std::vector<std::vector<uint32_t>>{{0, 24, 60}, {72, 6, 67}, {96, 24, 62}}));
     XSFLIB_CHECK(entered.file.sequences[0]->labels.at(2).item == 19);
-    XSFLIB_CHECK(Notes(Played(passed.file)) == kNotes && passed.file.sequences[0]->labels.at(2).item == 20);
-    XSFLIB_CHECK(
-        (Notes(Played(started.file)) == std::vector<std::vector<uint32_t>>{{12, 24, 60}, {60, 6, 67}, {84, 24, 62}}));
+    XSFLIB_CHECK(Notes(PlayedSequence(passed.file, 0)) == kNotes && passed.file.sequences[0]->labels.at(2).item == 20);
+    XSFLIB_CHECK((Notes(PlayedSequence(started.file, 0)) ==
+                  std::vector<std::vector<uint32_t>>{{12, 24, 60}, {60, 6, 67}, {84, 24, 62}}));
 }
 
 // The 3DS's player skips the first LFO's curve and the send to bus C. Their arguments have no range there, and the List
@@ -557,16 +558,17 @@ void Test3ds()
                   {sar_files::WaveArchive(sar::Flavor::kCtr,
                                           {sar_files::Wave(sar::Flavor::kCtr, sar_files::ConstantWave(false))})}};
     const File file = hokuto::format::ImportArchive(sar_files::Archive(sar::Flavor::kCtr, spec), sar::Flavor::kCtr);
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     Command send_c = NewCommand(Kind::kSend, 48, 0);
     send_c.index = 2;
     Command volume = NewCommand(Kind::kVolume, 48, 0);
     volume.value.value = 50 * kOne;
 
+    XSFLIB_CHECK(!ArgumentRange(Console{.engine = hokuto::format::Engine::k3ds}, 0, NewCommand(Kind::kLfoCurve, 48, 0),
+                                Source::kValue));
+    XSFLIB_CHECK(!ArgumentRange(Console{.engine = hokuto::format::Engine::k3ds}, 0, send_c, Source::kValue));
     XSFLIB_CHECK(
-        !ArgumentRange(Console{.flavor = sar::Flavor::kCtr}, NewCommand(Kind::kLfoCurve, 48, 0), Source::kValue));
-    XSFLIB_CHECK(!ArgumentRange(Console{.flavor = sar::Flavor::kCtr}, send_c, Source::kValue));
-    XSFLIB_CHECK(ArgumentRange(Console{.flavor = sar::Flavor::kNx}, send_c, Source::kValue).has_value());
+        ArgumentRange(Console{.engine = hokuto::format::Engine::kSwitch}, 0, send_c, Source::kValue).has_value());
     XSFLIB_CHECK(
         Refuses([&] { InsertCommand(file, 0, PlaceOf(song, 7, 0), false, NewCommand(Kind::kLfoCurve, 48, 0)); }));
     XSFLIB_CHECK(Refuses([&] { InsertCommand(file, 0, PlaceOf(song, 7, 0), false, send_c); }));
@@ -577,7 +579,7 @@ void Test3ds()
 
     const Edited quieter = InsertCommand(file, 0, PlaceOf(song, 7, 0), false, volume);
 
-    XSFLIB_CHECK(Played(quieter.file).tracks.at(0).volume.at(0) == (Setting{0, 50}));
+    XSFLIB_CHECK(PlayedSequence(quieter.file, 0).tracks.at(0).volume.at(0) == (Setting{0, 50}));
 }
 
 // A removed command takes the code that entered at it to the command after it. A note goes as the Key Editor removes
@@ -585,7 +587,7 @@ void Test3ds()
 void TestRemove()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file);
+    const Sequence song = PlayedSequence(file, 0);
     const std::vector<CommandPlace> wait = {PlaceOf(song, kWait48, 0)};
     const std::vector<CommandPlace> opening = {CommandPlace{kTrack1, song.tracks.at(1).stretches.at(0)}};
     const std::vector<CommandPlace> both = {PlaceOf(song, kSub, 1), PlaceOf(song, kVolume, 0)};
@@ -594,35 +596,268 @@ void TestRemove()
     const Edited moved = RemoveCommands(file, 0, opening);
     const Edited fewer = RemoveCommands(file, 0, both);
 
-    XSFLIB_CHECK(
-        (Notes(Played(earlier.file)) == std::vector<std::vector<uint32_t>>{{0, 24, 60}, {0, 6, 67}, {24, 24, 62}}));
+    XSFLIB_CHECK((Notes(PlayedSequence(earlier.file, 0)) ==
+                  std::vector<std::vector<uint32_t>>{{0, 24, 60}, {0, 6, 67}, {24, 24, 62}}));
     XSFLIB_CHECK(!earlier.items[7] && earlier.items[8] == 7u && earlier.items[21] == 20u);
     XSFLIB_CHECK(CommandAt(moved.file, 0, kTrack1).kind == Kind::kPan);
     XSFLIB_CHECK(moved.file.sequences[0]->labels.at(1).item == 15 && moved.file.sequences[0]->items.at(1).target == 15);
-    const Sequence fewer_song = Played(fewer.file);
+    const Sequence fewer_song = PlayedSequence(fewer.file, 0);
     XSFLIB_CHECK((Notes(fewer_song, 2) == std::vector<std::vector<uint32_t>>{{0, 24, 60}, {72, 24, 62}}));
     XSFLIB_CHECK(fewer.file.sequences[0]->items.size() == 20 && fewer_song.tracks[0].volume.at(0).tick == 72);
     XSFLIB_CHECK(fewer.file.sequences[0]->labels.at(2).item == 18 && !fewer.items[5] && !fewer.items[19]);
+}
+
+// A GBA ROM of one song. Its track sets the tempo, voice 0 and volume 100, and waits 24 ticks. A byte of 50 then
+// repeats the running status: a volume of 50. A note of key 60 follows.
+std::vector<uint8_t> GbaRom()
+{
+    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+    using enum ntdlib::mp2k::Command;
+
+    mp2k_cart::Cart cart;
+    const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
+    mp2k_cart::Track track;
+    track.Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100).Wait(24).Raw({50}).Note(24, 60, 100).Wait(24).Fine();
+    cart.Song({track}, voices);
+    for (uint32_t a = 0x38000; a < 0x40000; a++)
+    {
+        cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
+    }
+
+    const ntdlib::agb::Rom rom = cart.ToRom();
+    return hokuto::testing::RomBytes(rom);
+}
+
+// Song 0 as ntdlib's performer plays it from the ROM that `file` builds.
+Sequence PlayedGba(const File& file)
+{
+    return hokuto::song::ReadSequence(*hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(file)), 0);
+}
+
+// The place of the `nth` command of `kind` that track 0 of `song`, a song of `file`, runs.
+CommandPlace GbaPlace(const File& file, const Sequence& song, Kind kind, std::size_t nth = 0)
+{
+    const Track& track = song.tracks.at(0);
+    for (const CommandRow& row : CommandRows(file, 0, track.stretches, track.notes, std::nullopt))
+    {
+        if (CommandAt(file, 0, row.command).kind == kind && nth-- == 0)
+        {
+            return CommandPlace{row.command, track.stretches.at(row.stretch)};
+        }
+    }
+
+    throw std::logic_error("no such command");
+}
+
+// The commands of a GBA song use the values of MusicPlayer2000: a byte, a pan from the centre, half the tempo, and
+// notes of up to 223 ticks. No command has a random value, a variable or a time. A longer wait splits into the codes'
+// waits. A new command that sets another running status leaves the repeated volume after it in full, and so does the
+// removal of the volume that it repeated. The voice stays. A repeated volume of 200 is written in full too: the driver
+// would read its byte as a command.
+void TestGba()
+{
+    const File file = hokuto::format::ImportGbaRom(GbaRom());
+    const Sequence song = PlayedGba(file);
+    const Console gba{.engine = hokuto::format::Engine::kGba};
+    const Command volume = NewCommand(Kind::kVolume, 48, 0);
+    Command tempo = NewCommand(Kind::kTempo, 48, 0);
+    tempo.value.value = 120 * kOne + kOne * 6 / 10;
+    Command quieter = CommandAt(file, 0, GbaPlace(file, song, Kind::kVolume).command);
+    quieter.value.value = 80 * kOne;
+    Command longer = CommandAt(file, 0, GbaPlace(file, song, Kind::kWait).command);
+    longer.value.value = 26 * kOne;
+    Command pan = NewCommand(Kind::kPan, 48, 0);
+    pan.value.value = 10 * kOne;
+    Command louder = CommandAt(file, 0, GbaPlace(file, song, Kind::kVolume, 1).command);
+    louder.value.value = 200 * kOne;
+
+    XSFLIB_CHECK(song.tracks.at(0).volume == (std::vector<Setting>{{0, 100}, {24, 50}}));
+    XSFLIB_CHECK(ArgumentRange(gba, 0, volume, Source::kValue) == (ValueRange{0, 255 * kOne}));
+    XSFLIB_CHECK(ArgumentRange(gba, 0, pan, Source::kValue) == (ValueRange{-64 * kOne, 63 * kOne}));
+    XSFLIB_CHECK(ArgumentRange(gba, 0, tempo, Source::kValue) == (ValueRange{2 * kOne, 510 * kOne}));
+    XSFLIB_CHECK(ArgumentRange(gba, 0, NewCommand(Kind::kNote, 48, 0), Source::kValue) == (ValueRange{0, 223 * kOne}));
+    XSFLIB_CHECK(!ArgumentRange(gba, 0, volume, Source::kRandom) && !ArgumentRange(gba, 0, volume, Source::kVariable) &&
+                 !ArgumentRange(gba, 0, volume, Source::kValue, true));
+    XSFLIB_CHECK(Nearest(gba, tempo).value.value == 120 * kOne);
+
+    const Edited changed = ChangeCommand(file, 0, GbaPlace(file, song, Kind::kVolume), quieter);
+    const Edited waited = ChangeCommand(file, 0, GbaPlace(file, song, Kind::kWait), longer);
+    const Edited panned = InsertCommand(file, 0, GbaPlace(file, song, Kind::kVolume, 1), false, pan);
+    const Edited removed = RemoveCommands(file, 0, std::vector<CommandPlace>{GbaPlace(file, song, Kind::kVolume)});
+    const Edited loud = ChangeCommand(file, 0, GbaPlace(file, song, Kind::kVolume, 1), louder);
+
+    XSFLIB_CHECK(PlayedGba(changed.file).tracks.at(0).volume == (std::vector<Setting>{{0, 80}, {24, 50}}));
+    const Sequence later = PlayedGba(waited.file);
+    XSFLIB_CHECK(waited.file.sequences[0]->items.size() == file.sequences[0]->items.size() + 1);
+    XSFLIB_CHECK(later.tracks.at(0).notes.at(0).start == 26 &&
+                 later.tracks[0].volume == (std::vector<Setting>{{0, 100}, {26, 50}}));
+    const Sequence centred = PlayedGba(panned.file);
+    XSFLIB_CHECK(centred.tracks.at(0).volume == (std::vector<Setting>{{0, 100}, {24, 50}}));
+    XSFLIB_CHECK(centred.tracks[0].pan == (std::vector<Setting>{{24, 10}}));
+    XSFLIB_CHECK(!panned.file.sequences[0]->items.at(panned.added.at(0) + 1).encoding.repeated);
+    const Sequence fewer = PlayedGba(removed.file);
+    XSFLIB_CHECK(fewer.tracks.at(0).volume == (std::vector<Setting>{{0, 0}, {24, 50}}));
+    XSFLIB_CHECK(fewer.tracks[0].notes.at(0).program == 0);
+    XSFLIB_CHECK(louder.encoding.repeated);
+    XSFLIB_CHECK(PlayedGba(loud.file).tracks.at(0).volume == (std::vector<Setting>{{0, 100}, {24, 200}}));
+}
+
+// A DS archive with one sequence. Its first command allocates tracks 0 and 1. Track 0 opens track 1, and each track
+// plays a note.
+std::vector<uint8_t> DsArchive()
+{
+    namespace sdat_files = ntdlib::testing::sdat_files;
+    const sdat_files::Bytes two_tracks = {0xFE, 0x03, 0x00, 0x93, 0x01, 0x10, 0x00, 0x00, 0xC1, 0x64, 0xC0, 0x20,
+                                          0x3C, 0x7F, 0x30, 0xFF, 0xC1, 0x40, 0x80, 0x18, 0x43, 0x50, 0x18, 0xFF};
+    const sdat_files::Wave square{
+        .loop = 1,
+        .loop_length = 4,
+        .data = {0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0}};
+    constexpr uint16_t kNone = 0xFFFF;
+
+    ntdlib::sdat::ArchiveModel model;
+    model.sequences = {ntdlib::sdat::SequenceInfo{0, 0, 127, 64, 64, 0, 0, ""}};
+    model.banks = {ntdlib::sdat::BankInfo{1, {0, kNone, kNone, kNone}, ""}};
+    model.wave_archives = {ntdlib::sdat::WaveArchiveInfo{2, ""}};
+    model.players = {ntdlib::sdat::PlayerInfo{1, 0, 0, 0, ""}};
+    model.files = {sdat_files::Sequence(two_tracks), sdat_files::Bank({{.type = 1, .region = {.wave = 0}}}),
+                   sdat_files::WaveArchive({square})};
+
+    return ntdlib::sdat::BuildArchive(model);
+}
+
+// NITRO-Composer reads the allocation of tracks only as a sequence's first command. A command before it would leave
+// track 1 unallocated, and the edit refuses it. A command after it is inserted, and both tracks play.
+void TestDs()
+{
+    const File file = hokuto::format::ImportDsArchive(DsArchive());
+    const auto played = [](const File& of)
+    {
+        return hokuto::song::ReadSequence(*hokuto::song::LoadDsArchive(hokuto::format::ExportArchive(of)), 0);
+    };
+    const Sequence before = played(file);
+    const std::vector<uint32_t> offsets = hokuto::edit::Offsets(*file.sequences[0], hokuto::edit::ConsoleOf(file));
+    SEQLIB_REQUIRE(before.tracks.size() == 2 && file.sequences[0]->items.at(0).kind == Kind::kAllocateTracks);
+
+    Command wait = NewCommand(Kind::kWait, 48, 0);
+    wait.value.value = 0;
+    XSFLIB_CHECK(Refuses([&] { InsertCommand(file, 0, CommandPlace{offsets.at(0), {}}, false, wait); }));
+    XSFLIB_CHECK(Refuses([&] { InsertCommand(file, 0, CommandPlace{offsets.at(0), {}}, true, wait); }));
+
+    const Command volume = NewCommand(Kind::kVolume, 48, 0);
+    const Edited after = InsertCommand(file, 0, CommandPlace{offsets.at(1), {}}, true, volume);
+    const Sequence edited = played(after.file);
+    XSFLIB_CHECK(after.added == (std::vector<uint32_t>{1}));
+    XSFLIB_CHECK(edited.tracks.size() == 2 && edited.tracks[0].notes.size() == 1 && edited.tracks[1].notes.size() == 1);
+    XSFLIB_CHECK(after.file.sequences[0]->items.at(0).kind == Kind::kAllocateTracks &&
+                 after.file.sequences[0]->items.at(1).kind == Kind::kVolume);
+
+    // Elsewhere, NITRO-Composer reads 0xFE as no command, and the allocation's mask as commands. No new allocation is
+    // inserted at a later command.
+    const Command allocation = NewCommand(Kind::kAllocateTracks, 48, 0);
+    XSFLIB_CHECK(Refuses([&] { InsertCommand(file, 0, CommandPlace{offsets.at(1), {}}, true, allocation); }));
+    XSFLIB_CHECK(Refuses([&] { InsertCommand(file, 0, CommandPlace{offsets.at(3), {}}, false, allocation); }));
+}
+
+// The console that ConsoleOf returns for a file of each engine names that engine, and so does the native archive. A
+// driver plays at revision 0, and the Wii with a build of NW4R SND.
+void TestConsoleEngines()
+{
+    for (const hokuto::format::EngineFacts& facts : hokuto::format::kEngineFacts)
+    {
+        hokuto::format::NativeArchive native;
+        hokuto::format::SetEngine(native, facts.engine);
+        native.wii_build = ntdlib::SndBuild{};
+        File file;
+        file.engine = facts.engine;
+        file.native = native;
+
+        const Console console = hokuto::edit::ConsoleOf(file);
+
+        XSFLIB_CHECK(console.engine == facts.engine);
+        XSFLIB_CHECK(file.native->engine == facts.engine);
+        const bool driver = hokuto::format::IsDriverEngine(facts.engine);
+        XSFLIB_CHECK((console.driver != nullptr) == driver);
+        if (driver && console.driver != nullptr)
+        {
+            XSFLIB_CHECK(console.driver->DriverEngine() == facts.engine && console.driver->Revision() == 0);
+        }
+        const bool wii = facts.engine == hokuto::format::Engine::kWii;
+        XSFLIB_CHECK(console.wii == (wii ? std::optional(ntdlib::SndBuild{}) : std::nullopt));
+    }
+}
+
+// On each of the GBA's other drivers, the top of a volume command's range on each track is the most volume that the
+// track plays (DriverRules::MostVolume). Above it, the driver plays another level, or none. Ubisoft Milan's driver has
+// no volume command. Two drivers differ, for reasons that wait for a decision:
+// - Rare's driver scales a voice by the volume + 1 over 128 (ntdlib's rare::Sequencer::RenderVoice). A volume above 127
+//   plays louder, with no cut and no wrap. The range keeps the byte's 255.
+// - Krawall's volume command contains the byte of the volume column: the volume + 0x10, with an effect from 0x61 (0x51
+//   before build 1.4). The range keeps 0 to 255 until the scale of that byte is settled.
+void TestVolumeRangesTopAtMost()
+{
+    using hokuto::format::Engine;
+    using ntdlib::commands::Command;
+    using ntdlib::commands::Kind;
+    using ntdlib::commands::kOne;
+    using ntdlib::commands::Source;
+    for (const Engine engine : {Engine::kKonami, Engine::kRd2, Engine::kBrownie, Engine::kUbiMilan, Engine::kRare,
+                                Engine::kQuintet, Engine::kKrawall})
+    {
+        for (uint8_t revision = 0; revision < 8; revision++)
+        {
+            const hokuto::song::DriverRules* rules = nullptr;
+            try
+            {
+                rules = &hokuto::song::RulesOf(engine, revision);
+            }
+            catch (const std::invalid_argument&)
+            {
+                continue;
+            }
+            const Console console{.engine = engine, .driver = rules};
+            Command volume;
+            volume.kind = Kind::kVolume;
+            for (int track = 0; track < 16; track++)
+            {
+                const std::optional<ValueRange> range = ArgumentRange(console, track, volume, Source::kValue, false);
+                if (engine == Engine::kUbiMilan)
+                {
+                    XSFLIB_CHECK(!range.has_value());
+                    continue;
+                }
+                SEQLIB_REQUIRE(range.has_value());
+                const int top = engine == Engine::kRare || engine == Engine::kKrawall ? 0xFF : rules->MostVolume(track);
+                XSFLIB_CHECK(range->highest == top * kOne);
+            }
+        }
+    }
 }
 
 } // namespace
 
 int main()
 {
-    TestRows();
-    TestRowsAfterUnknownWait();
-    TestRowsAfterHeldWait();
-    TestDrawsRandom();
-    TestLabelsAndRanges();
-    TestNewCommand();
-    TestChange();
-    TestChangeSeveral();
-    TestMoveAndChange();
-    TestConditionAndTime();
-    TestChangeRefusals();
-    TestInsert();
-    Test3ds();
-    TestRemove();
-
-    return xsflib::testing::Summary("commands");
+    return xsflib::testing::RunTest("commands",
+                                    []
+                                    {
+                                        TestRows();
+                                        TestVolumeRangesTopAtMost();
+                                        TestRowsAfterUnknownWait();
+                                        TestRowsAfterHeldWait();
+                                        TestDrawsRandom();
+                                        TestLabelsAndRanges();
+                                        TestNewCommand();
+                                        TestChange();
+                                        TestChangeSeveral();
+                                        TestMoveAndChange();
+                                        TestConditionAndTime();
+                                        TestChangeRefusals();
+                                        TestInsert();
+                                        Test3ds();
+                                        TestRemove();
+                                        TestGba();
+                                        TestDs();
+                                        TestConsoleEngines();
+                                    });
 }

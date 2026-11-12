@@ -10,8 +10,11 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
+
+#include "app/time_text.h"
 
 namespace hokuto::app
 {
@@ -27,14 +30,7 @@ constexpr std::array<int, 7> kLetters = {9, 11, 0, 2, 4, 5, 7};
 // A velocity that the user typed: a whole number from 1 to 127, or nothing.
 std::optional<int> ParseVelocity(std::string_view text)
 {
-    while (!text.empty() && text.front() == ' ')
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && text.back() == ' ')
-    {
-        text.remove_suffix(1);
-    }
+    text = Trimmed(text);
 
     int velocity = 0;
     const bool digits = !text.empty() && text.size() <= 3 &&
@@ -72,16 +68,14 @@ std::optional<KeyEdit> Moving(const KeyEditorState& state, const KeyNote& first,
     const std::optional<edit::ShiftRange> range = SharedRange(state, state.selected);
     if (!range && LimitsKnown(state))
     {
-        edit.refused = "This track's notes set its timing. Hokuto can't move them in time yet.";
+        edit.refused = FixedText(state, true);
         return edit;
     }
     if (range && (shift < -int64_t{range->earlier} || shift > int64_t{range->later}))
     {
         const bool early = shift < 0;
         const int64_t bound = int64_t{first.start} + (early ? -int64_t{range->earlier} : int64_t{range->later});
-        edit.refused = std::string("The first selected note can start no ") + (early ? "earlier" : "later") + " than " +
-                       PlainPosition(static_cast<double>(bound) / quarter) +
-                       ". A note stays between the jumps, calls and loop points before and after it.";
+        edit.refused = ShiftLimitText("The first selected note", bound, early, quarter);
         return edit;
     }
     for (const uint32_t command : state.selected)
@@ -94,7 +88,9 @@ std::optional<KeyEdit> Moving(const KeyEditorState& state, const KeyNote& first,
 
 // The edit that sizes the selected notes together, with the command of `first` to `length` ticks. A note can sound for
 // less than its command's length, such as a one-shot wave's note or a note cut at the loop's end. The other commands
-// change by the same amount. Nothing when `first` shows that length already, or when its command has it.
+// change by the same amount. Nothing when `first` shows that length already, or when its command has it. Where the end
+// of its track cuts `first` (edit::NoteLimits::cut_by_end), the length of its command still makes the edit. The edit
+// then moves the end, or is refused with the reason.
 std::optional<KeyEdit> Sizing(const KeyTrack& track, const KeyEditorState& state, const KeyNote& first, int64_t length)
 {
     if (length == int64_t{first.length})
@@ -107,13 +103,13 @@ std::optional<KeyEdit> Sizing(const KeyTrack& track, const KeyEditorState& state
     edit.name = "Size";
     if (length < 1)
     {
-        edit.refused = "A note lasts a tick at least. Its end comes after its start.";
+        edit.refused = "A note must last a tick at least. Its end must come after its start.";
         return edit;
     }
     std::optional<std::map<uint32_t, uint32_t>> lengths = BaseLengths(track, state);
     if (!lengths && LimitsKnown(state))
     {
-        edit.refused = "This track's notes set its timing. Hokuto can't change their lengths yet.";
+        edit.refused = FixedText(state, false);
         return edit;
     }
 
@@ -133,7 +129,9 @@ std::optional<KeyEdit> Sizing(const KeyTrack& track, const KeyEditorState& state
     // Each command's length changes by the same amount.
     const auto base = lengths->find(first.command);
     const int64_t resize = length - (base != lengths->end() ? int64_t{base->second} : int64_t{first.length});
-    if (resize == 0)
+    const auto limits = state.limits.find(first.command);
+    const bool cut_by_end = limits != state.limits.end() && limits->second.cut_by_end;
+    if (resize == 0 && !cut_by_end)
     {
         return std::nullopt;
     }
@@ -157,21 +155,61 @@ bool HoldsNote(const KeyGesture& gesture)
 
 } // namespace
 
+std::string FixedText(const KeyEditorState& state, bool move)
+{
+    for (const uint32_t command : state.selected)
+    {
+        const auto limits = state.limits.find(command);
+        if (limits == state.limits.end())
+        {
+            continue;
+        }
+        if (!move && !limits->second.fixed_length.empty())
+        {
+            return limits->second.fixed_length;
+        }
+        if (!limits->second.fixed.empty())
+        {
+            return limits->second.fixed;
+        }
+    }
+
+    return move ? "Hokuto can't move these notes in time yet. On this track, the note lengths set the timing."
+                : "Hokuto can't change the length of these notes yet. On this track, the note lengths set the timing.";
+}
+
+std::string ShiftLimitText(std::string_view subject, int64_t bound, bool early, double quarter)
+{
+    return std::string(subject) + " can start no " + (early ? "earlier" : "later") + " than " +
+           PlainPosition(static_cast<double>(bound) / quarter) +
+           ". Notes can't move past jumps, calls and loop points.";
+}
+
+std::string PointLimitText(int64_t bound, bool early, double quarter)
+{
+    return std::string("The point can start no ") + (early ? "earlier" : "later") + " than " +
+           PlainPosition(static_cast<double>(bound) / quarter) +
+           ". Commands can't move past jumps, calls and loop points.";
+}
+
 std::string KeyName(int key)
 {
     return std::string(kKeyNames[static_cast<std::size_t>(key % 12)]) + std::to_string(key / 12 - 2);
 }
 
+std::string KeysText(int first, int last)
+{
+    return first == last ? KeyName(first) : KeyName(first) + " to " + KeyName(last);
+}
+
+std::string KeysDetail(int first, int last)
+{
+    return (first == last ? ", key " : ", keys ") + KeysText(first, last);
+}
+
 std::optional<int> ParseKeyName(std::string_view text)
 {
-    while (!text.empty() && text.front() == ' ')
-    {
-        text.remove_prefix(1);
-    }
-    while (!text.empty() && text.back() == ' ')
-    {
-        text.remove_suffix(1);
-    }
+    text = Trimmed(text);
 
     // The letter, in either case, then a sharp or a flat, then the octave.
     char letter = text.empty() ? '\0' : text.front();
@@ -288,8 +326,27 @@ std::map<uint32_t, int> Velocities(const KeyTrack& track, const KeyEditorState& 
     return velocities;
 }
 
+std::string FixedKeyText(const KeyEditorState& state)
+{
+    for (const uint32_t command : state.selected)
+    {
+        const auto limits = state.limits.find(command);
+        if (limits != state.limits.end() && !limits->second.fixed_key.empty())
+        {
+            return limits->second.fixed_key;
+        }
+    }
+
+    return {};
+}
+
 std::pair<int, int> TransposeRange(const KeyTrack& track, const KeyEditorState& state)
 {
+    if (!FixedKeyText(state).empty())
+    {
+        return {0, 0};
+    }
+
     int down = kKeys - 1;
     int up = kKeys - 1;
     for (const KeyNote& note : track.notes)
@@ -318,14 +375,24 @@ KeyEdit Removal(const std::set<uint32_t>& commands)
 
 std::optional<KeyEdit> Transposition(const KeyTrack& track, const KeyEditorState& state, int semitones)
 {
-    const auto [down, up] = TransposeRange(track, state);
-    if (state.selected.empty() || semitones < down || semitones > up)
+    if (state.selected.empty())
     {
         return std::nullopt;
     }
 
     KeyEdit edit;
     edit.name = semitones < 0 ? "Down" : "Up";
+    edit.refused = FixedKeyText(state);
+    if (!edit.refused.empty())
+    {
+        return edit;
+    }
+    const auto [down, up] = TransposeRange(track, state);
+    if (semitones < down || semitones > up)
+    {
+        return std::nullopt;
+    }
+
     for (const uint32_t command : state.selected)
     {
         edit.changes.push_back({.command = command, .transpose = semitones});
@@ -380,14 +447,12 @@ std::optional<KeyEdit> Quantization(const KeyTrack& track, const KeyEditorState&
     }
     if (timed)
     {
-        edit.refused = "This track's notes set its timing. Hokuto can't move them in time yet.";
+        edit.refused = FixedText(state, true);
         return edit;
     }
     if (kept)
     {
-        edit.refused =
-            "Hokuto can't move these notes onto the grid. A note stays between the jumps, calls and loop "
-            "points before and after it.";
+        edit.refused = "Can't quantize these notes. Notes can't move past jumps, calls and loop points.";
         return edit;
     }
 
@@ -525,7 +590,7 @@ std::optional<KeyEdit> TypedEdit(const KeyTrack& track, const KeyEditorState& st
             const std::optional<int> key = ParseKeyName(text);
             if (!key)
             {
-                return Unreadable(text, "a pitch", "A pitch is a key's name from C-2 to G8, such as C3 for middle C.");
+                return Unreadable(text, "a pitch", "A pitch is a key name from C-2 to G8, such as C3 for middle C.");
             }
             if (*key == first->key)
             {
@@ -535,7 +600,8 @@ std::optional<KeyEdit> TypedEdit(const KeyTrack& track, const KeyEditorState& st
             std::optional<KeyEdit> edit = Transposition(track, state, *key - first->key);
             if (!edit)
             {
-                edit = KeyEdit{.refused = "Hokuto can't move these notes that far. Every key stays from C-2 to G8."};
+                edit =
+                    KeyEdit{.refused = "Can't transpose these notes that far. Keys must stay in the range C-2 to G8."};
             }
             edit->name = "Set Note Pitch";
             return edit;
@@ -569,8 +635,8 @@ std::optional<KeyEdit> TypedEdit(const KeyTrack& track, const KeyEditorState& st
 
 KeyEdit Unreadable(std::string_view text, std::string_view what, std::string_view hint)
 {
-    return KeyEdit{.refused = "Hokuto can't read \"" + std::string(text) + "\" as " + std::string(what) + ". " +
-                              std::string(hint)};
+    return KeyEdit{.refused =
+                       "Can't read \"" + std::string(text) + "\" as " + std::string(what) + ". " + std::string(hint)};
 }
 
 const KeyNote* InstrumentNoteAt(const KeyTrack& track, double tick)
@@ -592,8 +658,73 @@ KeyNote WithInstrumentAt(const KeyTrack& track, double tick, KeyNote note)
         note.bank_slot = playing->bank_slot;
         note.program = playing->program;
     }
+    else if (track.first_slot >= 0)
+    {
+        note.bank_slot = track.first_slot;
+        note.program = track.first_program;
+    }
 
     return note;
+}
+
+std::string StoppedText(const KeyTrack& track, const KeyEditorState& state, bool move, double pixels, double short_by,
+                        double far, std::string_view limit, double rise)
+{
+    const bool side = std::abs(pixels) >= far;
+    if (!move)
+    {
+        return side && !BaseLengths(track, state) ? FixedText(state, false) : std::string();
+    }
+    if (side && !SharedRange(state, state.selected))
+    {
+        return FixedText(state, true);
+    }
+    if (side && std::abs(short_by) >= far)
+    {
+        return std::string(limit);
+    }
+
+    return std::abs(rise) >= far ? FixedKeyText(state) : std::string();
+}
+
+std::optional<KeyEdit> ReleasedNoteEdit(const KeyTrack& track, const KeyEditorState& state, const KeyGesture& gesture)
+{
+    const bool move = gesture.kind == KeyGesture::Kind::kMove;
+    if (!move && gesture.kind != KeyGesture::Kind::kSize)
+    {
+        return std::nullopt;
+    }
+
+    KeyEdit edit;
+    edit.name = move ? "Move" : "Size";
+    const std::optional<std::map<uint32_t, uint32_t>> lengths = move ? std::nullopt : BaseLengths(track, state);
+    const bool unchanged = move ? gesture.shift == 0 && gesture.transpose == 0 : gesture.resize == 0 || !lengths;
+    if (unchanged)
+    {
+        // A drag that stopped short of the mouse and changed nothing says why, as its tooltip did.
+        if (gesture.stopped.empty())
+        {
+            return std::nullopt;
+        }
+        edit.refused = gesture.stopped;
+        return edit;
+    }
+
+    if (move)
+    {
+        for (const uint32_t command : state.selected)
+        {
+            edit.changes.push_back({.command = command, .shift = gesture.shift, .transpose = gesture.transpose});
+        }
+        return edit;
+    }
+
+    for (const auto& [command, length] : *lengths)
+    {
+        const auto changed = static_cast<int64_t>(length) + gesture.resize;
+        edit.changes.push_back({.command = command, .length = static_cast<uint32_t>(std::max<int64_t>(changed, 1))});
+    }
+    return edit;
 }
 
 bool InLane(const KeyGesture& gesture)

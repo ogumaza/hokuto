@@ -58,74 +58,13 @@
 //
 // usage: hokuto_check_sounds [--model] <archive>
 
-#include <algorithm>
-#include <array>
-#include <bit>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-#include <exception>
-#include <filesystem>
-#include <functional>
-#include <map>
-#include <memory>
-#include <optional>
-#include <span>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
+#include "check_sounds.h"
 
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/rvl/snd/rsar_options.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sar/layout.h"
-#include "ntdlib/testing/sar_tools.h"
-#include "xsflib/bytes.h"
-#include "xsflib/console.h"
-#include "xsflib/files.h"
-
-#include "checked_archive.h"
-#include "edit/tables.h"
-#include "format/archive.h"
-#include "format/file.h"
-#include "song/archive.h"
-#include "song/sequence.h"
-#include "song/sequence_model.h"
+namespace hokuto::tools::sounds
+{
 
 namespace
 {
-
-namespace sar = ntdlib::sar;
-using hokuto::edit::SoundChange;
-using hokuto::edit::SoundValue;
-using hokuto::format::File;
-using hokuto::format::NativeSound;
-using hokuto::format::NativeTables;
-
-// A round's value. A round of a bank names its slot: 0, or kAfterList for the slot after each sound's list.
-struct Round
-{
-    SoundValue value = SoundValue::kVolume;
-    int slot = 0;
-};
-
-constexpr int kAfterList = -1;
-constexpr std::array<Round, 11> kRounds = {{
-    {SoundValue::kPlayer, 0},
-    {SoundValue::kVolume, 0},
-    {SoundValue::kPanMode, 0},
-    {SoundValue::kPanCurve, 0},
-    {SoundValue::kPlayerPriority, 0},
-    {SoundValue::kActorPlayer, 0},
-    {SoundValue::kBank, 0},
-    {SoundValue::kBank, kAfterList},
-    {SoundValue::kTracks, 0},
-    {SoundValue::kChannelPriority, 0},
-    {SoundValue::kReleasePriorityFix, 0},
-}};
 
 // A round of places: the option that leaves the entries, and its two values.
 struct PlaceRound
@@ -141,42 +80,6 @@ constexpr std::array<PlaceRound, 3> kPlaceRounds = {{
     {"channel priority", {false, false, true}, {SoundValue::kChannelPriority, SoundValue::kReleasePriorityFix}},
 }};
 
-// The sounds that a round edits at most, and the sounds of the volume's round that the model plays at most.
-constexpr std::size_t kRoundSounds = 64;
-constexpr std::size_t kLevelSounds = 8;
-
-// How long the model plays each sound, the least level of a sound's output that the tool measures, and how far the
-// change of level can stray from the ratio of the volumes, in dB.
-constexpr double kLevelSeconds = 4.0;
-constexpr double kLeastLevel = 30.0;
-constexpr double kTolerance = 0.25;
-
-// What the check counted, for the summary.
-struct Totals
-{
-    std::size_t sounds = 0;
-    std::size_t sequences = 0;
-    std::size_t edits = 0;
-    std::size_t lists_apart = 0;
-    std::size_t differ = 0;
-    std::size_t round_trips = 0;
-    std::size_t places = 0;
-    std::size_t old_values = 0;
-    std::size_t next_values = 0;
-    std::size_t place_edits = 0;
-    std::size_t place_layouts = 0;
-    std::size_t moved = 0;
-    std::size_t layouts = 0;
-    std::size_t levels = 0;
-    std::size_t clipped = 0;
-    std::size_t quiet = 0;
-    std::size_t wrong_levels = 0;
-    std::size_t limited = 0;
-    double worst = 0.0;
-    std::size_t refused = 0;
-    std::size_t failures = 0;
-};
-
 // What the rounds start from: the archive's name and bytes, what ntdlib reads of them, the file that they make, and the
 // places of the sounds' optional values in the file's tables.
 struct Original
@@ -186,15 +89,6 @@ struct Original
     std::shared_ptr<const sar::SoundArchive> archive;
     File file;
     std::vector<sar::ValuePlaces> places;
-};
-
-// The sequences of the files of an archive that a file builds, and the fields of its sounds' starts.
-struct Layout
-{
-    friend bool operator==(const Layout&, const Layout&) = default;
-
-    std::vector<std::optional<uint32_t>> sequences;
-    std::vector<std::optional<uint32_t>> fields;
 };
 
 // What ntdlib reads of `archive`, an archive of `flavor`, by the strict rules.
@@ -227,18 +121,15 @@ bool FilesMoved(const sar::SoundArchive& before, const sar::SoundArchive& after)
     return false;
 }
 
-// Whether only a sequence sound has `value`.
-bool OfSequenceSounds(SoundValue value)
-{
-    return value == SoundValue::kBank || value == SoundValue::kTracks || value == SoundValue::kChannelPriority ||
-           value == SoundValue::kReleasePriorityFix;
-}
+} // namespace
 
-// Whether `places` holds each option of `option`.
 bool Holds(const sar::ValuePlaces& places, const sar::ValuePlaces& option)
 {
     return (!option.pan || places.pan) && (!option.priority || places.priority) && (!option.channel || places.channel);
 }
+
+namespace
+{
 
 // Whether the edits of a bank slot can give `banks` back: a list of one slot, or a longer list whose last slot holds a
 // bank. An edit that empties a slot drops the empty slots at the list's end.
@@ -247,11 +138,11 @@ bool ListComesBack(const std::vector<uint32_t>& banks)
     return banks.size() == 1 || (banks.size() > 1 && banks.back() != sar::kNoItem);
 }
 
-// The change of `sound`, a sound of `tables`, in round `round`, or nothing for a sound without the value, or without
-// another value to take.
+} // namespace
+
 std::optional<SoundChange> ChangeOf(const NativeTables& tables, const NativeSound& sound, const Round& round)
 {
-    if (OfSequenceSounds(round.value) && sound.kind != sar::SoundType::kSequence)
+    if (edit::OfSequenceSounds(round.value) && sound.kind != sar::SoundType::kSequence)
     {
         return std::nullopt;
     }
@@ -270,6 +161,10 @@ std::optional<SoundChange> ChangeOf(const NativeTables& tables, const NativeSoun
 
             return SoundChange{round.value, 0, sar::ItemId(sar::kPlayerItem, (number + 1) % players)};
         }
+
+    // Only a song of a GBA ROM has a reverb, and the tool accepts no GBA file.
+    case SoundValue::kReverb:
+        return std::nullopt;
 
     case SoundValue::kVolume:
         if (sound.volume < 2)
@@ -331,8 +226,6 @@ std::optional<SoundChange> ChangeOf(const NativeTables& tables, const NativeSoun
     return SoundChange{round.value, 0, sound.release_priority_fix ? 0u : 1u};
 }
 
-// `sound` after `change`. The tool works the values out by itself. A bank goes into its slot, or after the list's last
-// slot.
 NativeSound Changed(NativeSound sound, const SoundChange& change)
 {
     const auto byte = static_cast<uint8_t>(change.to);
@@ -343,6 +236,9 @@ NativeSound Changed(NativeSound sound, const SoundChange& change)
         break;
     case SoundValue::kVolume:
         sound.volume = byte;
+        break;
+    case SoundValue::kReverb:
+        sound.reverb = byte;
         break;
     case SoundValue::kPanMode:
         sound.pan_mode = byte;
@@ -379,6 +275,9 @@ NativeSound Changed(NativeSound sound, const SoundChange& change)
 
     return sound;
 }
+
+namespace
+{
 
 // Whether ntdlib read `info` with the values of `sound`.
 bool SameValues(const sar::SoundInfo& info, const NativeSound& sound)
@@ -423,11 +322,6 @@ double Level(const std::vector<int16_t>& samples)
     return samples.empty() ? 0.0 : std::sqrt(sum / static_cast<double>(samples.size()));
 }
 
-// The output of a sequence sound of an archive for kLevelSeconds on ntdlib's model, by the sound's place in the table,
-// and the same at another volume of the sound.
-using Player = std::function<std::vector<int16_t>(uint32_t)>;
-using VolumePlayer = std::function<std::vector<int16_t>(uint32_t, uint32_t)>;
-
 // Whether the level of sound `sound` at volume `volume`, `level`, falls by the ratio of the volumes from one halving of
 // the volume to the next once the volume is low enough. `at_volume` plays the sound at another volume. The console
 // limits a voice's volume, and a sound whose voices reach the limit falls by less than the ratio.
@@ -453,8 +347,8 @@ bool FollowsBelowLimit(uint32_t sound, uint32_t volume, double level, const Volu
     return false;
 }
 
-// Checks the levels of up to kLevelSounds sequence sounds of `changes` that played as `before` plays them and play as
-// `after` plays them, from an archive with their new volumes. `at_volume` plays a sound at another volume.
+} // namespace
+
 void CheckLevels(const std::string& name, const File& file, const Player& before, const Player& after,
                  const VolumePlayer& at_volume, const std::vector<std::pair<uint32_t, SoundChange>>& changes,
                  Totals& totals)
@@ -536,19 +430,8 @@ void CheckLevels(const std::string& name, const File& file, const Player& before
     }
 }
 
-// Up to kRoundSounds of `candidates`, spread over them. `index` turns the choice from round to round.
-template <typename Candidate>
-std::vector<Candidate> Spread(const std::vector<Candidate>& candidates, std::size_t index)
+namespace
 {
-    std::vector<Candidate> chosen;
-    const std::size_t step = std::max<std::size_t>(1, candidates.size() / kRoundSounds);
-    for (std::size_t i = index % step; i < candidates.size() && chosen.size() < kRoundSounds; i += step)
-    {
-        chosen.push_back(candidates[i]);
-    }
-
-    return chosen;
-}
 
 // Checks that the values of every sound that ntdlib reads from `read` are those of `expected`. `what` names the round
 // in the messages.
@@ -632,7 +515,7 @@ void CheckRound(const Original& original, const Layout& layout, const Round& rou
     {
         hokuto::tools::CheckSaved(edited);
         exported = hokuto::format::ExportArchive(edited);
-        const sar::SoundArchive read = Strictly(exported, original.file.native->flavor);
+        const sar::SoundArchive read = Strictly(exported, FlavorOf(*original.file.native));
         CheckValues(name, read, expected, what, totals);
         CheckLayout(name, edited, exported, read, layout, what, totals);
         totals.moved += FilesMoved(*original.archive, read) ? 1 : 0;
@@ -717,15 +600,10 @@ std::vector<uint8_t> WithValues(std::vector<uint8_t> archive, sar::Flavor flavor
     return archive;
 }
 
-// Makes round `round` of places on up to kRoundSounds sounds of `original` whose entries hold the round's option. The
-// option leaves their entries, and the sounds take values through the edits. Checks the archive that the edits export,
-// and the archive that the edits back export. `index` turns the choice of sounds from round to round.
-void CheckPlaceRound(const Original& original, const PlaceRound& round, std::size_t index, Totals& totals)
+// Up to kRoundSounds sounds of `original` whose entries hold the option of `round`, spread over the table. `index`
+// turns the choice from round to round.
+std::vector<uint32_t> ChosenSounds(const Original& original, const PlaceRound& round, std::size_t index)
 {
-    // The sounds whose entries hold the option, and a choice of them spread over the table.
-    const std::string& name = original.name;
-    const std::string what = std::string("places of the ") + round.name;
-    const sar::Flavor flavor = original.file.native->flavor;
     const NativeTables& tables = *original.file.native->tables;
     std::vector<uint32_t> candidates;
     for (uint32_t sound = 0; sound < tables.sounds.size() && sound < original.places.size(); ++sound)
@@ -736,6 +614,139 @@ void CheckPlaceRound(const Original& original, const PlaceRound& round, std::siz
         }
     }
     const std::vector<uint32_t> chosen = Spread(candidates, index);
+
+    return chosen;
+}
+
+// The edits of round `round` on the `chosen` sounds of `edited`. A sound receives its old value from `tables`, or the
+// next one where the old one is its value in `unplaced`, the reader's values without the option. Records the new values
+// in `expected`. `name` is the archive's name.
+void EditPlaces(const NativeTables& tables, const PlaceRound& round, const std::vector<uint32_t>& chosen,
+                const std::vector<NativeSound>& unplaced, const std::string& name, File& edited,
+                std::vector<NativeSound>& expected, Totals& totals)
+{
+    for (const uint32_t sound : chosen)
+    {
+        const NativeSound& old = tables.sounds[sound];
+        const sar::ValuePlaces needed = hokuto::format::NeededPlaces(old);
+        const bool keeps = Holds(needed, round.option);
+        totals.old_values += keeps ? 1 : 0;
+        totals.next_values += keeps ? 0 : 1;
+        ++totals.places;
+        for (const SoundValue value : round.values)
+        {
+            // A sound without the value, such as a wave sound in the round of the channel priority, receives no next
+            // one.
+            const std::optional<SoundChange> next =
+                keeps ? std::nullopt : ChangeOf(tables, unplaced[sound], {value, 0});
+            if (!keeps && !next)
+            {
+                continue;
+            }
+
+            const uint32_t to = keeps ? hokuto::edit::ValueOf(old, value, 0) : next->to;
+            if (to == hokuto::edit::ValueOf(expected[sound], value, 0))
+            {
+                continue;
+            }
+
+            const SoundChange change{value, 0, to};
+            try
+            {
+                edited = hokuto::edit::ChangeSound(edited, sound, change);
+            }
+            catch (const std::invalid_argument& error)
+            {
+                std::printf("%s: %s: the edit of the %s fails: %s\n", name.c_str(), old.name.c_str(),
+                            hokuto::edit::NameOf(value).c_str(), error.what());
+                ++totals.failures;
+                continue;
+            }
+            ++totals.place_edits;
+            expected[sound] = Changed(expected[sound], change);
+        }
+    }
+}
+
+// Checks the export of `edited` against `original` with every option and the `expected` values. ntdlib has to read
+// them, and the files and the starts have to keep their places in `layout`, the layout of `bare_read`, the read of the
+// archive without the option. Returns false when the export fails.
+bool CheckPlaceExport(const Original& original, const File& edited, const std::vector<NativeSound>& expected,
+                      const Layout& layout, const std::optional<sar::SoundArchive>& bare_read, const std::string& what,
+                      Totals& totals)
+{
+    const std::string& name = original.name;
+    const sar::Flavor flavor = FlavorOf(*original.file.native);
+    const NativeTables& tables = *original.file.native->tables;
+    try
+    {
+        const std::vector<uint8_t> exported = hokuto::format::ExportArchive(edited);
+        const sar::SoundArchive read = Strictly(exported, flavor);
+        if (exported != WithValues(original.bytes, flavor, expected, tables.players))
+        {
+            std::printf("%s: the export differs from the archive with every option after the round of the %s.\n",
+                        name.c_str(), what.c_str());
+            ++totals.differ;
+        }
+        CheckValues(name, read, expected, what, totals);
+        CheckLayout(name, edited, exported, read, layout, what, totals);
+        totals.moved += FilesMoved(*bare_read, read) ? 1 : 0;
+        ++totals.place_layouts;
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: the round of the %s fails: %s\n", name.c_str(), what.c_str(), error.what());
+        ++totals.failures;
+        return false;
+    }
+
+    return true;
+}
+
+// Checks that the values of `unplaced`, the reader's values without the option of `round`, give `bare`, the archive
+// without the option, back from the `chosen` sounds of `edited`. `name` is the archive's name.
+void CheckBackWithoutOption(const File& edited, const std::vector<uint8_t>& bare, const std::vector<uint32_t>& chosen,
+                            const PlaceRound& round, const std::vector<NativeSound>& unplaced, const std::string& name,
+                            const std::string& what, Totals& totals)
+{
+    File back = edited;
+    try
+    {
+        for (const uint32_t sound : chosen)
+        {
+            for (const SoundValue value : round.values)
+            {
+                back = hokuto::edit::ChangeSound(back, sound,
+                                                 {value, 0, hokuto::edit::ValueOf(unplaced[sound], value, 0)});
+            }
+        }
+        if (hokuto::format::ExportArchive(back) != bare)
+        {
+            std::printf(
+                "%s: the values without the option don't give the archive without it back after the round of "
+                "the %s.\n",
+                name.c_str(), what.c_str());
+            ++totals.round_trips;
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: the edits back of the round of the %s fail: %s\n", name.c_str(), what.c_str(), error.what());
+        ++totals.failures;
+    }
+}
+
+// Makes round `round` of places on up to kRoundSounds sounds of `original` whose entries hold the round's option. The
+// option leaves their entries, and the sounds take values through the edits. Checks the archive that the edits export,
+// and the archive that the edits back export. `index` turns the choice of sounds from round to round.
+void CheckPlaceRound(const Original& original, const PlaceRound& round, std::size_t index, Totals& totals)
+{
+    // The sounds whose entries hold the option, and a choice of them spread over the table.
+    const std::string& name = original.name;
+    const std::string what = std::string("places of the ") + round.name;
+    const sar::Flavor flavor = FlavorOf(*original.file.native);
+    const NativeTables& tables = *original.file.native->tables;
+    const std::vector<uint32_t> chosen = ChosenSounds(original, round, index);
     if (chosen.empty())
     {
         return;
@@ -807,363 +818,35 @@ void CheckPlaceRound(const Original& original, const PlaceRound& round, std::siz
     // option.
     const std::vector<NativeSound> unplaced = expected;
     File edited = file;
-    for (const uint32_t sound : chosen)
-    {
-        const NativeSound& old = tables.sounds[sound];
-        const sar::ValuePlaces needed = hokuto::format::NeededPlaces(old);
-        const bool keeps = Holds(needed, round.option);
-        totals.old_values += keeps ? 1 : 0;
-        totals.next_values += keeps ? 0 : 1;
-        ++totals.places;
-        for (const SoundValue value : round.values)
-        {
-            const uint32_t to =
-                keeps ? hokuto::edit::ValueOf(old, value, 0) : ChangeOf(tables, unplaced[sound], {value, 0})->to;
-            if (to == hokuto::edit::ValueOf(expected[sound], value, 0))
-            {
-                continue;
-            }
-
-            const SoundChange change{value, 0, to};
-            try
-            {
-                edited = hokuto::edit::ChangeSound(edited, sound, change);
-            }
-            catch (const std::invalid_argument& error)
-            {
-                std::printf("%s: %s: the edit of the %s fails: %s\n", name.c_str(), old.name.c_str(),
-                            hokuto::edit::NameOf(value).c_str(), error.what());
-                ++totals.failures;
-                continue;
-            }
-            ++totals.place_edits;
-            expected[sound] = Changed(expected[sound], change);
-        }
-    }
+    EditPlaces(tables, round, chosen, unplaced, name, edited, expected, totals);
 
     // The export is the archive with every option and the new values. ntdlib reads them, and the files and the starts
     // keep their places in the file.
-    try
+    if (!CheckPlaceExport(original, edited, expected, layout, bare_read, what, totals))
     {
-        const std::vector<uint8_t> exported = hokuto::format::ExportArchive(edited);
-        const sar::SoundArchive read = Strictly(exported, flavor);
-        if (exported != WithValues(original.bytes, flavor, expected, tables.players))
-        {
-            std::printf("%s: the export differs from the archive with every option after the round of the %s.\n",
-                        name.c_str(), what.c_str());
-            ++totals.differ;
-        }
-        CheckValues(name, read, expected, what, totals);
-        CheckLayout(name, edited, exported, read, layout, what, totals);
-        totals.moved += FilesMoved(*bare_read, read) ? 1 : 0;
-        ++totals.place_layouts;
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: the round of the %s fails: %s\n", name.c_str(), what.c_str(), error.what());
-        ++totals.failures;
         return;
     }
 
     // The reader's values without the option give the archive without it back.
-    File back = edited;
-    try
-    {
-        for (const uint32_t sound : chosen)
-        {
-            for (const SoundValue value : round.values)
-            {
-                back = hokuto::edit::ChangeSound(back, sound,
-                                                 {value, 0, hokuto::edit::ValueOf(unplaced[sound], value, 0)});
-            }
-        }
-        if (hokuto::format::ExportArchive(back) != bare)
-        {
-            std::printf(
-                "%s: the values without the option don't give the archive without it back after the round of "
-                "the %s.\n",
-                name.c_str(), what.c_str());
-            ++totals.round_trips;
-        }
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: the edits back of the round of the %s fail: %s\n", name.c_str(), what.c_str(), error.what());
-        ++totals.failures;
-    }
-}
-
-// What the rounds of an archive of the Wii start from: the archive's name and bytes, what ntdlib reads of them for
-// playback, the file that they make, and the values that the archive holds.
-struct WiiOriginal
-{
-    std::string name;
-    std::vector<uint8_t> bytes;
-    std::shared_ptr<const ntdlib::rsar::SoundArchive> archive;
-    File file;
-    hokuto::edit::HeldValues held;
-};
-
-// Whether an archive that holds `held` holds the value of `round`. The slot after a sound's list counts as a second
-// slot.
-bool Holds(const hokuto::edit::HeldValues& held, const Round& round)
-{
-    switch (round.value)
-    {
-    case SoundValue::kActorPlayer:
-        return held.actor_player;
-    case SoundValue::kPanMode:
-    case SoundValue::kPanCurve:
-        return held.pan;
-    case SoundValue::kReleasePriorityFix:
-        return held.release_priority_fix;
-    case SoundValue::kBank:
-        return round.slot == 0 || held.bank_slots > 1;
-    default:
-        return true;
-    }
-}
-
-// The output of sequence sound `sound` of the Wii's `archive` for kLevelSeconds on ntdlib's model of the Wii, with the
-// settings of `build`.
-std::vector<int16_t> PlayWii(const std::shared_ptr<const ntdlib::rsar::SoundArchive>& archive, uint32_t sound,
-                             const ntdlib::SndBuild& build)
-{
-    const auto sequence =
-        std::make_shared<const hokuto::song::Sequence>(hokuto::song::ReadSequence(*archive, sound, {}, {}, build));
-    hokuto::song::SequenceModel model(archive, sequence);
-    const auto samples = static_cast<std::size_t>(kLevelSeconds * model.SampleRate()) * 2;
-    std::vector<int16_t> output;
-    for (bool more = model.SeekFrame(0); more && output.size() < samples; more = model.RunFrame())
-    {
-        const std::span<const int16_t> frame = model.Output();
-        output.insert(output.end(), frame.begin(), frame.end());
-    }
-
-    return output;
-}
-
-// The number of bytes in which `exported` differs from `bytes`, outside the INFO block of `bytes`, an archive of the
-// Wii. The INFO block's offset and size lie at 0x18 and 0x1C of the header.
-std::size_t DifferencesOutsideInfo(const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& exported)
-{
-    const std::size_t info = xsflib::LoadBe32(&bytes[0x18]);
-    const std::size_t end = info + xsflib::LoadBe32(&bytes[0x1C]);
-    std::size_t differences = 0;
-    for (std::size_t i = 0; i < std::min(bytes.size(), exported.size()); ++i)
-    {
-        differences += bytes[i] != exported[i] && (i < info || i >= end) ? 1 : 0;
-    }
-
-    return differences;
-}
-
-// The sequences of the files of `bytes`, an archive of the Wii that `file` builds, and the fields of its sounds'
-// starts.
-Layout WiiLayoutOf(const File& file, const std::vector<uint8_t>& bytes)
-{
-    const std::shared_ptr<const ntdlib::rsar::SoundArchive> read =
-        hokuto::song::LoadWiiArchive(bytes, "export", ntdlib::rvl::snd::kRsarOptions);
-    return {hokuto::format::SequencesOfFiles(file, bytes, *read), hokuto::format::StartFieldsOfSounds(file, bytes)};
-}
-
-// Makes round `round` on up to kRoundSounds sounds of `original`, an archive of the Wii. A value that the archive
-// doesn't hold has to be refused. Otherwise the tool checks the archive that the edits export, and the archive that the
-// edits back export. `layout` holds the original's files' sequences and starts' fields. `index` turns the choice of
-// sounds from round to round.
-void CheckWiiRound(const WiiOriginal& original, const Layout& layout, const Round& round, std::size_t index,
-                   Totals& totals)
-{
-    const std::string& name = original.name;
-    const std::string what = hokuto::edit::NameOf(round.value);
-    const NativeTables& tables = *original.file.native->tables;
-    std::vector<std::pair<uint32_t, SoundChange>> candidates;
-    for (uint32_t sound = 0; sound < tables.sounds.size(); ++sound)
-    {
-        if (const std::optional<SoundChange> change = ChangeOf(tables, tables.sounds[sound], round))
-        {
-            candidates.emplace_back(sound, *change);
-        }
-    }
-    const std::vector<std::pair<uint32_t, SoundChange>> changes = Spread(candidates, index);
-
-    // A value that the archive doesn't hold.
-    if (!Holds(original.held, round))
-    {
-        for (const auto& [sound, change] : changes)
-        {
-            try
-            {
-                hokuto::edit::ChangeSound(original.file, sound, change);
-                std::printf("%s: %s: the edit of the %s isn't refused.\n", name.c_str(),
-                            tables.sounds[sound].name.c_str(), what.c_str());
-                ++totals.failures;
-            }
-            catch (const std::invalid_argument&)
-            {
-                ++totals.refused;
-            }
-        }
-        return;
-    }
-
-    // The edits, and the values that the tool works out.
-    File edited = original.file;
-    std::vector<NativeSound> expected = tables.sounds;
-    std::vector<std::pair<uint32_t, SoundChange>> made;
-    for (const auto& [sound, change] : changes)
-    {
-        try
-        {
-            edited = hokuto::edit::ChangeSound(edited, sound, change);
-        }
-        catch (const std::invalid_argument& error)
-        {
-            std::printf("%s: %s: the edit of the %s fails: %s\n", name.c_str(), tables.sounds[sound].name.c_str(),
-                        what.c_str(), error.what());
-            ++totals.failures;
-            continue;
-        }
-
-        ++totals.edits;
-        expected[sound] = Changed(expected[sound], change);
-        made.emplace_back(sound, change);
-    }
-
-    // The export holds the new values in place.
-    std::vector<uint8_t> exported;
-    std::shared_ptr<const ntdlib::rsar::SoundArchive> after;
-    try
-    {
-        hokuto::tools::CheckSaved(edited);
-        exported = hokuto::format::ExportArchive(edited);
-        const File read = hokuto::format::ImportWiiArchive(exported);
-        if (exported.size() != original.bytes.size() || DifferencesOutsideInfo(original.bytes, exported) != 0)
-        {
-            std::printf(
-                "%s: the export moves bytes, or changes bytes outside its INFO block, after the round of the %s.\n",
-                name.c_str(), what.c_str());
-            ++totals.differ;
-        }
-        for (std::size_t sound = 0; sound < expected.size(); ++sound)
-        {
-            if (!read.native->tables || sound >= read.native->tables->sounds.size() ||
-                read.native->tables->sounds[sound] != expected[sound])
-            {
-                std::printf("%s: %s: the values read back otherwise after the round of the %s.\n", name.c_str(),
-                            expected[sound].name.c_str(), what.c_str());
-                ++totals.differ;
-            }
-        }
-        ++totals.layouts;
-        if (WiiLayoutOf(edited, exported) != layout)
-        {
-            std::printf("%s: the files' sequences or the starts' fields differ after the round of the %s.\n",
-                        name.c_str(), what.c_str());
-            ++totals.differ;
-        }
-        if (round.value == SoundValue::kVolume)
-        {
-            after = hokuto::song::LoadWiiArchive(exported, name, ntdlib::rvl::snd::kRsarOptions);
-        }
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: the round of the %s fails: %s\n", name.c_str(), what.c_str(), error.what());
-        ++totals.failures;
-        return;
-    }
-
-    // The old values give the archive back.
-    File back = edited;
-    try
-    {
-        for (auto it = made.rbegin(); it != made.rend(); ++it)
-        {
-            const auto& [sound, change] = *it;
-            const uint32_t old = hokuto::edit::ValueOf(tables.sounds[sound], change.value, change.slot);
-            back = hokuto::edit::ChangeSound(back, sound, {change.value, change.slot, old});
-        }
-        if (hokuto::format::ExportArchive(back) != original.bytes)
-        {
-            std::printf("%s: the old values don't give the archive back after the round of the %s.\n", name.c_str(),
-                        what.c_str());
-            ++totals.round_trips;
-        }
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: the edits back of the round of the %s fail: %s\n", name.c_str(), what.c_str(), error.what());
-        ++totals.failures;
-    }
-
-    if (after)
-    {
-        const ntdlib::SndBuild build = hokuto::format::BuildOfWiiArchive(*original.file.native);
-        const auto at_volume = [&](uint32_t sound, uint32_t volume)
-        {
-            const File lower = hokuto::edit::ChangeSound(original.file, sound, {SoundValue::kVolume, 0, volume});
-            return PlayWii(hokuto::song::LoadWiiArchive(hokuto::format::ExportArchive(lower), name,
-                                                        ntdlib::rvl::snd::kRsarOptions),
-                           sound, build);
-        };
-        CheckLevels(
-            name, original.file, [&](uint32_t sound) { return PlayWii(original.archive, sound, build); },
-            [&](uint32_t sound) { return PlayWii(after, sound, build); }, at_volume, made, totals);
-    }
-}
-
-// Checks the rounds of `bytes`, an archive of the Wii named `name`, and prints the summary. Returns the tool's code.
-int CheckWiiArchive(const std::string& name, std::vector<uint8_t> bytes)
-{
-    WiiOriginal original;
-    original.name = name;
-    original.bytes = std::move(bytes);
-    Layout layout;
-    try
-    {
-        original.archive = hokuto::song::LoadWiiArchive(original.bytes, name, ntdlib::rvl::snd::kRsarOptions);
-        original.file = hokuto::format::ImportWiiArchive(original.bytes);
-        original.file = hokuto::tools::CheckedForm(std::move(original.file), original.bytes);
-        if (!original.file.native->tables || hokuto::format::ExportArchive(original.file) != original.bytes)
-        {
-            throw std::runtime_error("the file holds no tables, or doesn't export the archive");
-        }
-        original.held = hokuto::edit::HeldValuesOf(original.file);
-        layout = WiiLayoutOf(original.file, original.bytes);
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 2;
-    }
-
-    Totals totals;
-    totals.sounds = original.file.native->tables->sounds.size();
-    for (const NativeSound& sound : original.file.native->tables->sounds)
-    {
-        totals.sequences += sound.kind == sar::SoundType::kSequence ? 1 : 0;
-    }
-    for (std::size_t i = 0; i < kRounds.size(); ++i)
-    {
-        CheckWiiRound(original, layout, kRounds[i], i, totals);
-    }
-
-    const uint16_t version = hokuto::format::WiiVersionOf(*original.file.native);
-    std::printf(
-        "%s: version %d.%d. %zu sounds, %zu of them sequence sounds. %zu edits in %zu rounds, and %zu edits refused of "
-        "values that the archive doesn't hold. %zu values read back otherwise, and %zu rounds whose values back give "
-        "other bytes. %zu exports checked for the files' sequences and the starts' fields. %zu levels measured, with "
-        "the worst %.4f dB from the ratio of the volumes, and %zu further than %.2f dB. Apart: %zu sounds that clip, "
-        "%zu too quiet to measure, and %zu whose voices reach the console's limit. %zu failures.\n",
-        name.c_str(), version >> 8, version & 0xFF, totals.sounds, totals.sequences, totals.edits, kRounds.size(),
-        totals.refused, totals.differ, totals.round_trips, totals.layouts, totals.levels, totals.worst,
-        totals.wrong_levels, kTolerance, totals.clipped, totals.quiet, totals.limited, totals.failures);
-
-    return totals.differ == 0 && totals.round_trips == 0 && totals.wrong_levels == 0 && totals.failures == 0 ? 0 : 1;
+    CheckBackWithoutOption(edited, bare, chosen, round, unplaced, name, what, totals);
 }
 
 } // namespace
+
+} // namespace hokuto::tools::sounds
+
+namespace sar = ntdlib::sar;
+using hokuto::format::NativeSound;
+using hokuto::tools::sounds::CheckPlaceRound;
+using hokuto::tools::sounds::CheckRound;
+using hokuto::tools::sounds::CheckWiiArchive;
+using hokuto::tools::sounds::kPlaceRounds;
+using hokuto::tools::sounds::kRounds;
+using hokuto::tools::sounds::kTolerance;
+using hokuto::tools::sounds::Layout;
+using hokuto::tools::sounds::LayoutOf;
+using hokuto::tools::sounds::Original;
+using hokuto::tools::sounds::Totals;
 
 int main(int argc, char** argv)
 {
@@ -1185,7 +868,7 @@ int main(int argc, char** argv)
     try
     {
         xsflib::ReadFile(path, original.bytes);
-        if (original.bytes.size() >= 4 && std::memcmp(original.bytes.data(), "RSAR", 4) == 0)
+        if (hokuto::tools::IsWiiArchive(original.bytes))
         {
             return CheckWiiArchive(original.name, std::move(original.bytes));
         }

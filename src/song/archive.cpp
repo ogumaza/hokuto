@@ -15,12 +15,20 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/agb/rom.h"
+#include "ntdlib/dse/commands.h"
+#include "ntdlib/dse/formats.h"
+#include "ntdlib/mp2k/commands.h"
+#include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sequence_export/archive_converter.h"
 #include "ntdlib/sequence_export/consoles.h"
 #include "xsflib/binary.h"
 #include "xsflib/files.h"
 
+#include "format/engine.h"
+#include "format/engines.h"
+#include "song/driver.h"
 #include "song/items.h"
 
 namespace hokuto::song
@@ -50,7 +58,7 @@ std::shared_ptr<ntdlib::sar::SoundArchive> ReadTables(std::vector<uint8_t> bytes
     // FSAR on the Switch and the Wii U, and CSAR on the 3DS. Bytes of another kind name no console.
     if (bytes.size() < 4 || (std::memcmp(bytes.data(), "FSAR", 4) != 0 && std::memcmp(bytes.data(), "CSAR", 4) != 0))
     {
-        throw std::runtime_error(name + " isn't a sound archive of the Switch, the Wii U, the 3DS or the Wii.");
+        throw std::runtime_error(name + " isn't a Switch, Wii U, 3DS or Wii sound archive.");
     }
 
     const ntdlib::sar::Flavor flavor = FlavorOfArchive(bytes);
@@ -62,8 +70,8 @@ std::shared_ptr<ntdlib::sar::SoundArchive> ReadTables(std::vector<uint8_t> bytes
     }
     catch (const xsflib::FormatError& error)
     {
-        throw std::runtime_error("Hokuto can't read " + name + " as a sound archive of the " + ConsoleName(flavor) +
-                                 ": " + error.what() + ".");
+        throw std::runtime_error("Can't read " + name + " as a " + ConsoleName(flavor) +
+                                 " sound archive: " + error.what() + ".");
     }
 }
 
@@ -131,6 +139,7 @@ std::vector<std::pair<std::string, std::vector<uint8_t>>> PlaceGroupFiles(
             {
                 break;
             }
+
             if (std::filesystem::exists(folder / kUserManagementFolder / file, error))
             {
                 output.first = std::string(kUserManagementFolder) + "/" + output.first;
@@ -172,7 +181,7 @@ std::shared_ptr<const ntdlib::rsar::SoundArchive> LoadWiiArchive(std::vector<uin
     }
     catch (const xsflib::FormatError& error)
     {
-        throw std::runtime_error("Hokuto can't read " + name + " as a sound archive of the Wii: " + error.what() + ".");
+        throw std::runtime_error("Can't read " + name + " as a Wii sound archive: " + error.what() + ".");
     }
 }
 
@@ -192,10 +201,8 @@ std::optional<ntdlib::SndBuild> ReadWiiBuild(std::span<const uint8_t> dol)
         return std::nullopt;
     }
 
-    ntdlib::SndBuild build = ntdlib::FindSndBuild(dol, {.check_day = true});
-    build.october_2006 = ntdlib::IdentifyBuild(*microcode) == ntdlib::AxBuild::kOctober2006;
-
-    return build;
+    // A build without a banner plays as the build of October 2006 on any AX. ntdlib's model plays it the same way.
+    return ntdlib::SndBuildWithAx(ntdlib::FindSndBuild(dol, {.check_day = true}), ntdlib::IdentifyBuild(*microcode));
 }
 
 std::optional<std::filesystem::path> FindMainDol(const std::filesystem::path& archive)
@@ -220,6 +227,11 @@ std::optional<std::filesystem::path> FindMainDol(const std::filesystem::path& ar
     return std::nullopt;
 }
 
+ntdlib::sar::Flavor FlavorOf(const Console& console)
+{
+    return format::FlavorOf(console.engine).value_or(ntdlib::sar::Flavor::kNx);
+}
+
 ntdlib::nwsnd::Grammar GrammarOf(ntdlib::sar::Flavor flavor)
 {
     switch (flavor)
@@ -238,12 +250,12 @@ ntdlib::nwsnd::Grammar GrammarOf(ntdlib::sar::Flavor flavor)
 ntdlib::nwsnd::Grammar GrammarOf(const Console& console)
 {
     return console.wii ? ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::RevolutionPolicy>(*console.wii)
-                       : GrammarOf(console.flavor);
+                       : GrammarOf(FlavorOf(console));
 }
 
 bool Runs(ntdlib::sar::Flavor flavor, ntdlib::commands::Kind kind, uint8_t index)
 {
-    return Runs(Console{.flavor = flavor}, kind, index);
+    return Runs(Console{.engine = format::EngineOf(flavor)}, kind, index);
 }
 
 std::string SettingName(const ntdlib::commands::Command& command)
@@ -284,7 +296,57 @@ std::string SettingName(const ntdlib::commands::Command& command)
 bool Runs(const Console& console, ntdlib::commands::Kind kind, uint8_t index)
 {
     using ntdlib::commands::Kind;
-    const bool skips = console.wii || console.flavor == ntdlib::sar::Flavor::kCtr;
+    if (console.driver != nullptr)
+    {
+        // The driver's bytes hold the command, or it has none.
+        try
+        {
+            console.driver->ItemOffsets(console.driver->Alone(ntdlib::commands::Command{.kind = kind, .index = index}));
+            return true;
+        }
+        catch (const std::invalid_argument&)
+        {
+            return false;
+        }
+    }
+
+    if (console.engine == format::Engine::kGba || console.engine == format::Engine::kDs ||
+        console.engine == format::Engine::kDse)
+    {
+        // MusicPlayer2000, NITRO-Composer and DSE run each command that their bytes hold. An end follows the command: a
+        // note's bytes on the GBA can leave out its last argument only before a command.
+        ntdlib::commands::Sequence command;
+        if (console.engine == format::Engine::kDse)
+        {
+            command.items.push_back(ntdlib::dse::TrackOpening(0, 0));
+        }
+
+        command.items.push_back(ntdlib::commands::Command{.kind = kind, .index = index});
+        command.items.push_back(ntdlib::commands::Command{.kind = Kind::kEnd});
+        try
+        {
+            if (console.engine == format::Engine::kGba)
+            {
+                ntdlib::mp2k::EncodeSequence(command, ntdlib::agb::kRomBase, console.note_arguments);
+            }
+            else if (console.engine == format::Engine::kDse)
+            {
+                ntdlib::dse::EncodeTracks(command);
+            }
+            else
+            {
+                ntdlib::ntr::snd::EncodeSequence(command);
+            }
+
+            return true;
+        }
+        catch (const std::invalid_argument&)
+        {
+            return false;
+        }
+    }
+
+    const bool skips = console.wii || FlavorOf(console) == ntdlib::sar::Flavor::kCtr;
     if (!skips || kind == Kind::kNote || kind == Kind::kOther || kind == Kind::kData ||
         ntdlib::commands::HasTarget(kind))
     {
@@ -303,6 +365,7 @@ bool Runs(const Console& console, ntdlib::commands::Kind kind, uint8_t index)
     {
         return false;
     }
+
     if (bytes.empty())
     {
         return false;
@@ -313,13 +376,27 @@ bool Runs(const Console& console, ntdlib::commands::Kind kind, uint8_t index)
                        : ntdlib::nwsnd::CtrPolicy::HasCommand({}, opcode);
 }
 
+bool Runs(const Console& console, const ntdlib::commands::Command& command)
+{
+    if (console.driver == nullptr && console.engine == format::Engine::kDse &&
+        command.kind == ntdlib::commands::Kind::kOther)
+    {
+        // ntdlib's Driver::State::RunEvent skips the arguments of these codes. A bare command of kOther has no code,
+        // and the kind alone doesn't encode.
+        const uint16_t code = command.encoding.opcode;
+        return code != ntdlib::dse::kSkipByte && code != ntdlib::dse::kSkipTwo && code != ntdlib::dse::kSkipTwoAgain;
+    }
+
+    return Runs(console, command.kind, command.index);
+}
+
 std::shared_ptr<const ntdlib::sar::SoundArchive> OpenArchive(const std::filesystem::path& path)
 {
     const std::string name = xsflib::Utf8(path.filename());
     std::vector<uint8_t> bytes;
     if (!xsflib::ReadFile(path, bytes))
     {
-        throw std::runtime_error("Hokuto can't read " + name + ".");
+        throw std::runtime_error("Can't read " + name + ".");
     }
 
     return LoadArchive(std::move(bytes), name, path);

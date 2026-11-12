@@ -7,60 +7,95 @@
 // - as the converter opens it, with the group files beside it, and
 // - as the program imports it into a Hokuto file. The file then builds the archive again, and the export reads that.
 //
-// Each sequence sound converts on both sides with the converter's options: no variable set and no changes. Hokuto's
-// side names the converter as the program that made the files. The tool compares the MIDI file, the SoundFont 2 file,
-// each SFZ file and sample, and the report, byte for byte. A sound that fails on both sides with the same error counts
-// as the same. The tests check that the files go where the converters put them.
+// Each sequence sound converts on both sides with the converter's options: no variable set and no changes. The tool
+// compares the MIDI file, the SoundFont 2 file, each SFZ file and sample, and the report, byte for byte. A sound that
+// fails on both sides with the same error counts as the same. The tests check that the files go where the converters
+// put them.
 //
-// A Wii archive converts with the build of NW4R SND that its version gives. revosf2 converts an archive without the
-// game's main.dol the same way. revosf2 converts a few games' sounds otherwise: with the build that the game's main.dol
-// shows, as pieces of several sequences, or set up as the game's code starts them. Hokuto converts each sound by itself
-// as the archive gives it.
+// A GBA ROM converts with ntdlib's converter of MusicPlayer2000 and the default settings of
+// ntdlib::sequence_export::agb::ConvertSettings. The converter's side reads the ROM, and Hokuto's side the ROM that the
+// Hokuto file builds. Each song that plays converts on both sides. The tool compares the MIDI file, the SoundFont 2
+// file and the warnings. It then checks the voice groups that the browser lists (song::GbaVoiceGroups). Each program
+// that ntdlib's performer selects as it plays a song has to be among the programs of the song's voice group. Each voice
+// group is exported as the browser's Export… writes it (song::ConvertVoiceGroup). Its SoundFont has to contain a preset
+// in bank 0 at each program at which a song's SoundFont contains one, and each listed program has to get a preset or a
+// warning.
+//
+// A GBA ROM with another of the GBA's drivers, such as Konami's, converts with ntdlib's converter of that driver and
+// the same settings: each sound of the driver (song::DriverRom::Sounds), such as a song's live version. With
+// --reference and a folder, the tool also compares each MIDI file and SoundFont 2 file with the file of the same name
+// in that folder. Konami's converter writes SFZ files too. Each SFZ file and sample of Hokuto's export has to match the
+// files of the converter, and the summary counts them.
+//
+// A DS cartridge image, or a sound archive of the DS (SDAT), converts with ntdlib's converter of NITRO-Composer's
+// sequences, with the build of the driver that the ARM7 binary of the image contains. ntdlib's frame of a DS converter
+// runs the converter the same way. Each sound archive of an image converts on both sides: the converter's side reads
+// the archive in the image, and Hokuto's side the archive that the Hokuto file of that archive builds. The tool
+// compares the MIDI file, the SoundFont 2 file, each SFZ file and sample, and the report. A loose archive uses the
+// default build of the driver. The converter side uses the profile of the game of the image
+// (ntdlib::ntr::GameProfileOf) as ntdlib's DS converter uses it, without the output effect: the image's game code, the
+// path of the archive's file and its place among the file's archives. Hokuto's side uses the game that the Hokuto file
+// stores.
+//
+// A DS cartridge image without a sound archive uses its DSE files (song::DseSounds). Each sound converts with ntdlib's
+// converter of DSE's sequences, with the build of the driver that the image contains. ntdlib's frame of a DSE converter
+// runs the converter the same way. The converter's side reads the set of the game's image, and Hokuto's side the set
+// that the Hokuto file builds. The tool compares the same files as on the DS.
+//
+// A Wii archive converts with the build of NW4R SND that its version gives. Hokuto converts each sound by itself as the
+// archive gives it.
 //
 // The tool prints a line for each sound that differs, and a summary. It returns 1 when a sound differs, and 2 when the
 // archive can't be read. With a sound's name, it checks that sound alone.
 //
-// usage: hokuto_check_exports <archive> [sound]
+// Both sides write the name of the program that made the files into them: Hokuto, or the name that --program sets. With
+// --reference, --program has to give the name that the reference files carry.
+//
+// usage: hokuto_check_exports [--reference <folder>] [--program <name>] <archive, GBA ROM or DS image> [sound]
 
-#include <algorithm>
-#include <cstddef>
-#include <cstdint>
-#include <cstdio>
-#include <exception>
-#include <filesystem>
-#include <memory>
-#include <optional>
-#include <string>
-#include <utility>
-#include <vector>
+#include "check_exports.h"
 
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sequence_export/archive_converter.h"
-#include "ntdlib/sequence_export/consoles.h"
-#include "ntdlib/sequence_export/convert.h"
-#include "xsflib/bytes.h"
-#include "xsflib/console.h"
-#include "xsflib/files.h"
+namespace hokuto::tools::exports
+{
 
-#include "format/archive.h"
-#include "format/file.h"
-#include "song/archive.h"
-#include "song/midi_export.h"
+bool SameSfzFiles(const export_::SfzInstruments& a, const export_::SfzInstruments& b)
+{
+    if (a.files.size() != b.files.size())
+    {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < a.files.size(); i++)
+    {
+        if (a.files[i].name != b.files[i].name || a.files[i].text != b.files[i].text)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool SameSfzSamples(const export_::SfzInstruments& a, const export_::SfzInstruments& b)
+{
+    if (a.samples.size() != b.samples.size())
+    {
+        return false;
+    }
+
+    for (std::size_t i = 0; i < a.samples.size(); i++)
+    {
+        if (a.samples[i].name != b.samples[i].name || a.samples[i].wav != b.samples[i].wav)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
 
 namespace
 {
-
-namespace export_ = ntdlib::sequence_export;
-namespace rsar = ntdlib::rsar;
-namespace sar = ntdlib::sar;
-
-// One side's conversion of a sound, or its error.
-struct Side
-{
-    std::optional<export_::Conversion> conversion;
-    std::string error;
-};
 
 // The parts of two conversions of a sound that differ, by name. Empty when they're the same.
 std::vector<std::string> Differences(const export_::Conversion& theirs, const export_::Conversion& ours)
@@ -74,49 +109,11 @@ std::vector<std::string> Differences(const export_::Conversion& theirs, const ex
     {
         parts.emplace_back("the SoundFont 2 file");
     }
-
-    // The SFZ files and samples, in their order.
-    const auto same_files = [](const export_::SfzInstruments& a, const export_::SfzInstruments& b)
-    {
-        if (a.files.size() != b.files.size())
-        {
-            return false;
-        }
-
-        for (std::size_t i = 0; i < a.files.size(); i++)
-        {
-            if (a.files[i].name != b.files[i].name || a.files[i].text != b.files[i].text)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    };
-
-    const auto same_samples = [](const export_::SfzInstruments& a, const export_::SfzInstruments& b)
-    {
-        if (a.samples.size() != b.samples.size())
-        {
-            return false;
-        }
-
-        for (std::size_t i = 0; i < a.samples.size(); i++)
-        {
-            if (a.samples[i].name != b.samples[i].name || a.samples[i].wav != b.samples[i].wav)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    };
-
-    if (!same_files(theirs.sfz, ours.sfz))
+    if (!SameSfzFiles(theirs.sfz, ours.sfz))
     {
         parts.emplace_back("the SFZ files");
     }
-    if (!same_samples(theirs.sfz, ours.sfz))
+    if (!SameSfzSamples(theirs.sfz, ours.sfz))
     {
         parts.emplace_back("the SFZ samples");
     }
@@ -131,7 +128,8 @@ std::vector<std::string> Differences(const export_::Conversion& theirs, const ex
     return parts;
 }
 
-// The parts joined into a list for a line: "a, b and c".
+} // namespace
+
 std::string Listed(const std::vector<std::string>& parts)
 {
     std::string text;
@@ -143,13 +141,8 @@ std::string Listed(const std::vector<std::string>& parts)
     return text;
 }
 
-// What a check of an archive's sounds found.
-struct Counts
+namespace
 {
-    std::size_t sounds = 0;
-    std::size_t differ = 0;
-    std::size_t failed = 0;
-};
 
 // Converts each sequence sound of `theirs`, the converter's archive, and of `ours`, the archive that a Hokuto file
 // builds, with the converter's `settings` and the name `program`. Prints a line for each sound that differs. With
@@ -187,44 +180,53 @@ Counts CheckSounds(const Archive& theirs_archive, const Archive& ours_archive, c
         {
             ours.error = error.what();
         }
-
-        // Hokuto's message names the sound before ntdlib's.
-        if (!theirs.conversion && !ours.conversion)
-        {
-            const std::string expected = "Hokuto can't convert " + info.name + ". " + theirs.error;
-            if (ours.error != expected)
-            {
-                std::printf("%s: %s fails with other errors: \"%s\" and \"%s\"\n", name.c_str(), info.name.c_str(),
-                            theirs.error.c_str(), ours.error.c_str());
-                counts.differ++;
-            }
-            counts.failed++;
-            continue;
-        }
-        if (!theirs.conversion || !ours.conversion)
-        {
-            std::printf("%s: %s fails only in %s: %s\n", name.c_str(), info.name.c_str(),
-                        theirs.conversion ? "Hokuto" : program.c_str(),
-                        (theirs.conversion ? ours.error : theirs.error).c_str());
-            counts.differ++;
-            continue;
-        }
-
-        const std::vector<std::string> parts = Differences(*theirs.conversion, *ours.conversion);
-        if (!parts.empty())
-        {
-            std::printf("%s: %s differs in %s\n", name.c_str(), info.name.c_str(), Listed(parts).c_str());
-            counts.differ++;
-        }
+        CompareSides(theirs, ours, name, info.name, counts);
     }
 
     return counts;
 }
 
+} // namespace
+
+void CompareSides(const Side& theirs, const Side& ours, const std::string& name, const std::string& sound_name,
+                  Counts& counts)
+{
+    if (!theirs.conversion && !ours.conversion)
+    {
+        const std::string expected = "Can't convert " + sound_name + ". " + theirs.error;
+        if (ours.error != expected)
+        {
+            std::printf("%s: %s fails with other errors: \"%s\" and \"%s\"\n", name.c_str(), sound_name.c_str(),
+                        theirs.error.c_str(), ours.error.c_str());
+            counts.differ++;
+        }
+        counts.failed++;
+        return;
+    }
+    if (!theirs.conversion || !ours.conversion)
+    {
+        std::printf("%s: %s fails only in %s: %s\n", name.c_str(), sound_name.c_str(),
+                    theirs.conversion ? "Hokuto" : "ntdlib's converter",
+                    (theirs.conversion ? ours.error : theirs.error).c_str());
+        counts.differ++;
+        return;
+    }
+
+    const std::vector<std::string> parts = Differences(*theirs.conversion, *ours.conversion);
+    if (!parts.empty())
+    {
+        std::printf("%s: %s differs in %s\n", name.c_str(), sound_name.c_str(), Listed(parts).c_str());
+        counts.differ++;
+    }
+}
+
+namespace
+{
+
 // Checks revosf2's conversion of the sounds of the Wii archive at `path`, named `name`, in `bytes`. Returns the tool's
-// exit status.
+// exit status. Both sides name `program` as the program that made the files.
 int CheckWiiArchive(std::vector<uint8_t> bytes, const std::filesystem::path& path, const std::string& name,
-                    const std::string& only)
+                    const std::string& only, const std::string& program)
 {
     std::optional<rsar::SoundArchive> converter_archive;
     std::shared_ptr<const rsar::SoundArchive> hokuto_archive;
@@ -249,56 +251,32 @@ int CheckWiiArchive(std::vector<uint8_t> bytes, const std::filesystem::path& pat
     }
 
     const Counts counts = CheckSounds<rsar::SoundArchive, rsar::SoundType>(*converter_archive, *hokuto_archive,
-                                                                           settings, "revosf2", name, only);
+                                                                           settings, program, name, only);
     std::printf("%s: %zu sequence sounds checked. %zu differ, and %zu fail on both sides.\n", name.c_str(),
                 counts.sounds, counts.differ, counts.failed);
 
     return counts.differ > 0 ? 1 : 0;
 }
 
-} // namespace
-
-int main(int argc, char** argv)
+// Checks the conversion of the sounds of the archive of the Switch, the Wii U or the 3DS at `path`, named `name`, in
+// `bytes`. Returns the tool's exit status. Both sides name `program` as the program that made the files.
+int CheckSarArchive(std::vector<uint8_t> bytes, const std::filesystem::path& path, const std::string& name,
+                    const std::string& only, const std::string& program)
 {
-    const std::vector<std::string> arguments = xsflib::console::Arguments(argc, argv);
-    if (arguments.size() < 2 || arguments.size() > 3)
-    {
-        std::fprintf(stderr, "usage: hokuto_check_exports <archive> [sound]\n");
-        return 2;
-    }
-    const std::string only = arguments.size() > 2 ? arguments[2] : std::string();
-
-    // The converter's archive, and the one that the Hokuto file builds. Both have the group files beside the archive. A
-    // Wii U archive converts as cafesf2 converts it, a 3DS archive as citrusf2 does, and a Switch archive as hacsf2
-    // does.
-    const std::filesystem::path path = xsflib::PathFromUtf8(arguments[1]);
-    const std::string name = xsflib::Utf8(path.filename());
+    // The converter's archive, and the one that the Hokuto file builds. Both have the group files beside the archive.
     std::optional<sar::SoundArchive> converter_archive;
     std::shared_ptr<const sar::SoundArchive> hokuto_archive;
     export_::Settings settings = export_::SwitchSettings();
-    std::string program = "hacsf2";
     try
     {
-        std::vector<uint8_t> bytes;
-        if (!xsflib::ReadFile(path, bytes))
-        {
-            std::fprintf(stderr, "%s can't be read\n", name.c_str());
-            return 2;
-        }
-        if (bytes.size() >= 8 && std::equal(bytes.begin(), bytes.begin() + 4, "RSAR"))
-        {
-            return CheckWiiArchive(std::move(bytes), path, name, only);
-        }
         const sar::Flavor flavor = hokuto::song::FlavorOfArchive(bytes);
         if (flavor == sar::Flavor::kCafe)
         {
             settings = export_::CafeSettings();
-            program = "cafesf2";
         }
         else if (flavor == sar::Flavor::kCtr)
         {
             settings = export_::CtrSettings();
-            program = "citrusf2";
         }
         converter_archive = export_::OpenArchive<sar::SoundArchive>(path, name, settings, true);
         if (!converter_archive)
@@ -325,4 +303,105 @@ int main(int argc, char** argv)
                 counts.sounds, counts.differ, counts.failed);
 
     return counts.differ > 0 ? 1 : 0;
+}
+
+// The options of the command line: the folder of the converter's references, the name of the program that made the
+// files, the file, and the sound to check, if only one.
+struct Options
+{
+    std::filesystem::path reference_folder;
+    std::string program = "Hokuto";
+    std::filesystem::path path;
+    std::string only;
+};
+
+// The options in the command line's `arguments`, or nothing after the usage.
+std::optional<Options> ParseArguments(std::vector<std::string> arguments)
+{
+    std::filesystem::path reference_folder;
+    std::string program = "Hokuto";
+    while (arguments.size() > 2 && (arguments[1] == "--reference" || arguments[1] == "--program"))
+    {
+        if (arguments[1] == "--reference")
+        {
+            reference_folder = xsflib::PathFromUtf8(arguments[2]);
+        }
+        else
+        {
+            program = arguments[2];
+        }
+        arguments.erase(arguments.begin() + 1, arguments.begin() + 3);
+    }
+    if (arguments.size() < 2 || arguments.size() > 3)
+    {
+        std::fprintf(stderr,
+                     "usage: hokuto_check_exports [--reference <folder>] [--program <name>] "
+                     "<archive, GBA ROM or DS image> [sound]\n");
+        return std::nullopt;
+    }
+    const std::string only = arguments.size() > 2 ? arguments[2] : std::string();
+
+    return Options{reference_folder, program, xsflib::PathFromUtf8(arguments[1]), only};
+}
+
+} // namespace
+
+} // namespace hokuto::tools::exports
+
+using hokuto::tools::exports::CheckDriverRom;
+using hokuto::tools::exports::CheckDs;
+using hokuto::tools::exports::CheckDse;
+using hokuto::tools::exports::CheckGbaRom;
+using hokuto::tools::exports::CheckSarArchive;
+using hokuto::tools::exports::CheckWiiArchive;
+using hokuto::tools::exports::Options;
+using hokuto::tools::exports::ParseArguments;
+
+int main(int argc, char** argv)
+{
+    const std::optional<Options> options = ParseArguments(xsflib::console::Arguments(argc, argv));
+    if (!options)
+    {
+        return 2;
+    }
+    const auto& [reference_folder, program, path, only] = *options;
+
+    const std::string name = xsflib::Utf8(path.filename());
+    std::vector<uint8_t> bytes;
+    try
+    {
+        if (!xsflib::ReadFile(path, bytes))
+        {
+            std::fprintf(stderr, "%s can't be read\n", name.c_str());
+            return 2;
+        }
+        if (bytes.size() >= 8 && std::equal(bytes.begin(), bytes.begin() + 4, "RSAR"))
+        {
+            return CheckWiiArchive(std::move(bytes), path, name, only, program);
+        }
+        if (hokuto::format::IsGbaRom(bytes) && hokuto::format::DriverOfRom(bytes) != nullptr)
+        {
+            return CheckDriverRom(std::move(bytes), name, only, reference_folder, xsflib::Utf8(path.stem()), program);
+        }
+        if (hokuto::format::IsGbaRom(bytes))
+        {
+            return CheckGbaRom(std::move(bytes), name, only, program);
+        }
+        if (hokuto::format::IsDsImage(bytes) && hokuto::format::DsArchivesIn(bytes).empty() &&
+            hokuto::format::HoldsDseFiles(bytes))
+        {
+            return CheckDse(bytes, name, only, program);
+        }
+        if (hokuto::format::IsDsImage(bytes) || hokuto::format::IsDsArchive(bytes))
+        {
+            return CheckDs(std::move(bytes), name, only, program);
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
+        return 2;
+    }
+
+    return CheckSarArchive(std::move(bytes), path, name, only, program);
 }

@@ -6,9 +6,10 @@ hashes.
 
 | Component | Licence | Use in Hokuto |
 |---|---|---|
-| [SDL3](https://libsdl.org) 3.4.18, Copyright (C) 1997-2026 Sam Lantinga | zlib | The window, the input, the GPU and the audio device. Linked statically. |
+| [SDL3](https://libsdl.org) 3.4.20, Copyright (C) 1997-2026 Sam Lantinga | zlib | The window, the input, the GPU and the audio device. Linked statically. |
 | yuv2rgb, part of SDL3, Copyright (c) 2016, Adrien Descamps | BSD-3-Clause | SDL3's conversions of YUV images. |
 | stb_image, part of SDL3, Copyright (c) 2017 Sean Barrett | MIT, or public domain | SDL3's image loading. |
+| miniz 1.15, part of SDL3, by Rich Geldreich | Public domain (Unlicense) | SDL3's writing of PNG images. |
 | fdlibm, part of SDL3, Copyright (C) 1993 by Sun Microsystems, Inc. | fdlibm's licence, below | SDL3's maths functions, in `src/libm`. |
 | SDL_gfx's rotation, part of SDL3, Copyright (C) 2001-2011 Andreas Schiffler | zlib | SDL3's rotation of surfaces. |
 | SDL3's table of game controllers, Copyright (C) Valve Corporation | zlib | SDL3's names of game controllers. Hokuto turns game controllers off. |
@@ -36,14 +37,16 @@ hashes.
 | hiir, part of sfizz, by Laurent de Soras | WTFPL | sfizz's oversampling. |
 | jsl, part of sfizz, Copyright Jean Pierre Cimalando 2018-2020 | BSL-1.0 | sfizz's memory helpers. |
 | ThreadPool, part of sfizz, Copyright (c) 2012 Jakob Progsch, Václav Zeman | zlib | sfizz's pool of threads that loads files. |
-| seqlib, xsflib and ntdlib, Copyright (c) 2026 the seqlib authors, the xsflib authors and the ntdlib authors | MIT | Submodules in `externals/`. ntdlib reads the sound archives of the Wii, the 3DS, the Wii U and the Switch, and plays their sequences on its models of each console's sound library and audio hardware. Its sequence export reads a sequence's notes and settings, and converts a sequence to MIDI, SoundFont 2 and SFZ files, with seqlib. xsflib holds the code that they share. The tests use the checks of xsflib and seqlib. Linked statically. |
-| [Teakra](https://github.com/wwylele/teakra), part of ntdlib, Copyright (c) 2018 Weiyi Wang | MIT | An emulator of the 3DS's DSP, in `externals/ntdlib/externals/teakra`. ntdlib's archive mode of the 3DS can run a DSP firmware that the user supplies on it. Only a check tool does: Hokuto plays the 3DS on ntdlib's model of the firmware. Linked statically. |
+| seqlib, xsflib and ntdlib, Copyright (c) 2026 the seqlib authors, the xsflib authors and the ntdlib authors | MIT | Submodules in `externals/`. ntdlib reads the sound archives of the Wii, the 3DS, the Wii U and the Switch, the DS's sound archives and DSE files, and the songs of the GBA's sound drivers. It plays them on its models of each console's sound library, sound driver and audio hardware. Its sequence export reads a sequence's notes and settings, and converts a sequence to MIDI, SoundFont 2 and SFZ files, with seqlib. xsflib holds the code that they share. The tests use the checks of xsflib and seqlib. Linked statically. |
+| [Teakra](https://github.com/wwylele/teakra), part of ntdlib, Copyright (c) 2018 Weiyi Wang | MIT | An emulator of the 3DS's DSP, in `externals/ntdlib/externals/teakra`. ntdlib's archive mode of the 3DS can run a DSP firmware that the user supplies on it. Only a check tool does: Hokuto plays the 3DS on ntdlib's model of the firmware. Linked statically. Upstream commit 3d697a1, with ntdlib's changes. |
+| puff 2.3, part of ntdlib, Copyright (C) 2002-2013 Mark Adler | zlib | A DEFLATE decoder in ntdlib's reader of GBA files (`externals/ntdlib/src/agb/inflate.cpp`), which unpacks GSF files. It's an altered copy: the decoder is rewritten as a C++ class, with the checks of the zlib header and of Adler-32. Linked statically. |
 
 Binary distributions must include Hokuto's MIT notice and the notices of seqlib, xsflib, ntdlib, Teakra, Dear ImGui, the
 stb libraries, the two Proggy fonts, yuv2rgb and fdlibm. They must also include the notices of sfizz and of its parts
 under the MIT, BSD and STK-4.3 licences, and Abseil's Apache licence. Shipping `LICENSE` and this file does that. SDL3's
-zlib licence requires no notice in binaries. Neither do the zlib licences of SDL_gfx's rotation and Valve's table, nor
-the licences of dr_wav, dr_flac, dr_mp3, hiir, jsl and ThreadPool. The licence texts are at the end of this file.
+zlib licence requires no notice in binaries. Neither do the zlib licences of SDL_gfx's rotation, Valve's table and
+puff, nor the licences of miniz, dr_wav, dr_flac, dr_mp3, hiir, jsl and ThreadPool. The licence texts are at the end
+of this file.
 
 ## Console data
 
@@ -172,6 +175,31 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### puff
+
+```
+  Copyright (C) 2002-2013 Mark Adler, all rights reserved
+  version 2.3, 21 Jan 2013
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the author be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Mark Adler    madler@alumni.caltech.edu
 ```
 
 ### Dear ImGui

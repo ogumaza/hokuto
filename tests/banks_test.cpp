@@ -40,6 +40,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 
+#include "binary_form_testing.h"
 #include "edit/files.h"
 #include "edit/groups.h"
 #include "edit/new_items.h"
@@ -53,6 +54,7 @@
 using hokuto::edit::Region;
 using hokuto::format::File;
 using hokuto::format::WaveModel;
+using hokuto::testing::ComesBack;
 using xsflib::testing::ErrorOf;
 
 namespace
@@ -194,13 +196,6 @@ std::shared_ptr<const sar::SoundArchive> Load(const File& file)
     return hokuto::song::LoadArchive(hokuto::format::ExportArchive(file), "test.bfsar");
 }
 
-// Whether `file` comes back from both forms unchanged.
-bool ComesBack(const File& file)
-{
-    return hokuto::format::Read(hokuto::format::Write(file)) == file &&
-           hokuto::format::ReadText(hokuto::format::WriteText(file)) == file;
-}
-
 // The wave of `archive` as its file holds it.
 sar::WaveFile WaveOf(const sar::SoundArchive& archive, uint32_t index)
 {
@@ -321,7 +316,7 @@ void TestMonoWave(sar::Flavor flavor)
     XSFLIB_CHECK(quiet.left == 0.0 && quiet.right == 0.0 && quiet.both == 0.0 && quiet.peak == 0);
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&] { hokuto::edit::MonoWaveOf(WaveOfSamples(flavor, sar::WaveEncoding::kPcm16, {sine}, {})); }) ==
-                 "The wave holds 1 channel, not 2.");
+                 "The wave isn't stereo. It has 1 channel.");
 }
 
 // The regions of an instrument's model, and their refusals.
@@ -355,9 +350,9 @@ void TestRegions()
     Region loudest = low;
     loudest.last_velocity = 128;
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::InstrumentOf({low, across}); }) ==
-                 "Regions over keys 0 to 59 and keys 50 to 70 overlap. Regions over other keys can't overlap.");
+                 "Key ranges 0–59 and 50–70 overlap. Regions with different key ranges can't overlap.");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::InstrumentOf({soft, shared}); }) ==
-                 "Two regions over keys 60 to 127 share velocity 63.");
+                 "Two regions with keys 60–127 overlap at velocity 63.");
     XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { hokuto::edit::InstrumentOf({backwards}); }).empty());
     XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { hokuto::edit::InstrumentOf({loudest}); }).empty());
 }
@@ -391,11 +386,11 @@ void TestInstruments()
     XSFLIB_CHECK(hokuto::edit::WithoutInstrument(ordered, 2).order == std::vector<uint32_t>({0}));
 
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithNewInstrument(bank, 0, std::nullopt); }) ==
-                 "Program 0 holds an instrument already.");
+                 "Program 0 already has an instrument.");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithoutInstrument(bank, 1); }) ==
-                 "Program 1 holds no instrument.");
+                 "Program 1 has no instrument.");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithInstrumentCopy(bank, 0, 0x10000); }) ==
-                 "A program goes up to 65535.");
+                 "The highest program number is 65535.");
 }
 
 // A region's new wave goes into the table of waves, and a wave that no region plays leaves it.
@@ -412,7 +407,24 @@ void TestWaveTable()
     XSFLIB_CHECK(edited.instruments[0] == bank.instruments[0]);
     regions[0].values.wave_id_index = 5;
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithRegions(bank, 2, regions); }) ==
-                 "A region plays entry 5 of the bank's table of waves. The table holds 3 entries.");
+                 "A region uses wave entry 5, but the wave table has only 3 entries.");
+}
+
+// An edit of one program leaves the regions of the others as they were, also a region whose entry is past the table.
+void TestStrayRegion()
+{
+    sar::BankFile bank = TestBank(sar::Flavor::kNx);
+    sar::BankFile::Region stray;
+    stray.values.wave_id_index = 900;
+    bank.instruments[1].emplace().key_regions = {{0, 127, {stray}}};
+    std::vector<Region> regions = hokuto::edit::RegionsOf(*bank.instruments[2]);
+    regions[0].values.wave_id_index = kSine;
+
+    const sar::BankFile edited = hokuto::edit::WithRegions(bank, 2, regions);
+
+    XSFLIB_CHECK(edited.waves == std::vector<sar::WaveId>({{kWavesId, kSine}}));
+    XSFLIB_CHECK(edited.instruments[1] == bank.instruments[1]);
+    XSFLIB_CHECK(edited.instruments[2]->key_regions[0].regions[0].values.wave_id_index == 0);
 }
 
 // An edited bank goes into the archive, and the file keeps its model.
@@ -453,7 +465,7 @@ void TestBankEdits(sar::Flavor flavor)
     sar::BankFile other = model;
     other.flavor = flavor == sar::Flavor::kNx ? sar::Flavor::kCafe : sar::Flavor::kNx;
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithBankModel(file, *archive, kBank, other); }) ==
-                 "The bank is a bank of another console than the archive's.");
+                 "The bank and the archive are for different consoles.");
 }
 
 // A wave's loop, rate and encoding.
@@ -490,7 +502,7 @@ void TestWaveEdits(sar::Flavor flavor)
     between.loop_start = 71;
     XSFLIB_CHECK(
         ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithWaveModel(file, *archive, kWaves, kSine, between); }) ==
-        "A loop in DSP-ADPCM starts at a frame of 14 samples.");
+        "In DSP-ADPCM, a loop must start on a frame of 14 samples.");
     WaveModel past = looped;
     past.loop_end = kSineLength + 1;
     XSFLIB_CHECK(
@@ -503,8 +515,8 @@ void TestWaveEdits(sar::Flavor flavor)
     empty.loop_start = kSineLength;
     XSFLIB_CHECK(
         ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithWaveModel(file, *archive, kWaves, kSine, empty); }) ==
-        "The wave has a loop that doesn't end after its start. Turn the loop off, or move its start before its end, "
-        "first.");
+        "The wave has a loop that doesn't end after its start. Turn off the loop, or move the loop start before the "
+        "loop end.");
 
     // PCM16 holds the decoded samples, and the model keeps them. The ramps' model stays unedited.
     WaveModel pcm = sine;
@@ -564,9 +576,9 @@ void TestWaveSoundEdits(sar::Flavor flavor)
     values.adshr.release = 1;
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&] { hokuto::edit::WithWaveSoundFields(file, *archive, kWaveSound, values, fields.wave); })
-                     .starts_with("The wave sound file can't take the values."));
+                     .starts_with("Can't apply these values to the wave sound file."));
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WaveSoundFieldsOf(*archive, 0); }) ==
-                 "The archive has no wave sound file there.");
+                 "The archive has no such wave sound file.");
 }
 
 // New waves of a bank from WAV files: after the waves of the bank's wave archive, or in a new wave archive, each with
@@ -844,7 +856,7 @@ void TestWiiBankEdits()
     // A surround pan is refused. The empty bank takes version 1.2, without instruments or waves.
     const std::shared_ptr<const rsar::SoundArchive> surround = LoadWii(hokuto::format::ImportWiiArchive(WiiArchive(1)));
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::BankModelOf(*surround, kBank); })
-                     .starts_with("Hokuto can't edit this bank. A region of program 0 holds a surround pan"));
+                     .starts_with("Can't edit this bank. Program 0 has a region with a surround pan"));
     const rsar::BankFile::Files empty = hokuto::edit::EmptyBank(*archive);
     const rsar::BankFile empty_bank = rsar::BankFile::Read(empty.file, empty.wave_data);
     XSFLIB_CHECK(empty_bank.version == 0x0102 && empty_bank.instruments.empty() && empty_bank.waves.empty());
@@ -919,7 +931,7 @@ void TestWiiWaveEdits()
     moved.loop_start = 11;
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&] { hokuto::edit::WithWaveModel(file, *archive, kWiiWaveSoundsFile, 0, moved); }) ==
-                 "A loop in DSP-ADPCM starts at a frame of 14 samples.");
+                 "In DSP-ADPCM, a loop must start on a frame of 14 samples.");
 
     // PCM8 holds the nearest 8-bit samples. The wave sound keeps its values.
     WaveModel pcm8 = hokuto::edit::WaveModelOf(file, *archive, kWiiBankFile, kRamps);
@@ -973,12 +985,12 @@ void TestWiiWaveSoundEdits()
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
                      [&]
                      { hokuto::edit::WithWaveSoundFields(file, *archive, kWiiWaveSound, filtered, fields.wave); }) ==
-                 "A wave sound of the Wii has no filters.");
+                 "Wii wave sounds have no filters.");
     XSFLIB_CHECK(
         ErrorOf<std::invalid_argument>(
             [&]
             { hokuto::edit::WithWaveSoundFields(file, *archive, kWiiWaveSound, fields.values, {kWiiBankWaves, 0}); }) ==
-        "A wave sound of the Wii plays a wave of its wave sound file's wave data.");
+        "A Wii wave sound can use only waves from the wave data of its wave sound file.");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WaveSoundFieldsOf(*archive, 0); }) ==
                  "The sound isn't a wave sound.");
 }
@@ -987,23 +999,27 @@ void TestWiiWaveSoundEdits()
 
 int main()
 {
-    TestRegions();
-    TestInstruments();
-    TestWaveTable();
-    for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe})
-    {
-        TestBankEdits(flavor);
-        TestWaveEdits(flavor);
-        TestWaveSoundEdits(flavor);
-        TestBankWaves(flavor);
-    }
-    TestWiiBankEdits();
-    TestWiiWaveEdits();
-    TestWiiWaveSoundEdits();
-    for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe, sar::Flavor::kCtr})
-    {
-        TestMonoWave(flavor);
-    }
-
-    return xsflib::testing::Summary("banks");
+    return xsflib::testing::RunTest(
+        "banks",
+        []
+        {
+            TestRegions();
+            TestInstruments();
+            TestWaveTable();
+            TestStrayRegion();
+            for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe})
+            {
+                TestBankEdits(flavor);
+                TestWaveEdits(flavor);
+                TestWaveSoundEdits(flavor);
+                TestBankWaves(flavor);
+            }
+            TestWiiBankEdits();
+            TestWiiWaveEdits();
+            TestWiiWaveSoundEdits();
+            for (const sar::Flavor flavor : {sar::Flavor::kNx, sar::Flavor::kCafe, sar::Flavor::kCtr})
+            {
+                TestMonoWave(flavor);
+            }
+        });
 }

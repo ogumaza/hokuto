@@ -33,6 +33,7 @@ std::size_t Clip::Render(float* out, std::size_t frames)
         out[i * 2] = samples_[frame * 2] * gain;
         out[i * 2 + 1] = samples_[frame * 2 + 1] * gain;
     }
+
     position_ += n;
 
     return n;

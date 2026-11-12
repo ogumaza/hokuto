@@ -26,12 +26,13 @@ public:
     // The most that a preview lasts, in milliseconds.
     static constexpr uint64_t kLongestMs = 30000;
 
-    // Plays `sequence`, a sequence sound of `archive` that ReadSequence read, with `effects` on the aux buses at
-    // `volumes`, in `mixing`. The preview ends once the sound has ended and the last frame came out silent, or after
-    // 30 s. The last frame of a preview that runs to the limit fades out. The model starts at the first Render, on the
-    // render worker's thread. Throws std::invalid_argument for an archive of a console that Hokuto doesn't play.
-    SequencePreview(std::shared_ptr<const ntdlib::sar::SoundArchive> archive, std::shared_ptr<const Sequence> sequence,
-                    AuxEffects effects = {}, const AuxVolumes& volumes = kFullVolumes, Mixing mixing = Mixing::kStrict);
+    // Plays `sequence`, a sequence sound of `played` that ReadSequence read, with `options` and the aux buses at
+    // `volumes`. Each console uses the options that it supports (ModelOptions). The preview ends once the sound has
+    // ended and the last frame came out silent, or after 30 s. The last frame of a preview that runs to the limit fades
+    // out. The model starts at the first Render, on the render worker's thread. Throws std::invalid_argument for an
+    // archive of a console that Hokuto doesn't play.
+    SequencePreview(Played played, std::shared_ptr<const Sequence> sequence, ModelOptions options = {},
+                    const AuxVolumes& volumes = kFullVolumes);
 
     // The model's frames that a preview lasts at most.
     uint64_t LongestFrames() const;

@@ -106,6 +106,7 @@ void VisitLevel(const Sequence& sequence, uint32_t item, const LoopBacks& backs,
     {
         visit(command.target);
     }
+
     if (const auto found = backs.find(item); found != backs.end())
     {
         for (const uint32_t back : found->second)
@@ -113,6 +114,7 @@ void VisitLevel(const Sequence& sequence, uint32_t item, const LoopBacks& backs,
             visit(back);
         }
     }
+
     const bool stops = command.kind == Kind::kJump || command.kind == Kind::kReturn || command.kind == Kind::kEnd ||
                        (command.kind == Kind::kCall && command.target_outside);
     if (!stops || command.conditional)
@@ -152,15 +154,10 @@ std::set<uint32_t> ReachedInLevel(const Sequence& sequence, std::vector<uint32_t
     return reached;
 }
 
-} // namespace
-
-TrackPaths TrackPathsOf(const Sequence& sequence, std::span<const uint32_t> starts)
+// The tracks' starts: `starts`, and the targets of the commands that open tracks. The targets are added to `paths` too.
+std::vector<uint32_t> TrackStarts(const Sequence& sequence, std::span<const uint32_t> starts, TrackPaths& paths)
 {
     const std::size_t size = sequence.items.size();
-    TrackPaths paths{.next = std::vector<std::vector<uint32_t>>(size),
-                     .opens = std::vector<std::optional<uint32_t>>(size)};
-
-    // The tracks' starts: `starts`, and the targets of the commands that open tracks.
     std::vector<uint32_t> tracks(starts.begin(), starts.end());
     for (uint32_t item = 0; item < size; ++item)
     {
@@ -172,10 +169,13 @@ TrackPaths TrackPathsOf(const Sequence& sequence, std::span<const uint32_t> star
         }
     }
 
-    // The returns outside every call go on to their next items. The others go back to the items after the calls that
-    // reach them.
-    const LoopBacks backs = LoopBacksOf(sequence);
-    const std::set<uint32_t> outside = ReachedInLevel(sequence, tracks, backs, true);
+    return tracks;
+}
+
+// The items after the calls that reach each return inside a call, by the return.
+std::map<uint32_t, std::vector<uint32_t>> ReturnTargets(const Sequence& sequence, const LoopBacks& backs)
+{
+    const std::size_t size = sequence.items.size();
     std::map<uint32_t, std::vector<uint32_t>> back_to;
     std::map<uint32_t, std::vector<uint32_t>> returns_of;
     for (uint32_t item = 0; item < size; ++item)
@@ -197,11 +197,32 @@ TrackPaths TrackPathsOf(const Sequence& sequence, std::span<const uint32_t> star
                 }
             }
         }
+
         for (const uint32_t ret : found->second)
         {
             back_to[ret].push_back(item + 1);
         }
     }
+
+    return back_to;
+}
+
+} // namespace
+
+TrackPaths TrackPathsOf(const Sequence& sequence, std::span<const uint32_t> starts)
+{
+    const std::size_t size = sequence.items.size();
+    TrackPaths paths{.next = std::vector<std::vector<uint32_t>>(size),
+                     .opens = std::vector<std::optional<uint32_t>>(size)};
+
+    // The tracks' starts: `starts`, and the targets of the commands that open tracks.
+    const std::vector<uint32_t> tracks = TrackStarts(sequence, starts, paths);
+
+    // The returns outside every call go on to their next items. The others go back to the items after the calls that
+    // reach them.
+    const LoopBacks backs = LoopBacksOf(sequence);
+    const std::set<uint32_t> outside = ReachedInLevel(sequence, tracks, backs, true);
+    const std::map<uint32_t, std::vector<uint32_t>> back_to = ReturnTargets(sequence, backs);
 
     // A call goes into its subroutine, and comes back from the subroutine's returns. A return outside every call goes
     // on to its next item.
@@ -219,12 +240,15 @@ TrackPaths TrackPathsOf(const Sequence& sequence, std::span<const uint32_t> star
             {
                 to(command.target);
             }
+
             if (command.conditional)
             {
                 to(item + 1);
             }
+
             continue;
         }
+
         VisitLevel(sequence, item, backs, to);
         if (command.kind == Kind::kReturn)
         {
@@ -232,6 +256,7 @@ TrackPaths TrackPathsOf(const Sequence& sequence, std::span<const uint32_t> star
             {
                 next.insert(next.end(), found->second.begin(), found->second.end());
             }
+
             if (outside.contains(item))
             {
                 to(item + 1);

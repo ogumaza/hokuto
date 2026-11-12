@@ -12,6 +12,7 @@
 #include "edit/groups.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -55,6 +56,7 @@ using hokuto::edit::UnreadableFiles;
 using hokuto::format::File;
 using ntdlib::sar::Flavor;
 using ntdlib::sar::SoundArchive;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -108,12 +110,12 @@ const std::vector<uint8_t> kBytecode = {
     0xFF,          // 5: the end
 };
 
-// A wave archive with a wave of 16-bit PCM whose 16 samples hold `value` in each byte.
-std::vector<uint8_t> TestWaveArchive(Flavor flavor, uint8_t value)
+// A wave archive with a wave of 16-bit PCM whose `bytes` bytes of samples hold `value` in each byte.
+std::vector<uint8_t> TestWaveArchive(Flavor flavor, uint8_t value, std::size_t bytes = 32)
 {
     sar_files::WaveSpec wave;
     wave.encoding = 1;
-    wave.channels = {std::vector<uint8_t>(32, value)};
+    wave.channels = {std::vector<uint8_t>(bytes, value)};
 
     return sar_files::WaveArchive(flavor, {sar_files::Wave(flavor, wave)});
 }
@@ -139,13 +141,13 @@ std::vector<uint8_t> TestBank(Flavor flavor, std::optional<uint32_t> wave_archiv
     return sar_files::Bank(flavor, bank);
 }
 
-// A wave sound file with `count` wave sounds that play wave 0 of `wave_archive`.
-std::vector<uint8_t> TestWaveSounds(Flavor flavor, uint32_t wave_archive, std::size_t count = 1)
+// A wave sound file with `count` wave sounds that play wave 0 of `wave_archive` for `seconds`.
+std::vector<uint8_t> TestWaveSounds(Flavor flavor, uint32_t wave_archive, std::size_t count = 1, float seconds = 1.0f)
 {
     sar_files::WaveSoundFileSpec spec;
     spec.waves = {{wave_archive, 0}};
     sar_files::WaveSoundSpec sound;
-    sound.tracks = {{{0.0f, 1.0f, 0}}};
+    sound.tracks = {{{0.0f, seconds, 0}}};
     sound.notes = {sar_files::Region()};
     spec.sounds.assign(count, sound);
 
@@ -254,7 +256,7 @@ std::shared_ptr<const SoundArchive> ArchiveOf(const File& file)
 SoundArchive ReadStrictly(const File& file)
 {
     sar::Options options;
-    options.flavor = file.native->flavor;
+    options.flavor = FlavorOf(*file.native);
     options.rules = sar::Rules::kStopAtFirstProblem;
     SoundArchive archive = SoundArchive::Load(hokuto::format::ExportArchive(file), options);
     for (const std::vector<uint8_t>& group_file : hokuto::format::ExportGroupFiles(file))
@@ -269,7 +271,7 @@ SoundArchive ReadStrictly(const File& file)
 sar::GroupContents ContentsOf(const File& file, uint32_t group)
 {
     const SoundArchive archive = ReadStrictly(file);
-    const sar::Flavor flavor = file.native->flavor;
+    const sar::Flavor flavor = FlavorOf(*file.native);
     if (archive.Groups().at(group).file_id == sar::kExternalGroupFile)
     {
         return sar::ReadGroupFile(hokuto::format::ExportGroupFiles(file).at(0), flavor);
@@ -282,7 +284,7 @@ sar::GroupContents ContentsOf(const File& file, uint32_t group)
 // reference to the file's location. The reference to the list follows the location, and counts from it.
 std::vector<uint32_t> GroupsListedBy(const File& file, uint32_t id)
 {
-    const Flavor flavor = file.native->flavor;
+    const Flavor flavor = FlavorOf(*file.native);
     const std::vector<uint8_t> archive = hokuto::format::ExportArchive(file);
     const sar::InfoBlock info = sar::InfoBlock::Read(sar::TablesOf(archive, flavor).info, flavor);
     const std::vector<uint8_t>& entry = info.files.at(id);
@@ -362,27 +364,11 @@ std::vector<uint32_t> Holding(const std::vector<GroupOption>& options)
     return groups;
 }
 
-// The message of the std::invalid_argument that `call` throws, or an empty string when it throws none.
-template <typename Call>
-std::string Refusal(Call call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return "";
-}
-
 // A new sequence sound that copies sound `model` of `file`, with the archive's sequence.
 File WithNewSound(const File& file, uint32_t model)
 {
     const ntdlib::commands::Sequence sequence =
-        hokuto::edit::ReadIncoming(sar_files::Sequence(file.native->flavor, kBytecode, {{"NEW", 0}})).sequence;
+        hokuto::edit::ReadIncoming(sar_files::Sequence(FlavorOf(*file.native), kBytecode, {{"NEW", 0}})).sequence;
     return hokuto::edit::AddSequenceSound(file, model, "SEQ_NEW", sequence, 0, {}, std::nullopt);
 }
 
@@ -431,7 +417,7 @@ void TestGroups(Flavor flavor)
     {
         XSFLIB_CHECK(without[kGroupBeside].files.empty() &&
                      without[kGroupBeside].unavailable ==
-                         "The game keeps this group in a file beside the archive, and the .hok file doesn't hold it.");
+                         "The game stores this group in a separate file. The .hok file doesn't contain it.");
         XSFLIB_CHECK(without[kGroupA] == groups[kGroupA]);
     }
 }
@@ -485,10 +471,10 @@ void TestOptions(Flavor flavor)
     XSFLIB_CHECK(bank.size() == 4 && bank[kGroupA].taken == std::vector<uint32_t>{kWarcBFile});
 
     std::vector<Group> unreachable = groups;
-    unreachable[kGroupA].unavailable = "Hokuto can't read this group's file.";
+    unreachable[kGroupA].unavailable = "Can't read the group file.";
     const std::vector<GroupOption> none = GroupOptions(unreachable, seq_a, {});
     SEQLIB_REQUIRE(none.size() == groups.size());
-    XSFLIB_CHECK(Proposed(none).empty() && none[kGroupA].unavailable == "Hokuto can't read this group's file.");
+    XSFLIB_CHECK(Proposed(none).empty() && none[kGroupA].unavailable == "Can't read the group file.");
 }
 
 // Without the group file beside the archive, Hokuto can't read the wave sound's file. The file table lists GROUP_BESIDE
@@ -506,18 +492,11 @@ void TestUnreadable(Flavor flavor)
     XSFLIB_CHECK(UnreadableFiles(*archive, kFiles).empty());
     XSFLIB_CHECK((hokuto::song::FilesInMissingGroups(*alone) == Missing{{kWaveSoundFile, {"GROUP_BESIDE"}}}));
     XSFLIB_CHECK(hokuto::song::FilesInMissingGroups(*archive).empty());
-    std::string message;
-    try
-    {
-        hokuto::song::ItemFile(*alone, {hokuto::song::ItemKind::kWaveSound, 2, 0});
-    }
-    catch (const std::runtime_error& error)
-    {
-        message = error.what();
-    }
+    const std::string message = ErrorOf<std::runtime_error>(
+        [&] { hokuto::song::ItemFile(*alone, {hokuto::song::ItemKind::kWaveSound, 2, 0}); });
     const std::string kExpected =
-        "The game keeps the file of WSD_A in the group file of GROUP_BESIDE. That file wasn't beside the archive when "
-        "Hokuto imported it. Import the archive again with the group file beside it.";
+        "The game stores WSD_A in the group file for GROUP_BESIDE. That file wasn't next to the archive when you "
+        "imported it. Import the archive again with the group file next to it.";
     XSFLIB_CHECK(message == kExpected);
 
     const std::vector<uint32_t> kOnlyBankA = {kBankA};
@@ -525,7 +504,7 @@ void TestUnreadable(Flavor flavor)
     const std::vector<GroupOption> options =
         GroupOptions(GroupsOf(file, *archive), FilesOfItem(*archive, kSeqB),
                      FilesOfItem(*archive, kSeqB, {.banks = kOnlyBankA}), kUnreadable);
-    const std::string kReason = "This group would take file 5 of the archive, and Hokuto can't read it.";
+    const std::string kReason = "This group would require archive file 5, but Hokuto can't read that file.";
     XSFLIB_CHECK(options.size() == 4 && Proposed(options).empty() && Holding(options).empty());
     if (options.size() == 4)
     {
@@ -625,6 +604,71 @@ void TestJoinBeside(Flavor flavor)
     XSFLIB_CHECK(hokuto::format::ChangedGroupFiles(again).empty());
 }
 
+// On the Wii U, NintendoWare's tools align the copies of a group's file to 32 bytes. A group file whose copies all
+// start on multiples of 64 can then end its last copy 32 bytes past one, right before INFX. New wave sounds of a new
+// file join GROUP_BESIDE, after the copies of the files of the wave sound and of WARC_A. WARC_A and the new file take
+// the first sizes that lay the group file out that way. A new cut of the export has to keep the new file's copy as a
+// piece of its own: Replace… of the file has to go in (H-401).
+void TestCopyBeforeInfx()
+{
+    constexpr Flavor flavor = Flavor::kCafe;
+    const std::vector<uint32_t> kGroups = {kGroupBeside};
+    const std::array<uint8_t, 4> kInfx = {'I', 'N', 'F', 'X'};
+
+    // Whether every copy of `group` starts on a multiple of 64, and the last ends 32 past one, right before INFX.
+    const auto ends_before_infx = [&](std::span<const uint8_t> group)
+    {
+        const std::vector<sar::GroupCopy> copies = sar::GroupCopies(group, flavor);
+        const bool starts =
+            std::ranges::all_of(copies, [](const sar::GroupCopy& copy) { return copy.start % 64 == 0; });
+        const std::size_t end = copies.empty() ? 0 : copies.back().start + copies.back().size;
+        return !copies.empty() && starts && end % 64 == 32 && end + kInfx.size() <= group.size() &&
+               std::ranges::equal(group.subspan(end, kInfx.size()), kInfx);
+    };
+
+    std::optional<File> joined;
+    std::size_t count = 0;
+    for (std::size_t samples = 32; samples <= 512 && !joined; samples += 32)
+    {
+        for (count = 1; count <= 4; count++)
+        {
+            const File file =
+                hokuto::edit::ReplaceFile(TestFile(flavor), kWarcAFile, TestWaveArchive(flavor, 30, samples));
+            const File added =
+                hokuto::edit::AddWaveSounds(file, 2, "WSD_NEW", TestWaveSounds(flavor, kWarcA, count), {{kWarcA, 0}});
+            std::vector<uint32_t> items;
+            for (uint32_t sound = 0; sound < count; sound++)
+            {
+                items.push_back(kNewSound + sound);
+            }
+            const File candidate = JoinGroups(added, kGroups, items, FilesOfItem(*ArchiveOf(file), kWaveSound));
+            if (ends_before_infx(hokuto::format::ExportGroupFiles(candidate).at(0)))
+            {
+                joined = candidate;
+                break;
+            }
+        }
+    }
+    SEQLIB_REQUIRE(joined.has_value());
+    SEQLIB_REQUIRE(FilesOf(ContentsOf(*joined, kGroupBeside)).back() == std::make_pair(kNewFile, true));
+
+    const File cut = hokuto::format::ImportArchive(hokuto::format::ExportArchive(*joined), flavor,
+                                                   hokuto::format::ExportGroupFiles(*joined));
+    const std::vector<uint8_t> next = TestWaveSounds(flavor, kWarcA, count, 0.5f);
+    std::optional<File> replaced;
+    try
+    {
+        replaced = hokuto::edit::ReplaceFile(cut, kNewFile, next);
+    }
+    catch (const std::invalid_argument&)
+    {
+    }
+    SEQLIB_REQUIRE(replaced.has_value());
+    const std::shared_ptr<const SoundArchive> after = ArchiveOf(*replaced);
+    XSFLIB_CHECK(std::ranges::equal(after->FileData(kNewFile), next));
+    XSFLIB_CHECK(CopiesMatch(ContentsOf(*replaced, kGroupBeside), *after));
+}
+
 // SEQ_B takes BANK_A in its slot. GROUP_B loads SEQ_B. The group takes copies of BANK_A's files and lists SEQ_B as
 // before. SEQ_B then joins GROUP_COMMON. That group takes a copy of SEQ_B's sequence file and lists SEQ_B as before:
 // once, with its bank alone.
@@ -684,12 +728,14 @@ void TestRefusals(Flavor flavor)
     const std::vector<uint32_t> kOnlyWaveSound = {kWaveSound};
 
     XSFLIB_CHECK(JoinGroups(file, kNone, kOnlySeqA, {}) == file && JoinGroups(file, kOnlyGroupA, kNone, {}) == file);
-    XSFLIB_CHECK(Refusal([&] { JoinGroups(file, kPast, kOnlySeqA, {}); }) == "The archive has no group 9.");
-    XSFLIB_CHECK(Refusal([&] { JoinGroups(TestFile(flavor, false), kBeside, kOnlySeqA, {}); }) ==
-                 "The game keeps group GROUP_BESIDE in a file beside the archive, and the .hok file doesn't hold it.");
-    XSFLIB_CHECK(Refusal([&] { JoinGroups(file, kOnlyGroupA, kOnlyWaveSound, {}); }) ==
-                 "Group GROUP_A links to the archive's files, and a file that it would take lies only in groups. "
-                 "Hokuto can't link to it.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { JoinGroups(file, kPast, kOnlySeqA, {}); }) ==
+                 "The archive has no group 9.");
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { JoinGroups(TestFile(flavor, false), kBeside, kOnlySeqA, {}); }) ==
+                 "The game stores group GROUP_BESIDE in a separate file. The .hok file doesn't contain it.");
+    XSFLIB_CHECK(
+        ErrorOf<std::invalid_argument>([&] { JoinGroups(file, kOnlyGroupA, kOnlyWaveSound, {}); }) ==
+        "Group GROUP_A contains links to archive files. A file that it would require exists only inside groups. "
+        "Hokuto can't link to it.");
 }
 
 // A new sound that copies SEQ_A joins GROUP_A and a new group, GROUP_NEW. The new group goes after GROUP_BESIDE, with a
@@ -750,14 +796,14 @@ void TestNewGroups(Flavor flavor)
     // The refusals.
     const auto refusal = [&file](std::vector<std::string> wanted)
     {
-        return Refusal([&] { hokuto::edit::AddGroups(file, wanted); });
+        return ErrorOf<std::invalid_argument>([&] { hokuto::edit::AddGroups(file, wanted); });
     };
 
     XSFLIB_CHECK(hokuto::edit::AddGroups(file, {}) == file);
-    XSFLIB_CHECK(refusal({""}) == "Give the new group a name.");
-    XSFLIB_CHECK(refusal({"GROUP_A"}) == "The archive holds the name GROUP_A already.");
-    XSFLIB_CHECK(refusal({"SEQ_B"}) == "The archive holds the name SEQ_B already.");
-    XSFLIB_CHECK(refusal({"GROUP_NEW", "GROUP_NEW"}) == "Two new groups have the name GROUP_NEW.");
+    XSFLIB_CHECK(refusal({""}) == "Enter a name for the new group.");
+    XSFLIB_CHECK(refusal({"GROUP_A"}) == "The archive already has an item named GROUP_A.");
+    XSFLIB_CHECK(refusal({"SEQ_B"}) == "The archive already has an item named SEQ_B.");
+    XSFLIB_CHECK(refusal({"GROUP_NEW", "GROUP_NEW"}) == "Two of the new groups have the same name: GROUP_NEW.");
 }
 
 // The model form keeps the groups. The model gives the archive and the group file beside it back. The group file counts
@@ -794,21 +840,24 @@ void TestModelForm(Flavor flavor)
 
 int main()
 {
-    for (const Flavor flavor : {Flavor::kNx, Flavor::kCafe})
-    {
-        TestModelForm(flavor);
-        TestFilesOfItem(flavor);
-        TestGroups(flavor);
-        TestOptions(flavor);
-        TestUnreadable(flavor);
-        TestJoinCopy(flavor);
-        TestJoinModel(flavor);
-        TestJoinBeside(flavor);
-        TestJoinReplacement(flavor);
-        TestJoinUnplaced(flavor);
-        TestRefusals(flavor);
-        TestNewGroups(flavor);
-    }
-
-    return xsflib::testing::Summary("groups");
+    return xsflib::testing::RunTest("groups",
+                                    []
+                                    {
+                                        for (const Flavor flavor : {Flavor::kNx, Flavor::kCafe})
+                                        {
+                                            TestModelForm(flavor);
+                                            TestFilesOfItem(flavor);
+                                            TestGroups(flavor);
+                                            TestOptions(flavor);
+                                            TestUnreadable(flavor);
+                                            TestJoinCopy(flavor);
+                                            TestJoinModel(flavor);
+                                            TestJoinBeside(flavor);
+                                            TestJoinReplacement(flavor);
+                                            TestJoinUnplaced(flavor);
+                                            TestRefusals(flavor);
+                                            TestNewGroups(flavor);
+                                        }
+                                        TestCopyBeforeInfx();
+                                    });
 }

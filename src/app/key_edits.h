@@ -34,6 +34,11 @@ inline constexpr int kBeatsPerBar = 4;
 std::string KeyName(int key);
 std::optional<int> ParseKeyName(std::string_view text);
 
+// The names of keys `first` to `last`, such as "C3 to G3", or of one key where `first` is `last`. KeysDetail returns
+// them after a word for a list of details: ", key C3" or ", keys C3 to G3".
+std::string KeysText(int first, int last);
+std::string KeysDetail(int first, int last);
+
 // A position for a message: the display's text of `quarters` without its figure spaces.
 std::string PlainPosition(double quarters);
 
@@ -53,10 +58,22 @@ double RulerPosition(const KeyEditorState& state, int ticks_per_quarter, double 
 // `state.selected` allows.
 std::optional<edit::ShiftRange> SharedRange(const KeyEditorState& state, const std::set<uint32_t>& commands);
 
+// Why the selected notes can't move in time, with `move`, or change their length: the reason that edit::LimitsOf
+// returns for one of them (edit::NoteLimits::fixed), or else the timing that the track's note lengths set.
+std::string FixedText(const KeyEditorState& state, bool move);
+
+// Why a move stops at tick `bound`: `subject`, such as "The first selected note", can start no earlier there, with
+// `early`, or no later. `quarter` is the ticks of a quarter note.
+std::string ShiftLimitText(std::string_view subject, int64_t bound, bool early, double quarter);
+
+// Why a move of a point of a lane or of the tempo row stops at tick `bound`: the point can start no earlier there, with
+// `early`, or no later. `quarter` is the ticks of a quarter note.
+std::string PointLimitText(int64_t bound, bool early, double quarter);
+
 // What the user reads when a setting stays at its tick though edit::WhyFixedInTime finds nothing against its command.
 // The notes of its track then leave it no room (edit::LimitsOf).
 inline constexpr std::string_view kTimedByNotes =
-    "This track's notes set its timing here. Hokuto can't move the command in time yet.";
+    "The notes of this track set its timing here. Hokuto doesn't support moving this command in time yet.";
 
 // The length that a size starts from for each selected command: the command's length, or the length that a note of
 // length 0 sounds. Nothing when one of the commands can't change its length.
@@ -65,14 +82,19 @@ std::optional<std::map<uint32_t, uint32_t>> BaseLengths(const KeyTrack& track, c
 // The velocity of each selected command, from the first note that it plays.
 std::map<uint32_t, int> Velocities(const KeyTrack& track, const KeyEditorState& state);
 
-// How far the selected notes can move up and down together. Every key has to stay from 0 to 127.
+// Why the selected notes can't take a new key: the reason that edit::LimitsOf returns for one of them
+// (edit::NoteLimits::fixed_key). Empty when every one can.
+std::string FixedKeyText(const KeyEditorState& state);
+
+// How far the selected notes can move up and down together. Every key has to stay from 0 to 127. No move when one of
+// them can't take a new key (FixedKeyText).
 std::pair<int, int> TransposeRange(const KeyTrack& track, const KeyEditorState& state);
 
 // The edit that removes the notes of `commands`.
 KeyEdit Removal(const std::set<uint32_t>& commands);
 
 // The edit that moves the selected notes `semitones` up, or down for a negative number. Its name is Up or Down. Nothing
-// when a key would leave the range.
+// when a key would leave the range. Where one of the notes can't take a new key, the edit says why (FixedKeyText).
 std::optional<KeyEdit> Transposition(const KeyTrack& track, const KeyEditorState& state, int semitones);
 
 // The edit of Edit > Quantize. It moves each selected note to the nearest line of the toolbar's grid, or every note
@@ -123,6 +145,22 @@ KeyEdit Unreadable(std::string_view text, std::string_view what, std::string_vie
 // track without notes. WithInstrumentAt gives `note` that instrument.
 const KeyNote* InstrumentNoteAt(const KeyTrack& track, double tick);
 KeyNote WithInstrumentAt(const KeyTrack& track, double tick, KeyNote note);
+
+// Why a drag of the selected notes stops short, for its tooltip and its release (KeyGesture::stopped). `pixels` is how
+// far the pointer has gone to the side, and `far` the least distance for a reason: a press that wobbles less makes no
+// refusal. Returns FixedText for a move (`move`) of notes that can't move. Returns `limit` for a move that stops
+// `short_by` pixels short of the pointer, `far` at least. Returns FixedText for a size of notes that can't change their
+// length. `rise` is how far the pointer of a move has gone up or down, and 0 while it stays on the row of the pressed
+// key. Returns FixedKeyText for a move of notes that can't take a new key, once `rise` reaches `far`. Empty otherwise.
+std::string StoppedText(const KeyTrack& track, const KeyEditorState& state, bool move, double pixels, double short_by,
+                        double far, std::string_view limit, double rise = 0.0);
+
+// The edit of a move or a size of the selected notes (KeyGesture::Kind::kMove and kSize) when the mouse is released. A
+// move applies the shift and the transpose of the gesture to each selected command. A size sets the length of each one
+// from BaseLengths with the resize of the gesture. Returns an edit that says why for a gesture that changes nothing
+// after it stopped short of the mouse (KeyGesture::stopped). Nothing for a gesture that changes nothing otherwise, or
+// for another kind of gesture.
+std::optional<KeyEdit> ReleasedNoteEdit(const KeyTrack& track, const KeyEditorState& state, const KeyGesture& gesture);
 
 // Whether `gesture` goes on in a controller lane: a drag of a point, a selection box or a point being drawn.
 bool InLane(const KeyGesture& gesture);

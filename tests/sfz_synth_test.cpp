@@ -19,11 +19,10 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
-#include <random>
+#include <numbers>
 #include <span>
 #include <stdexcept>
 #include <string>
-#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -40,10 +39,13 @@
 #include "song/archive.h"
 #include "song/midi_export.h"
 #include "synth/render.h"
+#include "temporary_files.h"
 
 using hokuto::synth::MidiSeconds;
 using hokuto::synth::RenderSfz;
 using hokuto::synth::StereoRender;
+using hokuto::testing::TemporaryFile;
+using xsflib::testing::ErrorOf;
 
 namespace
 {
@@ -51,7 +53,7 @@ namespace
 namespace export_ = ntdlib::sequence_export;
 namespace sar_files = ntdlib::testing::sar_files;
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr double kPi = std::numbers::pi;
 constexpr int kRate = 48000;
 
 // The sine: 480 Hz, a period of 100 samples at 48 kHz, for 2 s at 16,000 of 32,767.
@@ -151,10 +153,11 @@ std::vector<double> Channel(const StereoRender& render, int channel)
 }
 
 // The RMS level of `samples` from sample `first` up to sample `end`.
+// Samples past the end of `samples` count as 0.
 double Rms(const std::vector<double>& samples, std::size_t first, std::size_t end)
 {
     double sum = 0.0;
-    for (std::size_t i = first; i < end; i++)
+    for (std::size_t i = first; i < std::min(end, samples.size()); i++)
     {
         sum += samples[i] * samples[i];
     }
@@ -429,16 +432,7 @@ void TestProgress()
 template <typename Render>
 bool Throws(const Render& render)
 {
-    try
-    {
-        render();
-    }
-    catch (const std::runtime_error&)
-    {
-        return true;
-    }
-
-    return false;
+    return !ErrorOf<std::runtime_error>(render).empty();
 }
 
 // A track that plays without an SFZ file of its name, a region whose sample is missing and a damaged MIDI file throw. A
@@ -515,35 +509,6 @@ void TestThreads()
     }
 }
 
-// A file in the system's temporary folder with `bytes` in it, deleted again with the object.
-class TemporaryFile
-{
-public:
-    explicit TemporaryFile(std::span<const uint8_t> bytes)
-        : path_(std::filesystem::temp_directory_path() /
-                ("hokuto_sfz_synth_test_" + std::to_string(std::random_device{}()) + ".bfsar"))
-    {
-        xsflib::WriteFile(path_, bytes);
-    }
-
-    TemporaryFile(const TemporaryFile&) = delete;
-    TemporaryFile& operator=(const TemporaryFile&) = delete;
-
-    ~TemporaryFile()
-    {
-        std::error_code error;
-        std::filesystem::remove(path_, error);
-    }
-
-    const std::filesystem::path& Path() const
-    {
-        return path_;
-    }
-
-private:
-    std::filesystem::path path_;
-};
-
 // A small Switch archive: a sequence that plays key 60 for 24 ticks at timebase 48 and 120 BPM, a quarter of a second,
 // on a bank whose one instrument plays a saw at original key 60. The saw loops over 480 samples at 48 kHz: 100 Hz.
 std::vector<uint8_t> SawArchive()
@@ -614,18 +579,20 @@ void TestArchive()
 
 int main()
 {
-    TestPitch();
-    TestLevel();
-    TestEnvelope();
-    TestPan();
-    TestTracks();
-    TestTracksWithoutNotes();
-    TestTiming();
-    TestProgress();
-    TestErrors();
-    TestFastLoop();
-    TestThreads();
-    TestArchive();
-
-    return xsflib::testing::Summary("sfz_synth");
+    return xsflib::testing::RunTest("sfz_synth",
+                                    []
+                                    {
+                                        TestPitch();
+                                        TestLevel();
+                                        TestEnvelope();
+                                        TestPan();
+                                        TestTracks();
+                                        TestTracksWithoutNotes();
+                                        TestTiming();
+                                        TestProgress();
+                                        TestErrors();
+                                        TestFastLoop();
+                                        TestThreads();
+                                        TestArchive();
+                                    });
 }

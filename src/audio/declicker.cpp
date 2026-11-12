@@ -37,6 +37,7 @@ void Declicker::Process(float* frames, std::size_t count, std::size_t audio, boo
             {
                 gap_[channel] = previous_[channel] - sample;
             }
+
             sample += gap_[channel];
             gap_[channel] = std::abs(gap_[channel]) < kNegligible ? 0.0f : gap_[channel] * decay_;
             previous_[channel] = sample;

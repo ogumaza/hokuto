@@ -24,8 +24,8 @@ namespace hokuto::app
 // The effects on the aux buses A to C.
 using BusEffects = edit::BusEffects;
 
-// The FX channels of `engine`, one for each aux bus of its console: A and B on the 3DS, and A to C on the other
-// consoles.
+// The FX channels of `engine`, one for each aux bus of its console: A and B on the 3DS, none on the drivers of the GBA
+// and the DS, and A to C on the other consoles.
 std::size_t FxChannelsOf(format::Engine engine);
 
 // The kinds of effect that an empty insert of `file` offers by their names, for a sound on `engine`: the kinds that the

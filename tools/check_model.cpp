@@ -10,6 +10,7 @@
 //
 // A 3DS archive whose model gives the game's bytes back plays the same from both, and the tool plays nothing. Its
 // sounds otherwise play on ntdlib's archive mode of the 3DS, on ntdlib's model of the DSP's audio firmware.
+// An AAC stream plays as ntdlib's players of the 3DS take it (song::PlayableStream).
 //
 // A Wii archive takes the game's build of NW4R SND from the main.dol of the extracted disc that holds it. An import
 // does the same. The file has to keep the build, and the streams beside the archive. An archive whose model gives the
@@ -39,7 +40,6 @@
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -55,10 +55,12 @@
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "checked_archive.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "format/model.h"
 #include "format/text.h"
+#include "song/aac.h"
 #include "song/archive.h"
 #include "song/dry_render.h"
 #include "song/sequence.h"
@@ -214,6 +216,90 @@ std::size_t ChoicesIn(const format::File& file)
     return choices;
 }
 
+// Checks that each file of `ours`, the archive that the model builds, but for the sequences, contains the bytes of
+// `game`. Sets `result` to 1 where one doesn't. `name` is the archive's name.
+void CheckWiiFilesKept(const std::shared_ptr<const ntdlib::rsar::SoundArchive>& game,
+                       const std::shared_ptr<const ntdlib::rsar::SoundArchive>& ours,
+                       const std::vector<std::optional<uint32_t>>& sequences, const std::string& name, int& result)
+{
+    for (uint32_t id = 0; id < sequences.size(); ++id)
+    {
+        const auto a = game->FileData(id);
+        const auto b = ours->FileData(id);
+        if (!sequences[id] && !std::ranges::equal(a, b))
+        {
+            std::printf("%s: file %u holds other bytes in the model's archive.\n", name.c_str(), id);
+            result = 1;
+        }
+    }
+}
+
+// Plays each sequence sound of `game` and of `ours`, the archive that the model builds, for `seconds` at most with the
+// game's `build`, and checks that both play the same. Counts the sounds in `played` and those that differ in `differ`,
+// and sets `result` to 1 where one differs. `name` is the archive's name.
+void PlayWiiSequences(const std::shared_ptr<const ntdlib::rsar::SoundArchive>& game,
+                      const std::shared_ptr<const ntdlib::rsar::SoundArchive>& ours, const ntdlib::SndBuild& build,
+                      int seconds, const std::string& name, std::size_t& played, std::size_t& differ, int& result)
+{
+    const std::atomic<bool> kCancel = false;
+    for (uint32_t sound = 0; sound < game->Sounds().size(); ++sound)
+    {
+        if (game->Sounds()[sound].type != ntdlib::rsar::SoundType::kSequence)
+        {
+            continue;
+        }
+
+        song::DryRender expected;
+        song::DryRender output;
+        try
+        {
+            const auto read = [&](const auto& archive)
+            {
+                return song::RenderDry(
+                    archive, std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound, {}, {}, build)),
+                    song::Mixing::kStrict, seconds, kCancel);
+            };
+            expected = read(game);
+            output = read(ours);
+        }
+        catch (const std::exception& error)
+        {
+            std::printf("%s: sequence sound %s doesn't play. %s\n", name.c_str(), game->Sounds()[sound].name.c_str(),
+                        error.what());
+            differ++;
+            result = 1;
+            continue;
+        }
+        played++;
+        if (expected.samples != output.samples)
+        {
+            std::printf("%s: sequence sound %s plays otherwise.\n", name.c_str(), game->Sounds()[sound].name.c_str());
+            differ++;
+            result = 1;
+        }
+    }
+}
+
+// Checks that `model` comes back from `binary` and `text`, its binary and text forms. Prints a line under `name` for
+// each form that it doesn't come back from, and returns whether it comes back from both.
+bool ComesBackFromBothForms(const format::File& model, const std::vector<uint8_t>& binary, const std::string& text,
+                            const std::string& name)
+{
+    bool back = true;
+    if (!(format::Read(binary) == model))
+    {
+        std::printf("%s: the model form doesn't come back from the binary form.\n", name.c_str());
+        back = false;
+    }
+    if (!(format::ReadText(text) == model))
+    {
+        std::printf("%s: the model form doesn't come back from the text form.\n", name.c_str());
+        back = false;
+    }
+
+    return back;
+}
+
 // The check of `bytes`, an archive of the Wii at `path`.
 int RunWii(const std::filesystem::path& path, const std::vector<uint8_t>& bytes, int seconds)
 {
@@ -224,10 +310,7 @@ int RunWii(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
     std::map<uint32_t, std::vector<uint8_t>> streams;
     try
     {
-        std::vector<uint8_t> dol;
-        const std::optional<std::filesystem::path> found = song::FindMainDol(path);
-        const std::optional<ntdlib::SndBuild> build =
-            found && xsflib::ReadFile(*found, dol) ? song::ReadWiiBuild(dol) : std::nullopt;
+        const std::optional<ntdlib::SndBuild> build = hokuto::tools::GameBuildOf(path);
         streams = song::ReadStreams(*song::LoadWiiArchive(bytes, name, ntdlib::rvl::snd::kRsarOptions), path);
         file = format::ImportWiiArchive(bytes, build, streams);
     }
@@ -250,14 +333,8 @@ int RunWii(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
     int result = 0;
     const std::vector<uint8_t> binary = format::Write(model);
     const std::string text = format::WriteText(model);
-    if (!(format::Read(binary) == model))
+    if (!ComesBackFromBothForms(model, binary, text, name))
     {
-        std::printf("%s: the model form doesn't come back from the binary form.\n", name.c_str());
-        result = 1;
-    }
-    if (!(format::ReadText(text) == model))
-    {
-        std::printf("%s: the model form doesn't come back from the text form.\n", name.c_str());
         result = 1;
     }
     if (!(model.native->tables == file.native->tables) || model.native->wii_build != file.native->wii_build)
@@ -297,56 +374,11 @@ int RunWii(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
     const auto game = song::LoadWiiArchive(bytes, name, ntdlib::rvl::snd::kRsarOptions);
     const auto ours = song::LoadWiiArchive(built, name, ntdlib::rvl::snd::kRsarOptions);
     const std::vector<std::optional<uint32_t>> sequences = format::SequencesOfFiles(file, bytes, *game);
-    for (uint32_t id = 0; id < sequences.size(); ++id)
-    {
-        const auto a = game->FileData(id);
-        const auto b = ours->FileData(id);
-        if (!sequences[id] && !std::ranges::equal(a, b))
-        {
-            std::printf("%s: file %u holds other bytes in the model's archive.\n", name.c_str(), id);
-            result = 1;
-        }
-    }
+    CheckWiiFilesKept(game, ours, sequences, name, result);
 
-    const std::atomic<bool> kCancel = false;
     std::size_t played = 0;
     std::size_t differ = 0;
-    for (uint32_t sound = 0; sound < game->Sounds().size(); ++sound)
-    {
-        if (game->Sounds()[sound].type != ntdlib::rsar::SoundType::kSequence)
-        {
-            continue;
-        }
-
-        song::DryRender expected;
-        song::DryRender output;
-        try
-        {
-            const auto read = [&](const auto& archive)
-            {
-                return song::RenderDry(
-                    archive, std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound, {}, {}, build)),
-                    seconds, kCancel);
-            };
-            expected = read(game);
-            output = read(ours);
-        }
-        catch (const std::exception& error)
-        {
-            std::printf("%s: sequence sound %s doesn't play. %s\n", name.c_str(), game->Sounds()[sound].name.c_str(),
-                        error.what());
-            differ++;
-            result = 1;
-            continue;
-        }
-        played++;
-        if (expected.samples != output.samples)
-        {
-            std::printf("%s: sequence sound %s plays otherwise.\n", name.c_str(), game->Sounds()[sound].name.c_str());
-            differ++;
-            result = 1;
-        }
-    }
+    PlayWiiSequences(game, ours, build, seconds, name, played, differ, result);
 
     const double taken = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
     std::printf(
@@ -358,6 +390,144 @@ int RunWii(const std::filesystem::path& path, const std::vector<uint8_t>& bytes,
     return result;
 }
 
+// The stream that receives the lines of the check of a later console's archive.
+FILE* const kOut = stdout;
+
+// The game's archive as a file, and the file in the model form.
+struct ModelForms
+{
+    std::vector<uint8_t> bytes;
+    format::File file;
+    format::File model;
+    std::map<uint32_t, std::vector<uint8_t>> streams;
+    std::vector<std::vector<uint8_t>> group_files;
+    sar::Flavor flavor = sar::Flavor::kNx;
+};
+
+// Reads the archive at `path`, `name`, as a file, and puts the file in the model form. Returns nothing after a line
+// about a failure.
+std::optional<ModelForms> OpenModelForms(const std::filesystem::path& path, const std::string& name)
+{
+    ModelForms forms;
+    try
+    {
+        xsflib::ReadFile(path, forms.bytes);
+        const auto archive = song::LoadArchive(forms.bytes, name, path);
+        forms.flavor = archive->ReadOptions().flavor;
+        forms.group_files = archive->GroupFiles();
+        forms.streams = song::ReadStreams(*archive, path);
+        forms.file = format::ImportArchive(forms.bytes, forms.flavor, forms.group_files, forms.streams,
+                                           archive->GroupFileGroups());
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
+        return std::nullopt;
+    }
+    try
+    {
+        forms.model = format::InModelForm(forms.file);
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(kOut, "%s: the model form can't hold the archive. %s\n", name.c_str(), error.what());
+        return std::nullopt;
+    }
+
+    return forms;
+}
+
+// The sounds that the check played, by their kind, the sounds that start on neither archive, and those that differ.
+struct SoundCounts
+{
+    std::map<sar::SoundType, std::size_t> played;
+    std::size_t silent = 0;
+    std::size_t differ = 0;
+};
+
+// Plays each sound of `game` and of `ours`, the archive that the model of `forms` builds, for `seconds` at most, and
+// checks that both play the same. Counts the sounds in `counts`, and sets `result` to 1 where one differs. `name` is
+// the archive's name.
+void PlayBothArchives(const ModelForms& forms, const sar::SoundArchive& game, const sar::SoundArchive& ours,
+                      int seconds, const std::string& name, SoundCounts& counts, int& result)
+{
+    const bool wii_u = forms.flavor == sar::Flavor::kCafe;
+    const bool ctr = forms.flavor == sar::Flavor::kCtr;
+    const std::size_t frame_samples = wii_u ? cafe::ArchiveModel::kFrameSamples : atk::ArchiveModel::kFrameSamples;
+    const std::size_t limit =
+        ctr ? song::FramesIn(static_cast<uint64_t>(seconds) * 1000, song::FrameMsOf(sar::Flavor::kCtr))
+            : static_cast<std::size_t>(seconds) * kOutputRate / frame_samples;
+    for (uint32_t sound = 0; sound < game.Sounds().size(); sound++)
+    {
+        const sar::SoundInfo& info = game.Sounds()[sound];
+        std::vector<uint8_t> game_stream;
+        std::vector<uint8_t> our_stream;
+        if (info.type == sar::SoundType::kStream)
+        {
+            if (const auto found = forms.streams.find(info.file_id); found != forms.streams.end())
+            {
+                game_stream = found->second;
+            }
+            if (const auto found = forms.model.native->streams.find(info.file_id);
+                found != forms.model.native->streams.end())
+            {
+                our_stream = *found->second.bytes;
+            }
+        }
+
+        const auto play = [&](const sar::SoundArchive& archive, const std::vector<uint8_t>& stream)
+        {
+            const auto playable = [&]
+            {
+                return song::IsAdts(stream)
+                           ? song::PlayableStream(stream, song::AacStreamOf(archive, sound).value_or(song::AacStream()))
+                           : stream;
+            };
+
+            return ctr     ? PlayCtr(archive, sound, playable(), limit)
+                   : wii_u ? Play<cafe::ArchiveModel>(archive, sound, stream, limit)
+                           : Play<atk::ArchiveModel>(archive, sound, stream, limit);
+        };
+        // A sound whose model throws, such as a broken stream file, differs, and the run continues with the next.
+        std::optional<std::vector<int16_t>> expected;
+        std::optional<std::vector<int16_t>> output;
+        try
+        {
+            expected = play(game, game_stream);
+            output = play(ours, our_stream);
+        }
+        catch (const std::exception& error)
+        {
+            std::fprintf(kOut, "%s: %s sound %s can't play: %s\n", name.c_str(), KindName(info.type), info.name.c_str(),
+                         error.what());
+            counts.played[info.type]++;
+            counts.differ++;
+            result = 1;
+            continue;
+        }
+        if (!expected && !output)
+        {
+            counts.silent++;
+            continue;
+        }
+
+        counts.played[info.type]++;
+        if (expected != output)
+        {
+            const std::size_t length = std::min(expected ? expected->size() : 0, output ? output->size() : 0);
+            std::size_t first = 0;
+            while (first < length && (*expected)[first] == (*output)[first])
+            {
+                first++;
+            }
+            std::fprintf(kOut, "%s: %s sound %s plays otherwise from frame %zu.\n", name.c_str(), KindName(info.type),
+                         info.name.c_str(), first / 2 / (ctr ? kCtrFrameSamples : frame_samples));
+            counts.differ++;
+            result = 1;
+        }
+    }
+}
+
 // The tool, with the command line's `arguments`. Returns the tool's exit status.
 int Run(const std::vector<std::string>& arguments)
 {
@@ -367,65 +537,33 @@ int Run(const std::vector<std::string>& arguments)
         return 2;
     }
 
-    FILE* const kOut = stdout;
-
     const std::filesystem::path path = xsflib::PathFromUtf8(arguments[1]);
     const int seconds = arguments.size() > 2 ? std::max(std::atoi(arguments[2].c_str()), 1) : 30;
     const std::string name = xsflib::Utf8(path.filename());
     const auto began = std::chrono::steady_clock::now();
     {
         std::vector<uint8_t> head;
-        if (xsflib::ReadFile(path, head) && head.size() >= 4 &&
-            std::string_view(reinterpret_cast<const char*>(head.data()), 4) == "RSAR")
+        if (xsflib::ReadFile(path, head) && hokuto::tools::IsWiiArchive(head))
         {
             return RunWii(path, head, seconds);
         }
     }
 
     // The game's archive as a file, and the file in the model form.
-    std::vector<uint8_t> bytes;
-    format::File file;
-    format::File model;
-    std::map<uint32_t, std::vector<uint8_t>> streams;
-    std::vector<std::vector<uint8_t>> group_files;
-    sar::Flavor flavor = sar::Flavor::kNx;
-    try
+    const std::optional<ModelForms> forms = OpenModelForms(path, name);
+    if (!forms)
     {
-        xsflib::ReadFile(path, bytes);
-        const auto archive = song::LoadArchive(bytes, name, path);
-        flavor = archive->ReadOptions().flavor;
-        group_files = archive->GroupFiles();
-        streams = song::ReadStreams(*archive, path);
-        file = format::ImportArchive(bytes, flavor, group_files, streams, archive->GroupFileGroups());
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
         return 2;
     }
-    try
-    {
-        model = format::InModelForm(file);
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(kOut, "%s: the model form can't hold the archive. %s\n", name.c_str(), error.what());
-        return 2;
-    }
+    const auto& [bytes, file, model, streams, group_files, flavor] = *forms;
 
     // The file comes back from both forms. The archive that the model builds holds the game's tables.
     int result = 0;
     const std::size_t choices = ChoicesIn(file);
     const std::vector<uint8_t> binary = format::Write(model);
     const std::string text = format::WriteText(model);
-    if (!(format::Read(binary) == model))
+    if (!ComesBackFromBothForms(model, binary, text, name))
     {
-        std::fprintf(kOut, "%s: the model form doesn't come back from the binary form.\n", name.c_str());
-        result = 1;
-    }
-    if (!(format::ReadText(text) == model))
-    {
-        std::fprintf(kOut, "%s: the model form doesn't come back from the text form.\n", name.c_str());
         result = 1;
     }
     if (!(model.native->tables == file.native->tables))
@@ -440,60 +578,11 @@ int Run(const std::vector<std::string>& arguments)
     // Each sound plays the same from both archives. The same bytes of the 3DS play the same.
     const sar::SoundArchive game = Strict(bytes, flavor, group_files);
     const sar::SoundArchive ours = Strict(std::move(built), flavor, built_groups);
-    const bool wii_u = flavor == sar::Flavor::kCafe;
     const bool ctr = flavor == sar::Flavor::kCtr;
-    const std::size_t frame_samples = wii_u ? cafe::ArchiveModel::kFrameSamples : atk::ArchiveModel::kFrameSamples;
-    const std::size_t limit =
-        ctr ? song::FramesIn(static_cast<uint64_t>(seconds) * 1000, song::FrameMsOf(sar::Flavor::kCtr))
-            : static_cast<std::size_t>(seconds) * kOutputRate / frame_samples;
-    std::map<sar::SoundType, std::size_t> played;
-    std::size_t silent = 0;
-    std::size_t differ = 0;
-    for (uint32_t sound = 0; sound < game.Sounds().size() && !(ctr && same_bytes); sound++)
+    SoundCounts counts;
+    if (!(ctr && same_bytes))
     {
-        const sar::SoundInfo& info = game.Sounds()[sound];
-        std::vector<uint8_t> game_stream;
-        std::vector<uint8_t> our_stream;
-        if (info.type == sar::SoundType::kStream)
-        {
-            if (const auto found = streams.find(info.file_id); found != streams.end())
-            {
-                game_stream = found->second;
-            }
-            if (const auto found = model.native->streams.find(info.file_id); found != model.native->streams.end())
-            {
-                our_stream = *found->second.bytes;
-            }
-        }
-
-        const auto play = [&](const sar::SoundArchive& archive, const std::vector<uint8_t>& stream)
-        {
-            return ctr     ? PlayCtr(archive, sound, stream, limit)
-                   : wii_u ? Play<cafe::ArchiveModel>(archive, sound, stream, limit)
-                           : Play<atk::ArchiveModel>(archive, sound, stream, limit);
-        };
-        const std::optional<std::vector<int16_t>> expected = play(game, game_stream);
-        const std::optional<std::vector<int16_t>> output = play(ours, our_stream);
-        if (!expected && !output)
-        {
-            silent++;
-            continue;
-        }
-
-        played[info.type]++;
-        if (expected != output)
-        {
-            const std::size_t length = std::min(expected ? expected->size() : 0, output ? output->size() : 0);
-            std::size_t first = 0;
-            while (first < length && (*expected)[first] == (*output)[first])
-            {
-                first++;
-            }
-            std::fprintf(kOut, "%s: %s sound %s plays otherwise from frame %zu.\n", name.c_str(), KindName(info.type),
-                         info.name.c_str(), first / 2 / (ctr ? kCtrFrameSamples : frame_samples));
-            differ++;
-            result = 1;
-        }
+        PlayBothArchives(*forms, game, ours, seconds, name, counts, result);
     }
 
     const double taken = std::chrono::duration<double>(std::chrono::steady_clock::now() - began).count();
@@ -511,8 +600,8 @@ int Run(const std::vector<std::string>& arguments)
         "%s: %zu sequence, %zu wave and %zu stream sounds played for %d s at most, and %zu differ. %zu start on "
         "neither. The model leaves out the choices of %zu commands, and gives %s. The file takes %zu bytes in the "
         "model form, %zu in the text form. %.1f s.\n",
-        name.c_str(), played[sar::SoundType::kSequence], played[sar::SoundType::kWaveSound],
-        played[sar::SoundType::kStream], seconds, differ, silent, choices,
+        name.c_str(), counts.played[sar::SoundType::kSequence], counts.played[sar::SoundType::kWaveSound],
+        counts.played[sar::SoundType::kStream], seconds, counts.differ, counts.silent, choices,
         same_bytes ? "the game's bytes back" : "other bytes", binary.size(), text.size(), taken);
 
     return result;

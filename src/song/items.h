@@ -69,8 +69,9 @@ std::vector<uint32_t> ProgramsOf(const ntdlib::rsar::SoundArchive& archive, std:
 
 // The bytes of `item`'s file in `archive`. A wave's file is the wave file that its wave archive holds. Throws
 // std::runtime_error with a message for the user when the archive lacks the item or its file, and when a wave archive
-// can't be read. A file in a group file that the archive lacks takes MissingGroupNote's message. The archive holds no
-// stream: the call throws for one.
+// can't be read. A file in a group file that is missing from the archive gets the message of MissingGroupNote. A file
+// past the end of an archive that is cut short gets the message of CutShortNote. The archive holds no stream: the call
+// throws for one.
 std::span<const uint8_t> ItemFile(const ntdlib::sar::SoundArchive& archive, const Item& item);
 
 // The files of `archive` whose bytes it lacks because only group files beside the archive hold them, and the archive
@@ -83,6 +84,10 @@ std::map<uint32_t, std::vector<std::string>> FilesInMissingGroups(const ntdlib::
 // What the program says of the file of item `name` when only the group files of `groups` hold it, and the archive lacks
 // them (FilesInMissingGroups). Without names, it speaks of a group file.
 std::string MissingGroupNote(const std::string& name, std::span<const std::string> groups);
+
+// What the program says of the file of item `name` when the file runs past the end of an archive that is cut short
+// (ntdlib's FileMissing).
+std::string CutShortNote(const std::string& name);
 
 // What the program says of sound `sound` of `archive` when the files of banks in its slots lie in group files that the
 // archive lacks (FilesInMissingGroups). The notes that play such a bank have no instrument, and stay silent. Nothing
@@ -114,6 +119,9 @@ struct WaveSoundSet
 // its file ID when that sound has no name.
 std::vector<WaveSoundSet> WaveSoundSets(const ntdlib::sar::SoundArchive& archive);
 
+// `index` in decimal, with zeros in front up to the digits of the last index of `count`, `count` - 1: 007 for 7 of 300.
+std::string PaddedIndex(uint32_t index, std::size_t count);
+
 // The name of `item`'s file: the item's name and its format's extension, such as SEQ_TITLE.bfseq. A wave takes its wave
 // archive's name and its index. `waves` is the wave archive's number of waves. The index takes zeros in front up to the
 // digits of the last index, `waves` - 1: WARC_SE_007.bfwav for wave 7 of 300, and WARC_SE_7.bfwav for wave 7 of 10. A
@@ -124,6 +132,10 @@ std::string ItemFileName(const ntdlib::sar::SoundArchive& archive, const Item& i
 // with .wav in place of its format's extension.
 std::string WavFileName(const ntdlib::sar::SoundArchive& archive, uint32_t wave_archive, uint32_t wave,
                         std::size_t waves);
+
+// `decoded` as a WAV file of 16-bit PCM at its rate, with its loop. `what` names the wave in the message of the
+// std::runtime_error that a wave that a WAV file can't hold throws.
+std::vector<uint8_t> PcmAsWav(ntdlib::sar::Pcm decoded, const std::string& what);
 
 // The name that the user sees for `item`: a sound's, a bank's or a wave archive's name, a wave sound file's name from
 // WaveSoundSets, or "WARC_SE, wave 7".
@@ -197,6 +209,10 @@ bool HoldsOriginalStart(ntdlib::sar::Flavor flavor, uint32_t version);
 // short for a header or holds no byte order mark. The mark gives the version's byte order.
 std::optional<uint32_t> HeaderVersion(std::span<const uint8_t> file);
 
+// Whether the byte order mark at 0x04 of `file` is big-endian (FE FF) rather than little-endian (FF FE). Nothing when
+// the file is too short for the mark or has another value there.
+std::optional<bool> BigEndianMark(std::span<const uint8_t> file);
+
 // The console whose files are nearest those of `flavor`'s console: the Wii U for the Switch and the 3DS, and the Switch
 // for the Wii U. The Wii U's and the Switch's files hold the same structures in other byte orders.
 ntdlib::sar::Flavor OtherConsole(ntdlib::sar::Flavor flavor);
@@ -247,6 +263,9 @@ struct FileVersions
 // Wii U keeps its filters. A stream takes 2.0.0.0 on the 3DS, 3.0.0 on the Wii U and 4.0.0 on the Switch. Most of the
 // Wii U's games read stream files only up to 3.0.0.
 FileVersions ExportVersions(ItemKind kind, ntdlib::sar::Flavor flavor);
+
+// The version of the stream files that go to the 3DS: 2.0.0.0, the oldest that the 3DS's tools write.
+inline constexpr uint32_t kCtrStreamVersion = 0x02000000;
 
 // `file`, the file of an item of `kind` on the console of `from`, as a file of the console of `to` with `versions`: a
 // bank file, a wave sound file, a wave archive file, a wave file or a stream file (ConvertStreamFile). The three
@@ -304,9 +323,15 @@ std::size_t WaveCountOf(const ntdlib::rsar::SoundArchive& archive, uint32_t file
 
 // The bytes of `item`'s file in the Wii's `archive`: a sequence file (RSEQ), a wave sound file (RWSD), a bank (RBNK), a
 // wave archive (RWAR) or a wave (RWAV) of a wave archive. Throws std::runtime_error with a message for the user when
-// the archive lacks the item or its file, when a wave archive isn't an RWAR, and when the RWAR can't be read. The
-// archive holds no stream: the call throws for one.
+// the archive lacks the item or its file, when a wave archive isn't an RWAR, and when the RWAR can't be read. A file
+// past the end of an archive that is cut short gets the message of CutShortNote. The archive holds no stream: the call
+// throws for one.
 std::span<const uint8_t> ItemFile(const ntdlib::rsar::SoundArchive& archive, const Item& item);
+
+// `missing`, what the program says of a file that the Wii's `archive` doesn't hold. Where file `file_id` or its wave
+// data runs past the end of an archive that is cut short (ntdlib's FileMissing and WaveDataMissing), a sentence that
+// says so comes first.
+std::string WiiMissingNote(const ntdlib::rsar::SoundArchive& archive, uint32_t file_id, const std::string& missing);
 
 // The bytes that Export… writes for `item` of the Wii's `archive`: its file (ItemFile). Wave data that a WAVE block
 // describes goes out as an RWAR of the same waves, and a wave there as an RWAV file. The tools lay the samples that a

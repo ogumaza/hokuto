@@ -92,8 +92,9 @@ ntdlib::nwsnd::Grammar GrammarOf(ntdlib::sar::Flavor flavor)
 
 ntdlib::nwsnd::Grammar GrammarOf(const NativeArchive& native)
 {
-    return native.wii ? ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::RevolutionPolicy>(BuildOfWiiArchive(native))
-                      : GrammarOf(native.flavor);
+    return native.engine == Engine::kWii
+               ? ntdlib::nwsnd::GrammarOf<ntdlib::nwsnd::RevolutionPolicy>(BuildOfWiiArchive(native))
+               : GrammarOf(FlavorOf(native));
 }
 
 bool Holds(const ntdlib::nwsnd::Grammar& grammar, Command command)
@@ -142,6 +143,7 @@ std::optional<ValueRange> HeldRange(const ntdlib::nwsnd::Grammar& grammar, const
     {
         scale = ntdlib::nwsnd::Scale{1, 0};
     }
+
     const auto set = [source, time](Command& tried, ntdlib::commands::Fixed unit)
     {
         (time ? tried.time.emplace() : tried.value) = Argument{source, unit, source == Source::kRandom ? unit : 0};

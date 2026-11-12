@@ -23,7 +23,7 @@ constexpr std::size_t kBlockFrames = 4096;
 // The silence that a new device and a change of the source's rate put before the frames. SDL3's resampler looks a few
 // frames ahead (under 8 at Hokuto's rates).
 constexpr std::size_t kLookAheadFrames = 64;
-constexpr std::array<float, 2 * kLookAheadFrames> kSilence{};
+constexpr std::array<float, 2 * kLookAheadFrames> kSilentFrames{};
 
 // The playback device called `name`, or 0 if SDL3 doesn't list one.
 SDL_AudioDeviceID FindDevice(const std::string& name)
@@ -153,7 +153,7 @@ bool AudioOutput::Open(const std::string& name)
 
     // SDL3 opens the device paused. A new stream's first request can come back a few frames short. A change of the
     // source's rate does the same (SetSourceRate). Silence covers it.
-    SDL_PutAudioStreamData(stream_, kSilence.data(), static_cast<int>(sizeof(kSilence)));
+    SDL_PutAudioStreamData(stream_, kSilentFrames.data(), static_cast<int>(sizeof(kSilentFrames)));
     SDL_ResumeAudioStreamDevice(stream_);
 
     return true;
@@ -249,7 +249,7 @@ void AudioOutput::SetSourceRate(int rate)
         const SDL_AudioSpec source = {.format = SDL_AUDIO_F32, .channels = 2, .freq = rate};
         SDL_LockAudioStream(stream_);
         SDL_SetAudioStreamFormat(stream_, &source, nullptr);
-        SDL_PutAudioStreamData(stream_, kSilence.data(), static_cast<int>(sizeof(kSilence)));
+        SDL_PutAudioStreamData(stream_, kSilentFrames.data(), static_cast<int>(sizeof(kSilentFrames)));
         SDL_UnlockAudioStream(stream_);
     }
 }

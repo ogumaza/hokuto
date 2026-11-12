@@ -236,15 +236,8 @@ void TestAtRate()
 // A resampler from frames of no samples is refused.
 void TestEmptyFrames()
 {
-    bool threw = false;
-    try
-    {
-        FrameResampler resampler(0, kStrictFrame);
-    }
-    catch (const std::invalid_argument&)
-    {
-        threw = true;
-    }
+    const bool threw =
+        !xsflib::testing::ErrorOf<std::invalid_argument>([&] { FrameResampler resampler(0, kStrictFrame); }).empty();
 
     XSFLIB_CHECK(threw);
 }
@@ -253,11 +246,13 @@ void TestEmptyFrames()
 
 int main()
 {
-    TestSines();
-    TestConstant();
-    TestRenderer();
-    TestAtRate();
-    TestEmptyFrames();
-
-    return xsflib::testing::Summary("frame_resampler");
+    return xsflib::testing::RunTest("frame_resampler",
+                                    []
+                                    {
+                                        TestSines();
+                                        TestConstant();
+                                        TestRenderer();
+                                        TestAtRate();
+                                        TestEmptyFrames();
+                                    });
 }

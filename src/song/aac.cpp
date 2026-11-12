@@ -4,7 +4,10 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <map>
+#include <mutex>
 #include <stdexcept>
+#include <utility>
 
 #include "song/adts.h"
 
@@ -59,21 +62,23 @@ void CheckEncodable(const ntdlib::wave::Pcm& pcm, uint32_t bit_rate)
 {
     if (pcm.channels.empty() || pcm.channels.size() > 2)
     {
-        throw std::runtime_error("An AAC stream holds 1 or 2 channels.");
+        throw std::runtime_error("An AAC stream must have 1 or 2 channels.");
     }
     if (pcm.sample_rate != 44100 && pcm.sample_rate != 48000)
     {
-        throw std::runtime_error("An AAC stream plays at 44,100 or 48,000 Hz.");
+        throw std::runtime_error("An AAC stream must have a sample rate of 44,100 or 48,000 Hz.");
     }
+
     const std::size_t length = pcm.channels.front().size();
     if (length == 0 ||
         std::ranges::any_of(pcm.channels, [length](const auto& channel) { return channel.size() != length; }))
     {
-        throw std::runtime_error("An AAC stream requires samples, the same number in each channel.");
+        throw std::runtime_error("An AAC stream requires samples, with the same number in each channel.");
     }
+
     if (std::ranges::find(kAacBitRates, bit_rate) == kAacBitRates.end())
     {
-        throw std::runtime_error("An AAC stream takes 96, 128, 160 or 192 kbit/s.");
+        throw std::runtime_error("An AAC stream must have a bit rate of 96, 128, 160 or 192 kbit/s.");
     }
 }
 
@@ -83,7 +88,7 @@ void AppendAdtsFrame(std::vector<uint8_t>& bytes, std::span<const uint8_t> packe
     const std::size_t length = packet.size() + 7;
     if (index >= kRates.size() || channels == 0 || channels > 7 || length >= (std::size_t{1} << 13))
     {
-        throw std::runtime_error("The AAC frame doesn't fit an ADTS header.");
+        throw std::runtime_error("The AAC frame doesn't fit in an ADTS header.");
     }
 
     // The sync word, MPEG-4, layer 0 and no CRC. AAC-LC, the rate and the channels. The frame's length, the buffer's
@@ -99,7 +104,11 @@ void AppendAdtsFrame(std::vector<uint8_t>& bytes, std::span<const uint8_t> packe
     bytes.insert(bytes.end(), packet.begin(), packet.end());
 }
 
-uint32_t EncoderDelay(uint32_t rate, std::size_t channels)
+namespace
+{
+
+// The encoder's priming at `rate` with `channels`, measured each time.
+uint32_t MeasuredDelay(uint32_t rate, std::size_t channels)
 {
     // Noise from a linear congruential generator, in every channel, between silence.
     ntdlib::wave::Pcm source;
@@ -111,6 +120,7 @@ uint32_t EncoderDelay(uint32_t rate, std::size_t channels)
         state = (state * 1103515245 + 12345) % (uint64_t{1} << 31);
         samples[kBurstStart + i] = static_cast<int16_t>(static_cast<int>((state >> 15) % 16001) - 8000);
     }
+
     source.channels.assign(channels, samples);
     source.loop_end = kSourceLength;
     const ntdlib::wave::Pcm decoded = DecodeAdts(EncodeAdts(source, kAacBitRates[1]));
@@ -134,10 +144,30 @@ uint32_t EncoderDelay(uint32_t rate, std::size_t channels)
     }
     if (best_sum <= 0.0)
     {
-        throw std::runtime_error("The system's AAC encoder lost a burst of noise.");
+        throw std::runtime_error("The system AAC encoder lost a test burst of noise.");
     }
 
     return static_cast<uint32_t>(best);
+}
+
+} // namespace
+
+uint32_t EncoderDelay(uint32_t rate, std::size_t channels)
+{
+    // The priming depends only on the rate and the channels. Each pair is measured once. A measurement that throws
+    // leaves nothing behind, and the next call measures again.
+    static std::mutex mutex;
+    static std::map<std::pair<uint32_t, std::size_t>, uint32_t> delays;
+    const std::lock_guard lock(mutex);
+    const std::pair key(rate, channels);
+    if (const auto found = delays.find(key); found != delays.end())
+    {
+        return found->second;
+    }
+
+    const uint32_t delay = MeasuredDelay(rate, channels);
+    delays.emplace(key, delay);
+    return delay;
 }
 
 } // namespace hokuto::song

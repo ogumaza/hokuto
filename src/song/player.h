@@ -104,6 +104,7 @@ public:
 
     // The position, in ticks, at stereo frame `sample` of the output. Between the starts of two frames, the position
     // moves on in a straight line. Returns nothing for a sample that hasn't been written.
+    // It also returns nothing for a frame that the clock no longer keeps.
     std::optional<double> PositionAt(uint64_t sample) const;
 
     // The highest peaks of each meter in the frames that hold stereo frames `from` to `to` of the output, `to` not

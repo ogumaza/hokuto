@@ -35,13 +35,14 @@ public:
     // position in ticks instead (see PlaybackClock::ModelTicks): the time of the ticks differs between the two models
     // (SameTiming). A run in ticks stops `behind` seconds short of that position, at the tempo there. A model of
     // another engine then stops at the sample that the audio device plays, and playback starts again there on it. The
-    // frames before the lead don't mix (see SequenceModel::InLead). The model then reaches a settled state there
-    // sooner. Without a clock, the model runs through the sequence's first pass, and every frame mixes. Its snapshots
-    // then cover any seek, settled. The run stops early if the model's output ends. A run in ticks, or without a clock,
-    // also stops where the model's clock stops (SequenceModel::ClockStopped). A run that's still going is cancelled,
-    // and its model goes.
+    // frames before the lead don't mix (see SequenceModel::InLead). The ticks of `model` count `ticks_scale` times the
+    // ticks of the clock: a conversion of a song of the GBA has another timebase. The model then reaches a settled
+    // state there sooner. Without a clock, the model runs through the sequence's first pass, and every frame mixes. Its
+    // snapshots then cover any seek, settled. The run stops early if the model's output ends. A run in ticks, or
+    // without a clock, also stops where the model's clock stops (SequenceModel::ClockStopped). A run that's still going
+    // is cancelled, and its model goes.
     void Start(std::shared_ptr<SequenceModel> model, std::shared_ptr<const PlaybackClock> clock, bool by_ticks = false,
-               double behind = 0.0);
+               double behind = 0.0, double ticks_scale = 1.0);
 
     // Whether the last run that started runs up to the clock's position in ticks. The program offers its model to the
     // player the same way (PlaybackClock::Offer).

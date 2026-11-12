@@ -82,6 +82,7 @@ std::vector<double> WindowPowers(std::span<const float> samples, int rate, std::
             }
         }
     }
+
     for (double& power : powers)
     {
         power /= static_cast<double>(size * 2);
@@ -131,37 +132,12 @@ bool Flat(const std::vector<double>& levels)
     return sum_squares - sum * sum / count < kFlatDb * kFlatDb * count;
 }
 
-// The lag in frames by which `render` comes after `reference`: the shift of the render's levels in windows of 1 ms that
-// correlates best with the reference's, or 0 when either curve is flat.
-int64_t LagFrames(std::span<const float> reference, std::span<const float> render, int rate)
+// The correlation of the two curves at each lag from -100 ms to 100 ms, over the windows of either. A curve holds
+// the floor before its start, and after its end when its sound ends within the 20 s. A lag that moves a sound past
+// the other's start or end therefore pairs the sound with silence. Past the 20 s, a pair counts for nothing.
+std::vector<std::pair<int64_t, double>> Correlations(const std::vector<double>& a, const std::vector<double>& b,
+                                                     int64_t most, double floor, std::size_t windows)
 {
-    const auto size = static_cast<std::size_t>(std::lround(kLagWindowSeconds * rate));
-    const auto windows = static_cast<std::size_t>(std::lround(kLagSeconds / kLagWindowSeconds));
-    const auto most = static_cast<int64_t>(std::lround(kMostLagSeconds / kLagWindowSeconds));
-    std::vector<double> a = Levels(WindowPowers(reference, rate, size, 0, windows));
-    std::vector<double> b = Levels(WindowPowers(render, rate, size, 0, windows));
-    const double top = std::max(a.empty() ? kSilentDb : *std::max_element(a.begin(), a.end()),
-                                b.empty() ? kSilentDb : *std::max_element(b.begin(), b.end()));
-    if (top <= kSilentDb)
-    {
-        return 0;
-    }
-    for (std::vector<double>* levels : {&a, &b})
-    {
-        for (double& level : *levels)
-        {
-            level = std::max(level, top - kLagRangeDb);
-        }
-    }
-    if (Flat(a) || Flat(b))
-    {
-        return 0;
-    }
-
-    // The correlation of the two curves at each lag from -100 ms to 100 ms, over the windows of either. A curve holds
-    // the floor before its start, and after its end when its sound ends within the 20 s. A lag that moves a sound past
-    // the other's start or end therefore pairs the sound with silence. Past the 20 s, a pair counts for nothing.
-    const double floor = top - kLagRangeDb;
     const auto size_a = static_cast<int64_t>(a.size());
     const auto size_b = static_cast<int64_t>(b.size());
     const bool a_ends = a.size() < windows;
@@ -204,7 +180,12 @@ int64_t LagFrames(std::span<const float> reference, std::span<const float> rende
         correlations.emplace_back(lag, (sum_ab - sum_a * sum_b / count) / std::sqrt(spread_a * spread_b));
     }
 
-    // The peaks, the ends included. Among those within the tie of the best, the lag nearest 0 wins.
+    return correlations;
+}
+
+// The peaks, the ends included. Among those within the tie of the best, the lag nearest 0 wins.
+int64_t BestLag(const std::vector<std::pair<int64_t, double>>& correlations)
+{
     std::vector<std::pair<int64_t, double>> peaks;
     for (std::size_t i = 0; i < correlations.size(); i++)
     {
@@ -215,11 +196,13 @@ int64_t LagFrames(std::span<const float> reference, std::span<const float> rende
             peaks.push_back(correlations[i]);
         }
     }
+
     double best_correlation = -2.0;
     for (const auto& [lag, correlation] : peaks)
     {
         best_correlation = std::max(best_correlation, correlation);
     }
+
     int64_t best = 0;
     bool found = false;
     for (const auto& [lag, correlation] : peaks)
@@ -231,7 +214,41 @@ int64_t LagFrames(std::span<const float> reference, std::span<const float> rende
         }
     }
 
-    return best * static_cast<int64_t>(size);
+    return best;
+}
+
+// The lag in frames by which `render` comes after `reference`: the shift of the render's levels in windows of 1 ms that
+// correlates best with the reference's, or 0 when either curve is flat.
+int64_t LagFrames(std::span<const float> reference, std::span<const float> render, int rate)
+{
+    const auto size = static_cast<std::size_t>(std::lround(kLagWindowSeconds * rate));
+    const auto windows = static_cast<std::size_t>(std::lround(kLagSeconds / kLagWindowSeconds));
+    const auto most = static_cast<int64_t>(std::lround(kMostLagSeconds / kLagWindowSeconds));
+    std::vector<double> a = Levels(WindowPowers(reference, rate, size, 0, windows));
+    std::vector<double> b = Levels(WindowPowers(render, rate, size, 0, windows));
+    const double top = std::max(a.empty() ? kSilentDb : *std::max_element(a.begin(), a.end()),
+                                b.empty() ? kSilentDb : *std::max_element(b.begin(), b.end()));
+    if (top <= kSilentDb)
+    {
+        return 0;
+    }
+
+    for (std::vector<double>* levels : {&a, &b})
+    {
+        for (double& level : *levels)
+        {
+            level = std::max(level, top - kLagRangeDb);
+        }
+    }
+
+    if (Flat(a) || Flat(b))
+    {
+        return 0;
+    }
+
+    const double floor = top - kLagRangeDb;
+    const std::vector<std::pair<int64_t, double>> correlations = Correlations(a, b, most, floor, windows);
+    return BestLag(correlations) * static_cast<int64_t>(size);
 }
 
 // The start of each span of windows: every kSpanHop windows, and one that ends at the last window.
@@ -255,31 +272,11 @@ std::vector<std::size_t> SpanStarts(std::size_t count)
     return starts;
 }
 
-} // namespace
-
-LevelComparison CompareLevels(std::span<const float> reference, std::span<const float> render, int rate)
+// The gain: the median difference over the windows that count by the reference alone. A render that stays below the
+// floor throughout, and more than the count's range below the reference, takes no gain. Its silence is then the
+// finding, and not a gain of some 200 dB. A quiet render a few dB under a quiet reference still takes its gain.
+double GainDb(const std::vector<double>& b, const std::vector<double>& render_levels, std::size_t count)
 {
-    if (rate < 1000)
-    {
-        throw std::invalid_argument("CompareLevels requires a rate of 1,000 Hz or more");
-    }
-
-    // The levels of the windows, with the render lined up.
-    LevelComparison comparison;
-    const int64_t lag = LagFrames(reference, render, rate);
-    comparison.lag = static_cast<double>(lag) / rate;
-    const auto size = static_cast<std::size_t>(std::lround(kWindowSeconds * rate));
-    const std::vector<double> b = Levels(WindowPowers(reference, rate, size, 0, SIZE_MAX));
-    const std::vector<double> render_levels = Levels(WindowPowers(render, rate, size, lag, SIZE_MAX));
-    const std::size_t count = std::min(b.size(), render_levels.size());
-    if (count == 0)
-    {
-        return comparison;
-    }
-
-    // The gain: the median difference over the windows that count by the reference alone. A render that stays below the
-    // floor throughout, and more than the count's range below the reference, takes no gain. Its silence is then the
-    // finding, and not a gain of some 200 dB. A quiet render a few dB under a quiet reference still takes its gain.
     const double reference_top = *std::max_element(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(count));
     const double render_top =
         *std::max_element(render_levels.begin(), render_levels.begin() + static_cast<std::ptrdiff_t>(count));
@@ -291,43 +288,16 @@ LevelComparison CompareLevels(std::span<const float> reference, std::span<const 
             differences.push_back(render_levels[i] - b[i]);
         }
     }
+
     const bool silent = render_top <= kCountFloorDbfs && render_top < reference_top - kCountRangeDb;
-    comparison.gain_db = differences.empty() || silent ? 0.0 : Median(differences);
+    return differences.empty() || silent ? 0.0 : Median(differences);
+}
 
-    // Each window's difference, with both levels held at the floor.
-    std::vector<double> a(count);
-    for (std::size_t i = 0; i < count; i++)
-    {
-        a[i] = render_levels[i] - comparison.gain_db;
-    }
-    const double top = std::max(*std::max_element(a.begin(), a.end()),
-                                *std::max_element(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(count)));
-    const double floor = top - kCountRangeDb;
-    std::vector<bool> counted(count);
-    std::vector<double> d(count);
-    for (std::size_t i = 0; i < count; i++)
-    {
-        const double louder = std::max(a[i], b[i]);
-        counted[i] = louder >= floor && louder > kCountFloorDbfs;
-        d[i] = std::max(a[i], floor) - std::max(b[i], floor);
-        if (!counted[i])
-        {
-            continue;
-        }
-
-        // The first window furthest off is the worst.
-        const double off = std::abs(d[i]);
-        comparison.windows++;
-        (off < 1.0 ? comparison.within_1db : off <= 3.0 ? comparison.from_1_to_3db : comparison.beyond_3db)++;
-        if (comparison.windows == 1 || off > std::abs(comparison.worst_db))
-        {
-            comparison.worst_db = d[i];
-            comparison.worst_at = static_cast<double>(i) * kWindowSeconds;
-        }
-    }
-
-    // L1: the spans whose median passes 1 dB. Spans that overlap with the same sign make one place, with the median
-    // furthest off.
+// L1: the spans whose median passes 1 dB. Spans that overlap with the same sign make one place, with the median
+// furthest off.
+std::vector<LevelPlace> SpanPlaces(const std::vector<double>& d, const std::vector<bool>& counted)
+{
+    const std::size_t count = d.size();
     std::vector<LevelPlace> places;
     for (const std::size_t start : SpanStarts(count))
     {
@@ -364,7 +334,14 @@ LevelComparison CompareLevels(std::span<const float> reference, std::span<const 
         places.push_back({begin, seconds, median, false});
     }
 
-    // L2: the runs of counted windows that lie more than 6 dB off, by their mean.
+    return places;
+}
+
+// L2: the runs of counted windows that lie more than 6 dB off, by their mean.
+std::vector<LevelPlace> RunPlaces(const std::vector<double>& d, const std::vector<bool>& counted)
+{
+    const std::size_t count = d.size();
+    std::vector<LevelPlace> places;
     std::size_t run_start = 0;
     bool in_run = false;
     for (std::size_t i = 0; i <= count; i++)
@@ -388,12 +365,76 @@ LevelComparison CompareLevels(std::span<const float> reference, std::span<const 
             {
                 sum += d[j];
             }
+
             places.push_back({static_cast<double>(run_start) * kWindowSeconds,
                               static_cast<double>(i - run_start) * kWindowSeconds,
                               sum / static_cast<double>(i - run_start), true});
         }
     }
 
+    return places;
+}
+
+} // namespace
+
+LevelComparison CompareLevels(std::span<const float> reference, std::span<const float> render, int rate)
+{
+    if (rate < 1000)
+    {
+        throw std::invalid_argument("CompareLevels requires a rate of 1,000 Hz or more");
+    }
+
+    // The levels of the windows, with the render lined up.
+    LevelComparison comparison;
+    const int64_t lag = LagFrames(reference, render, rate);
+    comparison.lag = static_cast<double>(lag) / rate;
+    const auto size = static_cast<std::size_t>(std::lround(kWindowSeconds * rate));
+    const std::vector<double> b = Levels(WindowPowers(reference, rate, size, 0, SIZE_MAX));
+    const std::vector<double> render_levels = Levels(WindowPowers(render, rate, size, lag, SIZE_MAX));
+    const std::size_t count = std::min(b.size(), render_levels.size());
+    if (count == 0)
+    {
+        return comparison;
+    }
+
+    comparison.gain_db = GainDb(b, render_levels, count);
+
+    // Each window's difference, with both levels held at the floor.
+    std::vector<double> a(count);
+    for (std::size_t i = 0; i < count; i++)
+    {
+        a[i] = render_levels[i] - comparison.gain_db;
+    }
+
+    const double top = std::max(*std::max_element(a.begin(), a.end()),
+                                *std::max_element(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(count)));
+    const double floor = top - kCountRangeDb;
+    std::vector<bool> counted(count);
+    std::vector<double> d(count);
+    for (std::size_t i = 0; i < count; i++)
+    {
+        const double louder = std::max(a[i], b[i]);
+        counted[i] = louder >= floor && louder > kCountFloorDbfs;
+        d[i] = std::max(a[i], floor) - std::max(b[i], floor);
+        if (!counted[i])
+        {
+            continue;
+        }
+
+        // The first window furthest off is the worst.
+        const double off = std::abs(d[i]);
+        comparison.windows++;
+        (off < 1.0 ? comparison.within_1db : off <= 3.0 ? comparison.from_1_to_3db : comparison.beyond_3db)++;
+        if (comparison.windows == 1 || off > std::abs(comparison.worst_db))
+        {
+            comparison.worst_db = d[i];
+            comparison.worst_at = static_cast<double>(i) * kWindowSeconds;
+        }
+    }
+
+    std::vector<LevelPlace> places = SpanPlaces(d, counted);
+    const std::vector<LevelPlace> runs = RunPlaces(d, counted);
+    places.insert(places.end(), runs.begin(), runs.end());
     std::stable_sort(places.begin(), places.end(),
                      [](const LevelPlace& x, const LevelPlace& y) { return x.start < y.start; });
     comparison.places = std::move(places);

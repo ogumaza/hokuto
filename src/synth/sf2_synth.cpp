@@ -13,7 +13,10 @@
 #include <string>
 #include <vector>
 
+#include "seqlib/midi/controllers.h"
 #include "seqlib/midi/reader.h"
+#include "seqlib/sf2/presets.h"
+#include "seqlib/sf2/soundfont.h"
 
 #include "synth/sound_font.h"
 
@@ -21,6 +24,9 @@ namespace hokuto::synth
 {
 namespace
 {
+
+namespace cc = seqlib::midi::cc;
+namespace sf2 = seqlib::sf2;
 
 // The samples for which a voice holds its LFOs, its modulation envelope, its pitch and its filter.
 constexpr int kBlock = 64;
@@ -50,73 +56,11 @@ constexpr double kCentsBaseHz = 8.176;
 // How long the render goes on after the file's last event while voices still sound, in seconds.
 constexpr double kLongestTail = 10.0;
 
-// MIDI channel 10, the General MIDI channel of the drums, and the bank that it plays.
+// MIDI channel 10, the General MIDI channel of the drums. It plays bank sf2::kChannel10Bank.
 constexpr int kDrumChannel = 9;
-constexpr int kDrumBank = 128;
-
-// The controllers that the renderer reads by number.
-constexpr int kBankSelect = 0;
-constexpr int kVolume = 7;
-constexpr int kPan = 10;
-constexpr int kExpression = 11;
-constexpr int kBankSelectLsb = 32;
-constexpr int kVolumeLsb = 39;
-constexpr int kPanLsb = 42;
-constexpr int kSustain = 64;
 
 // A data entry of the null RPN changes nothing.
 constexpr int kNullRpn = 0x3FFF;
-
-// The generators that the voices read by number (section 8.1.2).
-enum Generator : int
-{
-    kStartAddrsOffset = 0,
-    kEndAddrsOffset = 1,
-    kStartloopAddrsOffset = 2,
-    kEndloopAddrsOffset = 3,
-    kStartAddrsCoarseOffset = 4,
-    kModLfoToPitch = 5,
-    kVibLfoToPitch = 6,
-    kModEnvToPitch = 7,
-    kInitialFilterFc = 8,
-    kInitialFilterQ = 9,
-    kModLfoToFilterFc = 10,
-    kModEnvToFilterFc = 11,
-    kEndAddrsCoarseOffset = 12,
-    kModLfoToVolume = 13,
-    kPanGenerator = 17,
-    kDelayModLfo = 21,
-    kFreqModLfo = 22,
-    kDelayVibLfo = 23,
-    kFreqVibLfo = 24,
-    kDelayModEnv = 25,
-    kAttackModEnv = 26,
-    kHoldModEnv = 27,
-    kDecayModEnv = 28,
-    kSustainModEnv = 29,
-    kReleaseModEnv = 30,
-    kKeynumToModEnvHold = 31,
-    kKeynumToModEnvDecay = 32,
-    kDelayVolEnv = 33,
-    kAttackVolEnv = 34,
-    kHoldVolEnv = 35,
-    kDecayVolEnv = 36,
-    kSustainVolEnv = 37,
-    kReleaseVolEnv = 38,
-    kKeynumToVolEnvHold = 39,
-    kKeynumToVolEnvDecay = 40,
-    kStartloopAddrsCoarseOffset = 45,
-    kKeynum = 46,
-    kVelocity = 47,
-    kInitialAttenuation = 48,
-    kEndloopAddrsCoarseOffset = 50,
-    kCoarseTune = 51,
-    kFineTune = 52,
-    kSampleModes = 54,
-    kScaleTuning = 56,
-    kExclusiveClass = 57,
-    kOverridingRootKey = 58,
-};
 
 double TimecentsToSeconds(double timecents)
 {
@@ -149,12 +93,13 @@ struct Channel
     void Start()
     {
         controllers.fill(0);
-        controllers[kVolume] = 100;
-        controllers[kPan] = 64;
+        controllers[cc::kVolume] = 100;
+        controllers[cc::kPan] = 64;
         for (std::size_t sound = 70; sound <= 79; sound++)
         {
             controllers[sound] = 64;
         }
+
         ResetControllers();
     }
 
@@ -164,15 +109,17 @@ struct Channel
     {
         for (int controller = 0; controller < 128; controller++)
         {
-            const bool kept = controller == kBankSelect || controller == kBankSelectLsb || controller == kVolume ||
-                              controller == kVolumeLsb || controller == kPan || controller == kPanLsb ||
-                              (controller >= 70 && controller <= 79) || (controller >= 91 && controller <= 95);
+            const bool kept = controller == cc::kBankSelect || controller == cc::kBankSelectLsb ||
+                              controller == cc::kVolume || controller == cc::kVolumeLsb || controller == cc::kPan ||
+                              controller == cc::kPanLsb || (controller >= 70 && controller <= 79) ||
+                              (controller >= 91 && controller <= 95);
             if (!kept)
             {
                 controllers[static_cast<std::size_t>(controller)] = 0;
             }
         }
-        controllers[kExpression] = 127;
+
+        controllers[cc::kExpression] = 127;
         key_pressure.fill(0);
         pitch_wheel = 8192;
         channel_pressure = 0;
@@ -225,6 +172,50 @@ double Convex(double index)
     return point == 0 ? 0.0 : 1.0 + (5.0 / 12.0) * std::log10(point / 127.0);
 }
 
+// The value of a source at x, from 0 to 1, by its direction, its polarity and its curve type (section 8.2.1).
+double CurveValue(double x, bool negative, bool bipolar, int curve)
+{
+    switch (curve)
+    {
+    case 0:
+        if (bipolar)
+        {
+            return negative ? 1.0 - 2.0 * x : 2.0 * x - 1.0;
+        }
+
+        return negative ? 1.0 - x : x;
+
+    case 1:
+        if (bipolar)
+        {
+            const double side = x > 0.5 ? Concave(127.0 * 2.0 * (x - 0.5)) : -Concave(127.0 * 2.0 * (0.5 - x));
+            return negative ? -side : side;
+        }
+
+        return Concave(127.0 * (negative ? 1.0 - x : x));
+
+    case 2:
+        if (bipolar)
+        {
+            const double side = x > 0.5 ? Convex(127.0 * 2.0 * (x - 0.5)) : -Convex(127.0 * 2.0 * (0.5 - x));
+            return negative ? -side : side;
+        }
+
+        return Convex(127.0 * (negative ? 1.0 - x : x));
+
+    default:
+        {
+            const bool high = x >= 0.5;
+            if (bipolar)
+            {
+                return high != negative ? 1.0 : -1.0;
+            }
+
+            return high != negative ? 1.0 : 0.0;
+        }
+    }
+}
+
 // The value of modulator source `source` (section 8.2.1) for a voice of key `key` and velocity `velocity` on `channel`.
 // A 7-bit value v counts as x = v / 128. The pitch wheel's value counts as v / 16384. A negative source turns x into
 // 1 - x. The concave and convex curves of a unipolar source then take 127 x.
@@ -240,6 +231,7 @@ double SourceValue(uint16_t source, const Channel& channel, int key, int velocit
         {
             return 0.0;
         }
+
         value = channel.controllers[static_cast<std::size_t>(index)];
     }
     else
@@ -273,44 +265,7 @@ double SourceValue(uint16_t source, const Channel& channel, int key, int velocit
     }
 
     // The direction, the polarity and the curve.
-    const double x = value / range;
-    const bool negative = (source & 0x100) != 0;
-    const bool bipolar = (source & 0x200) != 0;
-    switch (source >> 10 & 3)
-    {
-    case 0:
-        if (bipolar)
-        {
-            return negative ? 1.0 - 2.0 * x : 2.0 * x - 1.0;
-        }
-        return negative ? 1.0 - x : x;
-
-    case 1:
-        if (bipolar)
-        {
-            const double side = x > 0.5 ? Concave(127.0 * 2.0 * (x - 0.5)) : -Concave(127.0 * 2.0 * (0.5 - x));
-            return negative ? -side : side;
-        }
-        return Concave(127.0 * (negative ? 1.0 - x : x));
-
-    case 2:
-        if (bipolar)
-        {
-            const double side = x > 0.5 ? Convex(127.0 * 2.0 * (x - 0.5)) : -Convex(127.0 * 2.0 * (0.5 - x));
-            return negative ? -side : side;
-        }
-        return Convex(127.0 * (negative ? 1.0 - x : x));
-
-    default:
-        {
-            const bool high = x >= 0.5;
-            if (bipolar)
-            {
-                return high != negative ? 1.0 : -1.0;
-            }
-            return high != negative ? 1.0 : 0.0;
-        }
-    }
+    return CurveValue(value / range, (source & 0x100) != 0, (source & 0x200) != 0, source >> 10 & 3);
 }
 
 // A triangle LFO (section 8.1.2, generators 21 to 24): silent for its delay, then from 0 up to 1, down to -1 and back.
@@ -354,20 +309,21 @@ class ModulationEnvelope
 public:
     void Start(const std::array<double, kGeneratorCount>& g, int key, int rate)
     {
-        delay_ = Samples(TimecentsToSeconds(std::clamp(g[kDelayModEnv], -12000.0, 5000.0)), rate);
-        attack_ = Samples(TimecentsToSeconds(std::clamp(g[kAttackModEnv], -12000.0, 8000.0)), rate);
-        hold_ = Samples(
-            TimecentsToSeconds(std::clamp(g[kHoldModEnv] + g[kKeynumToModEnvHold] * (60 - key), -12000.0, 5000.0)),
-            rate);
+        delay_ = Samples(TimecentsToSeconds(std::clamp(g[sf2::kDelayModEnv], -12000.0, 5000.0)), rate);
+        attack_ = Samples(TimecentsToSeconds(std::clamp(g[sf2::kAttackModEnv], -12000.0, 8000.0)), rate);
+        hold_ = Samples(TimecentsToSeconds(std::clamp(g[sf2::kHoldModEnv] + g[sf2::kKeynumToModEnvHold] * (60 - key),
+                                                      -12000.0, 5000.0)),
+                        rate);
         decay_step_ =
             1.0 /
-            std::max<int64_t>(1, Samples(TimecentsToSeconds(std::clamp(
-                                             g[kDecayModEnv] + g[kKeynumToModEnvDecay] * (60 - key), -12000.0, 8000.0)),
-                                         rate));
-        sustain_ = 1.0 - std::clamp(g[kSustainModEnv], 0.0, 1000.0) / 1000.0;
+            std::max<int64_t>(
+                1, Samples(TimecentsToSeconds(std::clamp(
+                               g[sf2::kDecayModEnv] + g[sf2::kKeynumToModEnvDecay] * (60 - key), -12000.0, 8000.0)),
+                           rate));
+        sustain_ = 1.0 - std::clamp(g[sf2::kSustainModEnv], 0.0, 1000.0) / 1000.0;
         release_step_ =
-            1.0 /
-            std::max<int64_t>(1, Samples(TimecentsToSeconds(std::clamp(g[kReleaseModEnv], -12000.0, 8000.0)), rate));
+            1.0 / std::max<int64_t>(
+                      1, Samples(TimecentsToSeconds(std::clamp(g[sf2::kReleaseModEnv], -12000.0, 8000.0)), rate));
     }
 
     void Release()
@@ -448,46 +404,49 @@ public:
         };
 
         const int64_t size = static_cast<int64_t>(points_->size());
-        start_ = std::clamp<int64_t>(sample.start + offset(kStartAddrsOffset, kStartAddrsCoarseOffset), 0, size);
-        end_ = std::clamp<int64_t>(sample.end + offset(kEndAddrsOffset, kEndAddrsCoarseOffset), start_, size);
+        start_ =
+            std::clamp<int64_t>(sample.start + offset(sf2::kStartAddrsOffset, sf2::kStartAddrsCoarseOffset), 0, size);
+        end_ = std::clamp<int64_t>(sample.end + offset(sf2::kEndAddrsOffset, sf2::kEndAddrsCoarseOffset), start_, size);
         loop_start_ = std::clamp<int64_t>(
-            sample.loop_start + offset(kStartloopAddrsOffset, kStartloopAddrsCoarseOffset), start_, end_);
-        loop_end_ = std::clamp<int64_t>(sample.loop_end + offset(kEndloopAddrsOffset, kEndloopAddrsCoarseOffset),
-                                        loop_start_, end_);
-        const int mode = static_cast<int>(generators_[kSampleModes]) & 3;
+            sample.loop_start + offset(sf2::kStartloopAddrsOffset, sf2::kStartloopAddrsCoarseOffset), start_, end_);
+        loop_end_ = std::clamp<int64_t>(
+            sample.loop_end + offset(sf2::kEndloopAddrsOffset, sf2::kEndloopAddrsCoarseOffset), loop_start_, end_);
+        const int mode = static_cast<int>(generators_[sf2::kSampleModes]) & 3;
         loop_mode_ = loop_end_ - loop_start_ >= 2 ? mode : 0;
         looping_ = loop_mode_ == 1 || loop_mode_ == 3;
         position_ = static_cast<double>(start_);
-        exclusive_class_ = static_cast<int>(generators_[kExclusiveClass]);
+        exclusive_class_ = static_cast<int>(generators_[sf2::kExclusiveClass]);
 
         // The key and the velocity that the voice's generators and modulators read.
-        pitch_key_ = generators_[kKeynum] >= 0.0 ? static_cast<int>(generators_[kKeynum]) : key;
-        if (generators_[kVelocity] >= 0.0)
+        pitch_key_ = generators_[sf2::kKeynum] >= 0.0 ? static_cast<int>(generators_[sf2::kKeynum]) : key;
+        if (generators_[sf2::kVelocity] >= 0.0)
         {
-            velocity_ = static_cast<int>(generators_[kVelocity]);
+            velocity_ = static_cast<int>(generators_[sf2::kVelocity]);
         }
-        const double root = generators_[kOverridingRootKey] >= 0.0 ? generators_[kOverridingRootKey]
-                            : sample.original_key <= 127           ? sample.original_key
-                                                                   : 60.0;
+
+        const double root = generators_[sf2::kOverridingRootKey] >= 0.0 ? generators_[sf2::kOverridingRootKey]
+                            : sample.original_key <= 127                ? sample.original_key
+                                                                        : 60.0;
         key_cents_ = pitch_key_ - root;
         correction_ = sample.correction;
         rate_ratio_ = static_cast<double>(sample.rate) / rate;
 
         // The volume envelope (section 8.1.2, generators 33 to 40).
-        delay_ = Samples(TimecentsToSeconds(std::clamp(generators_[kDelayVolEnv], -12000.0, 5000.0)), rate);
-        attack_ = Samples(TimecentsToSeconds(std::clamp(generators_[kAttackVolEnv], -12000.0, 8000.0)), rate);
-        hold_ = Samples(
-            TimecentsToSeconds(std::clamp(
-                generators_[kHoldVolEnv] + generators_[kKeynumToVolEnvHold] * (60 - pitch_key_), -12000.0, 5000.0)),
-            rate);
-        decay_factor_ = FallFactor(generators_[kDecayVolEnv] + generators_[kKeynumToVolEnvDecay] * (60 - pitch_key_));
-        sustain_ = Gain(std::clamp(generators_[kSustainVolEnv], 0.0, kFullFall));
-        release_factor_ = FallFactor(generators_[kReleaseVolEnv]);
+        delay_ = Samples(TimecentsToSeconds(std::clamp(generators_[sf2::kDelayVolEnv], -12000.0, 5000.0)), rate);
+        attack_ = Samples(TimecentsToSeconds(std::clamp(generators_[sf2::kAttackVolEnv], -12000.0, 8000.0)), rate);
+        hold_ = Samples(TimecentsToSeconds(std::clamp(
+                            generators_[sf2::kHoldVolEnv] + generators_[sf2::kKeynumToVolEnvHold] * (60 - pitch_key_),
+                            -12000.0, 5000.0)),
+                        rate);
+        decay_factor_ =
+            FallFactor(generators_[sf2::kDecayVolEnv] + generators_[sf2::kKeynumToVolEnvDecay] * (60 - pitch_key_));
+        sustain_ = Gain(std::clamp(generators_[sf2::kSustainVolEnv], 0.0, kFullFall));
+        release_factor_ = FallFactor(generators_[sf2::kReleaseVolEnv]);
         stage_ = delay_ > 0 ? Stage::kDelay : Stage::kAttack;
 
         modulation_envelope_.Start(generators_, pitch_key_, rate);
-        modulation_lfo_.Start(generators_[kDelayModLfo], generators_[kFreqModLfo], rate);
-        vibrato_lfo_.Start(generators_[kDelayVibLfo], generators_[kFreqVibLfo], rate);
+        modulation_lfo_.Start(generators_[sf2::kDelayModLfo], generators_[sf2::kFreqModLfo], rate);
+        vibrato_lfo_.Start(generators_[sf2::kDelayVibLfo], generators_[sf2::kFreqVibLfo], rate);
     }
 
     // Works out the values that the modulators move, from the channel's controllers (section 9.5).
@@ -510,6 +469,7 @@ public:
             {
                 value = std::abs(value);
             }
+
             added[modulator.destination] += value;
         }
 
@@ -518,22 +478,23 @@ public:
             return generators_[oper] + added[oper];
         };
 
-        attenuation_ = std::clamp(kAttenuationScale * generators_[kInitialAttenuation] + added[kInitialAttenuation],
-                                  0.0, kMostAttenuation);
+        attenuation_ =
+            std::clamp(kAttenuationScale * generators_[sf2::kInitialAttenuation] + added[sf2::kInitialAttenuation], 0.0,
+                       kMostAttenuation);
         // The sin/cos law, with each side as a sine. A side then falls to exactly 0 at the other end.
-        const double pan = std::clamp(total(kPanGenerator), -500.0, 500.0) / 500.0;
+        const double pan = std::clamp(total(sf2::kPan), -500.0, 500.0) / 500.0;
         left_ = static_cast<float>(std::sin((1.0 - pan) * std::numbers::pi / 4.0));
         right_ = static_cast<float>(std::sin((1.0 + pan) * std::numbers::pi / 4.0));
-        pitch_cents_ = key_cents_ * total(kScaleTuning) + 100.0 * total(kCoarseTune) + total(kFineTune) + correction_ +
-                       channel.Tuning();
-        cutoff_cents_ = total(kInitialFilterFc);
-        resonance_ = std::clamp(total(kInitialFilterQ), 0.0, 960.0);
-        mod_lfo_to_pitch_ = total(kModLfoToPitch);
-        vib_lfo_to_pitch_ = total(kVibLfoToPitch);
-        mod_env_to_pitch_ = total(kModEnvToPitch);
-        mod_lfo_to_cutoff_ = total(kModLfoToFilterFc);
-        mod_env_to_cutoff_ = total(kModEnvToFilterFc);
-        mod_lfo_to_volume_ = total(kModLfoToVolume);
+        pitch_cents_ = key_cents_ * total(sf2::kScaleTuning) + 100.0 * total(sf2::kCoarseTune) + total(sf2::kFineTune) +
+                       correction_ + channel.Tuning();
+        cutoff_cents_ = total(sf2::kInitialFilterFc);
+        resonance_ = std::clamp(total(sf2::kInitialFilterQ), 0.0, 960.0);
+        mod_lfo_to_pitch_ = total(sf2::kModLfoToPitch);
+        vib_lfo_to_pitch_ = total(sf2::kVibLfoToPitch);
+        mod_env_to_pitch_ = total(sf2::kModEnvToPitch);
+        mod_lfo_to_cutoff_ = total(sf2::kModLfoToFilterFc);
+        mod_env_to_cutoff_ = total(sf2::kModEnvToFilterFc);
+        mod_lfo_to_volume_ = total(sf2::kModLfoToVolume);
     }
 
     // Starts the release. A sample that loops until release then plays on to its end.
@@ -568,6 +529,7 @@ public:
             {
                 StartBlock();
             }
+
             block_left_--;
 
             // The sample starts to play when the volume envelope's delay ends. FluidSynth's voices start the same way.
@@ -696,6 +658,7 @@ private:
             gain_ = target;
             first_block_ = false;
         }
+
         gain_step_ = (target - gain_) / kBlock;
     }
 
@@ -738,6 +701,7 @@ private:
                 stage_ = Stage::kHold;
                 return 1.0;
             }
+
             envelope_ = std::min(1.0, envelope_ + (1.0 - envelope_) / static_cast<double>(attack_));
             attack_--;
             if (attack_ <= 0)
@@ -912,6 +876,7 @@ public:
         {
             presets_.emplace(PresetKey(font_.presets[p].bank, font_.presets[p].program), &font_.presets[p]);
         }
+
         for (int ch = 0; ch < 16; ch++)
         {
             Channel& channel = channels_[static_cast<std::size_t>(ch)];
@@ -981,6 +946,7 @@ public:
         {
             voice.Render(out, frames);
         }
+
         std::erase_if(voices_, [](const Voice& voice) { return voice.Finished(); });
     }
 
@@ -1008,8 +974,8 @@ private:
 
         if (ch == kDrumChannel)
         {
-            const PresetRecord* drums = find(kDrumBank, program);
-            return drums != nullptr ? drums : find(kDrumBank, 0);
+            const PresetRecord* drums = find(sf2::kChannel10Bank, program);
+            return drums != nullptr ? drums : find(sf2::kChannel10Bank, 0);
         }
 
         const PresetRecord* preset = find(bank, program);
@@ -1056,13 +1022,14 @@ private:
                     }
                 }
             }
+
             voices_.push_back(std::move(voice));
         }
     }
 
     void NoteOff(int ch, int key)
     {
-        const bool sustain = channels_[static_cast<std::size_t>(ch)].controllers[kSustain] >= 64;
+        const bool sustain = channels_[static_cast<std::size_t>(ch)].controllers[cc::kSustain] >= 64;
         for (Voice& voice : voices_)
         {
             if (voice.ChannelNumber() == ch && voice.Key() == key && !voice.Released() && !voice.Sustained())
@@ -1086,7 +1053,7 @@ private:
         {
         case 0:
             channel.bank = value;
-            channel.controllers[kBankSelect] = value;
+            channel.controllers[cc::kBankSelect] = value;
             return;
 
         case 6:
@@ -1123,6 +1090,7 @@ private:
             {
                 NoteOff(ch, key);
             }
+
             return;
 
         default:
@@ -1130,10 +1098,11 @@ private:
         }
 
         channel.controllers[static_cast<std::size_t>(controller)] = value;
-        if (controller == kSustain && value < 64)
+        if (controller == cc::kSustain && value < 64)
         {
             ReleaseSustained(ch);
         }
+
         ModulateChannel(ch);
     }
 
@@ -1205,9 +1174,16 @@ struct TimedMessage
     std::vector<uint8_t> bytes;
 };
 
+// The channel messages of a MIDI file at their samples, and the sample of the file's last event.
+struct TimedMidi
+{
+    std::vector<TimedMessage> messages;
+    int64_t last = 0;
+};
+
 // The channel messages of every track of `file`, at their samples at `rate`, and the sample of the file's last event.
 // Events at the same tick keep the order of their tracks. The tempo changes of every track count.
-std::vector<TimedMessage> TimedMessages(const seqlib::midi::File& file, int rate, int64_t& last)
+TimedMidi TimedMessages(const seqlib::midi::File& file, int rate)
 {
     struct Placed
     {
@@ -1238,8 +1214,7 @@ std::vector<TimedMessage> TimedMessages(const seqlib::midi::File& file, int rate
     double seconds = 0.0;
     uint64_t tick = 0;
     double tempo = 500000.0; // microseconds a quarter note
-    std::vector<TimedMessage> messages;
-    last = 0;
+    TimedMidi timed;
     for (const Placed& placed : order)
     {
         const seqlib::midi::Event& event = file.tracks[placed.track].events[placed.index];
@@ -1247,7 +1222,7 @@ std::vector<TimedMessage> TimedMessages(const seqlib::midi::File& file, int rate
         seconds += smpte ? ticks * smpte_tick : ticks * tempo / 1e6 / division;
         tick = placed.tick;
         const int64_t sample = std::llround(seconds * rate);
-        last = std::max(last, sample);
+        timed.last = std::max(timed.last, sample);
 
         const std::vector<uint8_t>& bytes = event.bytes;
         if (bytes.size() >= 6 && bytes[0] == 0xFF && bytes[1] == 0x51 && bytes[2] == 3)
@@ -1256,11 +1231,11 @@ std::vector<TimedMessage> TimedMessages(const seqlib::midi::File& file, int rate
         }
         else if (!bytes.empty() && bytes[0] >= 0x80 && bytes[0] < 0xF0)
         {
-            messages.push_back({sample, bytes});
+            timed.messages.push_back({sample, bytes});
         }
     }
 
-    return messages;
+    return timed;
 }
 
 } // namespace
@@ -1270,11 +1245,11 @@ StereoRender RenderSoundFont(std::span<const uint8_t> midi, std::span<const uint
 {
     if (rate <= 0)
     {
-        throw std::invalid_argument("The rate of a render has to be positive.");
+        throw std::invalid_argument("The render sample rate must be positive.");
     }
     if (!(most_seconds > 0.0))
     {
-        throw std::invalid_argument("The length of a render has to be positive.");
+        throw std::invalid_argument("The render length must be positive.");
     }
 
     seqlib::midi::File file;
@@ -1284,11 +1259,11 @@ StereoRender RenderSoundFont(std::span<const uint8_t> midi, std::span<const uint
     }
     catch (const std::exception& e)
     {
-        throw std::runtime_error(std::string("The MIDI file can't be read: ") + e.what());
+        throw std::runtime_error(std::string("Can't read the MIDI file: ") + e.what());
     }
+
     const SoundFontData font = ReadSoundFont(sf2);
-    int64_t last = 0;
-    const std::vector<TimedMessage> messages = TimedMessages(file, rate, last);
+    const auto [messages, last] = TimedMessages(file, rate);
 
     // The render runs from message to message. After the last message, the render goes on while voices sound, for
     // kLongestTail at most. The render stops at `most_seconds` in any case.
@@ -1330,6 +1305,7 @@ StereoRender RenderSoundFont(std::span<const uint8_t> midi, std::span<const uint
         {
             return render;
         }
+
         synth.Message(message.bytes);
     }
 

@@ -7,12 +7,14 @@
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 
 #include "xsflib/files.h"
 
+#include "format/archive.h"
 #include "format/file.h"
 #include "format/text.h"
 
@@ -72,7 +74,7 @@ constexpr std::array<TakingCommand, 8> kTakingCommands = {{
     {"a wave file", "File > Import > Wave…"},
     {"a stream file", "File > Import > Stream…"},
     {"a WAV file", "File > Import > Audio File… or Stream…"},
-    {"an AAC file", "Replace… of a stream sound of the 3DS that plays an AAC stream"},
+    {"an AAC file", "Replace… on a 3DS stream sound that plays an AAC stream"},
 }};
 
 bool StartsWith(std::span<const uint8_t> bytes, std::string_view magic)
@@ -94,6 +96,47 @@ std::string_view LibraryKindOf(std::string_view letters)
 }
 
 } // namespace
+
+bool IsInputKind(std::span<const uint8_t> bytes, InputKind kind)
+{
+    switch (kind)
+    {
+    case InputKind::kMidi:
+        return StartsWith(bytes, "MThd");
+    case InputKind::kHokuto:
+        return IsBinary(bytes) || IsText(bytes);
+    case InputKind::kWiiArchive:
+        return StartsWith(bytes, "RSAR");
+    case InputKind::kLaterArchive:
+        return StartsWith(bytes, "CSAR") || StartsWith(bytes, "FSAR");
+    case InputKind::kGbaRom:
+        return IsGbaRom(bytes);
+    case InputKind::kDsArchive:
+        return IsDsArchive(bytes);
+    case InputKind::kDsImage:
+        return IsDsImage(bytes);
+    }
+
+    return false;
+}
+
+std::optional<InputKind> FirstInputKind(std::span<const uint8_t> bytes, std::span<const InputKind> order)
+{
+    for (const InputKind kind : order)
+    {
+        if (IsInputKind(bytes, kind))
+        {
+            return kind;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool HoldsDseOnly(std::span<const uint8_t> image)
+{
+    return DsArchivesIn(image).empty() && HoldsDseFiles(image);
+}
 
 std::string KindOfBytes(std::span<const uint8_t> bytes)
 {
@@ -134,6 +177,7 @@ std::string KindOfBytes(std::span<const uint8_t> bytes)
     {
         return {};
     }
+
     const std::string_view kind = LibraryKindOf(std::string_view(reinterpret_cast<const char*>(&bytes[1]), 3));
     const bool big_endian = bytes[4] == 0xFE && bytes[5] == 0xFF;
     const bool little_endian = bytes[4] == 0xFF && bytes[5] == 0xFE;
@@ -177,6 +221,7 @@ std::string KindOfName(const std::filesystem::path& file)
     {
         return {};
     }
+
     std::string letters = extension.substr(3);
     std::ranges::transform(letters, letters.begin(),
                            [](char c) { return static_cast<char>(std::toupper(static_cast<unsigned char>(c))); });
@@ -220,7 +265,7 @@ std::string NotKindText(std::span<const uint8_t> bytes, const std::string& wante
 std::string NotOpenedText(const std::filesystem::path& file, std::span<const uint8_t> bytes, bool import)
 {
     // The kind that the bytes give, or else the kind that the name indicates.
-    std::string text = (import ? "Hokuto can't import " : "Hokuto can't open ") + xsflib::Utf8(file.filename()) + ". ";
+    std::string text = (import ? "Can't import " : "Can't open ") + xsflib::Utf8(file.filename()) + ". ";
     const std::string kind = KindOfBytes(bytes);
     const std::string named = KindOfName(file);
     if (bytes.empty())
@@ -233,25 +278,20 @@ std::string NotOpenedText(const std::filesystem::path& file, std::span<const uin
     }
     else if (!named.empty())
     {
-        text += "Its name ends in " + xsflib::Utf8(file.extension()) + ", but it doesn't hold " + named + ". ";
+        text += "Its name ends in " + xsflib::Utf8(file.extension()) + ", but it isn't " + named + ". ";
     }
 
-    // What the command takes, and the command that takes the file's kind.
-    text += import ? "File > Import > Sound Archive… takes the sound archives of the Wii, the 3DS, the Wii U and the "
-                     "Switch."
-                   : "File > Open opens Hokuto files and the sound archives of the Wii, the 3DS, the Wii U and the "
-                     "Switch.";
+    // What the command takes, and the command that takes the file's kind. A MIDI file opens by its bytes, whatever its
+    // name, and never comes here.
+    text += import ? "File > Import > Sound Archive… imports sound archives, GBA ROMs, DS images and MIDI files."
+                   : kOpenedKinds;
     for (const TakingCommand& taking : kTakingCommands)
     {
         if (kind == taking.kind || kind.starts_with(std::string(taking.kind) + " of "))
         {
-            text += " " + std::string(taking.command) + " takes it.";
+            text += " Use " + std::string(taking.command) + " instead.";
             break;
         }
-    }
-    if (kind == "a MIDI file")
-    {
-        text += " Hokuto writes MIDI files, and reads none.";
     }
 
     return text;

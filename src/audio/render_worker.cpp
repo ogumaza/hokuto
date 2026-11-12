@@ -23,6 +23,7 @@ RenderWorker::~RenderWorker()
         std::lock_guard lock(mutex_);
         quit_ = true;
     }
+
     changed_.notify_one();
 
     thread_.join();
@@ -38,6 +39,7 @@ void RenderWorker::Play(std::unique_ptr<Renderer> renderer)
         changing_ = true;
         playing_.store(next_ != nullptr, std::memory_order_relaxed);
     }
+
     changed_.notify_one();
 }
 
@@ -75,6 +77,7 @@ void RenderWorker::Run()
         {
             changed_.wait(lock, woken);
         }
+
         if (quit_)
         {
             return;
@@ -88,6 +91,7 @@ void RenderWorker::Run()
             changing_ = false;
             ring_.DiscardWritten();
         }
+
         lock.unlock();
         finished.reset();
 

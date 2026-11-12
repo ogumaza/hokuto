@@ -38,13 +38,19 @@ std::string_view NameOf(Mixing mixing);
 std::optional<Mixing> MixingNamed(std::string_view name);
 
 // The number and the name of a kind of native archive, by the flavor of ntdlib's reader, and the flavor of each.
-// ntdlib's reader gives the Wii's archives no flavor. They take the number 4 and the name wii.
+// ntdlib's reader gives the Wii's archives no flavor. They take the number 4 and the name wii. A GBA ROM isn't an
+// archive of ntdlib's reader either. It has the number 5 and the name gba. A sound archive of the DS (SDAT) has the
+// number 6 and the name ds. A set of a DS image's DSE files (ntdlib/dse/layout.h) has the number 7 and the name dse. A
+// GBA ROM with another of the GBA's drivers has the number and the name of the driver's engine: 8 and konami for
+// Konami's driver, 9 and rd2 for Nintendo R&D2's, 10 and brownie for Brownie Brown's, 11 and ubimilan for Ubisoft
+// Milan's, 12 and rare for Rare's, 13 and quintet for Quintet's, and 14 and krawall for Krawall.
 uint8_t CodeOf(ntdlib::sar::Flavor flavor);
 std::optional<ntdlib::sar::Flavor> FlavorOfCode(uint8_t code);
 std::string_view NameOf(ntdlib::sar::Flavor flavor);
 std::optional<ntdlib::sar::Flavor> FlavorNamed(std::string_view name);
 inline constexpr uint8_t kWiiArchiveCode = 4;
 inline constexpr std::string_view kWiiArchiveName = "wii";
+inline constexpr std::string_view kDsArchiveName = "ds";
 
 // The number and the name of a kind of effect, the kind of each, and the names of its parameters in their order.
 uint8_t CodeOf(EffectKind kind);

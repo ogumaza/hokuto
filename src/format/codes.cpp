@@ -12,6 +12,7 @@
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/sar/formats.h"
 
+#include "format/engines.h"
 #include "format/file.h"
 
 namespace hokuto::format
@@ -101,14 +102,23 @@ constexpr std::array<std::pair<Kind, uint16_t>, ntdlib::commands::kKindCount> kK
     {Kind::kUserProcedure, 74},
     {Kind::kOther, 75},
     {Kind::kData, 76},
-}};
-
-// Each engine's number and name. 0 is no engine.
-constexpr std::array<std::pair<uint8_t, std::string_view>, 4> kEngines = {{
-    {1, "switch"},
-    {2, "wii_u"},
-    {3, "3ds"},
-    {4, "wii"},
+    {Kind::kNoteOff, 77},
+    {Kind::kRepeat, 78},
+    {Kind::kJumpIfEqual, 79},
+    {Kind::kJumpIfNotEqual, 80},
+    {Kind::kJumpIfGreater, 81},
+    {Kind::kJumpIfGreaterOrEqual, 82},
+    {Kind::kJumpIfLessOrEqual, 83},
+    {Kind::kJumpIfLess, 84},
+    {Kind::kTune, 85},
+    {Kind::kRegister, 86},
+    {Kind::kSampleWave, 87},
+    {Kind::kVoiceType, 88},
+    {Kind::kEchoVolume, 89},
+    {Kind::kEchoLength, 90},
+    {Kind::kPsgLength, 91},
+    {Kind::kSweep, 92},
+    {Kind::kSampleOffset, 93},
 }};
 
 constexpr std::array<std::pair<uint8_t, std::string_view>, 2> kMixings = {{
@@ -116,10 +126,10 @@ constexpr std::array<std::pair<uint8_t, std::string_view>, 2> kMixings = {{
     {1, "enhanced"},
 }};
 
-// Each kind of effect's number and name, by the kind. 0 is no effect. An I3DL2 reverb is HSF's type 1 of aux effect.
-// The Wii U's kinds follow in the order of nw::snd's classes FxReverbHi, FxReverbStd, FxChorus and FxDelay. The Wii's
-// kinds follow in the order of ntdlib's types of its effects, each 5 more than the type. The 3DS's kinds follow:
-// nw::snd's FxReverb and FxDelay, nn::snd's FxReverb and FxDelay, and nn::snd's FxReverb of 2011.
+// Each kind of effect's number and name, by the kind. 0 is no effect. The Wii U's kinds follow in the order of
+// nw::snd's classes FxReverbHi, FxReverbStd, FxChorus and FxDelay. The Wii's kinds follow in the order of ntdlib's
+// types of its effects, each 5 more than the type. The 3DS's kinds follow: nw::snd's FxReverb and FxDelay, nn::snd's
+// FxReverb and FxDelay, and nn::snd's FxReverb of 2011.
 constexpr std::array<std::pair<uint8_t, std::string_view>, 16> kEffectKinds = {{
     {1, "i3dl2_reverb"},
     {2, "reverb_hi"},
@@ -138,6 +148,9 @@ constexpr std::array<std::pair<uint8_t, std::string_view>, 16> kEffectKinds = {{
     {15, "3ds_nn_delay"},
     {16, "3ds_nn_reverb_2011"},
 }};
+
+// CodeOf and NameOf read the table by the kind's value. The table requires a row for each kind.
+static_assert(kEffectKinds.size() == static_cast<std::size_t>(EffectKind::kCtrNnReverb2011) + 1);
 
 // The parameters of an I3DL2 reverb, in the order of nn::audio's I3dl2ReverbParameterSet.
 constexpr std::array<std::string_view, 12> kI3dl2ReverbParameters = {
@@ -215,12 +228,10 @@ constexpr std::array<std::pair<std::string_view, ParameterLimits>, 12> kCtrLimit
     {"feedback", kCtrGain},
 }};
 
-// Each kind of native archive's number and name. 0 is no archive. The Wii's archives take 4 (kWiiArchiveCode).
-constexpr std::array<std::pair<Flavor, std::pair<uint8_t, std::string_view>>, 3> kFlavors = {{
-    {Flavor::kNx, {1, "switch"}},
-    {Flavor::kCafe, {2, "wii_u"}},
-    {Flavor::kCtr, {3, "3ds"}},
-}};
+// The kinds of native archive keep the codes and the names of their engines in kEngineFacts. The constants of codes.h
+// name three of them.
+static_assert(FactsOf(Engine::kWii).code == kWiiArchiveCode && FactsOf(Engine::kWii).name == kWiiArchiveName &&
+              FactsOf(Engine::kDs).name == kDsArchiveName);
 
 // Each kind of sound's number and name. 0 is a sound of another kind: ntdlib's SoundType::kUnknown.
 constexpr std::array<std::pair<SoundType, std::pair<uint8_t, std::string_view>>, 4> kSoundTypes = {{
@@ -260,16 +271,16 @@ std::optional<Kind> KindOfCode(uint16_t code)
 
 uint8_t CodeOf(Engine engine)
 {
-    return kEngines[static_cast<std::size_t>(engine)].first;
+    return FactsOf(engine).code;
 }
 
 std::optional<Engine> EngineOfCode(uint8_t code)
 {
-    for (std::size_t i = 0; i < kEngines.size(); ++i)
+    for (const EngineFacts& facts : kEngineFacts)
     {
-        if (kEngines[i].first == code)
+        if (facts.code == code)
         {
-            return static_cast<Engine>(i);
+            return facts.engine;
         }
     }
 
@@ -278,16 +289,16 @@ std::optional<Engine> EngineOfCode(uint8_t code)
 
 std::string_view NameOf(Engine engine)
 {
-    return kEngines[static_cast<std::size_t>(engine)].second;
+    return FactsOf(engine).name;
 }
 
 std::optional<Engine> EngineNamed(std::string_view name)
 {
-    for (std::size_t i = 0; i < kEngines.size(); ++i)
+    for (const EngineFacts& facts : kEngineFacts)
     {
-        if (kEngines[i].second == name)
+        if (facts.name == name)
         {
-            return static_cast<Engine>(i);
+            return facts.engine;
         }
     }
 
@@ -332,11 +343,11 @@ std::optional<Mixing> MixingNamed(std::string_view name)
 
 uint8_t CodeOf(Flavor flavor)
 {
-    for (const auto& [f, entry] : kFlavors)
+    for (const EngineFacts& facts : kEngineFacts)
     {
-        if (f == flavor)
+        if (facts.flavor == flavor)
         {
-            return entry.first;
+            return facts.code;
         }
     }
 
@@ -345,11 +356,11 @@ uint8_t CodeOf(Flavor flavor)
 
 std::optional<Flavor> FlavorOfCode(uint8_t code)
 {
-    for (const auto& [flavor, entry] : kFlavors)
+    for (const EngineFacts& facts : kEngineFacts)
     {
-        if (entry.first == code)
+        if (facts.flavor && facts.code == code)
         {
-            return flavor;
+            return facts.flavor;
         }
     }
 
@@ -358,11 +369,11 @@ std::optional<Flavor> FlavorOfCode(uint8_t code)
 
 std::string_view NameOf(Flavor flavor)
 {
-    for (const auto& [f, entry] : kFlavors)
+    for (const EngineFacts& facts : kEngineFacts)
     {
-        if (f == flavor)
+        if (facts.flavor == flavor)
         {
-            return entry.second;
+            return facts.name;
         }
     }
 
@@ -371,11 +382,11 @@ std::string_view NameOf(Flavor flavor)
 
 std::optional<Flavor> FlavorNamed(std::string_view name)
 {
-    for (const auto& [flavor, entry] : kFlavors)
+    for (const EngineFacts& facts : kEngineFacts)
     {
-        if (entry.second == name)
+        if (facts.flavor && facts.name == name)
         {
-            return flavor;
+            return facts.flavor;
         }
     }
 

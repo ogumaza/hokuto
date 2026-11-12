@@ -7,14 +7,13 @@
 #include <algorithm>
 #include <array>
 #include <cfloat>
-#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -22,7 +21,10 @@
 
 #include "app/item_views.h"
 #include "app/theme.h"
+#include "app/time_text.h"
 #include "app/widgets.h"
+#include "edit/ds_streams.h"
+#include "edit/ds_waves.h"
 
 namespace hokuto::app
 {
@@ -65,40 +67,67 @@ constexpr float kLabelSpacing = 90.0f;
 constexpr uint32_t kHighestRate = 192'000;
 
 // What each field does, for the tooltips of the labels.
-const char* const kLoopTip = "On, the wave plays from its start to the loop's end, then round the loop until it stops.";
+const char* const kLoopTip = "When on, playback runs to the loop end, then repeats the loop until the sound stops.";
 const char* const kLoopStartTip =
-    "The loop's first sample. A loop in DSP-ADPCM starts at a frame of 14 samples. A stream's loop starts at a block, "
-    "so that the samples stay as they are. The 3DS's tools never start a loop at a stream's first block. Such a loop "
-    "moves to the second block, and the first block's samples follow the end. The loop sounds the same.";
+    "First sample of the loop. In DSP-ADPCM, a loop starts on a frame of 14 samples. A stream loop starts on a block. "
+    "On the 3DS, a loop at the first block moves to the second block, and the first block is repeated after the loop "
+    "end. It sounds the same.";
 const char* const kLoopEndTip =
-    "One past the last sample that plays. The samples after it stay in the wave, and a later edit can move the end "
-    "back over them.";
+    "One past the last sample that plays. Samples after the end are kept, and you can move the end back over them "
+    "later.";
 const char* const kStreamEndTip =
-    "One past the last sample that plays. A stream's loop runs to its end. A new end makes the stream again from its "
-    "samples, and DSP-ADPCM is encoded again.";
+    "One past the last sample that plays. A stream loop always runs to the end. A new end rebuilds the stream from its "
+    "samples and re-encodes DSP-ADPCM.";
 const char* const kEndTip =
-    "One past the last sample that plays. Without a loop, the wave stops there. The samples after it stay in the "
-    "wave, and a later edit can move the end back over them.";
-const char* const kRateTip =
-    "The samples per second that the console plays the wave at. Another rate changes the pitch and the length, and the "
-    "samples stay.";
+    "One past the last sample that plays. Without a loop, the wave stops here. Samples after the end are kept, and you "
+    "can move the end back over them later.";
+const char* const kRateTip = "Playback sample rate. Changing it changes the pitch and length but keeps the samples.";
 const char* const kEncodingTip =
-    "How the wave holds its samples. Another encoding makes the wave again from its samples. DSP-ADPCM takes 8 bytes "
-    "for each 14 samples of a channel: 4/7 of the bytes of PCM8 and 2/7 of those of PCM16, with some noise.";
+    "Sample encoding. Changing it re-encodes the wave from its samples. DSP-ADPCM uses 8 bytes per 14 samples per "
+    "channel: 4/7 the size of 8-bit PCM and 2/7 the size of 16-bit PCM, with some added noise.";
+const char* const kDsLoopStartTip =
+    "First sample of the loop. The DS reads waves in 32-bit words, and a loop starts on a word: every 4 samples in "
+    "8-bit PCM, 2 in 16-bit PCM or 8 in IMA-ADPCM. For IMA-ADPCM, the DS saves the decoder state when it first reaches "
+    "the loop start.";
+const char* const kDsEndTip =
+    "One past the last sample. A DS wave loop always runs to the end of the wave. The end can't be changed.";
+const char* const kDsRateTip =
+    "Playback sample rate, 256–192,000 Hz. The channel timer follows it. Changing it changes the pitch and length but "
+    "keeps the samples.";
+const char* const kDseRateTip =
+    "Sample rate of the wave, 256–192,000 Hz. DSE ignores the wave rate and sets the pitch from the tuning of each "
+    "split. Changing the rate adjusts the tuning of every split that uses the wave. The samples don't change.";
+const char* const kDseEncodingTip = "Sample encoding. Hokuto can't change the encoding of DSE waves yet.";
+const char* const kDsEncodingTip =
+    "Sample encoding. Changing it re-encodes the wave from its samples and resizes the wave archive file. 8-bit PCM "
+    "and IMA-ADPCM lose some detail. 16-bit PCM uses the most space.";
+const char* const kDsStreamLoopStartTip =
+    "First sample of the loop. A DS stream loop starts on a block, and the block sets the IMA-ADPCM state. Another "
+    "encoding has other block boundaries. The loop then moves forward to the next one, and the samples in between are "
+    "repeated after the end.";
+const char* const kDsStreamEndTip = "One past the last sample. A DS stream loop always runs to the end of the stream.";
+const char* const kDsStreamRateTip =
+    "Playback sample rate, 256–65,535 Hz. Changing it changes the pitch and length but keeps the samples. The DS mixes "
+    "at about 32,728 Hz. Other rates haven't been tested in a game.";
+const char* const kDsStreamEncodingTip =
+    "Sample encoding. Changing it re-encodes the stream from its samples, in blocks of 512 bytes. 8-bit PCM and "
+    "IMA-ADPCM lose some detail. 16-bit PCM uses the most space.";
 const char* const kTracksTip =
-    "The tracks that the sound plays, from the archive's table. A track plays its channels with its volume and pan.";
-const char* const kRegionsTip = "The regions of the stream. Hokuto reads no stream that holds regions.";
+    "Tracks of the stream sound, from the archive table. Each track sets the volume and pan of its channels.";
+const char* const kRegionsTip = "Stream regions. Hokuto doesn't support streams with regions.";
 
 const char* EncodingName(sar::WaveEncoding encoding)
 {
     switch (encoding)
     {
     case sar::WaveEncoding::kPcm8:
-        return "PCM8";
+        return "8-bit PCM";
     case sar::WaveEncoding::kPcm16:
-        return "PCM16";
+        return "16-bit PCM";
     case sar::WaveEncoding::kDspAdpcm:
         return "DSP-ADPCM";
+    case sar::WaveEncoding::kImaAdpcm:
+        return "IMA-ADPCM";
     default:
         return "Other";
     }
@@ -131,14 +160,13 @@ std::optional<uint32_t> NumberIn(const std::string& text)
             digits += c;
         }
     }
-    uint32_t value = 0;
-    const auto [end, error] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
-    if (error != std::errc() || end != digits.data() + digits.size() || digits.empty())
+    const std::optional<uint64_t> value = WholeNumber(digits);
+    if (!value || *value > std::numeric_limits<uint32_t>::max())
     {
         return std::nullopt;
     }
 
-    return value;
+    return static_cast<uint32_t>(*value);
 }
 
 // The samples that the view shows: from its first, and across its width.
@@ -293,32 +321,17 @@ std::optional<uint32_t> DraggedPlace(const WaveView& view, const WaveValues& val
 {
     if (marker == LoopMarker::kStart)
     {
-        const uint32_t step = LoopStep(values.encoding, view.stream);
+        const uint32_t step = LoopStepOf(view, values.encoding);
         return LoopMarkerPlace(view.samples, target, step, 0, values.loop_end - 1, snap, reach);
     }
 
     return LoopMarkerPlace(view.samples, target, 1, values.loop ? values.loop_start + 1 : 1, view.held, snap, reach);
 }
 
-// The waveform at `pos`, `size` large, with the ruler over it, the loop and the markers. A drag of a marker moves it,
-// and the edit ends when the user lets go. Ctrl with the wheel zooms around the pointer, and the wheel scrolls. The
-// arrangement takes the same gestures. A double-click shows the whole item.
-void DrawWaveform(const WaveView& view, WaveWindowState& state, bool busy, ImVec2 pos, ImVec2 size, WaveEdit& edit)
+// The loop marker that a press at `mouse` grabs, if any.
+std::optional<LoopMarker> NearbyMarker(const WaveView& view, const WaveValues& before, const Span& span, ImVec2 min,
+                                       float width, ImVec2 mouse)
 {
-    ImDrawList* draw = ImGui::GetWindowDrawList();
-    const ImVec2 min(pos.x, pos.y + Px(kRulerHeight));
-    const ImVec2 max(pos.x + size.x, pos.y + size.y);
-    const float width = max.x - min.x;
-    Span span = SpanOf(view, state);
-    const WaveValues before = state.held ? *state.held : view.values;
-    draw->AddRectFilled(min, max, theme::kDisplay, Px(4.0f));
-    DrawRuler(draw, view, span, pos, width);
-
-    // The gestures: a drag of a marker, the wheel and a double-click.
-    ImGui::SetCursorScreenPos(min);
-    ImGui::InvisibleButton("##waveform", ImVec2(width, max.y - min.y));
-    const bool hovered = ImGui::IsItemHovered();
-    const ImVec2 mouse = ImGui::GetMousePos();
     const float start_x = XOf(span, min, width, before.loop_start);
     const float end_x = XOf(span, min, width, before.loop_end);
 
@@ -331,24 +344,29 @@ void DrawWaveform(const WaveView& view, WaveWindowState& state, bool busy, ImVec
         const bool on_flag = in_flags && (mouse.x - x) * side >= 0.0f && off <= Px(kFlagSize);
         return off <= Px(kMarkerBand) || on_flag ? std::optional<float>(off) : std::nullopt;
     };
-    const std::optional<float> end_reach = reach(end_x, -1.0f);
+    // A DS wave's end stays.
+    const std::optional<float> end_reach = view.ds ? std::nullopt : reach(end_x, -1.0f);
     const std::optional<float> start_reach = before.loop ? reach(start_x, 1.0f) : std::nullopt;
-    std::optional<LoopMarker> near;
+    std::optional<LoopMarker> nearby;
     if (end_reach)
     {
-        near = LoopMarker::kEnd;
+        nearby = LoopMarker::kEnd;
     }
     if (start_reach && (!end_reach || *start_reach < *end_reach))
     {
-        near = LoopMarker::kStart;
+        nearby = LoopMarker::kStart;
     }
-    if ((hovered && near && !busy) || state.dragging)
+
+    return nearby;
+}
+
+// Follows a drag of a loop marker. The edit ends when the user lets go.
+void DragMarker(const WaveView& view, WaveWindowState& state, const Span& span, ImVec2 min, float width, ImVec2 mouse,
+                bool busy, std::optional<LoopMarker> nearby, WaveEdit& edit)
+{
+    if (ImGui::IsItemActivated() && nearby && !busy)
     {
-        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    }
-    if (ImGui::IsItemActivated() && near && !busy)
-    {
-        state.dragging = near;
+        state.dragging = nearby;
         state.held = view.values;
     }
     if (ImGui::IsItemActive() && state.dragging && state.held)
@@ -371,38 +389,41 @@ void DrawWaveform(const WaveView& view, WaveWindowState& state, bool busy, ImVec
         state.dragging.reset();
         state.held.reset();
     }
-    if (hovered && !state.dragging)
-    {
-        const ImGuiIO& io = ImGui::GetIO();
-        const float zoom = io.KeyCtrl ? io.MouseWheel : 0.0f;
-        const float scroll = io.KeyCtrl ? io.MouseWheelH : io.MouseWheel + io.MouseWheelH;
-        if (zoom != 0.0f)
-        {
-            const double pointer = SampleAt(span, min, width, mouse.x);
-            const double across =
-                std::clamp(span.across * std::pow(kZoomStep, -zoom),
-                           std::min(kLeastAcross, static_cast<double>(view.held)), static_cast<double>(view.held));
-            state.across = across;
-            state.first = pointer - (mouse.x - min.x) / width * across;
-        }
-        if (scroll != 0.0f)
-        {
-            state.across = span.across;
-            state.first = span.first - scroll * span.across * kScrollStep;
-        }
-        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !near)
-        {
-            state.across = 0.0;
-            state.first = 0.0;
-        }
-        span = SpanOf(view, state);
-    }
+}
 
-    // The loop's region and the channels. The samples after the end lie in shadow.
-    const WaveValues values = state.held ? *state.held : view.values;
-    draw->PushClipRect(min, max, true);
-    const float loop_left = XOf(span, min, width, values.loop_start);
-    const float loop_right = XOf(span, min, width, values.loop_end);
+// Zooms on Ctrl with the wheel, scrolls on the wheel, and shows the whole item on a double-click.
+void ZoomAndScroll(const WaveView& view, WaveWindowState& state, Span& span, ImVec2 min, float width, ImVec2 mouse,
+                   std::optional<LoopMarker> nearby)
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const float zoom = io.KeyCtrl ? io.MouseWheel : 0.0f;
+    const float scroll = io.KeyCtrl ? io.MouseWheelH : io.MouseWheel + io.MouseWheelH;
+    if (zoom != 0.0f)
+    {
+        const double pointer = SampleAt(span, min, width, mouse.x);
+        const double across =
+            std::clamp(span.across * std::pow(kZoomStep, -zoom), std::min(kLeastAcross, static_cast<double>(view.held)),
+                       static_cast<double>(view.held));
+        state.across = across;
+        state.first = pointer - (mouse.x - min.x) / width * across;
+    }
+    if (scroll != 0.0f)
+    {
+        state.across = span.across;
+        state.first = span.first - scroll * span.across * kScrollStep;
+    }
+    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !nearby)
+    {
+        state.across = 0.0;
+        state.first = 0.0;
+    }
+    span = SpanOf(view, state);
+}
+
+// Draws the loop region from `loop_left` to `loop_right`, the shadow after it and the channels.
+void DrawLoopAndChannels(ImDrawList* draw, const WaveView& view, const WaveValues& values, const Span& span, ImVec2 min,
+                         ImVec2 max, float loop_left, float loop_right)
+{
     if (values.loop)
     {
         draw->AddRectFilled(ImVec2(loop_left, min.y), ImVec2(loop_right, max.y),
@@ -420,25 +441,65 @@ void DrawWaveform(const WaveView& view, WaveWindowState& state, bool busy, ImVec
             draw->AddLine(ImVec2(min.x, top), ImVec2(max.x, top), theme::kBorder, Px(1.0f));
         }
     }
+}
+
+// Draws a loop marker: its line at `x`, and its flag with `letter` at the top, on `side` of the line.
+void DrawLoopMarker(ImDrawList* draw, ImVec2 min, ImVec2 max, float x, float side, ImU32 colour, const char* letter)
+{
+    const float flag = Px(kFlagSize) * side;
+    draw->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), colour, Px(1.5f));
+    draw->AddRectFilled(ImVec2(std::min(x, x + flag), min.y), ImVec2(std::max(x, x + flag), min.y + Px(kFlagSize)),
+                        colour, Px(2.0f));
+    const ImVec2 letter_size = TextSize(theme::GetFonts().strong, theme::kSmallSize, letter);
+    DrawText(draw, theme::GetFonts().strong, theme::kSmallSize,
+             ImVec2(x + flag * 0.5f - letter_size.x * 0.5f, min.y + (Px(kFlagSize) - letter_size.y) * 0.5f),
+             theme::kTextOnColour, letter);
+}
+
+// The waveform at `pos`, `size` large, with the ruler over it, the loop and the markers. A drag of a marker moves it,
+// and the edit ends when the user lets go. Ctrl with the wheel zooms around the pointer, and the wheel scrolls. The
+// arrangement takes the same gestures. A double-click shows the whole item.
+void DrawWaveform(const WaveView& view, WaveWindowState& state, bool busy, ImVec2 pos, ImVec2 size, WaveEdit& edit)
+{
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 min(pos.x, pos.y + Px(kRulerHeight));
+    const ImVec2 max(pos.x + size.x, pos.y + size.y);
+    const float width = max.x - min.x;
+    Span span = SpanOf(view, state);
+    const WaveValues before = state.held ? *state.held : view.values;
+    draw->AddRectFilled(min, max, theme::kDisplay, Px(4.0f));
+    DrawRuler(draw, view, span, pos, width);
+
+    // The gestures: a drag of a marker, the wheel and a double-click.
+    ImGui::SetCursorScreenPos(min);
+    ImGui::InvisibleButton("##waveform", ImVec2(width, max.y - min.y));
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const std::optional<LoopMarker> nearby = NearbyMarker(view, before, span, min, width, mouse);
+    if ((hovered && nearby && !busy) || state.dragging)
+    {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+    DragMarker(view, state, span, min, width, mouse, busy, nearby, edit);
+    if (hovered && !state.dragging)
+    {
+        ZoomAndScroll(view, state, span, min, width, mouse, nearby);
+    }
+
+    // The loop's region and the channels. The samples after the end lie in shadow.
+    const WaveValues values = state.held ? *state.held : view.values;
+    draw->PushClipRect(min, max, true);
+    const float loop_left = XOf(span, min, width, values.loop_start);
+    const float loop_right = XOf(span, min, width, values.loop_end);
+    DrawLoopAndChannels(draw, view, values, span, min, max, loop_left, loop_right);
 
     // The markers over them. A marker's flag sits at the top of its line, inside the loop: the start's to the right,
     // and the end's to the left.
-    const auto marker = [draw, &min, &max](float x, float side, ImU32 colour, const char* letter)
-    {
-        const float flag = Px(kFlagSize) * side;
-        draw->AddLine(ImVec2(x, min.y), ImVec2(x, max.y), colour, Px(1.5f));
-        draw->AddRectFilled(ImVec2(std::min(x, x + flag), min.y), ImVec2(std::max(x, x + flag), min.y + Px(kFlagSize)),
-                            colour, Px(2.0f));
-        const ImVec2 letter_size = TextSize(theme::GetFonts().strong, theme::kSmallSize, letter);
-        DrawText(draw, theme::GetFonts().strong, theme::kSmallSize,
-                 ImVec2(x + flag * 0.5f - letter_size.x * 0.5f, min.y + (Px(kFlagSize) - letter_size.y) * 0.5f),
-                 theme::kTextOnColour, letter);
-    };
     if (values.loop)
     {
-        marker(loop_left, 1.0f, theme::kCycle, "S");
+        DrawLoopMarker(draw, min, max, loop_left, 1.0f, theme::kCycle, "S");
     }
-    marker(loop_right, -1.0f, values.loop ? theme::kCycle : theme::kTextMuted, "E");
+    DrawLoopMarker(draw, min, max, loop_right, -1.0f, values.loop ? theme::kCycle : theme::kTextMuted, "E");
     draw->PopClipRect();
 
     // The sample under the pointer, or under the dragged marker.
@@ -460,25 +521,34 @@ void FieldLabel(const char* label, const char* tooltip)
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::kTextMuted), "%s", label);
+    MutedText(label);
     ItemTooltip(tooltip);
     ImGui::TableNextColumn();
 }
 
 // A box in the value's cell that shows `value` and takes a typed number. Once the user ends the typing, returns the
 // typed text if it differs from the value's.
-std::optional<std::string> NumberBox(const char* id, uint32_t value, WaveWindowState& state, bool enabled)
+// While `busy`, the closed boxes take no click. A field that the user opened before still receives the keys
+// (BeginOpenField). The text that the field ends with waits in `state.waiting` for `item`, and the box shows it, until
+// the program is free.
+std::optional<std::string> NumberBox(const char* id, uint32_t value, WaveWindowState& state, const ShownItem& item,
+                                     bool enabled, bool busy)
 {
     const std::string text = std::to_string(value);
+    const ImGuiID box = ImGui::GetID(id);
     if (!enabled)
     {
+        state.waiting.Drop(box);
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::kTextDim), "%s", text.c_str());
         return std::nullopt;
     }
 
-    const std::optional<std::string> entered =
-        TextEntry(id, text, ImGui::GetCursorScreenPos(), Px(kBoxWidth), state.typing);
+    const bool reenabled = BeginOpenField(TextEntryOpen(id, state.typing), busy);
+    std::optional<std::string> entered =
+        TextEntry(id, state.waiting.Shown(item, box, text), ImGui::GetCursorScreenPos(), Px(kBoxWidth), state.typing);
+    EndOpenField(reenabled);
+    entered = state.waiting.Pass(item, box, text, std::move(entered), busy);
     if (!entered || *entered == text)
     {
         return std::nullopt;
@@ -508,23 +578,12 @@ void NoteCell(const std::string& note)
 {
     ImGui::TableNextColumn();
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(theme::kTextMuted), "%s", note.c_str());
+    MutedText(note.c_str());
 }
 
-// The fields of the loop: whether the item loops, the loop's start and its end, and the samples that the item holds.
-void DrawLoopFields(const WaveView& view, WaveWindowState& state, float width, WaveEdit& edit)
+// The switch of the loop for the item's `values` (DrawLoopFields).
+void DrawLoopSwitch(const WaveView& view, WaveWindowState& state, const WaveValues& values, WaveEdit& edit)
 {
-    if (!ImGui::BeginTable("##loop", 3, ImGuiTableFlags_None, ImVec2(width, 0.0f)))
-    {
-        return;
-    }
-
-    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, Px(kLabelWidth));
-    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthFixed, Px(kBoxWidth));
-    ImGui::TableSetupColumn("##after", ImGuiTableColumnFlags_WidthStretch);
-    const WaveValues values = state.held ? *state.held : view.values;
-
-    // The loop's switch. A loop that comes on starts where the loop that went off started, or else at the item's start.
     FieldLabel("Loop", kLoopTip);
     const std::array<std::string, 2> kLabels = {"On", "Off"};
     std::array<uint8_t, 2> lit{};
@@ -539,37 +598,77 @@ void DrawLoopFields(const WaveView& view, WaveWindowState& state, float width, W
         edit.values = WithLoopSwitched(view, clicked == 0, state.loop_start_off);
         edit.name = "Change Loop";
     }
+}
+
+// The edit of a typed loop `start` (DrawLoopFields).
+void MoveLoopStart(const WaveView& view, WaveWindowState& state, const WaveValues& values, uint32_t start,
+                   WaveEdit& edit)
+{
+    const uint32_t step = LoopStepOf(view, values.encoding);
+    const std::optional<uint32_t> place =
+        LoopMarkerPlace(view.samples, start, step, 0, values.loop_end - 1, false, 0.0);
+    // A start that moves gets a note over the facts, in the Replace window's words, with or without an edit.
+    std::vector<std::string> notes;
+    if (place && *place != start)
+    {
+        notes.push_back(LoopMoveLine(view.stream, view.ds && !view.stream, start, *place, false));
+    }
+    if (place && *place != values.loop_start)
+    {
+        WaveValues changed = view.values;
+        changed.loop_start = *place;
+        edit.values = changed;
+        edit.name = "Change Loop Start";
+        edit.notes = std::move(notes);
+    }
+    else if (!notes.empty())
+    {
+        state.notes = std::move(notes);
+    }
+}
+
+// The fields of the loop: whether the item loops, the loop's start and its end, and the samples that the item holds.
+// `busy` is passed to the boxes (NumberBox).
+void DrawLoopFields(const WaveView& view, WaveWindowState& state, const ShownItem& item, float width, bool busy,
+                    WaveEdit& edit)
+{
+    if (!ImGui::BeginTable("##loop", 3, ImGuiTableFlags_None, ImVec2(width, 0.0f)))
+    {
+        return;
+    }
+
+    ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, Px(kLabelWidth));
+    ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthFixed, Px(kBoxWidth));
+    ImGui::TableSetupColumn("##after", ImGuiTableColumnFlags_WidthStretch);
+    const WaveValues values = state.held ? *state.held : view.values;
+
+    // The loop's switch. A loop that comes on starts where the loop that went off started, or else at the item's start.
+    DrawLoopSwitch(view, state, values, edit);
 
     // The loop's start and its end, typed. A typed start moves to the place that the encoding allows.
-    FieldLabel("Loop start", kLoopStartTip);
-    const std::optional<std::string> typed_start = NumberBox("##start", values.loop_start, state, values.loop);
+    FieldLabel("Loop start", view.ds ? (view.stream ? kDsStreamLoopStartTip : kDsLoopStartTip) : kLoopStartTip);
+    const std::optional<std::string> typed_start =
+        NumberBox("##start", values.loop_start, state, item, values.loop, busy);
     NoteCell(TimeOf(values.loop_start, values.rate));
     const std::optional<uint32_t> start =
         typed_start && values.loop ? NumberFrom(*typed_start, 0, values.loop_end - 1,
-                                                "The loop's start is a whole number of samples", edit.refused)
+                                                "The loop start must be a whole number of samples", edit.refused)
                                    : std::nullopt;
     if (start)
     {
-        const uint32_t step = LoopStep(values.encoding, view.stream);
-        const std::optional<uint32_t> place =
-            LoopMarkerPlace(view.samples, *start, step, 0, values.loop_end - 1, false, 0.0);
-        if (place && *place != values.loop_start)
-        {
-            WaveValues changed = view.values;
-            changed.loop_start = *place;
-            edit.values = changed;
-            edit.name = "Change Loop Start";
-        }
+        MoveLoopStart(view, state, values, *start, edit);
     }
 
     // Without a loop, the end is where the wave stops. It takes input either way.
     const bool ends_loop = !view.stream && values.loop;
-    FieldLabel(ends_loop ? "Loop end" : "End", view.stream ? kStreamEndTip : (ends_loop ? kLoopEndTip : kEndTip));
-    const std::optional<std::string> typed_end = NumberBox("##end", values.loop_end, state, true);
+    FieldLabel(ends_loop ? "Loop end" : "End",
+               view.ds ? (view.stream ? kDsStreamEndTip : kDsEndTip)
+                       : (view.stream ? kStreamEndTip : (ends_loop ? kLoopEndTip : kEndTip)));
+    const std::optional<std::string> typed_end = NumberBox("##end", values.loop_end, state, item, !view.ds, busy);
     NoteCell(TimeOf(values.loop_end, values.rate));
     const uint32_t least = values.loop ? values.loop_start + 1 : 1;
     const std::string end_text =
-        ends_loop ? "The loop's end is a whole number of samples" : "The end is a whole number of samples";
+        ends_loop ? "The loop end must be a whole number of samples" : "The end must be a whole number of samples";
     const std::optional<uint32_t> end =
         typed_end ? NumberFrom(*typed_end, least, view.held, end_text, edit.refused) : std::nullopt;
     if (end && *end != values.loop_end)
@@ -581,7 +680,8 @@ void DrawLoopFields(const WaveView& view, WaveWindowState& state, float width, W
     }
 
     // The samples that the item holds.
-    FieldLabel("Samples", "The samples that each channel holds. The end can move over all of them.");
+    FieldLabel("Samples", view.ds ? "Number of samples in each channel."
+                                  : "Number of samples in each channel. The end can move anywhere up to this number.");
     ImGui::AlignTextToFramePadding();
     ImGui::Text("%u", view.held);
     NoteCell(TimeOf(view.held, values.rate));
@@ -589,8 +689,9 @@ void DrawLoopFields(const WaveView& view, WaveWindowState& state, float width, W
 }
 
 // The fields of the format: the rate, the encoding and the channels, and a stream's tracks and regions. A value takes
-// the rest of the table's width.
-void DrawFormatFields(const WaveView& view, WaveWindowState& state, float width, WaveEdit& edit)
+// the rest of the table's width. `busy` is passed to the box of the rate (NumberBox).
+void DrawFormatFields(const WaveView& view, WaveWindowState& state, const ShownItem& item, float width, bool busy,
+                      WaveEdit& edit)
 {
     if (!ImGui::BeginTable("##format", 2, ImGuiTableFlags_None, ImVec2(width, 0.0f)))
     {
@@ -603,14 +704,17 @@ void DrawFormatFields(const WaveView& view, WaveWindowState& state, float width,
     const ImVec4 kMuted = ImGui::ColorConvertU32ToFloat4(theme::kTextMuted);
 
     // The rate, typed.
-    FieldLabel("Rate", kRateTip);
-    const std::optional<std::string> typed_rate = NumberBox("##rate", values.rate, state, true);
+    FieldLabel("Rate", view.dse ? kDseRateTip : view.ds ? (view.stream ? kDsStreamRateTip : kDsRateTip) : kRateTip);
+    const std::optional<std::string> typed_rate = NumberBox("##rate", values.rate, state, item, true, busy);
     ImGui::SameLine();
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(kMuted, "Hz");
     const std::optional<uint32_t> rate =
-        typed_rate ? NumberFrom(*typed_rate, 1, kHighestRate, "The rate is a whole number of hertz", edit.refused)
-                   : std::nullopt;
+        typed_rate
+            ? NumberFrom(*typed_rate, view.ds ? edit::kLeastDsRate : 1,
+                         view.ds ? (view.stream ? edit::kHighestDsStreamRate : edit::kHighestDsRate) : kHighestRate,
+                         "The sample rate must be a whole number of hertz", edit.refused)
+            : std::nullopt;
     if (rate && *rate != values.rate)
     {
         WaveValues changed = values;
@@ -620,7 +724,9 @@ void DrawFormatFields(const WaveView& view, WaveWindowState& state, float width,
     }
 
     // The encoding, from the encodings that the item can take. Each switch is as wide as the longest name.
-    FieldLabel("Encoding", kEncodingTip);
+    FieldLabel("Encoding", view.dse  ? kDseEncodingTip
+                           : view.ds ? (view.stream ? kDsStreamEncodingTip : kDsEncodingTip)
+                                     : kEncodingTip);
     std::vector<std::string> names;
     std::vector<uint8_t> lit;
     float widest = 0.0f;
@@ -639,13 +745,14 @@ void DrawFormatFields(const WaveView& view, WaveWindowState& state, float width,
         changed.encoding = view.encodings[static_cast<std::size_t>(clicked)];
         edit.values = changed;
         edit.name = "Change Encoding";
+        edit.notes = EncodingNotes(view, values, changed.encoding);
     }
 
     // The channels, and a stream's tracks and regions. A track's line wraps at the table's edge.
-    FieldLabel("Channels", "The channels that the item holds.");
+    FieldLabel("Channels", "Number of channels.");
     ImGui::AlignTextToFramePadding();
     ImGui::Text("%zu", view.samples.size());
-    if (view.stream)
+    if (view.stream && !view.ds)
     {
         FieldLabel("Tracks", kTracksTip);
         ImGui::AlignTextToFramePadding();
@@ -666,27 +773,106 @@ void DrawFormatFields(const WaveView& view, WaveWindowState& state, float width,
     ImGui::EndTable();
 }
 
-} // namespace
-
-WaveEdit DrawWaveWindow(const WaveView& view, WaveWindowState& state, bool busy, bool* open)
+// Begins the window. Returns whether it's visible.
+bool BeginWaveWindow(const WaveView& view, bool* open)
 {
     // A window over the middle of the main window, in the style of the Bank Editor. The user can make it larger.
     const std::string title =
         std::string(view.stream ? "Stream Properties - " : "Wave Properties - ") + view.name + "###WaveProperties";
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(Px(kWindowWidth), Px(kWindowHeight)), ImGuiCond_Appearing);
     ImGui::SetNextWindowSizeConstraints(ImVec2(Px(kLeastWidth), Px(kLeastHeight)), ImVec2(FLT_MAX, FLT_MAX));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Px(theme::kDialogPadding));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(theme::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(theme::kBorderStrong));
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoDocking |
-                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
-                                        ImGuiWindowFlags_NoScrollWithMouse;
-    const bool visible = ImGui::Begin(title.c_str(), open, kFlags);
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
+    const bool visible =
+        BeginDialogWindow(title.c_str(), open, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    return visible;
+}
+
+// Draws the buttons across the top at `origin`, `room` wide.
+void DrawWaveButtons(const WaveView& view, WaveWindowState& state, bool busy, ImVec2 origin, ImVec2 room,
+                     WaveEdit& edit)
+{
+    const ImVec2 button(Px(kButtonHeight), Px(kButtonHeight));
+    const char* play_tip = state.playing ? "Stop" : "Play from the start, looping until you press Stop";
+    if (IconButton("##play", state.playing ? Icon::kStop : Icon::kPlay, button, state.playing, theme::kPlay, play_tip))
+    {
+        (state.playing ? edit.stop : edit.play) = true;
+    }
+    ImGui::SameLine(0.0f, Px(kGap));
+    ImGui::BeginDisabled(busy);
+    if (ImGui::Button("Replace…", ImVec2(0.0f, Px(kButtonHeight))))
+    {
+        edit.replace = true;
+    }
+    ItemTooltip(view.dse      ? "Replace the wave with a WAV file."
+                : view.stream ? "Replace the stream with a WAV or stream file."
+                              : "Replace the wave with a WAV or wave file.");
+    ImGui::SameLine(0.0f, Px(kGap) * 0.5f);
+    if (ImGui::Button("Export…", ImVec2(0.0f, Px(kButtonHeight))))
+    {
+        edit.export_item = true;
+    }
+    ItemTooltip(std::string("Export the ") + (view.stream ? "stream" : "wave") +
+                " in its original format or as a WAV file.");
+    ImGui::EndDisabled();
+    ImGui::SameLine(origin.x + room.x - button.x - ImGui::GetWindowPos().x);
+    if (IconButton("##snap", Icon::kSnap, button, state.snap, theme::kAccent, "Snap loop markers to zero crossings"))
+    {
+        state.snap = !state.snap;
+    }
+}
+
+// Draws the facts from `facts_top` down to the bottom of the room.
+void DrawWaveFacts(const WaveView& view, WaveWindowState& state, ImVec2 origin, ImVec2 room, float facts_top)
+{
+    // The facts take the rest of the window, and scroll where they don't fit.
+    const float facts_height =
+        std::max(origin.y + room.y - facts_top - Px(kGap), ImGui::GetTextLineHeightWithSpacing() * 2.0f);
+    ImGui::SetCursorScreenPos(ImVec2(origin.x, facts_top + Px(kGap)));
+    if (std::exchange(state.top, false))
+    {
+        ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
+    }
+    ImGui::BeginChild("##facts", ImVec2(room.x, facts_height));
+    ImGui::PushTextWrapPos(0.0f);
+    for (const std::string& note : state.notes)
+    {
+        ImGui::TextUnformatted(note.c_str());
+    }
+    const ImVec4 kMuted = ImGui::ColorConvertU32ToFloat4(theme::kTextMuted);
+    ImGui::TextColored(kMuted, "%s", view.reach.c_str());
+    for (const std::string& line : view.sizes)
+    {
+        ImGui::TextColored(kMuted, "%s", line.c_str());
+    }
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+}
+
+} // namespace
+
+std::vector<std::string> EncodingNotes(const WaveView& view, const WaveValues& values, sar::WaveEncoding encoding)
+{
+    const uint32_t step = LoopStep(encoding, view.stream);
+    if (view.ds || !values.loop || step <= 1 || values.loop_start % step == 0)
+    {
+        return {};
+    }
+
+    const uint32_t start = (values.loop_start / step + 1) * step;
+    std::vector<std::string> notes = {LoopMoveLine(view.stream, false, values.loop_start, start, true)};
+    if (view.stream)
+    {
+        notes.push_back("The end moves from sample " + Grouped(values.loop_end) + " to " +
+                        Grouped(values.loop_end + (start - values.loop_start)) + ".");
+    }
+
+    return notes;
+}
+
+WaveEdit DrawWaveWindow(const WaveView& view, WaveWindowState& state, const ShownItem& item, bool busy, bool* open)
+{
     WaveEdit edit;
-    if (!visible)
+    if (!BeginWaveWindow(view, open))
     {
         ImGui::End();
         return edit;
@@ -701,33 +887,7 @@ WaveEdit DrawWaveWindow(const WaveView& view, WaveWindowState& state, bool busy,
     // The buttons across the top: Play or Stop, Replace… and Export…, and the snap on the right.
     const ImVec2 origin = ImGui::GetCursorScreenPos();
     const ImVec2 room = ImGui::GetContentRegionAvail();
-    const ImVec2 button(Px(kButtonHeight), Px(kButtonHeight));
-    const char* play_tip = state.playing ? "Stop" : "Play the wave from its start, then round its loop until Stop";
-    if (IconButton("##play", state.playing ? Icon::kStop : Icon::kPlay, button, state.playing, theme::kPlay, play_tip))
-    {
-        (state.playing ? edit.stop : edit.play) = true;
-    }
-    ImGui::SameLine(0.0f, Px(kGap));
-    ImGui::BeginDisabled(busy);
-    if (ImGui::Button("Replace…", ImVec2(0.0f, Px(kButtonHeight))))
-    {
-        edit.replace = true;
-    }
-    ItemTooltip(std::string("Puts a WAV file or a ") + (view.stream ? "stream" : "wave") +
-                " file in this one's place.");
-    ImGui::SameLine(0.0f, Px(kGap) * 0.5f);
-    if (ImGui::Button("Export…", ImVec2(0.0f, Px(kButtonHeight))))
-    {
-        edit.export_item = true;
-    }
-    ItemTooltip(std::string("Writes the ") + (view.stream ? "stream" : "wave") + " as its file or as a WAV file.");
-    ImGui::EndDisabled();
-    ImGui::SameLine(origin.x + room.x - button.x - ImGui::GetWindowPos().x);
-    if (IconButton("##snap", Icon::kSnap, button, state.snap, theme::kAccent,
-                   "Snap the loop's markers to zero crossings"))
-    {
-        state.snap = !state.snap;
-    }
+    DrawWaveButtons(view, state, busy, origin, room, edit);
 
     // The waveform, then the fields in two tables side by side, then the facts across the bottom.
     const float waveform_top = origin.y + Px(kButtonHeight) + Px(kGap);
@@ -736,34 +896,17 @@ WaveEdit DrawWaveWindow(const WaveView& view, WaveWindowState& state, bool busy,
     const float half = (room.x - Px(kGap) * 2.0f) * 0.5f;
     ImGui::BeginDisabled(busy);
     ImGui::SetCursorScreenPos(ImVec2(origin.x, fields_top));
-    DrawLoopFields(view, state, half, edit);
+    DrawLoopFields(view, state, item, half, busy, edit);
     const float loop_bottom = ImGui::GetCursorScreenPos().y;
     ImGui::SetCursorScreenPos(ImVec2(origin.x + half + Px(kGap) * 2.0f, fields_top));
-    DrawFormatFields(view, state, half, edit);
+    DrawFormatFields(view, state, item, half, busy, edit);
     const float format_bottom = ImGui::GetCursorScreenPos().y;
     ImGui::EndDisabled();
     const float facts_top = std::max(loop_bottom, format_bottom) + Px(kGap);
     ImDrawList* draw = ImGui::GetWindowDrawList();
     draw->AddLine(ImVec2(origin.x, facts_top), ImVec2(origin.x + room.x, facts_top), theme::kBorder, Px(1.0f));
 
-    // The facts take the rest of the window, and scroll where they don't fit.
-    const float facts_height =
-        std::max(origin.y + room.y - facts_top - Px(kGap), ImGui::GetTextLineHeightWithSpacing() * 2.0f);
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, facts_top + Px(kGap)));
-    if (std::exchange(state.top, false))
-    {
-        ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
-    }
-    ImGui::BeginChild("##facts", ImVec2(room.x, facts_height));
-    ImGui::PushTextWrapPos(0.0f);
-    const ImVec4 kMuted = ImGui::ColorConvertU32ToFloat4(theme::kTextMuted);
-    ImGui::TextColored(kMuted, "%s", view.reach.c_str());
-    for (const std::string& line : view.sizes)
-    {
-        ImGui::TextColored(kMuted, "%s", line.c_str());
-    }
-    ImGui::PopTextWrapPos();
-    ImGui::EndChild();
+    DrawWaveFacts(view, state, origin, room, facts_top);
     ImGui::End();
 
     // A busy window takes no edits. Play and Stop still work.

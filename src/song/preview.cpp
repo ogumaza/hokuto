@@ -3,6 +3,8 @@
 #include "song/preview.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <exception>
 #include <initializer_list>
 #include <memory>
@@ -20,6 +22,7 @@
 #include "ntdlib/sequence_export/consoles.h"
 
 #include "song/items.h"
+#include "song/preview_parts.h"
 #include "song/sequence.h"
 
 namespace hokuto::song
@@ -31,9 +34,6 @@ namespace atk = ntdlib::nx::atk;
 namespace cafe = ntdlib::cafe::snd;
 namespace rvl = ntdlib::rvl::snd;
 namespace sar = ntdlib::sar;
-
-// A sample as a float, from -1 to just under 1.
-constexpr float kSampleScale = 1.0f / 32768.0f;
 
 } // namespace
 
@@ -71,6 +71,7 @@ std::size_t WavePreview::Render(float* out, std::size_t frames)
             {
                 break;
             }
+
             position_ = pcm_.loop_start;
         }
 
@@ -80,6 +81,7 @@ std::size_t WavePreview::Render(float* out, std::size_t frames)
             out[(done + i) * 2] = static_cast<float>(left[position_ + i]) * kSampleScale;
             out[(done + i) * 2 + 1] = static_cast<float>(right[position_ + i]) * kSampleScale;
         }
+
         position_ += count;
         done += count;
     }
@@ -163,21 +165,7 @@ int ModelPreview::SampleRate() const
 
 std::size_t ModelPreview::Render(float* out, std::size_t frames)
 {
-    std::size_t done = 0;
-    while (done < frames)
-    {
-        if (frame_read_ == frame_.size() && !NextFrame())
-        {
-            break;
-        }
-
-        const std::size_t count = std::min((frames - done) * 2, frame_.size() - frame_read_);
-        std::copy_n(frame_.data() + frame_read_, count, out + done * 2);
-        frame_read_ += count;
-        done += count / 2;
-    }
-
-    return done;
+    return preview_parts::RenderFrames(out, frames, frame_, frame_read_, [this] { return NextFrame(); });
 }
 
 bool ModelPreview::NextFrame()
@@ -187,6 +175,7 @@ bool ModelPreview::NextFrame()
         started_ = true;
         ended_ = !StartModel();
     }
+
     const auto run = [this](auto& model)
     {
         return RunFrame(*model);
@@ -206,11 +195,11 @@ bool ModelPreview::NextFrame()
     };
     std::visit(output, model_);
     ended_ = frames_ == LongestFrames();
-    for (std::size_t i = 0; ended_ && i < frame_.size(); i++)
+    if (ended_)
     {
-        const float through = static_cast<float>(i / 2) / static_cast<float>(frame_.size() / 2);
-        frame_[i] *= 1.0f - through;
+        preview_parts::FadeOut(frame_);
     }
+
     frame_read_ = 0;
 
     return true;
@@ -346,34 +335,20 @@ NotePreview::NotePreview(std::shared_ptr<const ntdlib::rsar::SoundArchive> archi
 
 int NotePreview::KeyOf(const ntdlib::rsar::Bank& bank, uint32_t program)
 {
-    for (int distance = 0; distance <= 127; distance++)
+    const auto plays = [&](int key)
     {
-        for (const int key : {kKey - distance, kKey + distance})
-        {
-            if (key >= 0 && key <= 127 && bank.Find(program, key, kVelocity) != nullptr)
-            {
-                return key;
-            }
-        }
-    }
-
-    return -1;
+        return bank.Find(program, key, kVelocity) != nullptr;
+    };
+    return preview_parts::NearestKey(plays);
 }
 
 int NotePreview::KeyOf(const sar::Instrument& instrument)
 {
-    for (int distance = 0; distance <= 127; distance++)
+    const auto plays = [&](int key)
     {
-        for (const int key : {kKey - distance, kKey + distance})
-        {
-            if (key >= 0 && key <= 127 && instrument.Find(key, kVelocity) != nullptr)
-            {
-                return key;
-            }
-        }
-    }
-
-    return -1;
+        return instrument.Find(key, kVelocity) != nullptr;
+    };
+    return preview_parts::NearestKey(plays);
 }
 
 uint64_t NotePreview::HoldFrames() const
@@ -450,6 +425,7 @@ bool NotePreview::StartModel()
             {
                 return false;
             }
+
             ntdlib::ctr::snd::NoteOnInfo info;
             info.prg_no = program_;
             info.key = key_;
@@ -496,7 +472,7 @@ SoundPreview::SoundPreview(std::shared_ptr<const sar::SoundArchive> archive, uin
 {
     if (sound >= archive_->Sounds().size())
     {
-        throw std::runtime_error("The archive lacks sound " + std::to_string(sound) + ".");
+        throw std::runtime_error("The archive has no sound " + std::to_string(sound) + ".");
     }
 
     info_ = archive_->Sounds()[sound];
@@ -532,12 +508,13 @@ SoundPreview::SoundPreview(std::shared_ptr<const ntdlib::rsar::SoundArchive> arc
 {
     if (sound >= wii_archive_->Sounds().size())
     {
-        throw std::runtime_error("The archive lacks sound " + std::to_string(sound) + ".");
+        throw std::runtime_error("The archive has no sound " + std::to_string(sound) + ".");
     }
+
     const ntdlib::rsar::SoundInfo& info = wii_archive_->Sounds()[sound];
     if (info.type == ntdlib::rsar::SoundType::kStream)
     {
-        throw std::runtime_error("The file holds no stream of " + info.name + ".");
+        throw std::runtime_error("The file contains no stream for " + info.name + ".");
     }
     if (info.type != ntdlib::rsar::SoundType::kWaveSound)
     {
@@ -559,8 +536,9 @@ SoundPreview::SoundPreview(std::shared_ptr<const ntdlib::rsar::SoundArchive> arc
 {
     if (sound >= wii_archive_->Sounds().size())
     {
-        throw std::runtime_error("The archive lacks sound " + std::to_string(sound) + ".");
+        throw std::runtime_error("The archive has no sound " + std::to_string(sound) + ".");
     }
+
     CheckWiiStream(wii_archive_->Sounds()[sound]);
 }
 
@@ -590,13 +568,14 @@ void SoundPreview::CheckWiiStream(const ntdlib::rsar::SoundInfo& info) const
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't read the stream of " + info.name + ". " + error.what());
+        throw std::runtime_error("Can't read the stream of " + info.name + ". " + error.what());
     }
+
     if (!ntdlib::rvl::snd::StrmPlayer::TracksOf(build_, info, wii_archive_->Version(), file))
     {
         throw std::runtime_error(info.name +
-                                 " plays no track of its stream: its entry names a track or a channel that "
-                                 "the stream lacks.");
+                                 " plays no stream tracks. Its entry names a track or channel that the stream "
+                                 "doesn't have.");
     }
 }
 
@@ -610,15 +589,16 @@ void SoundPreview::CheckStream() const
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't read the stream of " + info_.name + ". " + error.what());
+        throw std::runtime_error("Can't read the stream of " + info_.name + ". " + error.what());
     }
+
     if (file.flavor != archive_->ReadOptions().flavor)
     {
-        throw std::runtime_error("The stream of " + info_.name + " is a stream of another console.");
+        throw std::runtime_error("The stream of " + info_.name + " is for another console.");
     }
     if (info_.stream.valid_tracks == 0)
     {
-        throw std::runtime_error(info_.name + " plays no track when it starts.");
+        throw std::runtime_error(info_.name + " has no tracks enabled at the start.");
     }
 }
 

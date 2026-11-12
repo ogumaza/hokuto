@@ -97,9 +97,11 @@ void TestShortClip()
 
 int main()
 {
-    TestFades();
-    TestBlocks();
-    TestShortClip();
-
-    return xsflib::testing::Summary("clip");
+    return xsflib::testing::RunTest("clip",
+                                    []
+                                    {
+                                        TestFades();
+                                        TestBlocks();
+                                        TestShortClip();
+                                    });
 }

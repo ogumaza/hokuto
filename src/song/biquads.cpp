@@ -11,7 +11,7 @@
 #include <map>
 #include <numbers>
 #include <set>
-#include <tuple>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -69,13 +69,14 @@ using EdgeTable = std::array<std::vector<Edges>, kPresets>;
 
 // The power of a biquad with coefficients `c` in Q14 (b0, b1, b2, a1 and a2, for y = b0 x + b1 x1 + b2 x2 + a1 y1 + a2
 // y2), at a frequency whose angle per sample has the cosine `c1`. `c2` is the cosine of twice the angle.
-double Power(const int16_t* c, double c1, double c2)
+double Power(std::span<const int16_t, 5> c, double c1, double c2)
 {
-    const double b0 = c[0] / 16384.0;
-    const double b1 = c[1] / 16384.0;
-    const double b2 = c[2] / 16384.0;
-    const double a1 = c[3] / 16384.0;
-    const double a2 = c[4] / 16384.0;
+    constexpr double kCoefficientScale = 16384.0; // 1.0 in Q14
+    const double b0 = c[0] / kCoefficientScale;
+    const double b1 = c[1] / kCoefficientScale;
+    const double b2 = c[2] / kCoefficientScale;
+    const double a1 = c[3] / kCoefficientScale;
+    const double a2 = c[4] / kCoefficientScale;
     const double numerator = b0 * b0 + b1 * b1 + b2 * b2 + 2.0 * (b0 * b1 + b1 * b2) * c1 + 2.0 * b0 * b2 * c2;
     const double denominator = 1.0 + a1 * a1 + a2 * a2 + 2.0 * (a1 * a2 - a1) * c1 - 2.0 * a2 * c2;
     return numerator / denominator;
@@ -107,6 +108,7 @@ EdgeTable EdgesAt(double rate)
             {
                 powers[k] = Power(row, c1[k], c2[k]);
             }
+
             const double floor = *std::max_element(powers.begin(), powers.end()) * kHalfPower;
             const auto within = [floor](double power)
             {
@@ -139,7 +141,7 @@ const EdgeTables& Tables()
 // Whether `console` is the Switch.
 bool IsSwitch(const Console& console)
 {
-    return !console.wii && console.flavor == Flavor::kNx;
+    return !console.wii && FlavorOf(console) == Flavor::kNx;
 }
 
 // The row of preset `type`'s table that `value`, from 0 to 127, selects on `console` (ntdlib's BiquadPresetRow).
@@ -152,7 +154,7 @@ int RowOn(const Console& console, int type, int value)
         return BiquadPresetRow<Policy>(type, Policy::BiquadValueOf(value));
     }
 
-    switch (console.flavor)
+    switch (FlavorOf(console))
     {
     case Flavor::kCtr:
         return BiquadPresetRow<ntdlib::nwsnd::CtrPolicy>(type, ntdlib::nwsnd::CtrPolicy::BiquadValueOf(value));
@@ -168,7 +170,7 @@ int RowOn(const Console& console, int type, int value)
 // The console's name in the warnings.
 std::string NameOf(const Console& console)
 {
-    return console.wii ? "Wii" : ConsoleName(console.flavor);
+    return console.wii ? "Wii" : ConsoleName(FlavorOf(console));
 }
 
 // A filter's type, and the item of the setting of its value or kStartingValue. A track's state holds each pair that can
@@ -207,6 +209,76 @@ State After(const Command& command, uint32_t item, const State& before)
     return after;
 }
 
+// A value of the Switch that plays with one type of 1 to 5 takes the value whose passband on `to` lies nearest.
+void MapBiquadValues(Sequence& sequence, const std::optional<std::map<uint32_t, std::set<int>>>& types,
+                     const Console& to, BiquadChanges& changes)
+{
+    for (uint32_t item = 0; item < sequence.items.size(); ++item)
+    {
+        Command& command = sequence.items[item];
+        if (command.kind != Kind::kBiquadValue)
+        {
+            continue;
+        }
+
+        if (!types)
+        {
+            changes.kept++;
+            continue;
+        }
+
+        const auto found = types->find(item);
+        if (found == types->end())
+        {
+            continue;
+        }
+
+        std::set<int> presets;
+        bool others = false;
+        for (const int type : found->second)
+        {
+            if (type >= 1 && type <= kPresets)
+            {
+                presets.insert(type);
+            }
+
+            others = others || type == kUnknownType || type > kPresets;
+        }
+        if (presets.empty())
+        {
+            continue;
+        }
+
+        if (presets.size() > 1 || others || command.value.source == Source::kVariable)
+        {
+            changes.kept++;
+            continue;
+        }
+
+        // A random value takes other ends.
+        const int type = *presets.begin();
+        const auto mapped = [type, &to](int64_t fixed)
+        {
+            const int64_t value = fixed / kOne;
+            return value >= 1 && value <= 127 ? NearestBiquadValue(type, static_cast<uint8_t>(value), to) * kOne
+                                              : fixed;
+        };
+
+        const ntdlib::commands::Argument before = command.value;
+        command.value.value = mapped(command.value.value);
+        if (command.value.source == Source::kRandom)
+        {
+            command.value.high = mapped(command.value.high);
+            if (command.value.high < command.value.value)
+            {
+                std::swap(command.value.value, command.value.high);
+            }
+        }
+
+        changes.values += command.value == before ? 0 : 1;
+    }
+}
+
 } // namespace
 
 std::optional<std::map<uint32_t, std::set<int>>> BiquadTypesOf(const Sequence& sequence,
@@ -224,6 +296,7 @@ std::optional<std::map<uint32_t, std::set<int>>> BiquadTypesOf(const Sequence& s
     {
         starts.push_back(label.item);
     }
+
     starts.push_back(0);
     for (const Command& command : sequence.items)
     {
@@ -232,6 +305,7 @@ std::optional<std::map<uint32_t, std::set<int>>> BiquadTypesOf(const Sequence& s
             starts.push_back(command.target);
         }
     }
+
     const std::optional<std::vector<State>> states =
         TrackStates(sequence, starts, Pair{kNoFilter, kStartingValue}, After, most);
     if (!states)
@@ -264,7 +338,7 @@ uint8_t NearestBiquadValue(int type, uint8_t value, const Console& to)
     // The Switch's row of the value, at 48 kHz, and the rows of each value on `to`.
     const std::size_t preset = static_cast<std::size_t>(type - 1);
     const Edges source = Tables().nx[preset][static_cast<std::size_t>(RowOn(Console{}, type, value))];
-    const EdgeTable& target = !to.wii && to.flavor == Flavor::kCtr ? Tables().ctr : Tables().wii_u;
+    const EdgeTable& target = !to.wii && FlavorOf(to) == Flavor::kCtr ? Tables().ctr : Tables().wii_u;
     uint8_t best = value;
     int64_t nearest = std::numeric_limits<int64_t>::max();
     for (int candidate = 1; candidate <= 127; ++candidate)
@@ -305,6 +379,7 @@ BiquadChanges MapBiquads(Sequence& sequence, std::span<const uint32_t> entries, 
         {
             continue;
         }
+
         if (command.value.source != Source::kValue)
         {
             changes.kept++;
@@ -327,68 +402,13 @@ BiquadChanges MapBiquads(Sequence& sequence, std::span<const uint32_t> entries, 
             changes.band_passes++;
         }
     }
+
     if (!from_switch || !values)
     {
         return changes;
     }
 
-    // A value of the Switch that plays with one type of 1 to 5 takes the value whose passband on `to` lies nearest.
-    for (uint32_t item = 0; item < sequence.items.size(); ++item)
-    {
-        Command& command = sequence.items[item];
-        if (command.kind != Kind::kBiquadValue)
-        {
-            continue;
-        }
-        if (!types)
-        {
-            changes.kept++;
-            continue;
-        }
-
-        const auto found = types->find(item);
-        if (found == types->end())
-        {
-            continue;
-        }
-        std::set<int> presets;
-        bool others = false;
-        for (const int type : found->second)
-        {
-            if (type >= 1 && type <= kPresets)
-            {
-                presets.insert(type);
-            }
-            others = others || type == kUnknownType || type > kPresets;
-        }
-        if (presets.empty())
-        {
-            continue;
-        }
-        if (presets.size() > 1 || others || command.value.source == Source::kVariable)
-        {
-            changes.kept++;
-            continue;
-        }
-
-        // A random value takes other ends.
-        const int type = *presets.begin();
-        const auto mapped = [type, &to](int64_t fixed)
-        {
-            const int64_t value = fixed / kOne;
-            return value >= 1 && value <= 127 ? NearestBiquadValue(type, static_cast<uint8_t>(value), to) * kOne
-                                              : fixed;
-        };
-
-        const ntdlib::commands::Argument before = command.value;
-        command.value.value = mapped(command.value.value);
-        if (command.value.source == Source::kRandom)
-        {
-            command.value.high = mapped(command.value.high);
-            std::tie(command.value.value, command.value.high) = std::minmax(command.value.value, command.value.high);
-        }
-        changes.values += command.value == before ? 0 : 1;
-    }
+    MapBiquadValues(sequence, types, to, changes);
 
     return changes;
 }
@@ -413,37 +433,45 @@ std::optional<std::string> BiquadWarning(const BiquadChanges& changes, const Con
     const bool from_switch = IsSwitch(from);
     const Console& other = from_switch ? to : from;
     const std::string name = NameOf(other);
-    const bool ctr = !other.wii && other.flavor == Flavor::kCtr;
-    std::string text = "The Switch plays the biquad filters of types 1 to 5 at 48 kHz, and the " + name + " at " +
+    const bool ctr = !other.wii && FlavorOf(other) == Flavor::kCtr;
+    std::string text = "The Switch runs biquad filter types 1–5 at 48 kHz, and the " + name + " runs them at " +
                        (ctr ? "32,728 Hz" : "32 kHz") +
-                       ". Their cutoffs lie about 1.5 times higher on the Switch. The Switch's types 6 to 10 are the "
-                       "same filters made for 48 kHz.";
+                       ". Their cutoffs are about 1.5 times higher on the Switch. Switch types 6–10 are the same "
+                       "filters designed for 48 kHz.";
     if (!from_switch && changes.types > 0)
     {
-        text += " " + count(changes.types) + " of types 1 to 5 took types 6 to 10.";
+        text += " " + count(changes.types) + " changed from types 1–5 to types 6–10.";
     }
+
     if (from_switch && changes.types > 0)
     {
-        text += " " + count(changes.types) + " of types 6 to 10 took types 1 to 5.";
+        text += " " + count(changes.types) + " changed from types 6–10 to types 1–5.";
     }
+
     if (changes.values > 0)
     {
-        text += " " + count(changes.values) + " of the value of a filter of types 1 to 5 took the value whose " +
-                "passband on the " + name + " lies nearest.";
+        text += " " + std::to_string(changes.values) + verb(changes.values, " value", " values") +
+                " of types 1–5 changed to the value with the nearest passband on the " + name + ".";
     }
+
     if (changes.band_passes > 0)
     {
         std::array<char, 16> octaves{};
         std::snprintf(octaves.data(), octaves.size(), "%.2f", std::log2(kSwitchRate / (ctr ? kCtrRate : kWiiURate)));
-        text += " " + count(changes.band_passes) + " of a band-pass " +
-                verb(changes.band_passes, "keeps its type", "keep their type") +
-                ", and no value moves the band: it lies " + octaves.data() + " octaves lower on the " + name + ".";
+        text += " " + std::to_string(changes.band_passes) +
+                verb(changes.band_passes, " band-pass setting is unchanged. Its band is ",
+                     " band-pass settings are unchanged. Their band is ") +
+                octaves.data() + " octaves lower on the " + name + ", and no value can correct that.";
     }
+
     if (changes.kept > 0)
     {
-        text += " " + count(changes.kept) + " " + verb(changes.kept, "keeps its filter", "keep their filters") +
-                " at the other rate: a type from a variable or a random number, or a value that plays with more than "
-                "one type.";
+        text += " " + std::to_string(changes.kept) +
+                verb(changes.kept,
+                     " setting is unchanged because its type comes from a variable or a random number, or its value "
+                     "is used with more than one type.",
+                     " settings are unchanged because their types come from a variable or a random number, or their "
+                     "values are used with more than one type.");
     }
 
     return text;

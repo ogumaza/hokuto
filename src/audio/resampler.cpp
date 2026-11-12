@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -15,8 +16,6 @@ namespace hokuto::audio
 {
 namespace
 {
-
-constexpr double kPi = 3.14159265358979323846;
 
 // The filter passes up to 90 % of the lower rate's Nyquist frequency and stops from 100 %. Its cutoff lies between.
 // Kaiser's window with this beta holds the stopband about 90 dB down. The taps follow from the transition's width
@@ -43,7 +42,7 @@ double SinPi(double x)
     }
 
     // Taylor's series of sin up to the 23rd power. At π/2, the next term is below 10^-19.
-    const double y = kPi * x;
+    const double y = std::numbers::pi * x;
     const double y2 = y * y;
     double term = y;
     double result = 0.0;
@@ -86,7 +85,7 @@ std::vector<double> KernelTable(double cutoff, std::size_t half)
     {
         const double t = static_cast<double>(i) / static_cast<double>(kPhases);
         const double u = 2.0 * cutoff * t;
-        const double sinc = i == 0 ? 1.0 : SinPi(u) / (kPi * u);
+        const double sinc = i == 0 ? 1.0 : SinPi(u) / (std::numbers::pi * u);
         const double r = t / static_cast<double>(half);
         table[i] = 2.0 * cutoff * sinc * BesselI0(kBeta * std::sqrt(std::max(0.0, 1.0 - r * r))) / window;
     }
@@ -111,6 +110,51 @@ Filter FilterFor(uint32_t from, uint32_t to)
     return {KernelTable(cutoff, half), half};
 }
 
+// The old samples with what the filter reads around them: silence before, and the loop again or silence after.
+std::vector<double> PaddedSamples(std::span<const int16_t> samples, std::optional<std::size_t> loop_start,
+                                  std::size_t pad)
+{
+    const std::size_t count = samples.size();
+    std::vector<double> padded(pad + count + pad, 0.0);
+    for (std::size_t i = 0; i < count; i++)
+    {
+        padded[pad + i] = samples[i];
+    }
+
+    for (std::size_t i = 0; loop_start && i < pad; i++)
+    {
+        padded[pad + count + i] = samples[*loop_start + i % (count - *loop_start)];
+    }
+
+    return padded;
+}
+
+// Sets `weights` to the kernel at each old sample around the time `t`, in old samples: the filter's `half` samples
+// before the time first, then the `half` samples after it. The distances of the taps on one side share the fraction of
+// the time. The table's place of each tap therefore follows from the first. Returns the whole part of `t`.
+double KernelWeights(const Filter& filter, double t, std::span<double> weights)
+{
+    const std::size_t half = filter.half;
+    const std::vector<double>& table = filter.table;
+    const double whole = std::floor(t);
+    const double phase = (t - whole) * static_cast<double>(kPhases);
+    const auto first = static_cast<std::size_t>(phase);
+    const double fraction = phase - static_cast<double>(first);
+    for (std::size_t m = 0; m < half; m++)
+    {
+        // At distance m + the time's fraction, before the time.
+        const std::size_t i = m * kPhases + first;
+        weights[m] = table[i] + (table[i + 1] - table[i]) * fraction;
+
+        // At distance m + 1 − the time's fraction, after it.
+        const double place = static_cast<double>((m + 1) * kPhases) - phase;
+        const auto j = static_cast<std::size_t>(place);
+        weights[half + m] = table[j] + (table[j + 1] - table[j]) * (place - static_cast<double>(j));
+    }
+
+    return whole;
+}
+
 } // namespace
 
 std::size_t ResampledPlace(std::size_t sample, uint32_t from, uint32_t to)
@@ -123,15 +167,15 @@ std::vector<int16_t> Resample(std::span<const int16_t> samples, uint32_t from, u
 {
     if (from == 0 || to == 0 || to == from)
     {
-        throw std::invalid_argument("A resample goes to another rate.");
+        throw std::invalid_argument("The new sample rate must differ from the current one.");
     }
     if (samples.empty())
     {
-        throw std::invalid_argument("A resample requires samples.");
+        throw std::invalid_argument("There are no samples to resample.");
     }
     if (loop_start && *loop_start >= samples.size())
     {
-        throw std::invalid_argument("The loop starts past the samples.");
+        throw std::invalid_argument("The loop starts after the last sample.");
     }
 
     // The new samples: the intro and the loop, each a whole number of them.
@@ -159,46 +203,29 @@ std::vector<int16_t> Resample(std::span<const int16_t> samples, uint32_t from, u
     // The filter. The transition runs from 90 % to 100 % of the lower rate's Nyquist frequency.
     const Filter filter = FilterFor(from, to);
     const std::size_t half = filter.half;
-    const std::vector<double>& table = filter.table;
 
-    // The old samples with what the filter reads around them: silence before, and the loop again or silence after.
     const std::size_t pad = half + 1;
-    std::vector<double> padded(pad + count + pad, 0.0);
-    for (std::size_t i = 0; i < count; i++)
-    {
-        padded[pad + i] = samples[i];
-    }
-    for (std::size_t i = 0; loop_start && i < pad; i++)
-    {
-        padded[pad + count + i] = samples[*loop_start + i % (count - *loop_start)];
-    }
+    const std::vector<double> padded = PaddedSamples(samples, loop_start, pad);
 
-    // Each new sample adds up the old samples on either side of its time, each by the kernel at its distance. The
-    // distances of the taps on one side share the fraction of the time. The table's place of each tap therefore follows
-    // from the first.
+    // Each new sample adds up the old samples on either side of its time, each by the kernel at its distance: the
+    // samples before the time first, then the samples after it.
     std::vector<int16_t> resampled(total);
+    std::vector<double> weights(2 * half);
     for (std::size_t k = 0; k < total; k++)
     {
-        const double t = time_of(k);
-        const double whole = std::floor(t);
-        const double phase = (t - whole) * static_cast<double>(kPhases);
-        const auto first = static_cast<std::size_t>(phase);
-        const double fraction = phase - static_cast<double>(first);
+        const double whole = KernelWeights(filter, time_of(k), weights);
         const std::size_t at = pad + static_cast<std::size_t>(whole);
         double sum = 0.0;
         for (std::size_t m = 0; m < half; m++)
         {
-            // At distance m + the time's fraction, before the time.
-            const std::size_t i = m * kPhases + first;
-            sum += padded[at - m] * (table[i] + (table[i + 1] - table[i]) * fraction);
+            sum += padded[at - m] * weights[m];
         }
+
         for (std::size_t m = 0; m < half; m++)
         {
-            // At distance m + 1 − the time's fraction, after it.
-            const double place = static_cast<double>((m + 1) * kPhases) - phase;
-            const auto i = static_cast<std::size_t>(place);
-            sum += padded[at + 1 + m] * (table[i] + (table[i + 1] - table[i]) * (place - static_cast<double>(i)));
+            sum += padded[at + 1 + m] * weights[half + m];
         }
+
         resampled[k] = static_cast<int16_t>(std::clamp(std::lround(sum), -32768L, 32767L));
     }
 
@@ -209,12 +236,13 @@ std::vector<float> ResampleFrames(std::span<const float> samples, std::size_t ch
 {
     if (from == 0 || to == 0 || channels == 0)
     {
-        throw std::invalid_argument("A resample requires two rates and a channel.");
+        throw std::invalid_argument("Resampling requires two sample rates and at least one channel.");
     }
     if (samples.size() % channels != 0)
     {
-        throw std::invalid_argument("The samples don't fill their frames.");
+        throw std::invalid_argument("The samples don't fill whole frames.");
     }
+
     const std::size_t frames = samples.size() / channels;
     if (from == to || frames == 0)
     {
@@ -223,27 +251,13 @@ std::vector<float> ResampleFrames(std::span<const float> samples, std::size_t ch
 
     const Filter filter = FilterFor(from, to);
     const std::size_t half = filter.half;
-    const std::vector<double>& table = filter.table;
     const std::size_t total = ResampledPlace(frames, from, to);
     std::vector<float> resampled(total * channels);
     std::vector<double> weights(2 * half);
     for (std::size_t k = 0; k < total; k++)
     {
-        // The kernel at each old frame around the new frame's time: the frames before the time first, then the frames
-        // after it. Resample finds the kernel in this order too.
-        const double t = static_cast<double>(k) * from / to;
-        const double whole = std::floor(t);
-        const double phase = (t - whole) * static_cast<double>(kPhases);
-        const auto first = static_cast<std::size_t>(phase);
-        const double fraction = phase - static_cast<double>(first);
-        for (std::size_t m = 0; m < half; m++)
-        {
-            const std::size_t i = m * kPhases + first;
-            weights[m] = table[i] + (table[i + 1] - table[i]) * fraction;
-            const double place = static_cast<double>((m + 1) * kPhases) - phase;
-            const auto j = static_cast<std::size_t>(place);
-            weights[half + m] = table[j] + (table[j + 1] - table[j]) * (place - static_cast<double>(j));
-        }
+        // The kernel at each old frame around the new frame's time.
+        const double whole = KernelWeights(filter, static_cast<double>(k) * from / to, weights);
 
         // Each channel adds up its frames by the kernel. Frames outside the samples are silent.
         const auto at = static_cast<std::size_t>(whole);
@@ -256,11 +270,13 @@ std::vector<float> ResampleFrames(std::span<const float> samples, std::size_t ch
                 {
                     sum += samples[(at - m) * channels + c] * weights[m];
                 }
+
                 if (at + 1 + m < frames)
                 {
                     sum += samples[(at + 1 + m) * channels + c] * weights[half + m];
                 }
             }
+
             resampled[k * channels + c] = static_cast<float>(sum);
         }
     }

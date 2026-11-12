@@ -7,22 +7,19 @@
 // and sfizz plays SFZ files (synth/sfz_synth.h). For an export of a sound to the other console, the other console's
 // model renders the new sound dry. The measure keeps clips of both renders around the places that it finds, for the
 // window's Play buttons. The renders of an export to MIDI run at the rate of the console's model: 32 kHz on the Wii,
-// 32,728 Hz on the 3DS in strict mixing and about 48,070 Hz in enhanced mixing, and 48 kHz on the Wii U and the Switch.
-// The renders of an export to another console compare at the higher rate of the two models.
+// 32,728 Hz on the 3DS in strict mixing and about 48,070 Hz in enhanced mixing, 48 kHz on the Wii U and the Switch, and
+// 32,768 Hz or 65,536 Hz on the GBA in strict mixing and about 48,022 Hz in enhanced mixing. The renders of an export
+// to another console compare at the higher rate of the two models.
 
 #pragma once
 
 #include <atomic>
-#include <memory>
 #include <vector>
 
-#include "ntdlib/rsar/formats.h"
-#include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/convert.h"
 
 #include "song/audibility.h"
-#include "song/sequence.h"
-#include "song/sequence_model.h"
+#include "song/dry_render.h"
 
 namespace hokuto::measure
 {
@@ -67,66 +64,29 @@ struct Renders
     int rate = 48000;
 };
 
-// Renders the export of `conversion` to MIDI with `instruments`, and `sequence` of `archive` dry on the console's model
-// in `mixing`. The synth renders at the model's rate. The renders run to the MIDI file's last event. A sequence without
-// a loop runs 2 s further, for its last notes' releases. A looped sequence would play on into its loop where the MIDI
-// file ends. Once `cancel` is set, the renders stop and return nothing. Throws std::runtime_error with a message for
-// the user when a synth can't read the files, and std::invalid_argument for an archive that Hokuto doesn't play.
+// Renders the export of `conversion` to MIDI with `instruments`, and the sequence of `source` dry on the model of its
+// console (song::DrySource). The synth renders at the model's rate. The renders run to the MIDI file's last event. A
+// sequence without a loop runs 2 s further, for its last notes' releases. A looped sequence would play on into its loop
+// where the MIDI file ends. Once `cancel` is set, the renders stop and return nothing. Throws std::runtime_error with a
+// message for the user when a synth can't read the files, and std::invalid_argument for an archive that Hokuto doesn't
+// play. A song of the GBA is converted to MIDI with SoundFont 2 alone. Only a driver whose converter writes SFZ files
+// accepts Instruments::kSfz (DriverRom::WritesSfz).
 Renders RenderExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                     std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                     std::shared_ptr<const song::Sequence> sequence, song::Mixing mixing,
-                     const std::atomic<bool>& cancel);
+                     const song::DrySource& source, const std::atomic<bool>& cancel);
 
-// The same renders for `sequence` of the Wii's `archive`, at 32 kHz. The archive has to be read by
-// ntdlib::rvl::snd::kRsarOptions.
-Renders RenderExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                     std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                     std::shared_ptr<const song::Sequence> sequence, const std::atomic<bool>& cancel);
-
-// Renders `sequence` of `archive` dry on its console's model in `mixing`, and `target_sequence` of `target_archive` on
-// its console's model in `target_mixing`. The target's render is the export's. Both run to the end of `sequence`, or to
-// the end of its loop's first pass. A sequence without a loop runs 2 s further, for its last notes' releases. The
-// render at the lower rate goes to the higher (song::AtRate). Once `cancel` is set, the renders stop and return
-// nothing. Throws std::invalid_argument for an archive that Hokuto doesn't play.
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::sar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, song::Mixing mixing,
-                           song::Mixing target_mixing, const std::atomic<bool>& cancel);
-
-// The same renders for `sequence` of the Wii's `archive`, dry on the Wii's model at 32 kHz. The archive has to be read
-// by ntdlib::rvl::snd::kRsarOptions.
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::sar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, song::Mixing target_mixing,
+// Renders the sequence of `source` dry, and the sequence of `target`, the export to another console, dry on that
+// console's model. Both run to the end of the sequence of `source`, or to the end of its loop's first pass. A sequence
+// without a loop runs 2 s further, for its last notes' releases. The render at the lower rate goes to the higher
+// (song::AtRate). Once `cancel` is set, the renders stop and return nothing. Throws std::invalid_argument for an
+// archive that Hokuto doesn't play.
+Renders RenderOtherConsole(const song::DrySource& source, const song::DrySource& target,
                            const std::atomic<bool>& cancel);
-
-// The same renders for `target_sequence` of the Wii's `target_archive`, dry on the Wii's model at 32 kHz: from
-// `sequence` of `archive` in `mixing`, or of the Wii's `archive`, such as a sound's conversion on the Wii's engine. The
-// Wii's archives have to be read by ntdlib::rvl::snd::kRsarOptions.
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::rsar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, song::Mixing mixing,
-                           const std::atomic<bool>& cancel);
-Renders RenderOtherConsole(std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                           std::shared_ptr<const song::Sequence> sequence,
-                           std::shared_ptr<const ntdlib::rsar::SoundArchive> target_archive,
-                           std::shared_ptr<const song::Sequence> target_sequence, const std::atomic<bool>& cancel);
-
-// Compares the renders of `renders`, with Hokuto's render as the reference, and keeps clips of the worst places.
-Measure MeasureRenders(const Renders& renders);
 
 // RenderExport, then MeasureRenders. A measure that `cancel` stops returns nothing.
 Measure MeasureExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                      std::shared_ptr<const ntdlib::sar::SoundArchive> archive,
-                      std::shared_ptr<const song::Sequence> sequence, song::Mixing mixing,
-                      const std::atomic<bool>& cancel);
+                      const song::DrySource& source, const std::atomic<bool>& cancel);
 
-// The same for `sequence` of the Wii's `archive`.
-Measure MeasureExport(const ntdlib::sequence_export::Conversion& conversion, Instruments instruments,
-                      std::shared_ptr<const ntdlib::rsar::SoundArchive> archive,
-                      std::shared_ptr<const song::Sequence> sequence, const std::atomic<bool>& cancel);
+// Compares the renders of `renders`, with Hokuto's render as the reference, and keeps clips of the worst places.
+Measure MeasureRenders(const Renders& renders);
 
 } // namespace hokuto::measure

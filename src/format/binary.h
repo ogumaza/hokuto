@@ -120,6 +120,13 @@ private:
     std::vector<uint8_t> bytes_;
 };
 
+// The FormatError of In for a read past the end of its bytes.
+class EndsEarly : public xsflib::FormatError
+{
+public:
+    using xsflib::FormatError::FormatError;
+};
+
 // Little-endian numbers and bytes, read in order. A read past the end throws FormatError for a damaged file.
 class In
 {
@@ -169,7 +176,7 @@ public:
     {
         if (count > bytes_.size() - at_)
         {
-            throw xsflib::FormatError("The file is damaged: " + what_ + " ends early.");
+            throw EndsEarly("The file is damaged: " + what_ + " ends early.");
         }
 
         const std::span<const uint8_t> taken = bytes_.subspan(at_, static_cast<std::size_t>(count));
@@ -205,8 +212,8 @@ private:
 // Throws xsflib::FormatError for a file that holds `what`. A later version of Hokuto made such a file.
 [[noreturn]] inline void Newer(const std::string& what)
 {
-    throw xsflib::FormatError("The file holds " + what +
-                              " that this version of Hokuto doesn't know. A later version made it.");
+    throw xsflib::FormatError("The file contains " + what +
+                              " that this version of Hokuto doesn't support. A later version of Hokuto saved it.");
 }
 
 } // namespace hokuto::format::binary

@@ -45,6 +45,25 @@ struct KeyNote
     uint32_t command = 0; // the offset of the note's command (song::Note::command)
     int bank_slot = 0;
     uint32_t program = 0;
+    int psg = 0;      // on the GBA and the DS, the PSG channel of the note's voice, or 0 (song::Note::psg)
+    bool cut = false; // on the GBA and the DS, a later note took the note's channel while it sounded (song::Note::cut)
+    std::optional<int8_t> sample_semitones = {}; // on Konami's driver, a sample's note (song::Note::sample_semitones)
+};
+
+// A note of any track of the song on a PSG channel of the console, for the lane of channels in the Key Editor: the
+// channel (song::Note::psg), the ticks and the key of the note, the name and the colour of its track, and whether it
+// belongs to the shown track, a later note cut it short, or the driver never started it.
+struct ChannelBar
+{
+    int channel = 1;
+    uint32_t start = 0;
+    uint32_t length = 0;
+    int key = 60;
+    std::string track;
+    ImU32 colour = 0;
+    bool shown = false;
+    bool cut = false;
+    bool unstarted = false;
 };
 
 // A command of a setting that the controller lanes show, at a place where the track ran it: the command, its offset in
@@ -68,7 +87,17 @@ struct KeyTrack
     uint32_t song_length = 0; // ticks
     std::vector<KeyNote> notes;
     song::Console console;
+    int number = 0; // the track's number in its sequence
     std::vector<KeyControl> controls;
+
+    // The instrument that a note plays on a track without notes. Without a slot, the note keeps its instrument.
+    int first_slot = -1;
+    uint32_t first_program = 0;
+
+    // On the GBA and the DS: the track's notes that the driver never started (song::Track::unstarted), and every
+    // track's notes on the PSG channels, for the lane of channels. The lane shows only where a song plays a PSG voice.
+    std::vector<KeyNote> unstarted;
+    std::vector<ChannelBar> channels;
 };
 
 // A setting that a controller lane shows: a kind of command, and the bus or the LFO that the command addresses.
@@ -137,6 +166,7 @@ struct KeyGesture
     int velocity = 0;     // the pressed note's new velocity
     KeyNote drawn;        // the note being drawn
     KeyNote played;       // the note that the keyboard plays
+    std::string stopped;  // why a move or a size stops short of the mouse, in the words of the drag tooltip
 
     // In a controller lane: the lane, the point pressed (KeyTrack::controls), the pressed point's new value or the
     // drawn point's value, and the drawn point's tick. A drag of a point moves it by `shift` too.
@@ -159,6 +189,10 @@ struct KeyEditorState
     double left_quarter = 0.0;
     float top_key = 0.0f;
     std::optional<std::pair<double, float>> scroll_to;
+
+    // The jumps of the position that the notes follow (PageTurn). The editor keeps its scroll through the jumps while
+    // it's hidden.
+    JumpWatch jumps;
 
     // The zoom, in points: the width of a beat and the height of a key. The menu's zoom commands add steps. Zoom Full
     // fits the whole song into the window.
@@ -189,6 +223,9 @@ struct KeyEditorState
     std::set<uint32_t> selected;
     std::map<uint32_t, edit::NoteLimits> limits;
     InfoTyping typing;
+
+    // The text of a field of the info line that the user ended while the program was busy (BusyInfoEntry).
+    WaitingValues<std::string> typed_waiting;
 
     // Whether the editor's window had the keyboard focus in the last frame, and the gesture under way.
     bool focused = false;
@@ -239,8 +276,9 @@ struct KeyEdit
 // Draws the Key Editor while `*open` is set. A click on the ruler moves the transport's position, to the grid with the
 // snap on (RulerPosition). `busy` holds the gestures off while the program reads the result of the last edit. Returns
 // the edit of a gesture that ended, or of a command of the Edit menu (see RequestedEdit). `state.sounding` then gives
-// the note that sounds (see SoundingNote).
-std::optional<KeyEdit> DrawKeyEditor(const KeyTrack& track, KeyEditorState& state, Transport& transport, bool busy,
-                                     bool* open);
+// the note that sounds (see SoundingNote). `track_item` is the version, the sound and the track (the first number of
+// its place) that `track` comes from. A value typed into the info line while busy waits for its note or point there.
+std::optional<KeyEdit> DrawKeyEditor(const KeyTrack& track, KeyEditorState& state, Transport& transport,
+                                     const ShownItem& track_item, bool busy, bool* open);
 
 } // namespace hokuto::app

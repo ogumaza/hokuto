@@ -10,58 +10,13 @@
 // note. A fourth file sets a volume and a pan between its notes, and settings move to other ticks there. A fifth file
 // sets a pan from a random number on a track whose notes wait for their length, then makes the note wait unknown.
 
-#include "edit/notes.h"
-
-#include <cstddef>
-#include <cstdint>
-#include <memory>
-#include <optional>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
-
-#include "ntdlib/commands/sequence.h"
-#include "ntdlib/commands/units.h"
-#include "ntdlib/sar/formats.h"
-#include "ntdlib/sequence_export/performance.h"
-#include "ntdlib/testing/sar_files.h"
-#include "xsflib/testing/check.h"
-
-#include "format/archive.h"
-#include "format/file.h"
-#include "song/archive.h"
-#include "song/sequence.h"
-
-using hokuto::edit::AddSettings;
-using hokuto::edit::CommandKey;
-using hokuto::edit::CommandsAfter;
-using hokuto::edit::Edited;
-using hokuto::edit::EditNotes;
-using hokuto::edit::LimitsOf;
-using hokuto::edit::MoveSettings;
-using hokuto::edit::NewNote;
-using hokuto::edit::NewSetting;
-using hokuto::edit::NoteEdit;
-using hokuto::edit::NoteLimits;
-using hokuto::edit::NotePlace;
-using hokuto::edit::SettingMove;
-using hokuto::edit::ShiftRange;
-using hokuto::edit::ShiftRangeOf;
-using hokuto::edit::WhyFixedInTime;
-using hokuto::format::File;
-using hokuto::song::Note;
-using hokuto::song::Sequence;
-using hokuto::song::Setting;
-using hokuto::song::Stretch;
-using ntdlib::commands::Kind;
-using ntdlib::sequence_export::Entry;
+#include "notes_fixtures.h"
+#include "sound_places.h"
 
 namespace
 {
 
-namespace sar = ntdlib::sar;
-namespace sar_files = ntdlib::testing::sar_files;
+using hokuto::testing::PlayedSequence;
 
 // The archive's sounds.
 constexpr uint32_t kSong = 0;
@@ -249,81 +204,22 @@ std::vector<uint8_t> RandomArchive()
     return ArchiveOf({random}, {sar_files::Sequence(false, kRandomBytecode, {{"Random", 0}})});
 }
 
-// The notes of track 0 that sound `sound` of the archive that `file` builds plays.
-Sequence Played(const File& file, uint32_t sound)
-{
-    const std::shared_ptr<const sar::SoundArchive> archive =
-        hokuto::song::LoadArchive(hokuto::format::ExportArchive(file), "test.bfsar");
-    return hokuto::song::ReadSequence(*archive, sound);
-}
-
-// The start, length and key of each note of track 0 of `sequence`.
-std::vector<std::vector<uint32_t>> Notes(const Sequence& sequence)
-{
-    std::vector<std::vector<uint32_t>> notes;
-    for (const Note& note : sequence.tracks.at(0).notes)
-    {
-        notes.push_back({note.start, note.length, note.key});
-    }
-
-    return notes;
-}
-
-// An edit of the note at `index` of track 0 of `sequence`, in the stretch that ran it.
-NoteEdit EditOf(const Sequence& sequence, std::size_t index)
-{
-    const Note& note = sequence.tracks.at(0).notes.at(index);
-    return NoteEdit{.command = note.command, .stretch = sequence.tracks[0].stretches.at(note.stretch)};
-}
-
-// A command that sets the volume to `volume`.
-ntdlib::commands::Command Volume(int volume)
-{
-    ntdlib::commands::Command command;
-    command.kind = Kind::kVolume;
-    command.value = ntdlib::commands::Argument{ntdlib::commands::Source::kValue, volume * ntdlib::commands::kOne, 0};
-
-    return command;
-}
-
-// The message of the std::invalid_argument that `call` throws: a refusal for the user. Nothing when it throws none.
-template <class Call>
-std::optional<std::string> RefusalOf(const Call& call)
-{
-    try
-    {
-        call();
-    }
-    catch (const std::invalid_argument& error)
-    {
-        return error.what();
-    }
-
-    return std::nullopt;
-}
-
 // Whether the new settings `settings` are refused with a message for the user.
 bool RefusesSettings(const File& file, uint32_t sequence, const std::vector<NewSetting>& settings)
 {
-    return RefusalOf([&] { AddSettings(file, sequence, settings); }).has_value();
+    return !ErrorOf<std::invalid_argument>([&] { AddSettings(file, sequence, settings); }).empty();
 }
 
 // Why the moves `moves` are refused, for the user, or nothing when they aren't.
-std::optional<std::string> MoveRefusal(const File& file, uint32_t sequence, const std::vector<SettingMove>& moves)
+std::string MoveRefusal(const File& file, uint32_t sequence, const std::vector<SettingMove>& moves)
 {
-    return RefusalOf([&] { MoveSettings(file, sequence, moves); });
+    return ErrorOf<std::invalid_argument>([&] { MoveSettings(file, sequence, moves); });
 }
 
 // Whether the moves `moves` are refused with a message for the user.
 bool RefusesMoves(const File& file, uint32_t sequence, const std::vector<SettingMove>& moves)
 {
-    return MoveRefusal(file, sequence, moves).has_value();
-}
-
-// Whether `edit` refuses with a message for the user.
-bool Refuses(const File& file, uint32_t sequence, const NoteEdit& edit)
-{
-    return RefusalOf([&] { EditNotes(file, sequence, std::vector<NoteEdit>{edit}); }).has_value();
+    return !MoveRefusal(file, sequence, moves).empty();
 }
 
 // The sound's file leads to the file's sequence. The notes lead to their commands and the stretches that ran them.
@@ -363,7 +259,7 @@ void TestCommands()
 void TestKeyVelocityLength()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     NoteEdit louder = EditOf(song, 1);
     louder.velocity = 90;
     NoteEdit higher = EditOf(song, 3);
@@ -373,7 +269,7 @@ void TestKeyVelocityLength()
 
     const Edited edited = EditNotes(file, 0, std::vector<NoteEdit>{louder, higher, longer});
 
-    const Sequence played = Played(edited.file, kSong);
+    const Sequence played = PlayedSequence(edited.file, kSong);
     const std::vector<std::vector<uint32_t>> kNotes = {
         {0, 36, 60}, {48, 24, 62}, {96, 6, 69}, {120, 6, 69}, {144, 12, 64}};
     XSFLIB_CHECK(Notes(played) == kNotes);
@@ -388,7 +284,7 @@ void TestKeyVelocityLength()
 void TestMove()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     NoteEdit first = EditOf(song, 0);
     first.shift = 1;
     NoteEdit later = EditOf(song, 1);
@@ -400,7 +296,7 @@ void TestMove()
 
     const std::vector<std::vector<uint32_t>> kNotes = {
         {1, 24, 60}, {60, 24, 62}, {102, 6, 67}, {126, 6, 67}, {144, 12, 64}};
-    XSFLIB_CHECK(Notes(Played(edited.file, kSong)) == kNotes);
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, kSong)) == kNotes);
 
     // Key 60 goes one tick into the wait after it, and key 62 between the two parts of the wait after it. Key 67 does
     // the same in the subroutine. The second sound still starts at key 64. The subroutine's label stays at its start,
@@ -409,7 +305,7 @@ void TestMove()
     SEQLIB_REQUIRE(edited.items.size() > 14);
     XSFLIB_CHECK((edited.items[3] == 4u && edited.items[4] == 5u && edited.items[5] == 7u && edited.items[6] == 8u));
     XSFLIB_CHECK((edited.items[12] == 15u && edited.items[13] == 16u && edited.items[14] == 17u));
-    XSFLIB_CHECK(Notes(Played(edited.file, kTail)) == (std::vector<std::vector<uint32_t>>{{0, 12, 64}}));
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, kTail)) == (std::vector<std::vector<uint32_t>>{{0, 12, 64}}));
     const File again = hokuto::format::ImportSwitchArchive(hokuto::format::ExportArchive(edited.file));
     const ntdlib::commands::Sequence& commands = *again.sequences[0];
     XSFLIB_CHECK(commands.labels.size() == 2 && commands.labels.at(1).name == "Sub");
@@ -425,7 +321,7 @@ void TestMove()
 void TestMoveLimits()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
 
     const std::optional<ShiftRange> range = ShiftRangeOf(file, 0, kKey62, song.tracks[0].stretches[0]);
     const std::optional<ShiftRange> sub = ShiftRangeOf(file, 0, kKey67, song.tracks[0].stretches[1]);
@@ -438,7 +334,7 @@ void TestMoveLimits()
     XSFLIB_CHECK(Refuses(file, 0, too_late) && Refuses(file, 0, too_early));
 
     // The second sound runs key 64 with the note wait on, and the first sound with it off.
-    const Sequence tail = Played(file, kTail);
+    const Sequence tail = PlayedSequence(file, kTail);
     NoteEdit waiting = EditOf(tail, 0);
     waiting.shift = 6;
     XSFLIB_CHECK(Refuses(file, 0, waiting));
@@ -456,11 +352,11 @@ void TestMoveLimits()
     XSFLIB_CHECK(!Refuses(file, 0, softer));
     XSFLIB_CHECK(!ShiftRangeOf(file, 0, kKey64, song.tracks[0].stretches[4]));
     const std::vector<NoteLimits> limits =
-        LimitsOf(file, 0, std::vector<NotePlace>{{kKey64, song.tracks[0].stretches[4]}});
+        LimitsOf(file, 0, std::vector<NotePlace>{{.command = kKey64, .stretch = song.tracks[0].stretches[4]}});
     XSFLIB_CHECK(limits.size() == 1 && !limits[0].shift && !limits[0].length);
     const std::vector<NewNote> added = {
         {.stretch = song.tracks[0].stretches[4], .tick = 150, .key = 65, .velocity = 80, .length = 6}};
-    XSFLIB_CHECK(RefusalOf([&] { EditNotes(file, 0, {}, added); }).has_value());
+    XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { EditNotes(file, 0, {}, added); }).empty());
 }
 
 // The limits of several notes come from one look at the sequence: each note's range and its command's length. A note
@@ -468,11 +364,11 @@ void TestMoveLimits()
 void TestLimits()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
-    const Sequence tail = Played(file, kTail);
-    const std::vector<NotePlace> places = {{kKey60, song.tracks[0].stretches[0]},
-                                           {kKey67, song.tracks[0].stretches[1]},
-                                           {kKey64, tail.tracks[0].stretches[0]}};
+    const Sequence song = PlayedSequence(file, kSong);
+    const Sequence tail = PlayedSequence(file, kTail);
+    const std::vector<NotePlace> places = {{.command = kKey60, .stretch = song.tracks[0].stretches[0]},
+                                           {.command = kKey67, .stretch = song.tracks[0].stretches[1]},
+                                           {.command = kKey64, .stretch = tail.tracks[0].stretches[0]}};
 
     const std::vector<NoteLimits> limits = LimitsOf(file, 0, places);
 
@@ -483,7 +379,8 @@ void TestLimits()
     const std::vector<NoteLimits> wait =
         LimitsOf(file, 0, std::vector<NotePlace>{{.command = 10, .stretch = song.tracks[0].stretches[0]}});
     XSFLIB_CHECK(wait.size() == 1 && !wait[0].shift && !wait[0].length);
-    XSFLIB_CHECK(RefusalOf([&] { LimitsOf(file, 0, std::vector<NotePlace>{{.command = 11}}); }).has_value());
+    XSFLIB_CHECK(
+        !ErrorOf<std::invalid_argument>([&] { LimitsOf(file, 0, std::vector<NotePlace>{{.command = 11}}); }).empty());
 }
 
 // A note goes, and new notes go in at their ticks. A new note at the end of a block goes before the call that ends it.
@@ -492,7 +389,7 @@ void TestLimits()
 void TestRemoveAndAdd()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     NoteEdit removed = EditOf(song, 0);
     removed.remove = true;
     const std::vector<NewNote> added = {
@@ -505,9 +402,9 @@ void TestRemoveAndAdd()
 
     const std::vector<std::vector<uint32_t>> kNotes = {{48, 24, 62}, {72, 12, 65}, {96, 6, 59},  {96, 6, 67},
                                                        {100, 3, 72}, {120, 6, 67}, {124, 3, 72}, {144, 12, 64}};
-    XSFLIB_CHECK(Notes(Played(edited.file, kSong)) == kNotes);
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, kSong)) == kNotes);
     XSFLIB_CHECK(!edited.items[3]);
-    XSFLIB_CHECK(Notes(Played(edited.file, kTail)) == (std::vector<std::vector<uint32_t>>{{0, 12, 64}}));
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, kTail)) == (std::vector<std::vector<uint32_t>>{{0, 12, 64}}));
 }
 
 // After an edit, the commands of the notes that stay and of the new notes lead to the notes that the edited sequence
@@ -515,7 +412,7 @@ void TestRemoveAndAdd()
 void TestCommandsAfter()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     NoteEdit removed = EditOf(song, 0);
     removed.remove = true;
     NoteEdit moved = EditOf(song, 1);
@@ -534,14 +431,14 @@ void TestCommandsAfter()
         keys.push_back(CommandKey(edited.file, 0, command));
     }
     XSFLIB_CHECK((keys == std::vector<int>{62, 67, 64, 65}));
-    const Sequence played = Played(edited.file, kSong);
+    const Sequence played = PlayedSequence(edited.file, kSong);
     std::vector<uint32_t> commands;
     for (const Note& note : played.tracks.at(0).notes)
     {
         commands.push_back(note.command);
     }
     XSFLIB_CHECK((commands == std::vector<uint32_t>{after[0], after[3], after[1], after[1], after[2]}));
-    XSFLIB_CHECK(RefusalOf([&] { CommandKey(file, 0, 10); }).has_value());
+    XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { CommandKey(file, 0, 10); }).empty());
 }
 
 // On a track whose notes wait for their length, a key or velocity changes, and a note that goes leaves a wait. The
@@ -549,7 +446,7 @@ void TestCommandsAfter()
 void TestNoteWait()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence waiting = Played(file, kWaiting);
+    const Sequence waiting = PlayedSequence(file, kWaiting);
     NoteEdit softer = EditOf(waiting, 0);
     softer.velocity = 50;
     NoteEdit removed = EditOf(waiting, 1);
@@ -564,14 +461,16 @@ void TestNoteWait()
 
     const Edited edited = EditNotes(file, 1, std::vector<NoteEdit>{softer, removed});
 
-    const Sequence played = Played(edited.file, kWaiting);
+    const Sequence played = PlayedSequence(edited.file, kWaiting);
     XSFLIB_CHECK(Notes(played) == (std::vector<std::vector<uint32_t>>{{0, 24, 60}, {48, 24, 64}}));
     SEQLIB_REQUIRE(!played.tracks.empty() && !played.tracks[0].notes.empty());
     XSFLIB_CHECK(played.tracks[0].notes[0].velocity == 50);
     XSFLIB_CHECK(edited.file.sequences[1]->items.size() == file.sequences[1]->items.size());
     XSFLIB_CHECK(Refuses(file, 1, finish) && Refuses(file, 1, finish_moved));
     const std::vector<NoteLimits> limits =
-        LimitsOf(file, 1, std::vector<NotePlace>{{kFinish, finish.stretch}, {8, waiting.tracks[0].stretches[0]}});
+        LimitsOf(file, 1,
+                 std::vector<NotePlace>{{.command = kFinish, .stretch = finish.stretch},
+                                        {.command = 8, .stretch = waiting.tracks[0].stretches[0]}});
     XSFLIB_CHECK(!limits.at(0).shift && limits.at(1).shift == (ShiftRange{24, 47}) && limits.at(1).length == 24u);
 }
 
@@ -580,7 +479,7 @@ void TestNoteWait()
 void TestTrackEnd()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence waiting = Played(file, kWaiting);
+    const Sequence waiting = PlayedSequence(file, kWaiting);
     NoteEdit to_end = EditOf(waiting, 1);
     to_end.shift = 48;
     NoteEdit before_end = to_end;
@@ -589,9 +488,9 @@ void TestTrackEnd()
         {.stretch = waiting.tracks[0].stretches[0], .tick = 72, .key = 67, .velocity = 80, .length = 6}};
 
     XSFLIB_CHECK(Refuses(file, 1, to_end));
-    XSFLIB_CHECK(RefusalOf([&] { EditNotes(file, 1, {}, at_end); }).has_value());
+    XSFLIB_CHECK(!ErrorOf<std::invalid_argument>([&] { EditNotes(file, 1, {}, at_end); }).empty());
 
-    const Sequence moved = Played(EditNotes(file, 1, std::vector<NoteEdit>{before_end}).file, kWaiting);
+    const Sequence moved = PlayedSequence(EditNotes(file, 1, std::vector<NoteEdit>{before_end}).file, kWaiting);
     std::vector<std::pair<uint32_t, int>> starts;
     for (const Note& note : moved.tracks.at(0).notes)
     {
@@ -606,7 +505,7 @@ void TestTrackEnd()
 void TestNoteWaitWritten()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence waiting = Played(file, kWaiting);
+    const Sequence waiting = PlayedSequence(file, kWaiting);
     NoteEdit longer = EditOf(waiting, 0);
     longer.length = 36;
     NoteEdit later = EditOf(waiting, 1);
@@ -617,7 +516,7 @@ void TestNoteWaitWritten()
     const Edited edited = EditNotes(file, 1, std::vector<NoteEdit>{longer, later}, added);
 
     const std::vector<std::vector<uint32_t>> kNotes = {{0, 36, 60}, {12, 6, 67}, {30, 24, 62}, {48, 24, 64}};
-    XSFLIB_CHECK(Notes(Played(edited.file, kWaiting)) == kNotes);
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, kWaiting)) == kNotes);
 
     // The note wait goes off before the timebase and comes back on before the end. The new note splits the wait after
     // key 60, and key 62 splits the wait after its old place.
@@ -647,7 +546,7 @@ void TestNoteWaitWritten()
 void TestAddSettings()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     const std::vector<Stretch>& stretches = song.tracks[0].stretches;
     const std::vector<NewSetting> settings = {
         {.stretch = stretches[0], .tick = 72, .command = Volume(90)},
@@ -665,7 +564,7 @@ void TestAddSettings()
 
     const Edited edited = AddSettings(file, 0, settings);
 
-    const Sequence played = Played(edited.file, kSong);
+    const Sequence played = PlayedSequence(edited.file, kSong);
     XSFLIB_CHECK(Notes(played) == Notes(song));
     std::vector<Setting> volumes = played.tracks[0].volume;
     std::erase_if(volumes, [](const Setting& volume) { return volume.tick == 0; });
@@ -676,7 +575,7 @@ void TestAddSettings()
     XSFLIB_CHECK(edited.added[1] + 1 == *edited.items[5] && items.at(*edited.items[5]).key == 62);
     XSFLIB_CHECK(edited.added[2] + 1 == *edited.items[7] && items.at(*edited.items[7]).kind == Kind::kCall);
     XSFLIB_CHECK(edited.added[4] + 1 == *edited.items[8] && items.at(*edited.items[8]).kind == Kind::kCall);
-    XSFLIB_CHECK(Notes(Played(edited.file, kTail)) == (std::vector<std::vector<uint32_t>>{{0, 12, 64}}));
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, kTail)) == (std::vector<std::vector<uint32_t>>{{0, 12, 64}}));
     for (const ntdlib::commands::Command& refused : {note, wait, jump})
     {
         XSFLIB_CHECK(RefusesSettings(file, 0, {{.stretch = stretches[0], .tick = 24, .command = refused}}));
@@ -689,7 +588,7 @@ void TestAddSettings()
 void TestAddSettingBeforeLoop()
 {
     const File file = hokuto::format::ImportSwitchArchive(LoopArchive());
-    const Sequence loop = Played(file, 0);
+    const Sequence loop = PlayedSequence(file, 0);
     const std::vector<NewSetting> settings = {
         {.stretch = loop.tracks[0].stretches[0], .tick = 0, .command = Volume(90)}};
 
@@ -699,7 +598,7 @@ void TestAddSettingBeforeLoop()
     SEQLIB_REQUIRE(edited.added.size() == 1 && edited.items[3] && edited.items[4] && edited.items[5]);
     XSFLIB_CHECK(edited.added[0] == 3 && *edited.items[3] == 4 && items.at(4).kind == Kind::kNote);
     XSFLIB_CHECK(items.at(*edited.items[5]).kind == Kind::kJump && items[*edited.items[5]].target == *edited.items[4]);
-    XSFLIB_CHECK(Notes(Played(edited.file, 0)) == Notes(loop));
+    XSFLIB_CHECK(Notes(PlayedSequence(edited.file, 0)) == Notes(loop));
 }
 
 // On a track whose notes wait for their length, a new setting first turns the note wait off around the notes of its
@@ -707,13 +606,13 @@ void TestAddSettingBeforeLoop()
 void TestAddSettingWaiting()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence waiting = Played(file, kWaiting);
+    const Sequence waiting = PlayedSequence(file, kWaiting);
     const std::vector<NewSetting> settings = {
         {.stretch = waiting.tracks[0].stretches[0], .tick = 12, .command = Volume(90)}};
 
     const Edited edited = AddSettings(file, 1, settings);
 
-    const Sequence played = Played(edited.file, kWaiting);
+    const Sequence played = PlayedSequence(edited.file, kWaiting);
     XSFLIB_CHECK(Notes(played) == Notes(waiting));
     std::vector<Setting> volumes = played.tracks[0].volume;
     std::erase_if(volumes, [](const Setting& volume) { return volume.tick == 0; });
@@ -730,7 +629,7 @@ void TestAddSettingWaiting()
 void TestMoveSettings()
 {
     const File file = hokuto::format::ImportSwitchArchive(SettingsArchive());
-    const Sequence song = Played(file, 0);
+    const Sequence song = PlayedSequence(file, 0);
     const Stretch& stretch = song.tracks[0].stretches.at(0);
     const std::vector<SettingMove> moves = {{.command = kVolume100, .stretch = stretch, .shift = 24},
                                             {.command = kPan10, .stretch = stretch, .shift = -36}};
@@ -739,7 +638,7 @@ void TestMoveSettings()
     const std::optional<ShiftRange> volume_range = ShiftRangeOf(file, 0, kVolume100, stretch);
     const std::optional<ShiftRange> pan_range = ShiftRangeOf(file, 0, kPan10, stretch);
 
-    const Sequence played = Played(edited.file, 0);
+    const Sequence played = PlayedSequence(edited.file, 0);
     XSFLIB_CHECK(Notes(played) == Notes(song));
     std::vector<Setting> volumes = played.tracks[0].volume;
     std::erase_if(volumes, [](const Setting& volume) { return volume.tick == 0 || volume.tick >= 96; });
@@ -770,7 +669,7 @@ void TestMoveSettings()
 void TestMoveSettingWaiting()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence waiting = Played(file, kWaiting);
+    const Sequence waiting = PlayedSequence(file, kWaiting);
     const Stretch& stretch = waiting.tracks[0].stretches[0];
     const std::vector<SettingMove> moves = {{.command = 2, .stretch = stretch, .shift = 12}};
     const std::vector<SettingMove> still = {{.command = 2, .stretch = stretch}};
@@ -778,7 +677,7 @@ void TestMoveSettingWaiting()
     const Edited edited = MoveSettings(file, 1, moves);
     const Edited unchanged = MoveSettings(file, 1, still);
 
-    const Sequence played = Played(edited.file, kWaiting);
+    const Sequence played = PlayedSequence(edited.file, kWaiting);
     XSFLIB_CHECK(Notes(played) == Notes(waiting));
     const std::vector<ntdlib::commands::Command>& items = edited.file.sequences[1]->items;
     SEQLIB_REQUIRE(edited.items[1] && *edited.items[1] >= 1);
@@ -796,16 +695,17 @@ void TestMoveSettingWaiting()
 void TestMoveRandomSetting()
 {
     const File file = hokuto::format::ImportSwitchArchive(RandomArchive());
-    const Sequence song = Played(file, 0);
+    const Sequence song = PlayedSequence(file, 0);
     const Stretch& stretch = song.tracks[0].stretches.at(0);
     const std::vector<SettingMove> later = {{.command = kRandomPan, .stretch = stretch, .shift = 12}};
     const std::vector<SettingMove> after = {{.command = kPanAfter, .stretch = stretch, .shift = 12}};
-    const std::vector<NotePlace> places = {{kRandomPan, stretch}, {kPanAfter, stretch}};
+    const std::vector<NotePlace> places = {{.command = kRandomPan, .stretch = stretch},
+                                           {.command = kPanAfter, .stretch = stretch}};
 
     const Edited moved = MoveSettings(file, 0, later);
     const std::vector<NoteLimits> limits = LimitsOf(file, 0, places);
 
-    XSFLIB_CHECK(Notes(Played(moved.file, 0)) == Notes(song));
+    XSFLIB_CHECK(Notes(PlayedSequence(moved.file, 0)) == Notes(song));
     const std::vector<ntdlib::commands::Command>& items = moved.file.sequences[0]->items;
     SEQLIB_REQUIRE(moved.items[1]);
     XSFLIB_CHECK(items.at(*moved.items[1]).kind == Kind::kPan &&
@@ -815,7 +715,7 @@ void TestMoveRandomSetting()
     SEQLIB_REQUIRE(limits.size() == 2);
     XSFLIB_CHECK(limits[0].shift == (ShiftRange{0, 48}) && !limits[1].shift);
     XSFLIB_CHECK(MoveRefusal(file, 0, after) ==
-                 "A command before this one changes the note wait as the track plays. Hokuto can't move it.");
+                 "An earlier command changes note wait during playback. Can't move this command.");
 }
 
 // Only a setting moves in time: not a note wait, the timebase or a track's allocation. A setting that runs only if the
@@ -833,11 +733,10 @@ void TestWhyFixedInTime()
     ntdlib::commands::Command tracks;
     tracks.kind = Kind::kAllocateTracks;
 
-    const std::string kOnlySettings = "Only a setting, such as a volume, moves to another tick.";
+    const std::string kOnlySettings = "Only a setting, such as a volume, can move to another tick.";
     XSFLIB_CHECK(!WhyFixedInTime(Volume(90)));
-    XSFLIB_CHECK(WhyFixedInTime(conditional) ==
-                 "Hokuto can't move a command that runs only if the last comparison held.");
-    XSFLIB_CHECK(WhyFixedInTime(variable) == "Hokuto can't move a command that reads or changes a variable.");
+    XSFLIB_CHECK(WhyFixedInTime(conditional) == "Can't move a command that runs only if the last comparison was true.");
+    XSFLIB_CHECK(WhyFixedInTime(variable) == "Can't move a command that reads or changes a variable.");
     XSFLIB_CHECK(WhyFixedInTime(note_wait) == kOnlySettings && WhyFixedInTime(timebase) == kOnlySettings);
     XSFLIB_CHECK(WhyFixedInTime(tracks) == kOnlySettings);
 }
@@ -846,7 +745,7 @@ void TestWhyFixedInTime()
 void TestRefusals()
 {
     const File file = hokuto::format::ImportSwitchArchive(TestArchive());
-    const Sequence song = Played(file, kSong);
+    const Sequence song = PlayedSequence(file, kSong);
     NoteEdit wait = EditOf(song, 0);
     wait.command = 10;
     NoteEdit high = EditOf(song, 0);
@@ -861,24 +760,26 @@ void TestRefusals()
 
 int main()
 {
-    TestCommands();
-    TestKeyVelocityLength();
-    TestMove();
-    TestMoveLimits();
-    TestLimits();
-    TestRemoveAndAdd();
-    TestCommandsAfter();
-    TestNoteWait();
-    TestTrackEnd();
-    TestNoteWaitWritten();
-    TestAddSettings();
-    TestAddSettingBeforeLoop();
-    TestAddSettingWaiting();
-    TestMoveSettings();
-    TestMoveSettingWaiting();
-    TestMoveRandomSetting();
-    TestWhyFixedInTime();
-    TestRefusals();
-
-    return xsflib::testing::Summary("notes");
+    return xsflib::testing::RunTest("notes",
+                                    []
+                                    {
+                                        TestCommands();
+                                        TestKeyVelocityLength();
+                                        TestMove();
+                                        TestMoveLimits();
+                                        TestLimits();
+                                        TestRemoveAndAdd();
+                                        TestCommandsAfter();
+                                        TestNoteWait();
+                                        TestTrackEnd();
+                                        TestNoteWaitWritten();
+                                        TestAddSettings();
+                                        TestAddSettingBeforeLoop();
+                                        TestAddSettingWaiting();
+                                        TestMoveSettings();
+                                        TestMoveSettingWaiting();
+                                        TestMoveRandomSetting();
+                                        TestWhyFixedInTime();
+                                        TestRefusals();
+                                    });
 }

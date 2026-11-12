@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // Tests what the arrangement's tempo row shows (src/app/tempo_row.h). A small Switch archive gives the commands of a
-// sound's two tracks that set the tempo, how far they can move, and the commands that drags of them give. Songs made by
-// hand give the row's span and line. Points made by hand give the labels that fit beside them.
+// sound's two tracks that set the tempo, how far they can move, and the commands that drags of them give. A sound that
+// sets the tempo long after its last note yields a point past the song's end. Songs made by hand give the row's span
+// and line. Points made by hand give the labels that fit beside them. Points made by hand also give where a drag in
+// time stops.
 
 #include "app/tempo_row.h"
 
@@ -29,6 +31,7 @@
 
 using hokuto::app::FittingLabels;
 using hokuto::app::kTimedByNotes;
+using hokuto::app::ShiftOfTempoPoint;
 using hokuto::app::SongView;
 using hokuto::app::TempoChangeView;
 using hokuto::app::TempoCommand;
@@ -36,6 +39,7 @@ using hokuto::app::TempoLine;
 using hokuto::app::TempoMove;
 using hokuto::app::TempoPoints;
 using hokuto::app::TempoPointView;
+using hokuto::app::TempoShift;
 using hokuto::app::TempoSpan;
 using hokuto::app::TempoSpanOf;
 using ntdlib::commands::Command;
@@ -86,6 +90,18 @@ const std::vector<uint8_t> kWaitFromVariable = {
     60,   100,  48,   // 8: key 60 for 48 ticks
     0x80, 48,         // 11: wait 48 ticks
     0xFF,             // 13: the end
+};
+
+// A sound that sets the tempo long after its last note. At 120 BPM, a beat of 48 ticks lasts 0.5 s. The note ends at
+// 0.5 s, and ntdlib's performer counts 10 s of its release at most (kMaxTailSeconds). The wait of 2,400 ticks (a
+// variable-length number, 0x92 0x60) brings the second tempo to 25.5 s.
+const std::vector<uint8_t> kTempoAfterTheEnd = {
+    0xB0, 48,         // 0: timebase 48
+    0xE1, 120,  0x00, // 2: tempo 120
+    60,   100,  48,   // 5: key 60 for 48 ticks
+    0x80, 0x92, 0x60, // 8: wait 2,400 ticks
+    0xE1, 110,  0x00, // 11: tempo 110
+    0xFF,             // 14: the end
 };
 
 // The archive, with the sound's bytecode `bytecode`. The bank plays a looped wave for every key.
@@ -172,13 +188,13 @@ void TestPoints()
          .command = 31,
          .conditional = true,
          .track_name = "Track 1",
-         .fixed = "Hokuto can't move a command that runs only if the last comparison held."},
+         .fixed = "Can't move a command that runs only if the last comparison was true."},
         {.tick = 60, .bpm = 110.0, .track = 1, .command = 51, .stretch = 1, .track_name = "Track 1"},
         {.tick = 96,
          .command = 19,
          .source = "Variable 5",
          .track_name = "Track 0",
-         .fixed = "Hokuto can't move a command that reads or changes a variable."}};
+         .fixed = "Can't move a command that reads or changes a variable."}};
     XSFLIB_CHECK(points == expected);
     XSFLIB_CHECK(missing.empty());
 }
@@ -195,6 +211,27 @@ void TestTimedByNotes()
 
     SEQLIB_REQUIRE(points.size() == 1);
     XSFLIB_CHECK(points[0].tick == 0 && points[0].command == 5 && points[0].fixed == kTimedByNotes);
+}
+
+// A sound without a loop whose last change comes more than 10 s after its last sound has died away ends where that
+// sound dies away (ntdlib's EndsAtLastSound). The song then ends within 10 s of the note's end at tick 48: by tick
+// 1,008 at 120 BPM. The performer records no tempo after the end, and plays 120 BPM at tick 2,448. The List Editor
+// shows the command there, and the tempo row still shows it as a point.
+void TestPastTheEnd()
+{
+    const std::vector<uint8_t> bytes = TestArchive(kTempoAfterTheEnd);
+    const hokuto::format::File file = hokuto::format::ImportSwitchArchive(bytes);
+    const std::shared_ptr<const sar::SoundArchive> archive = hokuto::song::LoadArchive(bytes, "test.bfsar");
+    const hokuto::song::Sequence song = hokuto::song::ReadSequence(*archive, 0);
+
+    const std::vector<TempoPointView> points = TempoPoints(file, 0, song);
+
+    XSFLIB_CHECK(!song.loop);
+    XSFLIB_CHECK(song.length >= 48 && song.length <= 1008);
+    XSFLIB_CHECK(hokuto::song::TempoAt(song, 2448) == 120.0);
+    SEQLIB_REQUIRE(points.size() == 2);
+    XSFLIB_CHECK(points[0].tick == 0 && points[0].bpm == 120.0 && points[0].command == 2);
+    XSFLIB_CHECK(points[1].tick == 2448 && points[1].bpm == 110.0 && points[1].command == 11);
 }
 
 // The span runs from 20 below the lowest tempo to 20 above the highest, out to multiples of 10. The song's tempo, the
@@ -264,8 +301,9 @@ void TestLine()
 
 // A drag that moves a point moves each run of its command. Its tempo holds from the run's new tick up to the next
 // change. At the old tick, the command before the run in that tick decides the tempo, or else the tempo before the tick
-// holds on. At tick 0, the tempo with which the sequence starts holds: 120. A run that a later command overrides in its
-// tick takes its tempo to its new tick. A tempo without one value takes the tempo that the line showed at its tick.
+// holds on. At tick 0, the tempo with which the sequence starts holds: 120, or on the GBA about 149.32. A run that a
+// later command overrides in its tick takes its tempo to its new tick. A tempo without one value takes the tempo that
+// the line showed at its tick.
 void TestMovedLine()
 {
     SongView song;
@@ -291,6 +329,9 @@ void TestMovedLine()
     const std::vector<TempoChangeView> overriding = move(song, 3, 150.0, -6);
     const std::vector<TempoChangeView> overridden = move(song, 2, 140.0, -6);
     const std::vector<TempoChangeView> first = move(start, 0, 100.0, 24);
+    SongView gba = start;
+    gba.starting_tempo = 149.32;
+    const std::vector<TempoChangeView> gba_first = move(gba, 0, 100.0, 24);
     const std::vector<TempoChangeView> drawn = move(random, 0, 0.0, 24);
 
     XSFLIB_CHECK((twice == std::vector<TempoChangeView>{{0, 120.0}, {30, 100.0}, {48, 150.0}, {66, 100.0}}));
@@ -299,6 +340,7 @@ void TestMovedLine()
     XSFLIB_CHECK(
         (overridden == std::vector<TempoChangeView>{{0, 120.0}, {24, 90.0}, {42, 140.0}, {48, 150.0}, {60, 90.0}}));
     XSFLIB_CHECK((first == std::vector<TempoChangeView>{{0, 120.0}, {24, 100.0}, {48, 150.0}}));
+    XSFLIB_CHECK((gba_first == std::vector<TempoChangeView>{{0, 149.32}, {24, 100.0}, {48, 150.0}}));
     XSFLIB_CHECK((drawn == std::vector<TempoChangeView>{{0, 120.0}, {48, 85.0}}));
 }
 
@@ -327,6 +369,27 @@ void TestCommand()
     XSFLIB_CHECK(!variable && !note && !nowhere && !unknown && !empty);
 }
 
+// A drag moves a tempo point as far as its room allows, and says where it stops. A drag of a point in the lanes of the
+// Key Editor does the same. A point without room says so at once. A quarter note is 48 ticks.
+void TestShift()
+{
+    TempoPointView stuck;
+    TempoPointView point;
+    point.tick = 96;
+    point.earlier = 48;
+    point.later = 96;
+
+    const TempoShift none = ShiftOfTempoPoint(stuck, 48, 48);
+    const TempoShift inside = ShiftOfTempoPoint(point, 48, 48);
+    const TempoShift early = ShiftOfTempoPoint(point, -96, 48);
+    const TempoShift late = ShiftOfTempoPoint(point, 192, 48);
+
+    XSFLIB_CHECK(none.ticks == 0 && none.refused.find("The point can start no later than 1. 1. 0.") == 0);
+    XSFLIB_CHECK(inside == (TempoShift{48, {}}));
+    XSFLIB_CHECK(early.ticks == -48 && early.refused.find("no earlier than 2. 1. 0.") != std::string::npos);
+    XSFLIB_CHECK(late.ticks == 96 && late.refused.find("no later than 5. 1. 0.") != std::string::npos);
+}
+
 // A label fits where no other point lies from its point to its end, a gap of 6 pixels and its width on. Of points a few
 // pixels apart, only the last draws its label. Two points at one place draw none. The points can come in any order. A
 // label that ends at the next point doesn't fit.
@@ -345,13 +408,17 @@ void TestFittingLabels()
 
 int main()
 {
-    TestPoints();
-    TestTimedByNotes();
-    TestSpan();
-    TestLine();
-    TestMovedLine();
-    TestCommand();
-    TestFittingLabels();
-
-    return xsflib::testing::Summary("tempo_row");
+    return xsflib::testing::RunTest("tempo_row",
+                                    []
+                                    {
+                                        TestPoints();
+                                        TestTimedByNotes();
+                                        TestPastTheEnd();
+                                        TestSpan();
+                                        TestLine();
+                                        TestMovedLine();
+                                        TestCommand();
+                                        TestShift();
+                                        TestFittingLabels();
+                                    });
 }

@@ -3,6 +3,7 @@
 #include "song/midi_export.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -13,9 +14,15 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
+#include "ntdlib/sequence_export/agb/settings.h"
+#include "ntdlib/sequence_export/dse/convert.h"
+#include "ntdlib/sequence_export/mp2k/convert.h"
+#include "ntdlib/sequence_export/ntr/convert.h"
 #include "ntdlib/sequence_export/sfz.h"
+#include "seqlib/midi/encoder.h"
 #include "xsflib/files.h"
 
 #include "song/archive.h"
@@ -74,8 +81,8 @@ std::vector<const export_::SfzSample*> NewSamples(const std::vector<export_::Sfz
         std::vector<uint8_t> bytes;
         if (!xsflib::ReadFile(path, bytes) || bytes != sample.wav)
         {
-            throw std::runtime_error("The folder " + where + " already holds another " + sample.name +
-                                     ". It belongs to an earlier export. Export to another folder.");
+            throw std::runtime_error("The folder " + where + " already contains a different " + sample.name +
+                                     " from an earlier export. Export to another folder.");
         }
     }
 
@@ -89,6 +96,7 @@ void WriteSamples(const std::vector<const export_::SfzSample*>& samples, const s
     {
         MakeFolder(folder);
     }
+
     for (const export_::SfzSample* sample : samples)
     {
         Write(folder / xsflib::PathFromUtf8(sample->name), sample->wav);
@@ -136,17 +144,9 @@ std::optional<uint32_t> ReadVariable(std::span<const uint8_t> data, std::size_t&
 // Appends a meta event of type `type` with `text` at a delta of 0 to `track`. Its length is a variable-length number.
 void AppendMeta(std::vector<uint8_t>& track, uint8_t type, std::string_view text)
 {
-    track.insert(track.end(), {0x00, 0xFF, type});
-    const auto length = static_cast<uint32_t>(text.size());
-    for (int shift = 21; shift > 0; shift -= 7)
-    {
-        if (length >> shift != 0)
-        {
-            track.push_back(static_cast<uint8_t>(0x80 | ((length >> shift) & 0x7F)));
-        }
-    }
-    track.push_back(static_cast<uint8_t>(length & 0x7F));
-    track.insert(track.end(), text.begin(), text.end());
+    seqlib::midi::AppendVlq(track, 0);
+    const std::vector<uint8_t> event = seqlib::midi::MetaEvent(type, std::string(text));
+    track.insert(track.end(), event.begin(), event.end());
 }
 
 // Converts sound `sound` of `archive`, a sound archive of the 3DS, the Switch, the Wii U or the Wii, with `options` and
@@ -168,7 +168,7 @@ export_::Conversion Convert(const Archive& archive, uint32_t sound, bool sequenc
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't convert " + archive.Sounds()[sound].name + ". " + error.what());
+        throw std::runtime_error("Can't convert " + archive.Sounds()[sound].name + ". " + error.what());
     }
 }
 
@@ -194,6 +194,138 @@ export_::Conversion ConvertToMidi(const ntdlib::rsar::SoundArchive& archive, uin
                    SettingsOf(archive, build), program);
 }
 
+export_::Conversion ConvertToMidi(const GbaRom& rom, int song, const std::string& program)
+{
+    ntdlib::sequence_export::agb::ConvertSettings settings;
+    settings.program = program;
+    ntdlib::sequence_export::mp2k::SongFiles files =
+        ntdlib::sequence_export::mp2k::ConvertSongFiles(rom.rom, rom.info, song, settings);
+
+    return AgbConversion(GbaSongName(rom, song), std::move(files));
+}
+
+export_::Conversion AgbConversion(const std::string& name, bool ok, bool silent, std::vector<std::string> warnings,
+                                  std::vector<uint8_t> midi, std::vector<uint8_t> sf2)
+{
+    if (!ok)
+    {
+        // ntdlib's last warning says why, after the song's name, such as "its header can't be read".
+        std::string why = warnings.empty() ? std::string() : warnings.back();
+        if (!why.empty())
+        {
+            why = " " + std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(why[0])))) +
+                  why.substr(1) + ".";
+        }
+
+        throw std::runtime_error("Can't convert " + name + "." + why);
+    }
+
+    if (silent)
+    {
+        throw EmptyConversion(name + " has no notes. The MIDI file would be empty.");
+    }
+
+    export_::Conversion conversion;
+    conversion.midi = std::move(midi);
+    conversion.sf2 = std::move(sf2);
+    conversion.warnings = std::move(warnings);
+
+    return conversion;
+}
+
+export_::Conversion ConvertToMidi(const DsArchive& archive, uint32_t sound, const StartValues& values,
+                                  const std::string& program)
+{
+    if (sound >= archive.sounds.size() || !archive.sounds[sound])
+    {
+        throw std::runtime_error("The archive has no sequence " + std::to_string(sound) + ".");
+    }
+
+    const export_::ntr::PerformOptions options = DsPerformOptions(archive, sound, values);
+    const std::string name = DsSoundName(archive, sound);
+    export_::ntr::Conversion converted;
+    try
+    {
+        converted = export_::ntr::ConvertSequence(archive.archive, *archive.sounds[sound], name, options, program);
+    }
+    catch (const std::exception& error)
+    {
+        throw std::runtime_error("Can't convert " + name + ". " + error.what());
+    }
+
+    return FrameConversion(std::move(converted));
+}
+
+export_::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::string& program)
+{
+    if (sound >= set.sounds.size())
+    {
+        throw std::runtime_error("The image has no DSE sound " + std::to_string(sound) + ".");
+    }
+
+    export_::dse::PerformOptions options;
+    options.build = set.build;
+    const std::string name = DseSoundName(set, sound);
+    export_::dse::Conversion converted;
+    try
+    {
+        converted = export_::dse::ConvertSequence(set.sounds[sound].Files(), name, options, program);
+    }
+    catch (const std::exception& error)
+    {
+        throw std::runtime_error("Can't convert " + name + ". " + error.what());
+    }
+
+    return FrameConversion(std::move(converted));
+}
+
+export_::BankConversion ConvertVoiceGroup(const GbaRom& rom, uint32_t voices, const std::vector<int>& programs,
+                                          const std::string& program)
+{
+    ntdlib::sequence_export::agb::ConvertSettings settings;
+    settings.program = program;
+    const std::string name = GbaVoiceGroupName(voices);
+    const std::string title = rom.rom.Title();
+    ntdlib::sequence_export::mp2k::VoiceGroupFiles files = ntdlib::sequence_export::mp2k::ConvertVoiceGroup(
+        rom.rom, rom.info, voices, programs, settings, title.empty() ? name : title + " " + name);
+    if (!files.ok)
+    {
+        throw BankWithoutInstruments(name + " has no voices that make a sound.");
+    }
+
+    export_::BankConversion conversion;
+    conversion.sound_fonts.push_back({static_cast<uint32_t>(*std::ranges::min_element(programs)),
+                                      static_cast<uint32_t>(*std::ranges::max_element(programs)),
+                                      std::move(files.sf2)});
+    conversion.warnings = std::move(files.warnings);
+
+    return conversion;
+}
+
+export_::BankConversion SamplesConversion(export_::BankConversion conversion,
+                                          ntdlib::sequence_export::agb::Sf2File& file, std::span<const int> samples,
+                                          const std::string& program, const std::string& title)
+{
+    if (file.presets.empty())
+    {
+        throw BankWithoutInstruments("None of the samples in the ROM make a sound.");
+    }
+
+    file.program = program;
+    file.SetTitle(title.empty() ? "Samples" : title + " Samples");
+    std::vector<uint8_t> bytes;
+    std::string error;
+    if (!file.Encode(bytes, error))
+    {
+        throw std::runtime_error("Can't write the SoundFont. " + error);
+    }
+
+    conversion.sound_fonts.push_back({static_cast<uint32_t>(*std::ranges::min_element(samples)),
+                                      static_cast<uint32_t>(*std::ranges::max_element(samples)), std::move(bytes)});
+
+    return conversion;
+}
+
 std::vector<std::string> ConversionReport(const export_::Conversion& conversion)
 {
     std::vector<std::string> lines;
@@ -202,6 +334,7 @@ std::vector<std::string> ConversionReport(const export_::Conversion& conversion)
         lines.push_back("Approximated " + (count == 1 ? std::string("once") : std::to_string(count) + " times") + ": " +
                         what);
     }
+
     lines.insert(lines.end(), conversion.warnings.begin(), conversion.warnings.end());
 
     return lines;
@@ -233,19 +366,20 @@ std::vector<uint8_t> WithMidiTags(std::span<const uint8_t> midi, const MidiTags&
 
     // The header, then the first track's chunk. The track's first event names the sequence.
     const std::runtime_error unnamed(
-        "Hokuto can't put the tags in the MIDI file. Its first track doesn't start with "
-        "the sequence's name.");
+        "Can't add the tags to the MIDI file. Its first track doesn't start with a sequence name.");
     if (!HasId(midi, 0, "MThd") || midi.size() < kMidiHeader + kChunkStart || BigEndian32(midi.subspan(4)) != 6 ||
         !HasId(midi, kMidiHeader, "MTrk"))
     {
         throw unnamed;
     }
+
     const std::size_t kTrackStart = kMidiHeader + kChunkStart;
     const uint32_t size = BigEndian32(midi.subspan(kMidiHeader + 4));
     if (size > midi.size() - kTrackStart)
     {
         throw unnamed;
     }
+
     const std::span<const uint8_t> data = midi.subspan(kTrackStart, size);
     std::size_t at = 3;
     const bool named = data.size() >= at && data[0] == 0x00 && data[1] == 0xFF && data[2] == 0x03;
@@ -254,6 +388,7 @@ std::vector<uint8_t> WithMidiTags(std::span<const uint8_t> midi, const MidiTags&
     {
         throw unnamed;
     }
+
     const std::string_view name(reinterpret_cast<const char*>(data.data() + at), *length);
 
     // The notice, the title or the old name, then the track's other events.
@@ -262,6 +397,7 @@ std::vector<uint8_t> WithMidiTags(std::span<const uint8_t> midi, const MidiTags&
     {
         AppendMeta(track, 0x02, tags.copyright);
     }
+
     AppendMeta(track, 0x03, tags.title.empty() ? name : std::string_view(tags.title));
     track.insert(track.end(), data.begin() + static_cast<std::ptrdiff_t>(at + *length), data.end());
     if (track.size() > UINT32_MAX)
@@ -271,13 +407,7 @@ std::vector<uint8_t> WithMidiTags(std::span<const uint8_t> midi, const MidiTags&
 
     // The header, the track with its new size, and the other tracks as they were.
     std::vector<uint8_t> result(midi.begin(), midi.begin() + static_cast<std::ptrdiff_t>(kMidiHeader));
-    result.insert(result.end(), {'M', 'T', 'r', 'k'});
-    const auto track_size = static_cast<uint32_t>(track.size());
-    for (const int shift : {24, 16, 8, 0})
-    {
-        result.push_back(static_cast<uint8_t>(track_size >> shift));
-    }
-    result.insert(result.end(), track.begin(), track.end());
+    seqlib::midi::AppendTrack(result, track);
     result.insert(result.end(), midi.begin() + static_cast<std::ptrdiff_t>(kTrackStart + size), midi.end());
 
     return result;
@@ -302,7 +432,7 @@ std::vector<const export_::SfzSample*> NewSfzSamples(const export_::Conversion& 
     const std::filesystem::path in_sfz =
         std::filesystem::path("sfz") / xsflib::PathFromUtf8(export_::kSfzSamplesFolder);
     return NewSamples(conversion.sfz.samples, midi.parent_path() / in_sfz,
-                      xsflib::Utf8(in_sfz) + " beside " + xsflib::Utf8(midi.filename()));
+                      xsflib::Utf8(in_sfz) + " next to " + xsflib::Utf8(midi.filename()));
 }
 
 } // namespace
@@ -326,10 +456,12 @@ void WriteMidiAndSfz(const export_::Conversion& conversion, const std::filesyste
     {
         MakeFolder(files);
     }
+
     for (const export_::SfzFile& file : conversion.sfz.files)
     {
         Write(files / xsflib::PathFromUtf8(file.name), file.text);
     }
+
     WriteSamples(new_samples, samples);
 }
 
@@ -345,11 +477,12 @@ export_::BankConversion ConvertBank(const ntdlib::sar::SoundArchive& archive, ui
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't read " + name + ". " + error.what());
+        throw std::runtime_error("Can't read " + name + ". " + error.what());
     }
+
     if (programs.empty())
     {
-        throw BankWithoutInstruments(name + " holds no instruments.");
+        throw BankWithoutInstruments(name + " has no instruments.");
     }
 
     try
@@ -358,7 +491,7 @@ export_::BankConversion ConvertBank(const ntdlib::sar::SoundArchive& archive, ui
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't convert " + name + ". " + error.what());
+        throw std::runtime_error("Can't convert " + name + ". " + error.what());
     }
 }
 
@@ -375,11 +508,12 @@ export_::BankConversion ConvertBank(const ntdlib::rsar::SoundArchive& archive, u
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't read " + name + ". " + error.what());
+        throw std::runtime_error("Can't read " + name + ". " + error.what());
     }
+
     if (programs.empty())
     {
-        throw BankWithoutInstruments(name + " holds no instruments.");
+        throw BankWithoutInstruments(name + " has no instruments.");
     }
 
     const auto plays = [bank](const ntdlib::rsar::SoundInfo& sound)
@@ -394,7 +528,7 @@ export_::BankConversion ConvertBank(const ntdlib::rsar::SoundArchive& archive, u
     }
     catch (const std::exception& error)
     {
-        throw std::runtime_error("Hokuto can't convert " + name + ". " + error.what());
+        throw std::runtime_error("Can't convert " + name + ". " + error.what());
     }
 }
 
@@ -432,7 +566,7 @@ bool WriteBankSfz(const export_::BankConversion& conversion, const std::filesyst
     const std::filesystem::path files = folder / xsflib::PathFromUtf8(name);
     const std::filesystem::path samples = folder / xsflib::PathFromUtf8(export_::kSfzSamplesFolder);
     const std::vector<const export_::SfzSample*> new_samples =
-        NewSamples(conversion.sfz.samples, samples, export_::kSfzSamplesFolder + " beside " + name);
+        NewSamples(conversion.sfz.samples, samples, export_::kSfzSamplesFolder + " next to " + name);
     std::vector<std::string> existing;
     for (const export_::SfzFile& file : conversion.sfz.files)
     {
@@ -452,6 +586,7 @@ bool WriteBankSfz(const export_::BankConversion& conversion, const std::filesyst
     {
         Write(files / xsflib::PathFromUtf8(file.name), file.text);
     }
+
     WriteSamples(new_samples, samples);
 
     return true;

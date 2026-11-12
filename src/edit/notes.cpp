@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: MIT
 
+// The note edits of edit/notes.h: the edits of notes and settings, and the limits of a drag. The blocks are in
+// note_blocks.cpp, their rewrite in note_rewrite.cpp, the runs that turn the note wait off in note_wait_edits.cpp, and
+// the rules of Konami's driver in konami_notes.cpp.
+
 #include "edit/notes.h"
 
 #include <algorithm>
@@ -19,1223 +23,343 @@
 #include "ntdlib/sar/layout.h"
 
 #include "edit/bytecode.h"
+#include "edit/drivers.h"
+#include "edit/engine_edits.h"
+#include "edit/mp2k.h"
+#include "edit/note_blocks.h"
+#include "edit/note_edits.h"
 #include "edit/timelines.h"
 #include "song/archive.h"
 
 namespace hokuto::edit
 {
+
 namespace
 {
 
+using note_detail::Addition;
+using note_detail::BlockChange;
+using note_detail::BlockOf;
+using note_detail::BlockStarts;
+using note_detail::BlockTicks;
+using note_detail::CheckedByte;
+using note_detail::Code;
+using note_detail::EditedAt;
+using note_detail::EditNotesIn;
+using note_detail::EditWritten;
+using note_detail::EndOf;
+using note_detail::EndsAt;
+using note_detail::EndsBlockIn;
+using note_detail::EntryStates;
+using note_detail::Examine;
+using note_detail::IsSetting;
+using note_detail::IsTie;
+using note_detail::ItemAt;
+using note_detail::kDseLegato;
+using note_detail::kEndRefusal;
+using note_detail::kFarLater;
+using note_detail::KonamiKey;
+using note_detail::KonamiSilentNote;
+using note_detail::KonamiStartsAlone;
+using note_detail::kTieRefusal;
+using note_detail::kWaitOn;
+using note_detail::Last;
+using note_detail::LastsTo;
+using note_detail::NoteAt;
+using note_detail::NoteTicks;
+using note_detail::NoteWaitAt;
+using note_detail::ProgramEnd;
+using note_detail::ProgramEnds;
+using note_detail::Rewrite;
+using note_detail::Run;
+using note_detail::RunOf;
+using note_detail::RunsToWrite;
+using note_detail::Spot;
+using note_detail::SpotOf;
+using note_detail::StretchEnd;
+using note_detail::TailOf;
+using note_detail::TimelineSpot;
+using note_detail::TimelineSpotOf;
+using note_detail::TrackEndIn;
+using note_detail::UsesVariables;
+using note_detail::WaitOf;
+using note_detail::WaitRefusal;
+using note_detail::WaitTicks;
+using note_detail::WithItems;
 using ntdlib::commands::Argument;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Source;
 
-// A sequence's commands as an edit finds them: each item's offset in the bytecode, then the end, and the first item of
-// each block, then the number of items. `fixed` is set for a sequence whose bytes must keep their places: one with a
-// target that's a byte offset, or with bytes that no command was decoded from.
-struct Code
-{
-    const std::vector<Command>* items = nullptr;
-    std::vector<uint32_t> offsets;
-    std::vector<uint32_t> starts;
-    bool fixed = false;
-};
+} // namespace
 
-// Whether `command` moves the track elsewhere, or may: a jump, a call, a return, a loop's start or end, or the end. The
-// command after it starts a block.
-bool EndsBlock(const Command& command)
+namespace note_detail
 {
-    switch (command.kind)
+
+namespace
+{
+
+// Writes the new length of `edit` into `note`, item `item` of `code` in block `block` (EditNotesIn). A note of a
+// timeline that runs past the end of its track, and a note of a program that runs past the end of the program, move
+// that end in `blocks`. `new_lengths` lists the notes whose lengths change alone, and `ends` the ends of the programs.
+void ResizeNote(const Code& code, uint32_t item, const NoteEdit* edit, Command& note, std::size_t block, bool timeline,
+                const SongEnd& song_end, const std::set<uint32_t>& new_lengths, ProgramEnds& ends,
+                std::map<std::size_t, BlockChange>& blocks)
+{
+    note.value = Argument{Source::kValue, static_cast<int64_t>(*edit->length) * kOne, 0};
+    note.encoding.value_bytes = 0;
+
+    // A timeline's note that now runs past the end of its track moves the end.
+    const std::map<std::size_t, uint32_t> starts = timeline && edit->shift == 0 && !edit->remove
+                                                       ? BlockStarts(code, edit->stretch)
+                                                       : std::map<std::size_t, uint32_t>();
+    if (const auto start = starts.find(block); start != starts.end())
     {
-    case Kind::kJump:
-    case Kind::kCall:
-    case Kind::kReturn:
-    case Kind::kLoopStart:
-    case Kind::kLoopEnd:
-    case Kind::kEnd:
-        return true;
-    default:
+        const uint32_t at = start->second + BlockTicks(code, block)[item - code.starts[block]];
+        Last(blocks, LastsTo(EndOf(code, starts), at, note, song_end));
+    }
+
+    // So does a program's note, where the end cuts no other note (ProgramEndOf). The end of a later stretch
+    // (NoteEdit::track_end) stays: the notes of the stretches between could sound up to it.
+    const ProgramEnd* end = !timeline && !code.konami && !code.dse && new_lengths.contains(item) && *edit->length > 0
+                                ? &ends.Of(edit->stretch)
+                                : nullptr;
+    const std::optional<uint32_t> at = end ? end->TickOf(item) : std::nullopt;
+    if (at && end->ends && *at + *edit->length > end->tick)
+    {
+        const bool others = std::ranges::any_of(end->held, [&](uint32_t held) { return !new_lengths.contains(held); });
+        if (end->fixed || others)
+        {
+            throw std::invalid_argument(std::string(kEndRefusal));
+        }
+
+        Last(blocks, std::pair(end->block, *at + *edit->length - end->start));
+    }
+    else if (at && !end->ends && edit->track_end && *at + *edit->length > *edit->track_end)
+    {
+        throw std::invalid_argument(std::string(kEndRefusal));
+    }
+}
+
+// Moves `note`, item `item` of `code` in block `block`, by the shift of `edit` in `blocks` (EditNotesIn). With
+// `settings`, the note is a setting.
+void ShiftNote(const Code& code, uint32_t item, const NoteEdit* edit, const Command& note, std::size_t block,
+               bool timeline, const SongEnd& song_end, bool settings, std::map<std::size_t, BlockChange>& blocks)
+{
+    const std::vector<uint32_t> ticks = BlockTicks(code, block);
+    const int64_t tick = static_cast<int64_t>(ticks[item - code.starts[block]]) + edit->shift;
+    const std::map<std::size_t, uint32_t> starts =
+        timeline ? BlockStarts(code, edit->stretch) : std::map<std::size_t, uint32_t>();
+    if (const auto start = starts.find(block); start != starts.end())
+    {
+        // A timeline's note moves to any tick of its track before the loop's end (TimelineSpotOf).
+        const int64_t at = static_cast<int64_t>(start->second) + tick;
+        if (at < 0)
+        {
+            throw std::invalid_argument(settings ? "Can't place a command before the start of the track."
+                                                 : "Can't place a note before the start of the track.");
+        }
+
+        const TimelineSpot placed =
+            TimelineSpotOf(code, Addition{edit->stretch, static_cast<uint32_t>(at), note}, song_end);
+        blocks[block].removed.insert(item);
+        blocks[placed.spot.block].placed.push_back({placed.spot.tick, note, item, std::nullopt});
+        Last(blocks, placed.lasts);
+        return;
+    }
+
+    if (tick < 0 || tick > static_cast<int64_t>(ticks.back()))
+    {
+        throw std::invalid_argument(settings ? "Can't move a command outside its section of the track."
+                                             : "Can't move a note outside its section of the track.");
+    }
+
+    if (!settings && note.kind == Kind::kNote && tick == static_cast<int64_t>(ticks.back()) &&
+        EndsAt(code, TailOf(code, block)))
+    {
+        throw std::invalid_argument("A note can't start on the tick where the track ends. It wouldn't sound.");
+    }
+
+    blocks[block].removed.insert(item);
+    blocks[block].placed.push_back({static_cast<uint32_t>(tick), note, item, std::nullopt});
+
+    // A legato's command (0xC0) acts on the next note of the track. It goes with the note before it, and the
+    // next note still takes it.
+    for (uint32_t next = item + 1; code.dse && note.kind == Kind::kNote && next < code.starts[block + 1]; ++next)
+    {
+        const Command& after = (*code.items)[next];
+        if (after.kind == Kind::kOther && after.encoding.opcode == kDseLegato)
+        {
+            blocks[block].removed.insert(next);
+            blocks[block].placed.push_back({static_cast<uint32_t>(tick), after, next, std::nullopt});
+            break;
+        }
+
+        if (after.kind == Kind::kNote || after.kind == Kind::kWait)
+        {
+            break;
+        }
+    }
+}
+
+// Changes item `item` of `items`, a note of `code`, as `edit` says, and records in `blocks` the moves, the removals
+// and the ends that move (EditNotesIn). Returns whether the note's block changes.
+bool ChangeNote(const Code& code, std::vector<Command>& items, uint32_t item, const NoteEdit* edit, bool timeline,
+                const SongEnd& song_end, bool settings, const std::set<uint32_t>& new_lengths, ProgramEnds& ends,
+                std::map<std::size_t, BlockChange>& blocks)
+{
+    Command& note = items[item];
+    if (edit->transpose != 0)
+    {
+        note.key = code.konami ? KonamiKey(note,
+                                           note.sample ? static_cast<int8_t>(note.key) + edit->transpose
+                                                       : note.key + edit->transpose,
+                                           *code.konami)
+                               : static_cast<uint8_t>(CheckedByte(note.key + edit->transpose, "key"));
+    }
+
+    if (edit->velocity)
+    {
+        const int velocity = CheckedByte(*edit->velocity, "velocity");
+        const int64_t level =
+            int64_t{code.driver ? code.driver->VolumeOf(velocity, note.sample.has_value()) : velocity} * kOne;
+
+        // On Konami's driver, a volume command sets the volume of the note that it starts (KonamiSilentNote).
+        if (code.konami && note.kind == Kind::kVolume)
+        {
+            note.value.value = level;
+        }
+        else
+        {
+            note.velocity = level;
+        }
+    }
+
+    if (!edit->length && edit->shift == 0 && !edit->remove)
+    {
         return false;
     }
-}
 
-// The ticks of a wait whose length the bytecode gives, or nothing for another command.
-std::optional<uint32_t> WaitTicks(const Command& command)
-{
-    if (command.kind != Kind::kWait || command.conditional || command.value.source != Source::kValue ||
-        command.value.value < 0 || command.value.value % kOne != 0)
+    // A note that waits for its length leaves a wait of that length when it goes. The wait keeps the note's
+    // condition: a note whose comparison failed doesn't wait.
+    const std::optional<bool> note_wait = NoteWaitAt(code, edit->stretch, item);
+    if (note_wait.value_or(true) && settings)
     {
-        return std::nullopt;
+        throw std::invalid_argument(note_wait ? "Another part of the sequence may run this command with note "
+                                                "wait on. Can't move it."
+                                              : "An earlier command changes note wait during playback. Can't "
+                                                "move this command.");
     }
 
-    return static_cast<uint32_t>(command.value.value / kOne);
-}
-
-// Whether a track that runs the commands of `code` from item `from` on ends in the same tick: an end that runs always
-// comes before any command that takes time or moves the track elsewhere. A note that starts there doesn't sound.
-// SequenceTrack::Close (0x022B6158) releases the track's channels in the tick where the track ends.
-bool EndsAt(const Code& code, uint32_t from)
-{
-    for (uint32_t i = from; i < code.items->size(); ++i)
+    if (note_wait.value_or(true))
     {
-        const Command& command = (*code.items)[i];
-        if (command.kind == Kind::kEnd)
+        if (edit->remove && !edit->length && edit->shift == 0 && note_wait && NoteTicks(note))
         {
-            return !command.conditional;
+            Command wait;
+            wait.kind = Kind::kWait;
+            wait.conditional = note.conditional;
+            note = WaitOf(wait, *NoteTicks(note));
+            return true;
         }
-        if (command.kind == Kind::kNote || command.kind == Kind::kData || EndsBlock(command) ||
-            (command.kind == Kind::kWait && WaitTicks(command) != 0))
+
+        const bool removal = edit->remove && !edit->length && edit->shift == 0;
+        throw std::invalid_argument(note_wait ? WaitRefusal(note, removal ? "remove" : "move or resize")
+                                              : "An earlier command changes note wait during playback. Can't "
+                                                "move or resize this note.");
+    }
+
+    const std::size_t block = BlockOf(code, item);
+    if (edit->length)
+    {
+        ResizeNote(code, item, edit, note, block, timeline, song_end, new_lengths, ends, blocks);
+    }
+
+    if (edit->remove)
+    {
+        blocks[block].removed.insert(item);
+        return true;
+    }
+
+    if (edit->shift != 0)
+    {
+        ShiftNote(code, item, edit, note, block, timeline, song_end, settings, blocks);
+    }
+
+    return true;
+}
+
+// Places each of `additions` in `blocks`, in the block of `code` that runs at its tick (EditNotesIn). Returns whether
+// a block changes.
+bool PlaceAdditions(const Code& code, std::span<const Addition> additions, bool timeline, const SongEnd& song_end,
+                    std::map<std::size_t, BlockChange>& blocks)
+{
+    bool resized = false;
+    // Each new command goes into the block that runs at its tick (SpotOf).
+    for (std::size_t index = 0; index < additions.size(); ++index)
+    {
+        const Addition& addition = additions[index];
+        if (timeline)
         {
-            return false;
-        }
-    }
-
-    return false;
-}
-
-// Whether `command` determines the track's timing in a way that a block can't hold: a wait whose length comes from a
-// random number, a variable or a comparison, a change of the note wait, and bytes that no command was decoded from.
-// Such a command is a block of its own.
-bool Barrier(const Command& command)
-{
-    return (command.kind == Kind::kWait && !WaitTicks(command)) || command.kind == Kind::kNoteWait ||
-           command.kind == Kind::kData;
-}
-
-// The commands of sequence `sequence` of `file`, with its blocks.
-Code Examine(const format::File& file, uint32_t sequence)
-{
-    Code code;
-    const ntdlib::commands::Sequence& commands = SequenceToEdit(file, sequence);
-    const std::vector<Command>& items = commands.items;
-    code.items = &items;
-    code.offsets = Offsets(commands, ConsoleOf(file));
-    code.fixed = Fixed(commands);
-
-    // Other code enters a sequence at a target, a label, a sound's start, and the command after a jump or a call. A
-    // barrier stands alone.
-    std::set<uint32_t> starts = {0, static_cast<uint32_t>(items.size())};
-    for (uint32_t i = 0; i < items.size(); ++i)
-    {
-        const Command& item = items[i];
-        if (ntdlib::commands::HasTarget(item.kind) && !item.target_outside)
-        {
-            starts.insert(item.target);
-        }
-        if (EndsBlock(item))
-        {
-            starts.insert(i + 1);
-        }
-        if (Barrier(item))
-        {
-            starts.insert(i);
-            starts.insert(i + 1);
-        }
-    }
-    for (const ntdlib::commands::Label& label : commands.labels)
-    {
-        starts.insert(label.item);
-    }
-    ForEachItemPlace(*file.native, sequence,
-                     [&starts](const ntdlib::sar::Place& place) { starts.insert(place.offset); });
-    std::erase_if(starts, [&items](uint32_t start) { return start > items.size(); });
-    code.starts.assign(starts.begin(), starts.end());
-
-    return code;
-}
-
-// The item at `offset` in the bytecode. Throws for an offset where no item starts.
-uint32_t ItemAt(const Code& code, uint32_t offset)
-{
-    const std::optional<uint32_t> item = ItemAtOffset(code.offsets, offset);
-    if (!item)
-    {
-        throw std::invalid_argument("The note's command isn't where the arrangement shows it.");
-    }
-
-    return *item;
-}
-
-// The note command at `offset`.
-uint32_t NoteAt(const Code& code, uint32_t offset)
-{
-    const uint32_t item = ItemAt(code, offset);
-    if ((*code.items)[item].kind != Kind::kNote)
-    {
-        throw std::invalid_argument("The note's command isn't where the arrangement shows it.");
-    }
-
-    return item;
-}
-
-// Whether `command` is a setting: a command that neither plays a note, waits, moves the track elsewhere nor determines
-// the track's timing (Barrier). A new setting goes in at a tick (AddSettings).
-bool IsSetting(const Command& command)
-{
-    return command.kind != Kind::kNote && command.kind != Kind::kWait && command.kind != Kind::kOther &&
-           !EndsBlock(command) && !Barrier(command) && !ntdlib::commands::HasTarget(command.kind);
-}
-
-// Whether `command` reads or changes a variable, compares one, or runs the game's code.
-bool UsesVariables(const Command& command)
-{
-    return (command.kind >= Kind::kSetVariable && command.kind <= Kind::kUserProcedure) ||
-           command.kind == Kind::kPrintVariable || command.value.source == Source::kVariable ||
-           (command.time && command.time->source == Source::kVariable);
-}
-
-// The item of the command at `offset` that an edit names: a note's command, or with `settings`, a setting's
-// (MoveSettings). Throws std::invalid_argument with a message for the user for a setting that can't move.
-uint32_t EditedAt(const Code& code, uint32_t offset, bool settings)
-{
-    if (!settings)
-    {
-        return NoteAt(code, offset);
-    }
-
-    const uint32_t item = ItemAt(code, offset);
-    if (const std::optional<std::string> why = WhyFixedInTime((*code.items)[item]))
-    {
-        throw std::invalid_argument(*why);
-    }
-
-    return item;
-}
-
-// The block that holds `item`.
-std::size_t BlockOf(const Code& code, uint32_t item)
-{
-    return static_cast<std::size_t>(std::upper_bound(code.starts.begin(), code.starts.end(), item) -
-                                    code.starts.begin()) -
-           1;
-}
-
-// Whether the track's notes wait for their length when `item` runs in `stretch`. Nothing when the item lies outside the
-// stretch, or a command before it in the stretch changes the note wait by a random number, a variable or a comparison.
-std::optional<bool> NoteWaitAt(const Code& code, const song::Stretch& stretch, uint32_t item)
-{
-    const uint32_t first = ItemAt(code, stretch.first);
-    const uint32_t last = ItemAt(code, stretch.last);
-    if (item < first || item > last)
-    {
-        return std::nullopt;
-    }
-
-    bool note_wait = stretch.note_wait;
-    for (uint32_t i = first; i < item; ++i)
-    {
-        const Command& command = (*code.items)[i];
-        if (command.kind == Kind::kData)
-        {
-            return std::nullopt;
-        }
-        if (command.kind == Kind::kNoteWait)
-        {
-            if (command.conditional || command.value.source != Source::kValue)
-            {
-                return std::nullopt;
-            }
-            note_wait = command.value.value != 0;
-        }
-    }
-
-    return note_wait;
-}
-
-// The item where the commands at the end of block `block` go in: before its last command when that command moves the
-// track elsewhere, and else at the next block's start (Rewrite).
-uint32_t TailOf(const Code& code, std::size_t block)
-{
-    const uint32_t end = code.starts[block + 1];
-    return end > code.starts[block] && EndsBlock((*code.items)[end - 1]) ? end - 1 : end;
-}
-
-// The tick of each command of block `block` from the block's start, then the block's length, with the note wait off.
-std::vector<uint32_t> BlockTicks(const Code& code, std::size_t block)
-{
-    std::vector<uint32_t> ticks;
-    uint32_t tick = 0;
-    for (uint32_t i = code.starts[block]; i < code.starts[block + 1]; ++i)
-    {
-        ticks.push_back(tick);
-        tick += WaitTicks((*code.items)[i]).value_or(0);
-    }
-    ticks.push_back(tick);
-
-    return ticks;
-}
-
-// The ticks of a note that waits for its length, or nothing for a length that the bytecode doesn't give.
-std::optional<uint32_t> NoteTicks(const Command& note)
-{
-    if (note.value.source != Source::kValue || note.value.value <= 0 || note.value.value % kOne != 0)
-    {
-        return std::nullopt;
-    }
-
-    return static_cast<uint32_t>(note.value.value / kOne);
-}
-
-// The ticks that a note waits for on a track whose notes wait for their length, when a wait of its own can take its
-// place: the note runs every time, and the bytecode gives its length.
-std::optional<uint32_t> WrittenWait(const Command& note)
-{
-    return note.conditional ? std::nullopt : NoteTicks(note);
-}
-
-// Why a note that waits for its length can't take an edit. `action` names the edit, such as "remove".
-std::string WaitRefusal(const Command& note, const std::string& action)
-{
-    if (note.value.source != Source::kValue)
-    {
-        return "This note's track waits for a length that the sequence decides as it plays. Hokuto can't " + action +
-               " the note.";
-    }
-    if (!NoteTicks(note))
-    {
-        return "This note makes its track wait until the track's notes have ended. Hokuto can't " + action + " it.";
-    }
-
-    return "Whether this note's track waits for it depends on a comparison. Hokuto can't " + action + " it.";
-}
-
-// The states of the note wait that a track can have. Each is a bit.
-constexpr int kWaitOff = 1;
-constexpr int kWaitOn = 2;
-
-// The blocks of `code` that a track can go to from block `block`: a jump's or a call's target, and the next block
-// unless the block's last command always moves the track elsewhere. A call's return and a loop's end going back aren't
-// among them.
-std::vector<std::size_t> NextBlocks(const Code& code, std::size_t block)
-{
-    const Command& last = (*code.items)[code.starts[block + 1] - 1];
-    std::vector<std::size_t> next;
-    if (last.kind == Kind::kData)
-    {
-        return next;
-    }
-
-    if (ntdlib::commands::HasTarget(last.kind) && last.kind != Kind::kOpenTrack && !last.target_outside)
-    {
-        next.push_back(BlockOf(code, last.target));
-    }
-    const bool moves =
-        last.kind == Kind::kJump || last.kind == Kind::kCall || last.kind == Kind::kReturn || last.kind == Kind::kEnd;
-    if ((!moves || last.conditional) && block + 2 < code.starts.size())
-    {
-        next.push_back(block + 1);
-    }
-
-    return next;
-}
-
-// Which blocks of `code` a track can reach from block `from`: a flag for each block. A call comes back to the block
-// after it, and a return to the block after any call. `returns` holds the blocks after the calls. Without a loop's end
-// going back, a track still reaches every block that it can: it ran the loop's start first.
-std::vector<bool> Reach(const Code& code, std::size_t from, const std::vector<std::size_t>& returns)
-{
-    std::vector<bool> reached(code.starts.size() - 1, false);
-    std::vector<std::size_t> pending = {from};
-    while (!pending.empty())
-    {
-        const std::size_t block = pending.back();
-        pending.pop_back();
-        if (reached[block])
-        {
+            const TimelineSpot placed = TimelineSpotOf(code, addition, song_end);
+            blocks[placed.spot.block].placed.push_back({placed.spot.tick, addition.command, std::nullopt, index});
+            Last(blocks, placed.lasts);
+            resized = true;
             continue;
         }
 
-        reached[block] = true;
-        const std::vector<std::size_t> next = NextBlocks(code, block);
-        pending.insert(pending.end(), next.begin(), next.end());
-        const Command& last = (*code.items)[code.starts[block + 1] - 1];
-        if (last.kind == Kind::kCall && block + 2 < code.starts.size())
+        const std::optional<Spot> spot = SpotOf(code, addition);
+        if (!spot || spot->note_wait != false)
         {
-            pending.push_back(block + 1);
+            throw std::invalid_argument(addition.command.kind == Kind::kNote
+                                            ? "Can't add a note at that tick on this track."
+                                            : "Can't add a command at that tick on this track.");
         }
-        if (last.kind == Kind::kReturn)
-        {
-            pending.insert(pending.end(), returns.begin(), returns.end());
-        }
+
+        blocks[spot->block].placed.push_back({spot->tick, addition.command, std::nullopt, index});
+        resized = true;
     }
 
-    return reached;
+    return resized;
 }
 
-// What a call to block `target` of `code` can do to the note wait: the blocks with a return that the subroutine can end
-// at, and whether a command that it can run changes the note wait. The calls that the subroutine makes count too.
-struct Subroutine
+// `file` with the items of sequence `sequence` after the changes of `blocks` to `items`, the items of `code`
+// (EditNotesIn). `added` counts the new commands.
+Edited RewriteBlocks(const format::File& file, uint32_t sequence, const Code& code, const std::vector<Command>& items,
+                     std::size_t added, std::map<std::size_t, BlockChange>& blocks)
 {
-    std::vector<std::size_t> returns;
-    bool changes = false;
-};
-
-Subroutine SubroutineAt(const Code& code, std::size_t target)
-{
-    const std::vector<Command>& items = *code.items;
-    Subroutine subroutine;
-    const std::vector<bool> reached = Reach(code, target, {});
-    for (std::size_t block = 0; block < reached.size(); ++block)
+    // The blocks in order, each one rewritten or as it was.
+    Edited edited;
+    edited.items.resize(items.size());
+    edited.added.resize(added);
+    std::vector<Command> rewritten;
+    std::vector<uint32_t> new_starts;
+    for (std::size_t block = 0; block + 1 < code.starts.size(); ++block)
     {
-        if (!reached[block])
+        new_starts.push_back(static_cast<uint32_t>(rewritten.size()));
+        const auto change = blocks.find(block);
+        if (change != blocks.end())
         {
+            Rewrite(code, items, code.starts[block], code.starts[block + 1], std::move(change->second), rewritten,
+                    edited);
             continue;
         }
 
         for (uint32_t i = code.starts[block]; i < code.starts[block + 1]; ++i)
         {
-            subroutine.changes = subroutine.changes || items[i].kind == Kind::kNoteWait;
-        }
-        if (items[code.starts[block + 1] - 1].kind == Kind::kReturn)
-        {
-            subroutine.returns.push_back(block);
-        }
-    }
-
-    return subroutine;
-}
-
-// The states of the note wait at the end of each block of `code`, from the states with which tracks enter the blocks.
-std::vector<int> LeavingStates(const Code& code, const std::vector<int>& entering)
-{
-    std::vector<int> leaving(entering.size(), 0);
-    for (std::size_t block = 0; block < entering.size(); ++block)
-    {
-        int state = entering[block];
-        for (uint32_t i = code.starts[block]; i < code.starts[block + 1] && state != 0; ++i)
-        {
-            const Command& command = (*code.items)[i];
-            if (command.kind == Kind::kNoteWait)
-            {
-                const int set = command.value.source != Source::kValue ? kWaitOff | kWaitOn
-                                : command.value.value != 0             ? kWaitOn
-                                                                       : kWaitOff;
-                state = command.conditional ? state | set : set;
-            }
-        }
-        leaving[block] = state;
-    }
-
-    return leaving;
-}
-
-// The states of the note wait with which a track can enter each block of `code`, sequence `sequence` of `file`. A track
-// opens with the note wait on: at a sound's start, where a command opens it, and with `labels` at a label and at the
-// first item too. A subroutine starts with the state at its call. A call comes back with the state at the call when its
-// subroutine leaves the note wait alone, and else with any state at the subroutine's returns. A loop's end goes back
-// with its state to each loop's start from which a track can reach it. A block that no track reaches has no states.
-std::vector<int> EntryStates(const format::File& file, uint32_t sequence, const Code& code, bool labels = true)
-{
-    const std::vector<Command>& items = *code.items;
-    const std::size_t blocks = code.starts.size() - 1;
-    std::vector<int> states(blocks, 0);
-    const auto open = [&](uint32_t item)
-    {
-        if (item < items.size())
-        {
-            states[BlockOf(code, item)] |= kWaitOn;
-        }
-    };
-    if (labels)
-    {
-        for (const ntdlib::commands::Label& label : file.sequences[sequence]->labels)
-        {
-            open(label.item);
-        }
-        ForEachItemPlace(*file.native, sequence, [&open](const ntdlib::sar::Place& place) { open(place.offset); });
-    }
-    else
-    {
-        // A field that names an item measures a sound's start from the first item.
-        for (const ntdlib::sar::Field& field : file.native->fields)
-        {
-            if (NamesItemOf(*file.native, field.to, sequence))
-            {
-                open(field.to.offset);
-            }
-        }
-    }
-    std::vector<std::size_t> loops;
-    std::vector<std::size_t> returns;
-    for (uint32_t i = 0; i < items.size(); ++i)
-    {
-        if (items[i].kind == Kind::kOpenTrack && !items[i].target_outside)
-        {
-            open(items[i].target);
-        }
-        if (items[i].kind == Kind::kLoopStart && i + 1 < items.size())
-        {
-            loops.push_back(BlockOf(code, i + 1));
-        }
-        if (items[i].kind == Kind::kCall && i + 1 < items.size())
-        {
-            returns.push_back(BlockOf(code, i + 1));
-        }
-    }
-
-    // Each subroutine that a call goes to, once, and the loops' starts that each loop's end can go back to: those from
-    // which a track can reach the end.
-    std::map<std::size_t, Subroutine> subroutines;
-    for (const Command& item : items)
-    {
-        if (item.kind == Kind::kCall && !item.target_outside)
-        {
-            const std::size_t target = BlockOf(code, item.target);
-            if (!subroutines.contains(target))
-            {
-                subroutines.emplace(target, SubroutineAt(code, target));
-            }
-        }
-    }
-    std::map<std::size_t, std::vector<std::size_t>> backs;
-    for (const std::size_t loop : loops)
-    {
-        const std::vector<bool> reached = Reach(code, loop, returns);
-        for (std::size_t block = 0; block < blocks; ++block)
-        {
-            if (reached[block] && items[code.starts[block + 1] - 1].kind == Kind::kLoopEnd)
-            {
-                backs[block].push_back(loop);
-            }
-        }
-    }
-
-    // The states flow from block to block until they stop changing.
-    bool changed = true;
-    while (changed)
-    {
-        changed = false;
-
-        const auto flow = [&](std::size_t block, int entering)
-        {
-            if ((states[block] | entering) != states[block])
-            {
-                states[block] |= entering;
-                changed = true;
-            }
-        };
-
-        const std::vector<int> leaving = LeavingStates(code, states);
-        for (std::size_t block = 0; block < blocks; ++block)
-        {
-            if (leaving[block] == 0)
-            {
-                continue;
-            }
-
-            for (const std::size_t next : NextBlocks(code, block))
-            {
-                flow(next, leaving[block]);
-            }
-            if (const auto back = backs.find(block); back != backs.end())
-            {
-                for (const std::size_t loop : back->second)
-                {
-                    flow(loop, leaving[block]);
-                }
-            }
-            const Command& last = items[code.starts[block + 1] - 1];
-            if (last.kind != Kind::kCall || block + 1 >= blocks)
-            {
-                continue;
-            }
-
-            int back = kWaitOff | kWaitOn;
-            if (!last.target_outside)
-            {
-                const Subroutine& subroutine = subroutines.at(BlockOf(code, last.target));
-                back = subroutine.changes ? 0 : leaving[block];
-                if (subroutine.changes)
-                {
-                    for (const std::size_t end : subroutine.returns)
-                    {
-                        back |= leaving[end];
-                    }
-                }
-            }
-            flow(block + 1, back);
-        }
-    }
-
-    return states;
-}
-
-// A run of a block's commands on a track whose notes wait for their length: items [`begin`, `end`) between the notes
-// that a wait can't take the place of (WrittenWait). `start` is the run's tick from the block's start, or nothing when
-// a note before it waits for an unknown time. `ticks` holds the tick of each item from the run's start, then the run's
-// length.
-struct Run
-{
-    uint32_t begin = 0;
-    uint32_t end = 0;
-    std::optional<uint32_t> start;
-    std::vector<uint32_t> ticks;
-};
-
-// The runs of block `block`, in order. The block's last command stays out of them when it moves the track elsewhere.
-std::vector<Run> RunsOf(const Code& code, std::size_t block)
-{
-    const std::vector<Command>& items = *code.items;
-    const uint32_t begin = code.starts[block];
-    const uint32_t end = code.starts[block + 1];
-    const uint32_t tail = end > begin && EndsBlock(items[end - 1]) ? end - 1 : end;
-    std::vector<Run> runs;
-    Run run{begin, begin, 0, {}};
-    uint32_t tick = 0;
-    const auto close = [&](uint32_t at)
-    {
-        if (at > run.begin)
-        {
-            run.end = at;
-            run.ticks.push_back(tick);
-            runs.push_back(std::move(run));
-        }
-    };
-    for (uint32_t i = begin; i < tail; ++i)
-    {
-        const Command& command = items[i];
-        if (command.kind == Kind::kNote && !WrittenWait(command))
-        {
-            // The time after the note is unknown.
-            close(i);
-            run = Run{i + 1, i + 1, std::nullopt, {}};
-            tick = 0;
-            continue;
-        }
-
-        run.ticks.push_back(tick);
-        tick += command.kind == Kind::kNote ? *WrittenWait(command) : WaitTicks(command).value_or(0);
-    }
-    close(tail);
-
-    return runs;
-}
-
-// The run of block `block` that holds `item`, or nothing.
-std::optional<Run> RunOf(const Code& code, std::size_t block, uint32_t item)
-{
-    for (Run& run : RunsOf(code, block))
-    {
-        if (item >= run.begin && item < run.end)
-        {
-            return std::move(run);
-        }
-    }
-
-    return std::nullopt;
-}
-
-// The tick at which each block that `stretch` runs starts. The blocks stop where the time becomes unknown: at a wait
-// that the bytecode doesn't give, at a change of the note wait that it doesn't give, and at a note that waits for a
-// length that it doesn't give.
-std::map<std::size_t, uint32_t> BlockStarts(const Code& code, const song::Stretch& stretch)
-{
-    const uint32_t first = ItemAt(code, stretch.first);
-    const uint32_t last = ItemAt(code, stretch.last);
-    std::map<std::size_t, uint32_t> starts;
-    uint32_t tick = stretch.tick;
-    bool note_wait = stretch.note_wait;
-    for (std::size_t block = BlockOf(code, first); block + 1 < code.starts.size() && code.starts[block] <= last;
-         ++block)
-    {
-        starts[block] = tick;
-        for (uint32_t i = std::max(code.starts[block], first); i < code.starts[block + 1]; ++i)
-        {
-            const Command& command = (*code.items)[i];
-            const bool waiting_note = command.kind == Kind::kNote && note_wait;
-            const bool unknown_wait = command.kind == Kind::kNoteWait
-                                          ? command.conditional || command.value.source != Source::kValue
-                                          : Barrier(command);
-            if (unknown_wait || (waiting_note && !NoteTicks(command)))
-            {
-                return starts;
-            }
-
-            note_wait = command.kind == Kind::kNoteWait ? command.value.value != 0 : note_wait;
-            tick += waiting_note ? *NoteTicks(command) : WaitTicks(command).value_or(0);
-        }
-    }
-
-    return starts;
-}
-
-// A wait of `ticks` in place of `wait`, with the encoder's usual bytes for its length.
-Command WaitOf(const Command& wait, uint32_t ticks)
-{
-    Command command = wait;
-    command.value = Argument{Source::kValue, static_cast<int64_t>(ticks) * kOne, 0};
-    command.encoding.value_bytes = 0;
-
-    return command;
-}
-
-// What an edit does to a block: the notes that it takes out, by item, and the commands that it puts in, at their ticks
-// from the block's start. A moved note's item comes with it, and a new command's place among the edit's new commands.
-struct BlockChange
-{
-    struct Placed
-    {
-        uint32_t tick = 0;
-        Command command;
-        std::optional<uint32_t> item;
-        std::optional<std::size_t> addition;
-    };
-
-    std::set<uint32_t> removed;
-    std::vector<Placed> placed;
-    bool extend = false; // a note goes past the end of a timeline's track, and the track lasts to the note's end
-};
-
-// Rewrites block [`begin`, `end`) of `items` with `change` onto the end of `out`. `edited` takes the new index of each
-// item that stays, of each moved note and of each new command. A note goes in before the wait at its tick, after the
-// other commands at that tick. A new setting goes in before the first note at its tick. Inside a wait, a new command
-// splits the wait in two. At the block's end, it goes before a last command that moves the track elsewhere.
-void Rewrite(const std::vector<Command>& items, uint32_t begin, uint32_t end, BlockChange change,
-             std::vector<Command>& out, Edited& edited)
-{
-    std::stable_sort(change.placed.begin(), change.placed.end(),
-                     [](const BlockChange::Placed& a, const BlockChange::Placed& b) { return a.tick < b.tick; });
-    std::vector<std::optional<uint32_t>>& moved = edited.items;
-    std::size_t next = 0;
-    const auto place = [&]
-    {
-        const BlockChange::Placed& placed = change.placed[next++];
-        if (placed.item)
-        {
-            moved[*placed.item] = static_cast<uint32_t>(out.size());
-        }
-        if (placed.addition)
-        {
-            edited.added[*placed.addition] = static_cast<uint32_t>(out.size());
-        }
-        out.push_back(placed.command);
-    };
-
-    // The commands up to the last, with the notes at their ticks.
-    const uint32_t tail = end > begin && EndsBlock(items[end - 1]) ? end - 1 : end;
-    uint32_t tick = 0;
-    for (uint32_t i = begin; i < tail; ++i)
-    {
-        if (change.removed.contains(i))
-        {
-            continue;
-        }
-
-        const std::optional<uint32_t> wait = WaitTicks(items[i]);
-        if (!wait || *wait == 0)
-        {
-            while (items[i].kind == Kind::kNote && next < change.placed.size() && change.placed[next].tick == tick &&
-                   change.placed[next].command.kind != Kind::kNote)
-            {
-                place();
-            }
-            moved[i] = static_cast<uint32_t>(out.size());
-            out.push_back(items[i]);
-            continue;
-        }
-
-        uint32_t from = tick;
-        const uint32_t to = tick + *wait;
-        while (next < change.placed.size() && change.placed[next].tick < to)
-        {
-            if (change.placed[next].tick > from)
-            {
-                out.push_back(WaitOf(items[i], change.placed[next].tick - from));
-                from = change.placed[next].tick;
-            }
-            place();
-        }
-        moved[i] = static_cast<uint32_t>(out.size());
-        out.push_back(from == tick ? items[i] : WaitOf(items[i], to - from));
-        tick = to;
-    }
-
-    // The notes at the block's end, then its last command. A note past the end of a timeline's track goes in after a
-    // wait, and the track then lasts to the note's end (BlockChange::extend).
-    Command rest;
-    rest.kind = Kind::kWait;
-    uint32_t until = tick;
-    while (next < change.placed.size())
-    {
-        const BlockChange::Placed& placed = change.placed[next];
-        if (change.extend && placed.tick > tick)
-        {
-            out.push_back(WaitOf(rest, placed.tick - tick));
-            tick = placed.tick;
-        }
-        if (change.extend && placed.command.kind == Kind::kNote)
-        {
-            until = std::max(until, placed.tick + NoteTicks(placed.command).value_or(0));
-        }
-        place();
-    }
-    if (until > tick)
-    {
-        out.push_back(WaitOf(rest, until - tick));
-    }
-    for (uint32_t i = tail; i < end; ++i)
-    {
-        moved[i] = static_cast<uint32_t>(out.size());
-        out.push_back(items[i]);
-    }
-}
-
-// Checks a key or a velocity of a note command.
-int CheckedByte(int value, const char* what)
-{
-    if (value < 0 || value > 127)
-    {
-        throw std::invalid_argument(std::string("A note's ") + what + " has to stay from 0 to 127.");
-    }
-
-    return value;
-}
-
-// The length of block `block` in ticks on a track whose notes wait for their length, or nothing when a note of the
-// block waits for a time that the bytecode doesn't give.
-std::optional<uint32_t> WaitingLength(const Code& code, std::size_t block)
-{
-    uint32_t ticks = 0;
-    for (uint32_t i = code.starts[block]; i < code.starts[block + 1]; ++i)
-    {
-        const Command& command = (*code.items)[i];
-        const std::optional<uint32_t> wait = command.kind == Kind::kNote ? WrittenWait(command) : WaitTicks(command);
-        if (command.kind == Kind::kNote && !wait)
-        {
-            return std::nullopt;
-        }
-
-        ticks += wait.value_or(0);
-    }
-
-    return ticks;
-}
-
-// A command that an edit puts in at `tick` of `stretch`: a new note, or a new setting (NewSetting).
-struct Addition
-{
-    song::Stretch stretch;
-    uint32_t tick = 0;
-    Command command;
-};
-
-// Where a new command goes: `tick` ticks into block `block`, and whether the track's notes wait for their length there.
-struct Spot
-{
-    std::size_t block = 0;
-    uint32_t tick = 0;
-    std::optional<bool> note_wait;
-};
-
-// Whether block `block` runs a note at `tick` that a new setting can go in before. The block starts at tick `start`.
-// With `note_wait`, its notes wait for their length, and only a note whose wait a wait of its own can take the place of
-// counts. The new setting goes into the run of such a note (RunsToWrite).
-bool RunsNoteAt(const Code& code, std::size_t block, uint32_t start, bool note_wait, uint32_t tick)
-{
-    uint32_t at = start;
-    for (uint32_t i = code.starts[block]; i < code.starts[block + 1] && at <= tick; ++i)
-    {
-        const Command& command = (*code.items)[i];
-        if (command.kind == Kind::kNote && at == tick)
-        {
-            return !note_wait || WrittenWait(command);
-        }
-
-        const bool waiting = command.kind == Kind::kNote && note_wait;
-        const std::optional<uint32_t> wait = waiting ? WrittenWait(command) : WaitTicks(command);
-        if (waiting && !wait)
-        {
-            return false;
-        }
-
-        at += wait.value_or(0);
-    }
-
-    return false;
-}
-
-// Where `addition` goes. Of the blocks that its stretch runs at its tick, the last one whose notes don't wait for their
-// length takes it, or else the last one. A new setting goes into the first of them that runs a note at its tick
-// instead. It goes in before the note, and the note plays with it. A barrier takes no command.
-std::optional<Spot> SpotOf(const Code& code, const Addition& addition)
-{
-    std::optional<Spot> found;
-    for (const auto& [block, start] : BlockStarts(code, addition.stretch))
-    {
-        if (Barrier((*code.items)[code.starts[block]]) || addition.tick < start)
-        {
-            continue;
-        }
-
-        const std::optional<bool> note_wait = NoteWaitAt(code, addition.stretch, code.starts[block]);
-        const std::optional<uint32_t> length =
-            note_wait == true ? WaitingLength(code, block) : BlockTicks(code, block).back();
-        if (length && addition.tick > start + *length)
-        {
-            continue;
-        }
-
-        if (addition.command.kind == Kind::kNote && length && addition.tick == start + *length &&
-            EndsAt(code, TailOf(code, block)))
-        {
-            continue;
-        }
-
-        const Spot spot{block, addition.tick - start, note_wait};
-        if (addition.command.kind != Kind::kNote && RunsNoteAt(code, block, start, note_wait == true, addition.tick))
-        {
-            return spot;
-        }
-        if (note_wait == false || !found || found->note_wait != false)
-        {
-            found = spot;
-        }
-    }
-
-    return found;
-}
-
-// How far a note of a timeline can move past the end of a track that ends there.
-constexpr uint32_t kFarLater = 1u << 24;
-
-// The end of a stretch of a timeline's track, from the ticks of its blocks (BlockStarts): its last block, the tick
-// where that block starts and the tick where it ends. A track that loops jumps back to the loop's start there, and one
-// that ends there ends.
-struct StretchEnd
-{
-    std::size_t block = 0;
-    uint32_t start = 0;
-    uint32_t tick = 0;
-    bool loops = false;
-    bool ends = false;
-};
-
-StretchEnd EndOf(const Code& code, const std::map<std::size_t, uint32_t>& starts)
-{
-    const auto& [block, start] = *starts.rbegin();
-    const uint32_t tail = TailOf(code, block);
-    const bool jump =
-        tail < code.starts[block + 1] && (*code.items)[tail].kind == Kind::kJump && !(*code.items)[tail].conditional;
-    return {block, start, start + BlockTicks(code, block).back(), jump, EndsAt(code, tail)};
-}
-
-// Where a command of a timeline goes at `addition`'s tick: in the block of its stretch that runs at the tick (SpotOf),
-// in any block of the track before the loop's end. A note past the end of a track that ends there goes after the
-// stretch's last block, and the track then lasts to the note's end (the second value). `song_end` gives the tick where
-// the song's looping tracks have each gone back to their loop's start once (TimelineSongEnd). A track that ends takes
-// no command at or after it. Where the header doesn't give that tick, a note of a track that ends stays inside it.
-// Throws std::invalid_argument with a message for the user for a tick before the stretch's start, at or after the
-// loop's end, past the end of a track that ends where the song's end is unknown, or where no block of the stretch takes
-// the command.
-std::pair<Spot, bool> TimelineSpotOf(const Code& code, const Addition& addition, const SongEnd& song_end)
-{
-    const bool note = addition.command.kind == Kind::kNote;
-    const std::map<std::size_t, uint32_t> starts = BlockStarts(code, addition.stretch);
-    if (starts.empty() || addition.tick < addition.stretch.tick)
-    {
-        throw std::invalid_argument(note ? "A note can't go before the start of its track."
-                                         : "A command can't go before the start of its track.");
-    }
-    const StretchEnd end = EndOf(code, starts);
-    if (end.loops && addition.tick >= end.tick)
-    {
-        throw std::invalid_argument(note ? "A note can't start at or after the loop's end. The track jumps back to the "
-                                           "loop's start there."
-                                         : "A command can't go at or after the loop's end. The track jumps back to the "
-                                           "loop's start there.");
-    }
-    if (!end.loops && song_end.tick && addition.tick >= *song_end.tick)
-    {
-        throw std::invalid_argument(note ? "A note can't start at or after the loop's end. The song goes back to the "
-                                           "loop's start there."
-                                         : "A command can't go at or after the loop's end. The song goes back to the "
-                                           "loop's start there.");
-    }
-    if (const std::optional<Spot> spot = SpotOf(code, addition); spot && spot->note_wait == false)
-    {
-        return {*spot, false};
-    }
-    if (note && end.ends && addition.tick >= end.tick)
-    {
-        if (song_end.loops && !song_end.tick)
-        {
-            throw std::invalid_argument(
-                "A note can't go past the end of its track in this song. Hokuto can't tell "
-                "where the song goes back to its loop's start.");
-        }
-        return {Spot{end.block, addition.tick - end.start, false}, true};
-    }
-
-    throw std::invalid_argument(note ? "A new note can't go at that tick on this track."
-                                     : "A new command can't go at that tick on this track.");
-}
-
-// The file with `rewritten` in place of the items of sequence `sequence`. Block `i` of `code` now starts at item
-// `new_starts[i]`, and the last of `new_starts` is the end of the items. The targets, the labels and the sounds' starts
-// move with the blocks that they start.
-format::File WithItems(const format::File& file, uint32_t sequence, const Code& code, std::vector<Command> rewritten,
-                       const std::vector<uint32_t>& new_starts)
-{
-    const auto renumber = [&](uint32_t item)
-    {
-        const auto found = std::lower_bound(code.starts.begin(), code.starts.end(), item);
-        if (found == code.starts.end() || *found != item)
-        {
-            throw std::logic_error("an item that other code enters starts no block");
-        }
-
-        return new_starts[static_cast<std::size_t>(found - code.starts.begin())];
-    };
-    for (Command& item : rewritten)
-    {
-        if (ntdlib::commands::HasTarget(item.kind) && !item.target_outside)
-        {
-            item.target = renumber(item.target);
-        }
-    }
-    ntdlib::commands::Sequence result{std::move(rewritten), file.sequences[sequence]->labels};
-    for (ntdlib::commands::Label& label : result.labels)
-    {
-        label.item = renumber(label.item);
-    }
-
-    format::File edited = file;
-    edited.sequences[sequence] = std::move(result);
-    const auto renumber_place = [&renumber](ntdlib::sar::Place& place)
-    {
-        place.offset = renumber(place.offset);
-    };
-    edited.native.Edit([&](format::NativeArchive& native) { ForEachItemPlace(native, sequence, renumber_place); });
-
-    return edited;
-}
-
-// A sequence after WriteWaits: the edit, and for each item, the item that code entering there now reaches.
-struct Written
-{
-    Edited edited;
-    std::vector<uint32_t> entries;
-};
-
-// The file after runs `runs` of sequence `sequence`, by the item where each begins, turn the note wait off. Each run
-// turns the note wait off at its start and back on at its end, and each of its notes waits out its length with a wait
-// of its own. Every command keeps its tick. Code that entered a run at its start now enters where the note wait turns
-// off.
-Written WriteWaits(const format::File& file, uint32_t sequence, const Code& code, const std::map<uint32_t, Run>& runs)
-{
-    const std::vector<Command>& items = *code.items;
-    Command off;
-    off.kind = Kind::kNoteWait;
-    Command on = off;
-    on.value = Argument{Source::kValue, kOne, 0};
-    Command wait;
-    wait.kind = Kind::kWait;
-
-    Written written;
-    std::vector<std::optional<uint32_t>>& moved = written.edited.items;
-    moved.resize(items.size());
-    std::vector<Command> rewritten;
-    std::vector<uint32_t> new_starts;
-    std::size_t next = 0;
-    for (uint32_t i = 0; i < items.size(); ++i)
-    {
-        if (code.starts[next] == i)
-        {
-            new_starts.push_back(static_cast<uint32_t>(rewritten.size()));
-            ++next;
-        }
-
-        const auto run = runs.find(i);
-        if (run == runs.end())
-        {
-            moved[i] = static_cast<uint32_t>(rewritten.size());
+            edited.items[i] = static_cast<uint32_t>(rewritten.size());
             rewritten.push_back(items[i]);
-            continue;
         }
-
-        rewritten.push_back(off);
-        for (; i < run->second.end; ++i)
-        {
-            moved[i] = static_cast<uint32_t>(rewritten.size());
-            rewritten.push_back(items[i]);
-            if (items[i].kind == Kind::kNote)
-            {
-                rewritten.push_back(WaitOf(wait, *WrittenWait(items[i])));
-            }
-        }
-        rewritten.push_back(on);
-        --i;
     }
+
     new_starts.push_back(static_cast<uint32_t>(rewritten.size()));
 
-    written.entries.resize(items.size());
-    for (uint32_t i = 0; i < items.size(); ++i)
-    {
-        written.entries[i] = *moved[i];
-    }
-    for (std::size_t block = 0; block + 1 < code.starts.size(); ++block)
-    {
-        written.entries[code.starts[block]] = new_starts[block];
-    }
-    written.edited.file = WithItems(file, sequence, code, std::move(rewritten), new_starts);
-
-    return written;
-}
-
-// The runs that `named` and `additions` require to turn the note wait off, by the item where each begins. They're those
-// of a move, a new length and a new command on a track whose notes wait for their length. Throws std::invalid_argument
-// for a note whose wait no wait of its own can take the place of, and for a note that other code may run with the note
-// wait off.
-std::map<uint32_t, Run> RunsToWrite(const format::File& file, uint32_t sequence, const Code& code,
-                                    const std::map<uint32_t, const NoteEdit*>& named,
-                                    std::span<const Addition> additions)
-{
-    std::optional<std::vector<int>> states;
-    const auto entering = [&](std::size_t block)
-    {
-        if (!states)
-        {
-            states = EntryStates(file, sequence, code);
-        }
-
-        return (*states)[block];
-    };
-
-    std::optional<std::vector<int>> started;
-    const auto starting = [&](std::size_t block)
-    {
-        if (!started)
-        {
-            started = EntryStates(file, sequence, code, false);
-        }
-
-        return (*started)[block];
-    };
-
-    std::map<uint32_t, Run> runs;
-    for (const auto& [item, edit] : named)
-    {
-        const bool timing = edit->length || edit->shift != 0;
-        if (!timing && !edit->remove)
-        {
-            continue;
-        }
-
-        // A note that the stretch runs with the note wait off waits for its length on a track that runs it with the
-        // note wait on, such as a sound that starts inside the stretch.
-        const Command& note = (*code.items)[item];
-        const std::optional<bool> note_wait = NoteWaitAt(code, edit->stretch, item);
-        if (note_wait == false && note.kind == Kind::kNote && (starting(BlockOf(code, item)) & kWaitOn) != 0)
-        {
-            throw std::invalid_argument(timing ? "Other code may run this note with the note wait on. Hokuto can't "
-                                                 "move or resize it."
-                                               : "Other code may run this note with the note wait on. Hokuto can't "
-                                                 "remove it.");
-        }
-        if (!timing || note_wait != true)
-        {
-            continue;
-        }
-
-        if (note.kind == Kind::kNote && !WrittenWait(note))
-        {
-            throw std::invalid_argument(WaitRefusal(note, "move or resize"));
-        }
-        const std::size_t block = BlockOf(code, item);
-        if (entering(block) != kWaitOn)
-        {
-            throw std::invalid_argument(
-                note.kind == Kind::kNote
-                    ? "Other code may run this note with the note wait off. Hokuto can't move or resize it."
-                    : "Other code may run this command with the note wait off. Hokuto can't move it.");
-        }
-
-        Run run = *RunOf(code, block, item);
-        runs.emplace(run.begin, std::move(run));
-    }
-
-    // A new command goes into the run that holds its tick.
-    for (const Addition& addition : additions)
-    {
-        const std::optional<Spot> spot = SpotOf(code, addition);
-        if (spot && spot->note_wait == false && addition.command.kind == Kind::kNote &&
-            (starting(spot->block) & kWaitOn) != 0)
-        {
-            throw std::invalid_argument(
-                "Other code may run the commands at this tick with the note wait on. Hokuto can't put a note in "
-                "there.");
-        }
-        if (!spot || spot->note_wait != true || entering(spot->block) != kWaitOn)
-        {
-            continue;
-        }
-
-        std::optional<Run> found;
-        for (Run& run : RunsOf(code, spot->block))
-        {
-            if (run.start && spot->tick >= *run.start && spot->tick <= *run.start + run.ticks.back())
-            {
-                found = std::move(run);
-            }
-        }
-        if (found)
-        {
-            const uint32_t begin = found->begin;
-            runs.emplace(begin, std::move(*found));
-        }
-    }
-
-    return runs;
-}
-
-// The edit of EditNotes, AddSettings and MoveSettings. With `settings`, the edits name settings, and only move them.
-// Unless `written`, a move, a new length or a new command on a track whose notes wait for their length first turns the
-// note wait off in the run that it changes (WriteWaits).
-Edited EditNotesIn(const format::File& file, uint32_t sequence, std::span<const NoteEdit> edits,
-                   std::span<const Addition> additions, bool written, bool settings);
-
-// The edit of EditNotesIn after the runs `runs` of `code`, sequence `sequence` of `file`, turn the note wait off
-// (WriteWaits). The edits and the new commands follow their commands and stretches into the new version. The new index
-// of each item follows both steps.
-Edited EditWritten(const format::File& file, uint32_t sequence, const Code& code, const std::map<uint32_t, Run>& runs,
-                   std::span<const NoteEdit> edits, std::span<const Addition> additions, bool settings)
-{
-    const Written written = WriteWaits(file, sequence, code, runs);
-    const format::File& middle = written.edited.file;
-    const std::vector<uint32_t> offsets = Offsets(*middle.sequences[sequence], ConsoleOf(middle));
-    const auto stretch_after = [&](const song::Stretch& stretch)
-    {
-        song::Stretch after = stretch;
-        after.first = offsets[written.entries[ItemAt(code, stretch.first)]];
-        after.last = offsets[*written.edited.items[ItemAt(code, stretch.last)]];
-        return after;
-    };
-
-    std::vector<NoteEdit> moved_edits(edits.begin(), edits.end());
-    for (NoteEdit& edit : moved_edits)
-    {
-        edit.command = offsets[*written.edited.items[EditedAt(code, edit.command, settings)]];
-        edit.stretch = stretch_after(edit.stretch);
-    }
-    std::vector<Addition> moved_additions(additions.begin(), additions.end());
-    for (Addition& addition : moved_additions)
-    {
-        addition.stretch = stretch_after(addition.stretch);
-    }
-
-    Edited edited = EditNotesIn(middle, sequence, moved_edits, moved_additions, true, settings);
-    std::vector<std::optional<uint32_t>> items(code.items->size());
-    for (std::size_t i = 0; i < items.size(); ++i)
-    {
-        items[i] = edited.items[*written.edited.items[i]];
-    }
-    edited.items = std::move(items);
+    edited.file = WithItems(file, sequence, code, std::move(rewritten), new_starts);
 
     return edited;
 }
+
+} // namespace
 
 Edited EditNotesIn(const format::File& file, uint32_t sequence, std::span<const NoteEdit> edits,
                    std::span<const Addition> additions, bool written, bool settings)
@@ -1252,6 +376,18 @@ Edited EditNotesIn(const format::File& file, uint32_t sequence, std::span<const 
         named.emplace(EditedAt(code, edit.command, settings), &edit);
     }
 
+    // MusicPlayer2000 holds a tie until an end of the tie with its key.
+    if (ConsoleOf(file).engine == format::Engine::kGba)
+    {
+        for (const auto& [item, edit] : named)
+        {
+            if (IsTie(items[item]) && (edit->transpose != 0 || edit->length || edit->shift != 0 || edit->remove))
+            {
+                throw std::invalid_argument(std::string(kTieRefusal));
+            }
+        }
+    }
+
     // On a track whose notes wait for their length, a move, a new length and a new command first turn the note wait off
     // in the runs that they change.
     if (!written)
@@ -1262,7 +398,7 @@ Edited EditNotesIn(const format::File& file, uint32_t sequence, std::span<const 
             if (code.fixed)
             {
                 throw std::invalid_argument(
-                    "This sequence's commands can't move. Only their keys and velocities can change.");
+                    "The commands in this sequence can't move. You can change only keys and velocities.");
             }
 
             return EditWritten(file, sequence, code, runs, edits, additions, settings);
@@ -1272,158 +408,78 @@ Edited EditNotesIn(const format::File& file, uint32_t sequence, std::span<const 
     // The changes to each command. A move takes the note out of its block and puts it back at its new tick.
     std::map<std::size_t, BlockChange> blocks;
     bool resized = false;
+    std::set<uint32_t> new_lengths;
     for (const auto& [item, edit] : named)
     {
-        Command& note = items[item];
-        if (edit->transpose != 0)
+        if (edit->length && edit->shift == 0 && !edit->remove)
         {
-            note.key = static_cast<uint8_t>(CheckedByte(note.key + edit->transpose, "key"));
-        }
-        if (edit->velocity)
-        {
-            note.velocity = static_cast<int64_t>(CheckedByte(*edit->velocity, "velocity")) * kOne;
-        }
-        if (!edit->length && edit->shift == 0 && !edit->remove)
-        {
-            continue;
-        }
-
-        // A note that waits for its length leaves a wait of that length when it goes. The wait keeps the note's
-        // condition: a note whose comparison failed doesn't wait.
-        const std::optional<bool> note_wait = NoteWaitAt(code, edit->stretch, item);
-        if (note_wait.value_or(true) && settings)
-        {
-            throw std::invalid_argument(note_wait ? "Other code may run this command with the note wait on. Hokuto "
-                                                    "can't move it."
-                                                  : "A command before this one changes the note wait as the track "
-                                                    "plays. Hokuto can't move it.");
-        }
-        if (note_wait.value_or(true))
-        {
-            if (edit->remove && !edit->length && edit->shift == 0 && note_wait && NoteTicks(note))
-            {
-                Command wait;
-                wait.kind = Kind::kWait;
-                wait.conditional = note.conditional;
-                note = WaitOf(wait, *NoteTicks(note));
-                resized = true;
-                continue;
-            }
-
-            const bool removal = edit->remove && !edit->length && edit->shift == 0;
-            throw std::invalid_argument(note_wait ? WaitRefusal(note, removal ? "remove" : "move or resize")
-                                                  : "A command before this note changes the note wait as the track "
-                                                    "plays. Hokuto can't move or resize the note.");
-        }
-
-        resized = true;
-        if (edit->length)
-        {
-            note.value = Argument{Source::kValue, static_cast<int64_t>(*edit->length) * kOne, 0};
-            note.encoding.value_bytes = 0;
-        }
-
-        const std::size_t block = BlockOf(code, item);
-        if (edit->remove)
-        {
-            blocks[block].removed.insert(item);
-            continue;
-        }
-        if (edit->shift != 0)
-        {
-            const std::vector<uint32_t> ticks = BlockTicks(code, block);
-            const int64_t tick = static_cast<int64_t>(ticks[item - code.starts[block]]) + edit->shift;
-            const std::map<std::size_t, uint32_t> starts =
-                timeline ? BlockStarts(code, edit->stretch) : std::map<std::size_t, uint32_t>();
-            if (const auto start = starts.find(block); start != starts.end())
-            {
-                // A timeline's note moves to any tick of its track before the loop's end (TimelineSpotOf).
-                const int64_t at = static_cast<int64_t>(start->second) + tick;
-                if (at < 0)
-                {
-                    throw std::invalid_argument(settings ? "A command can't go before the start of its track."
-                                                         : "A note can't go before the start of its track.");
-                }
-                const auto [spot, past_end] =
-                    TimelineSpotOf(code, Addition{edit->stretch, static_cast<uint32_t>(at), note}, song_end);
-                blocks[block].removed.insert(item);
-                BlockChange& change = blocks[spot.block];
-                change.placed.push_back({spot.tick, note, item, std::nullopt});
-                change.extend = change.extend || past_end;
-                continue;
-            }
-            if (tick < 0 || tick > static_cast<int64_t>(ticks.back()))
-            {
-                throw std::invalid_argument(settings ? "A command can't move out of its part of the track's commands."
-                                                     : "A note can't move out of its part of the track's commands.");
-            }
-            if (!settings && tick == static_cast<int64_t>(ticks.back()) && EndsAt(code, TailOf(code, block)))
-            {
-                throw std::invalid_argument("A note can't start in the tick where its track ends. It wouldn't sound.");
-            }
-
-            blocks[block].removed.insert(item);
-            blocks[block].placed.push_back({static_cast<uint32_t>(tick), note, item, std::nullopt});
+            new_lengths.insert(item);
         }
     }
 
-    // Each new command goes into the block that runs at its tick (SpotOf).
-    for (std::size_t index = 0; index < additions.size(); ++index)
+    ProgramEnds ends(code);
+    for (const auto& [item, edit] : named)
     {
-        const Addition& addition = additions[index];
-        if (timeline)
-        {
-            const auto [spot, past_end] = TimelineSpotOf(code, addition, song_end);
-            BlockChange& change = blocks[spot.block];
-            change.placed.push_back({spot.tick, addition.command, std::nullopt, index});
-            change.extend = change.extend || past_end;
-            resized = true;
-            continue;
-        }
-        const std::optional<Spot> spot = SpotOf(code, addition);
-        if (!spot || spot->note_wait != false)
-        {
-            throw std::invalid_argument(addition.command.kind == Kind::kNote
-                                            ? "A new note can't go at that tick on this track."
-                                            : "A new command can't go at that tick on this track.");
-        }
-
-        blocks[spot->block].placed.push_back({spot->tick, addition.command, std::nullopt, index});
-        resized = true;
+        resized =
+            ChangeNote(code, items, item, edit, timeline, song_end, settings, new_lengths, ends, blocks) || resized;
     }
 
+    resized = PlaceAdditions(code, additions, timeline, song_end, blocks) || resized;
     if (resized && code.fixed)
     {
-        throw std::invalid_argument("This sequence's commands can't move. Only their keys and velocities can change.");
+        throw std::invalid_argument(
+            "The commands in this sequence can't move. You can change only keys and velocities.");
     }
 
-    // The blocks in order, each one rewritten or as it was.
-    Edited edited;
-    edited.items.resize(items.size());
-    edited.added.resize(additions.size());
-    std::vector<Command> rewritten;
-    std::vector<uint32_t> new_starts;
-    for (std::size_t block = 0; block + 1 < code.starts.size(); ++block)
+    return RewriteBlocks(file, sequence, code, items, additions.size(), blocks);
+}
+
+} // namespace note_detail
+
+namespace
+{
+
+// Whether the commands right before block `block` of `code` run a note in the tick where the block starts.
+bool NoteRunsBefore(const Code& code, std::size_t block)
+{
+    for (uint32_t item = code.starts[block]; item-- > 0;)
     {
-        new_starts.push_back(static_cast<uint32_t>(rewritten.size()));
-        const auto change = blocks.find(block);
-        if (change != blocks.end())
+        const Command& before = (*code.items)[item];
+        if (before.kind == Kind::kNote)
         {
-            Rewrite(items, code.starts[block], code.starts[block + 1], std::move(change->second), rewritten, edited);
-            continue;
+            return true;
         }
-
-        for (uint32_t i = code.starts[block]; i < code.starts[block + 1]; ++i)
+        if (EndsBlockIn(code, before) || WaitTicks(before).value_or(0) > 0)
         {
-            edited.items[i] = static_cast<uint32_t>(rewritten.size());
-            rewritten.push_back(items[i]);
+            return false;
         }
     }
-    new_starts.push_back(static_cast<uint32_t>(rewritten.size()));
 
-    edited.file = WithItems(file, sequence, code, std::move(rewritten), new_starts);
+    return false;
+}
 
-    return edited;
+// Whether a track or a call of sequence `sequence` of `file` enters at the delay right after `item`.
+bool EntersAfter(const format::File& file, uint32_t sequence, const Code& code, uint32_t item)
+{
+    const uint32_t next = item + 1;
+    if (next >= code.items->size() || (*code.items)[next].kind != Kind::kWait)
+    {
+        return false;
+    }
+
+    for (const Command& command : *code.items)
+    {
+        if (ntdlib::commands::HasTarget(command.kind) && !command.target_outside && command.target == next)
+        {
+            return true;
+        }
+    }
+
+    bool entered = false;
+    ForEachItemPlace(*file.native, sequence,
+                     [&](const ntdlib::sar::Place& place) { entered = entered || place.offset == next; });
+
+    return entered;
 }
 
 } // namespace
@@ -1431,18 +487,26 @@ Edited EditNotesIn(const format::File& file, uint32_t sequence, std::span<const 
 Edited EditNotes(const format::File& file, uint32_t sequence, std::span<const NoteEdit> edits,
                  std::span<const NewNote> additions)
 {
+    return EditsOf(ConsoleOf(file)).EditNotes(file, sequence, edits, additions);
+}
+
+Edited EditNotesWithLengths(const format::File& file, uint32_t sequence, std::span<const NoteEdit> edits,
+                            std::span<const NewNote> additions)
+{
+    const song::DriverRules* driver = ConsoleOf(file).driver;
     std::vector<Addition> notes;
     for (const NewNote& addition : additions)
     {
         Command note;
         note.kind = Kind::kNote;
         note.key = static_cast<uint8_t>(CheckedByte(addition.key, "key"));
-        note.velocity = static_cast<int64_t>(CheckedByte(addition.velocity, "velocity")) * kOne;
+        const int velocity = CheckedByte(addition.velocity, "velocity");
+        note.velocity = static_cast<int64_t>(driver ? driver->VolumeOf(velocity, false) : velocity) * kOne;
         note.value = Argument{Source::kValue, static_cast<int64_t>(addition.length) * kOne, 0};
         notes.push_back({addition.stretch, addition.tick, std::move(note)});
     }
 
-    return EditNotesIn(file, sequence, edits, notes, false, false);
+    return Writable(file, EditNotesIn(file, sequence, edits, notes, false, false), sequence);
 }
 
 Edited AddSettings(const format::File& file, uint32_t sequence, std::span<const NewSetting> settings)
@@ -1452,19 +516,27 @@ Edited AddSettings(const format::File& file, uint32_t sequence, std::span<const 
     {
         if (!IsSetting(setting.command))
         {
-            throw std::invalid_argument("Only a setting, such as a volume, goes in at a tick.");
+            throw std::invalid_argument("Only a setting, such as a volume, can be added at a tick.");
         }
         if (file.native && !song::Runs(ConsoleOf(file), setting.command.kind, setting.command.index))
         {
-            throw std::invalid_argument(
-                "The 3DS's sequence player skips such a setting. Its tracks have one LFO, without a curve, a phase or "
-                "a period, and send to FX A and FX B only.");
+            throw std::invalid_argument(SkippedMessage(ConsoleOf(file), "setting"));
         }
 
         additions.push_back({setting.stretch, setting.tick, setting.command});
     }
 
-    Edited edited = EditNotesIn(file, sequence, {}, additions, false, false);
+    const song::DriverRules* driver = ConsoleOf(file).driver;
+    if (driver)
+    {
+        if (std::optional<Edited> added = EditsOf(*driver).AddSettings(file, sequence, settings))
+        {
+            return *std::move(added);
+        }
+    }
+
+    Edited placed = EditNotesIn(file, sequence, {}, additions, false, false);
+    Edited edited = Writable(file, EditsOf(ConsoleOf(file)).Placed(file, std::move(placed), sequence), sequence);
 
     // The console's bytes have to hold the new commands.
     try
@@ -1473,21 +545,35 @@ Edited AddSettings(const format::File& file, uint32_t sequence, std::span<const 
     }
     catch (const std::invalid_argument&)
     {
-        throw std::invalid_argument("The console's sequences can't hold this command's values.");
+        throw std::invalid_argument("This console's sequence format can't store these values.");
     }
 
     return edited;
 }
 
-Edited MoveSettings(const format::File& file, uint32_t sequence, std::span<const SettingMove> moves)
+Edited MoveSettings(const format::File& file, uint32_t sequence, std::span<const SettingMove> moves,
+                    std::span<const song::Stretch> rows)
 {
+    const song::DriverRules* driver = ConsoleOf(file).driver;
+    const DriverEdits* driver_edits = driver ? &EditsOf(*driver) : nullptr;
+    if (driver_edits != nullptr)
+    {
+        if (std::optional<Edited> moved = driver_edits->MoveSettings(file, sequence, moves))
+        {
+            return *std::move(moved);
+        }
+    }
+
     std::vector<NoteEdit> edits;
     for (const SettingMove& move : moves)
     {
-        edits.push_back({.command = move.command, .stretch = move.stretch, .shift = move.shift});
+        const int32_t shift = driver_edits != nullptr ? driver_edits->ShiftOfSetting(rows, move) : move.shift;
+        edits.push_back({.command = move.command, .stretch = move.stretch, .shift = shift});
     }
 
-    return EditNotesIn(file, sequence, edits, {}, false, true);
+    Edited moved = EditNotesIn(file, sequence, edits, {}, false, true);
+
+    return Writable(file, EditsOf(ConsoleOf(file)).Placed(file, std::move(moved), sequence), sequence);
 }
 
 std::optional<song::Stretch> StretchAt(std::span<const song::Stretch> stretches, uint32_t tick)
@@ -1507,111 +593,383 @@ std::optional<song::Stretch> StretchAt(std::span<const song::Stretch> stretches,
 std::optional<ShiftRange> ShiftRangeOf(const format::File& file, uint32_t sequence, uint32_t command,
                                        const song::Stretch& stretch)
 {
-    const NotePlace place{command, stretch};
+    const NotePlace place{.command = command, .stretch = stretch};
     return LimitsOf(file, sequence, std::span(&place, 1)).front().shift;
 }
 
-std::vector<NoteLimits> LimitsOf(const format::File& file, uint32_t sequence, std::span<const NotePlace> notes,
-                                 std::optional<uint32_t> loop_end)
+std::optional<uint32_t> TrackEndOf(const format::File& file, uint32_t sequence,
+                                   std::span<const song::Stretch> stretches)
 {
+    if (stretches.empty())
+    {
+        return std::nullopt;
+    }
+
+    // A stretch that the sequence's bytecode doesn't hold gives no end.
+    try
+    {
+        const Code code = Examine(file, sequence);
+        if (code.konami || code.dse)
+        {
+            return std::nullopt;
+        }
+
+        return TrackEndIn(code, stretches);
+    }
+    catch (const std::invalid_argument&)
+    {
+        return std::nullopt;
+    }
+}
+
+namespace
+{
+
+// A timeline's note moves to any tick of its track before the loop's end, and past the end of a track that
+// ends, up to the song's end (TimelineSongEnd and TimelineSpotOf). Where the header doesn't give that tick, the
+// note stays before the tick where its track ends. Nothing moves to the end of the loop that the arrangement
+// shows, or past it.
+// TimelineLimits sets that room in `limit` for `note`, whose command `command` sits at tick `tick` of block `block`
+// of `code`, where `in_timeline` says that the note belongs to a timeline and doesn't wait for its length. `loop_end`
+// is the end of the loop in the arrangement.
+void TimelineLimits(const Code& code, const NotePlace& note, const Command& command, std::size_t block, uint32_t tick,
+                    bool in_timeline, const SongEnd& song_end, std::optional<uint32_t> loop_end, NoteLimits& limit)
+{
+    const std::map<std::size_t, uint32_t> starts =
+        in_timeline ? BlockStarts(code, note.stretch) : std::map<std::size_t, uint32_t>();
+    if (const auto start = starts.find(block); start != starts.end())
+    {
+        const uint32_t at = start->second + tick;
+        const StretchEnd end = EndOf(code, starts);
+        const bool past_end = command.kind == Kind::kNote && end.ends && !(song_end.loops && !song_end.tick);
+        uint32_t later = end.tick > at ? end.tick - at : 0;
+        if (end.loops || (command.kind == Kind::kNote && end.ends && !past_end))
+        {
+            later = later > 0 ? later - 1 : 0;
+        }
+        else if (past_end)
+        {
+            later = kFarLater;
+        }
+
+        if (!end.loops && song_end.tick)
+        {
+            later = std::min(later, *song_end.tick > at ? *song_end.tick - at - 1 : 0);
+        }
+
+        if (loop_end)
+        {
+            later = std::min(later, *loop_end > at ? *loop_end - at - 1 : 0);
+        }
+
+        limit.shift = ShiftRange{at - note.stretch.tick, later};
+
+        // The end of a track that ends cuts a note whose command lasts past it. An edit of the note's length moves
+        // the end (LastsTo).
+        limit.cut_by_end = command.kind == Kind::kNote && LastsTo(end, at, command, song_end).has_value();
+    }
+}
+
+// The length of note `command`, item `item` of block `block` of `code`, that an edit can change, where it has one
+// (LimitsOf). `ticks` contains the ticks of the items of the block.
+std::optional<uint32_t> LengthLimit(const Code& code, const Command& command, uint32_t item, std::size_t block,
+                                    const std::vector<uint32_t>& ticks)
+{
+    const Argument& length = command.value;
+    const bool volume_start = KonamiSilentNote(code, item).has_value();
+    if (code.konami && (command.kind == Kind::kNote || volume_start))
+    {
+        // The command has no length. The note sounds up to the next note or rest of its block. A note that a volume
+        // command starts sounds up to the next volume command too.
+        uint32_t until = ticks.back();
+        for (uint32_t i = item + 1; i < code.starts[block + 1]; ++i)
+        {
+            const Kind kind = (*code.items)[i].kind;
+            if (kind == Kind::kNote || kind == Kind::kNoteOff ||
+                (volume_start && kind == Kind::kVolume && (*code.items)[i].index == 0))
+            {
+                until = ticks[i - code.starts[block]];
+                break;
+            }
+        }
+
+        return until - ticks[item - code.starts[block]];
+    }
+    else if (command.kind == Kind::kNote)
+    {
+        return WholeTicks(length);
+    }
+
+    return std::nullopt;
+}
+
+// The ticks that a note or a setting can move among: the ticks of its block or run, its tick there, and the item where
+// the block or run ends (LimitsOf).
+struct MoveTicks
+{
+    std::vector<uint32_t> ticks;
+    uint32_t tick = 0;
+    uint32_t tail = 0;
+};
+
+// The limits of the notes and settings of sequence `sequence` of `file`, with `code` its blocks (LimitsOf). The entry
+// states of the blocks come once, when a note first requires them.
+class NoteLimiter
+{
+public:
+    NoteLimiter(const format::File& file, uint32_t sequence, const Code& code, std::optional<uint32_t> loop_end)
+        : file_(file),
+          sequence_(sequence),
+          code_(code),
+          loop_end_(loop_end),
+          timeline_(IsTimeline(file, sequence)),
+          song_end_(TimelineSongEnd(file, sequence)),
+          gba_(ConsoleOf(file).engine == format::Engine::kGba),
+          program_ends_(code)
+    {
+    }
+
+    // The limits of `note`.
+    NoteLimits LimitOf(const NotePlace& note);
+
+private:
+    // The limits of `note` by the timing of its track, before KonamiVolumeLimits.
+    NoteLimits TimingLimitOf(const NotePlace& note);
+
+    // Changes `limit`, the limits of `note`, where it is a volume command of Konami's driver that starts a note.
+    void KonamiVolumeLimits(const NotePlace& note, NoteLimits& limit) const;
+
+    // Whether a track enters block `block` with the note wait on.
+    bool EnteredWithWaitOn(std::size_t block);
+
+    // The ticks that the command at item `item` of block `block` can move among, on a track whose notes wait for their
+    // length with `note_wait`, or nothing where the command stays at its tick.
+    std::optional<MoveTicks> TicksAround(std::size_t block, uint32_t item, bool note_wait);
+
+    const format::File& file_;
+    const uint32_t sequence_;
+    const Code& code_;
+    const std::optional<uint32_t> loop_end_;
+    const bool timeline_;
+    const SongEnd song_end_;
+    const bool gba_;
+    std::optional<std::vector<int>> states_;
+    std::optional<std::vector<int>> started_;
+    ProgramEnds program_ends_;
+};
+
+NoteLimits NoteLimiter::LimitOf(const NotePlace& note)
+{
+    NoteLimits limit = TimingLimitOf(note);
+    KonamiVolumeLimits(note, limit);
+    return limit;
+}
+
+NoteLimits NoteLimiter::TimingLimitOf(const NotePlace& note)
+{
+    // A note moves inside its block. On a track whose notes wait for their length, it moves inside its run, once
+    // waits of their own take the place of the notes' waits (WriteWaits). Every track has to enter the block with
+    // the note wait on. Otherwise no track may run the note with the note wait on: its wait would follow its
+    // length. A setting moves the same way, whatever the note wait of other tracks. A tie on the GBA stays where
+    // it is.
+    NoteLimits limit;
+    const uint32_t item = ItemAt(code_, note.command);
+    const Command& command = (*code_.items)[item];
+    const std::optional<bool> note_wait = NoteWaitAt(code_, note.stretch, item);
+    if (gba_ && IsTie(command))
+    {
+        limit.fixed = kTieRefusal;
+        return limit;
+    }
+    if (code_.fixed || !note_wait || (command.kind != Kind::kNote && WhyFixedInTime(command)))
+    {
+        return limit;
+    }
+
+    const std::size_t block = BlockOf(code_, item);
+    if (!*note_wait && command.kind == Kind::kNote && EnteredWithWaitOn(block))
+    {
+        return limit;
+    }
+
+    const std::optional<MoveTicks> around = TicksAround(block, item, *note_wait);
+    if (!around)
+    {
+        return limit;
+    }
+
+    const std::vector<uint32_t>& ticks = around->ticks;
+    const uint32_t tick = around->tick;
+    const uint32_t tail = around->tail;
+
+    // A note can't start in the tick where its track ends (EndsAt).
+    const bool ends = command.kind == Kind::kNote && ticks.back() > tick && EndsAt(code_, tail);
+    limit.shift = ShiftRange{tick, ticks.back() - tick - (ends ? 1 : 0)};
+
+    // On Konami's driver, a delay that a track or a call enters can't follow another delay. The last command before
+    // such a delay can't move earlier.
+    if (code_.konami && limit.shift->later == 0 && EntersAfter(file_, sequence_, code_, item))
+    {
+        limit.shift->earlier = 0;
+    }
+
+    // A setting at the start of a block runs after a note that the commands before the block run in that tick. A
+    // volume there can take the place of the note's start. The setting stops a tick later.
+    if (code_.konami && command.kind != Kind::kNote && limit.shift->earlier == tick && tick > 0 &&
+        NoteRunsBefore(code_, block))
+    {
+        limit.shift->earlier = tick - 1;
+    }
+
+    // A volume command that starts a note takes the silent note command before it along (EditKonamiNotes). The two
+    // stop where that command reaches the start of the block.
+    const std::optional<uint32_t> silent = *note_wait ? std::nullopt : KonamiSilentNote(code_, item);
+    if (silent && KonamiStartsAlone(code_, *silent))
+    {
+        limit.shift->earlier = std::min(limit.shift->earlier, ticks[*silent - code_.starts[block]]);
+    }
+
+    TimelineLimits(code_, note, command, block, tick, timeline_ && !*note_wait, song_end_, loop_end_, limit);
+
+    // So does the end of a program's track, in the note's stretch (ProgramEndOf) or after it
+    // (NotePlace::track_end).
+    if (!timeline_ && !*note_wait && command.kind == Kind::kNote && NoteTicks(command) && !code_.konami && !code_.dse)
+    {
+        const ProgramEnd& end = program_ends_.Of(note.stretch);
+        const std::optional<uint32_t> at = end.TickOf(item);
+        limit.cut_by_end =
+            end.ends ? end.held.contains(item) : at && note.track_end && *at + *NoteTicks(command) > *note.track_end;
+    }
+
+    if (const std::optional<uint32_t> length = LengthLimit(code_, command, item, block, ticks))
+    {
+        limit.length = length;
+    }
+
+    return limit;
+}
+
+void NoteLimiter::KonamiVolumeLimits(const NotePlace& note, NoteLimits& limit) const
+{
+    // On Konami's driver, the edits of a note that a volume command starts refuse what could change another note
+    // (TakeSilentNote in konami_notes.cpp), and the limits give the same reasons. A volume command without a silent
+    // note command in its block accepts no edit as a note (kKonamiFarKey). One whose note command sets the key of
+    // another note too can't move or take a new key. One whose note command is the last of its block can't take a new
+    // key (kKonamiOpenKey).
+    if (!code_.konami)
+    {
+        return;
+    }
+    const uint32_t item = ItemAt(code_, note.command);
+    const Command& command = (*code_.items)[item];
+    if (command.kind != Kind::kVolume || command.index != 0)
+    {
+        return;
+    }
+
+    const std::optional<uint32_t> silent = KonamiSilentNote(code_, item);
+    if (!silent)
+    {
+        limit.fixed_length = note_detail::kKonamiFarKey;
+        if (note.note)
+        {
+            limit = {.fixed = std::string(note_detail::kKonamiFarKey),
+                     .fixed_length = std::string(note_detail::kKonamiFarKey),
+                     .fixed_key = std::string(note_detail::kKonamiFarKey)};
+        }
+        return;
+    }
+    if (!KonamiStartsAlone(code_, *silent))
+    {
+        limit.shift.reset();
+        limit.fixed = note_detail::KonamiSharedKeyRefusal("move");
+        limit.fixed_key = note_detail::KonamiSharedKeyRefusal("transpose");
+    }
+    else if (!note_detail::KonamiKeyEndsInBlock(code_, *silent))
+    {
+        limit.fixed_key = note_detail::kKonamiOpenKey;
+    }
+}
+
+bool NoteLimiter::EnteredWithWaitOn(std::size_t block)
+{
+    if (!started_)
+    {
+        started_ = EntryStates(file_, sequence_, code_, false);
+    }
+
+    return ((*started_)[block] & kWaitOn) != 0;
+}
+
+std::optional<MoveTicks> NoteLimiter::TicksAround(std::size_t block, uint32_t item, bool note_wait)
+{
+    MoveTicks around;
+    around.tail = TailOf(code_, block);
+    if (note_wait)
+    {
+        // Without the command that turns the note wait off, no wait can take the place of a note's wait
+        // (WriteWaits). The command stays at its tick.
+        if (!code_.writes_note_wait)
+        {
+            return std::nullopt;
+        }
+
+        if (!states_)
+        {
+            states_ = EntryStates(file_, sequence_, code_);
+        }
+
+        std::optional<Run> run = (*states_)[block] == kWaitOn ? RunOf(code_, block, item) : std::nullopt;
+        if (!run)
+        {
+            return std::nullopt;
+        }
+
+        around.tick = run->ticks[item - run->begin];
+        around.tail = run->end;
+        around.ticks = std::move(run->ticks);
+    }
+    else
+    {
+        around.ticks = BlockTicks(code_, block);
+        around.tick = around.ticks[item - code_.starts[block]];
+    }
+
+    return around;
+}
+
+} // namespace
+
+std::vector<NoteLimits> LimitsOf(const format::File& file, uint32_t sequence, std::span<const NotePlace> notes,
+                                 std::optional<uint32_t> loop_end, std::span<const song::Stretch> rows)
+{
+    const song::DriverRules* driver = ConsoleOf(file).driver;
+    const DriverEdits* driver_edits = driver ? &EditsOf(*driver) : nullptr;
+    if (driver_edits != nullptr)
+    {
+        if (std::optional<std::vector<NoteLimits>> limits = driver_edits->LimitsOf(file, sequence, notes))
+        {
+            return *std::move(limits);
+        }
+    }
+
     const Code code = Examine(file, sequence);
-    const bool timeline = IsTimeline(file, sequence);
-    const SongEnd song_end = TimelineSongEnd(file, sequence);
-    std::optional<std::vector<int>> states;
-    std::optional<std::vector<int>> started;
+    NoteLimiter limiter(file, sequence, code, loop_end);
     std::vector<NoteLimits> limits;
     for (const NotePlace& note : notes)
     {
-        // A note moves inside its block. On a track whose notes wait for their length, it moves inside its run, once
-        // waits of their own take the place of the notes' waits (WriteWaits). Every track has to enter the block with
-        // the note wait on. Otherwise no track may run the note with the note wait on: its wait would follow its
-        // length. A setting moves the same way, whatever the note wait of other tracks.
-        NoteLimits& limit = limits.emplace_back();
-        const uint32_t item = ItemAt(code, note.command);
-        const Command& command = (*code.items)[item];
-        const std::optional<bool> note_wait = NoteWaitAt(code, note.stretch, item);
-        if (code.fixed || !note_wait || (command.kind != Kind::kNote && WhyFixedInTime(command)))
+        limits.push_back(limiter.LimitOf(note));
+    }
+
+    if (driver_edits != nullptr)
+    {
+        std::vector<Kind> kinds;
+        for (const NotePlace& note : notes)
         {
-            continue;
+            kinds.push_back((*code.items)[ItemAt(code, note.command)].kind);
         }
 
-        const std::size_t block = BlockOf(code, item);
-        if (!*note_wait && command.kind == Kind::kNote)
-        {
-            if (!started)
-            {
-                started = EntryStates(file, sequence, code, false);
-            }
-            if (((*started)[block] & kWaitOn) != 0)
-            {
-                continue;
-            }
-        }
-        std::vector<uint32_t> ticks;
-        uint32_t tick = 0;
-        uint32_t tail = TailOf(code, block);
-        if (*note_wait)
-        {
-            if (!states)
-            {
-                states = EntryStates(file, sequence, code);
-            }
-            std::optional<Run> run = (*states)[block] == kWaitOn ? RunOf(code, block, item) : std::nullopt;
-            if (!run)
-            {
-                continue;
-            }
-
-            tick = run->ticks[item - run->begin];
-            tail = run->end;
-            ticks = std::move(run->ticks);
-        }
-        else
-        {
-            ticks = BlockTicks(code, block);
-            tick = ticks[item - code.starts[block]];
-        }
-
-        // A note can't start in the tick where its track ends (EndsAt).
-        const bool ends = command.kind == Kind::kNote && ticks.back() > tick && EndsAt(code, tail);
-        limit.shift = ShiftRange{tick, ticks.back() - tick - (ends ? 1 : 0)};
-
-        // A timeline's note moves to any tick of its track before the loop's end, and past the end of a track that
-        // ends, up to the song's end (TimelineSongEnd and TimelineSpotOf). Where the header doesn't give that tick, the
-        // note stays before the tick where its track ends. Nothing moves to the end of the loop that the arrangement
-        // shows, or past it.
-        const std::map<std::size_t, uint32_t> starts =
-            timeline && !*note_wait ? BlockStarts(code, note.stretch) : std::map<std::size_t, uint32_t>();
-        if (const auto start = starts.find(block); start != starts.end())
-        {
-            const uint32_t at = start->second + tick;
-            const StretchEnd end = EndOf(code, starts);
-            const bool past_end = command.kind == Kind::kNote && end.ends && !(song_end.loops && !song_end.tick);
-            uint32_t later = end.tick > at ? end.tick - at : 0;
-            if (end.loops || (command.kind == Kind::kNote && end.ends && !past_end))
-            {
-                later = later > 0 ? later - 1 : 0;
-            }
-            else if (past_end)
-            {
-                later = kFarLater;
-            }
-            if (!end.loops && song_end.tick)
-            {
-                later = std::min(later, *song_end.tick > at ? *song_end.tick - at - 1 : 0);
-            }
-            if (loop_end)
-            {
-                later = std::min(later, *loop_end > at ? *loop_end - at - 1 : 0);
-            }
-            limit.shift = ShiftRange{at - note.stretch.tick, later};
-        }
-        const Argument& length = command.value;
-        if (command.kind == Kind::kNote && length.source == Source::kValue && length.value >= 0 &&
-            length.value % kOne == 0)
-        {
-            limit.length = static_cast<uint32_t>(length.value / kOne);
-        }
+        driver_edits->FitLimits(notes, kinds, rows, limits);
     }
 
     return limits;
@@ -1621,15 +979,15 @@ std::optional<std::string> WhyFixedInTime(const Command& command)
 {
     if (!IsSetting(command) || command.kind == Kind::kTimebase || command.kind == Kind::kAllocateTracks)
     {
-        return "Only a setting, such as a volume, moves to another tick.";
+        return "Only a setting, such as a volume, can move to another tick.";
     }
     if (command.conditional)
     {
-        return "Hokuto can't move a command that runs only if the last comparison held.";
+        return "Can't move a command that runs only if the last comparison was true.";
     }
     if (UsesVariables(command))
     {
-        return "Hokuto can't move a command that reads or changes a variable.";
+        return "Can't move a command that reads or changes a variable.";
     }
 
     return std::nullopt;
@@ -1638,7 +996,10 @@ std::optional<std::string> WhyFixedInTime(const Command& command)
 int CommandKey(const format::File& file, uint32_t sequence, uint32_t command)
 {
     const Code code = Examine(file, sequence);
-    return (*code.items)[NoteAt(code, command)].key;
+
+    // On Konami's driver, a note that a volume command starts plays at the key of the note command before it.
+    const std::optional<uint32_t> silent = KonamiSilentNote(code, ItemAt(code, command));
+    return (*code.items)[silent ? *silent : NoteAt(code, command)].key;
 }
 
 std::vector<uint32_t> CommandsAfter(const format::File& file, uint32_t sequence, const Edited& edited,
@@ -1650,20 +1011,23 @@ std::vector<uint32_t> CommandsAfter(const format::File& file, uint32_t sequence,
 
     // A removed note on a track whose notes wait for their length leaves a wait in its place.
     std::vector<uint32_t> after;
-    const auto add = [&](std::optional<uint32_t> item)
+    // On Konami's driver, a volume command can start the note that names it (KonamiSilentNote).
+    const auto add = [&](std::optional<uint32_t> item, bool volume_start)
     {
-        if (item && items[*item].kind == Kind::kNote)
+        if (item && (items[*item].kind == Kind::kNote || (volume_start && items[*item].kind == Kind::kVolume)))
         {
             after.push_back(offsets[*item]);
         }
     };
     for (const uint32_t command : commands)
     {
-        add(edited.items.at(ItemAt(code, command)));
+        const uint32_t item = ItemAt(code, command);
+        add(edited.items.at(item), code.konami && (*code.items)[item].kind == Kind::kVolume);
     }
+
     for (const uint32_t item : edited.added)
     {
-        add(item);
+        add(item, false);
     }
 
     return after;

@@ -215,10 +215,12 @@ void TestPlaces()
 
 int main()
 {
-    TestVariablesRead();
-    TestLabel();
-    TestFlagWidths();
-    TestPlaces();
-
-    return xsflib::testing::Summary("markers");
+    return xsflib::testing::RunTest("markers",
+                                    []
+                                    {
+                                        TestVariablesRead();
+                                        TestLabel();
+                                        TestFlagWidths();
+                                        TestPlaces();
+                                    });
 }

@@ -9,7 +9,7 @@ if (CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MAC
 endif()
 # The program shows this version. The file properties of the Windows program and the Info.plist of the macOS app show
 # it too.
-project(hokuto VERSION 1.0.0 LANGUAGES C CXX)
+project(hokuto VERSION 2.0.0 LANGUAGES C CXX)
 # On macOS, the menu bar and the title bar come from AppKit, through Objective-C++.
 if (APPLE)
     enable_language(OBJCXX)
@@ -39,6 +39,22 @@ set(NTDLIB_CTR ON CACHE BOOL "" FORCE)
 xsflib_add_libraries(seqlib xsflib ntdlib)
 find_package(Threads REQUIRED)
 
+# Hokuto's designated initializers leave the fields they don't name at their defaults on purpose. Clang 19 and later
+# warn about each such field under -Wextra, and clang-cl under /W4. Apple's Clang doesn't yet. The warning stays off
+# for the targets below, so that every platform builds without warnings.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-Wmissing-designated-field-initializers HOKUTO_WARNS_DESIGNATED_FIELDS)
+if (HOKUTO_WARNS_DESIGNATED_FIELDS)
+    add_compile_options(-Wno-missing-designated-field-initializers)
+endif()
+
+# A switch over an enum that leaves out one of its values fails the build, where the compiler supports the option. A
+# new engine or kind then can't go unnoticed in a switch without a default.
+check_cxx_compiler_flag(-Werror=switch HOKUTO_SWITCH_ERRORS)
+if (HOKUTO_SWITCH_ERRORS)
+    list(APPEND HOKUTO_WARNINGS -Werror=switch)
+endif()
+
 include(FetchContent)
 
 # SDL3 supplies the window, input, the GPU, audio output and file dialogs. Hokuto links it statically. The subsystems
@@ -50,8 +66,8 @@ foreach (subsystem CAMERA HAPTIC HIDAPI JOYSTICK POWER RENDER SENSOR TRAY)
     set(SDL_${subsystem} OFF CACHE BOOL "" FORCE)
 endforeach()
 FetchContent_Declare(SDL3
-    URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.18/SDL3-3.4.18.tar.gz
-    URL_HASH SHA256=9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3
+    URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20.tar.gz
+    URL_HASH SHA256=f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(SDL3)
 
@@ -178,6 +194,14 @@ hokuto_set_options(hokuto_audio)
 xsflib_float_options(hokuto_float_options)
 target_compile_options(hokuto_audio PRIVATE ${hokuto_float_options})
 
+# The rules of the commands of Brownie Brown's, Quintet's and Ubisoft Milan's GBA drivers in a Hokuto file. The format
+# layer, the song layer and the edit layer share them. The song layer links them without the format layer.
+add_library(hokuto_driver_rules STATIC src/format/brownie_items.cpp src/format/quintet_rules.cpp
+            src/format/ubimilan_rules.cpp)
+target_include_directories(hokuto_driver_rules PUBLIC src)
+target_link_libraries(hokuto_driver_rules PUBLIC ntdlib::brownie ntdlib::commands ntdlib::quintet ntdlib::ubimilan)
+hokuto_set_options(hokuto_driver_rules)
+
 # The songs: a sound archive of any of the four consoles opened from a file, its sequences as the zones show them, and
 # the player that plays a sequence on ntdlib's model of the console, with snapshots for seeking. ntdlib's performer
 # reads the sequences, away from the program's thread. The browser's previews play a wave, a note of an instrument or a
@@ -187,16 +211,36 @@ target_compile_options(hokuto_audio PRIVATE ${hokuto_float_options})
 # level measure compares the render of an export with the model's, for the Export window's warnings. The 3DS plays on
 # ntdlib's archive mode of the 3DS, on ntdlib's model of the DSP's audio firmware. A player whose model changes its rate
 # brings the model's frames to its rate, with ntdlib's windowed sinc. A sequence's biquad filters take their types and
-# values on another console. A flow analysis follows the settings that a sequence's tracks hold.
-add_library(hokuto_song STATIC src/song/aac.cpp src/song/archive.cpp src/song/audibility.cpp src/song/biquads.cpp
-            src/song/catch_up.cpp src/song/ctr_model.cpp src/song/dry_render.cpp src/song/frame_resampler.cpp
-            src/song/items.cpp src/song/lengths.cpp src/song/midi_export.cpp src/song/player.cpp src/song/preview.cpp
-            src/song/sequence.cpp src/song/sequence_model.cpp src/song/sequence_preview.cpp
+# values on another console. A flow analysis follows the settings that a sequence's tracks hold. A GBA ROM's songs play
+# on ntdlib's models of MusicPlayer2000 and of the GBA's sound hardware. A DS archive's sequences play on ntdlib's
+# models of NITRO-Composer and of the DS's sound unit.
+add_library(hokuto_song STATIC src/song/aac.cpp src/song/archive.cpp src/song/audibility.cpp src/song/aux_effects.cpp
+            src/song/biquads.cpp src/song/catch_up.cpp src/song/ctr_model.cpp src/song/dry_render.cpp src/song/ds.cpp
+            src/song/dse.cpp src/song/frame_resampler.cpp src/song/gba.cpp src/song/gba_assembler.cpp
+            src/song/gba_assembly.cpp src/song/gba_samples.cpp src/song/driver.cpp src/song/items.cpp
+            src/song/items_convert.cpp src/song/items_wii.cpp src/song/konami.cpp src/song/lengths.cpp
+            src/song/brownie.cpp src/song/krawall.cpp src/song/quintet.cpp src/song/rare.cpp src/song/rd2.cpp
+            src/song/ubimilan.cpp src/song/midi_export.cpp src/song/played.cpp src/song/player.cpp src/song/preview.cpp
+            src/song/preview_ds.cpp src/song/preview_gba.cpp src/song/sequence.cpp src/song/sequence_brownie.cpp
+            src/song/sequence_ds.cpp src/song/sequence_konami.cpp src/song/sequence_krawall.cpp
+            src/song/sequence_quintet.cpp src/song/sequence_rare.cpp src/song/sequence_rd2.cpp
+            src/song/sequence_timing.cpp src/song/sequence_ubimilan.cpp src/song/sequence_variables.cpp
+            src/song/console_ctr.cpp src/song/console_ds.cpp src/song/console_gba.cpp src/song/console_switch_wiiu.cpp
+            src/song/console_wii.cpp src/song/sequence_model.cpp src/song/sequence_preview.cpp
             src/song/sequence_reader.cpp src/song/streams.cpp src/song/track_flow.cpp)
 target_include_directories(hokuto_song PUBLIC src)
-target_link_libraries(hokuto_song PUBLIC hokuto_audio ntdlib::cafe ntdlib::ctr ntdlib::ctr_fx ntdlib::nwsnd_commands
-                      ntdlib::nwsnd_lengths ntdlib::nx ntdlib::rsar ntdlib::rsar_layout ntdlib::rvl_snd ntdlib::sar
-                      ntdlib::sar_layout ntdlib::sequence_export ntdlib::wave)
+target_link_libraries(hokuto_song PUBLIC hokuto_audio hokuto_driver_rules ntdlib::cafe ntdlib::ctr ntdlib::ctr_fx
+                      ntdlib::dse_layout ntdlib::brownie_player ntdlib::konami_player ntdlib::krawall_player
+                      ntdlib::mp2k_player
+                      ntdlib::quintet_player ntdlib::rare_player ntdlib::rd2_player ntdlib::ntr_profiles
+                      ntdlib::ubimilan_player
+                      ntdlib::nwsnd_commands ntdlib::nwsnd_lengths ntdlib::nx ntdlib::rsar ntdlib::rsar_layout
+                      ntdlib::rvl_snd ntdlib::sar ntdlib::sar_layout ntdlib::sequence_export
+                      ntdlib::sequence_export_dse ntdlib::sequence_export_konami ntdlib::sequence_export_mp2k
+                      ntdlib::sequence_export_brownie ntdlib::sequence_export_krawall ntdlib::sequence_export_quintet
+                      ntdlib::sequence_export_rare ntdlib::sequence_export_rd2 ntdlib::sequence_export_ubimilan
+                      ntdlib::sequence_export_ntr
+                      ntdlib::wave)
 hokuto_set_options(hokuto_song)
 
 # The system's codec decodes and encodes AAC streams: Audio Toolbox on macOS and Media Foundation on Windows. Other
@@ -211,13 +255,20 @@ else()
     target_sources(hokuto_song PRIVATE src/song/aac_other.cpp)
 endif()
 
+# Hokuto's reader of SoundFont 2 files: the renderer reads them, and the imports make banks of them.
+add_library(hokuto_sound_font STATIC src/synth/sound_font.cpp)
+target_include_directories(hokuto_sound_font PUBLIC src)
+target_link_libraries(hokuto_sound_font PUBLIC seqlib::seqlib PRIVATE xsflib::common)
+hokuto_set_options(hokuto_sound_font)
+
 # The synths play an export the way its players would. The Export window renders an export with them to measure how
 # the export would sound. Hokuto's renderer plays a MIDI file through a SoundFont 2 file. It follows the SoundFont 2.04
 # specification and the conventions that the common SoundFont players share. sfizz plays a sequence's MIDI file through
 # its SFZ files.
-add_library(hokuto_synth STATIC src/synth/sf2_synth.cpp src/synth/sfz_synth.cpp src/synth/sound_font.cpp)
+add_library(hokuto_synth STATIC src/synth/sf2_synth.cpp src/synth/sfz_synth.cpp)
 target_include_directories(hokuto_synth PUBLIC src)
-target_link_libraries(hokuto_synth PUBLIC ntdlib::sequence_export seqlib::seqlib PRIVATE sfizz::sfizz xsflib::common)
+target_link_libraries(hokuto_synth PUBLIC hokuto_sound_font ntdlib::sequence_export seqlib::seqlib PRIVATE sfizz::sfizz
+                      xsflib::common)
 hokuto_set_options(hokuto_synth)
 
 # The measure of an export, for the Export window: a synth's render of an export to MIDI, or the render of a sound sent
@@ -228,46 +279,78 @@ target_include_directories(hokuto_measure PUBLIC src)
 target_link_libraries(hokuto_measure PUBLIC hokuto_song hokuto_synth)
 hokuto_set_options(hokuto_measure)
 
-# Hokuto's files (.hok): the model, the binary form and the text form, and the sound archives of the four consoles into
-# files and back. ntdlib cuts an archive into pieces, through its rsar layout on the Wii. seqlib names the group files
-# that an export writes.
-add_library(hokuto_format STATIC src/format/archive.cpp src/format/codes.cpp src/format/command_values.cpp
-                                 src/format/file.cpp src/format/kinds.cpp src/format/model.cpp src/format/text.cpp)
+# Hokuto's files (.hok): the model, the binary form and the text form, and the sound archives of the four consoles and
+# the GBA's ROMs into files and back. ntdlib cuts an archive into pieces, through its rsar layout on the Wii and its
+# mp2k layout on the GBA. seqlib names the group files that an export writes.
+add_library(hokuto_format STATIC src/format/archive.cpp src/format/archive_ds.cpp src/format/archive_gba.cpp
+            src/format/archive_tables.cpp src/format/brownie.cpp src/format/codes.cpp src/format/command_values.cpp
+            src/format/drivers.cpp src/format/file.cpp src/format/file_checks.cpp src/format/file_chunks.cpp
+            src/format/file_sequences.cpp src/format/kinds.cpp src/format/konami.cpp src/format/krawall.cpp
+            src/format/model.cpp src/format/model_chunks.cpp src/format/model_wii.cpp src/format/quintet.cpp
+            src/format/rare.cpp src/format/rd2.cpp src/format/text.cpp src/format/text_commands.cpp
+            src/format/text_read.cpp src/format/text_sections.cpp src/format/text_values.cpp src/format/ubimilan.cpp)
 target_include_directories(hokuto_format PUBLIC src)
-target_link_libraries(hokuto_format PUBLIC ntdlib::commands ntdlib::rsar_layout ntdlib::sar ntdlib::sar_layout
-                      xsflib::common PRIVATE seqlib::seqlib)
+target_link_libraries(hokuto_format PUBLIC hokuto_driver_rules ntdlib::brownie ntdlib::commands ntdlib::konami
+                      ntdlib::krawall ntdlib::mp2k ntdlib::quintet ntdlib::rare ntdlib::rd2 ntdlib::ubimilan ntdlib::ntr
+                      ntdlib::rsar_layout ntdlib::sar ntdlib::sar_layout ntdlib::sdat_cut ntdlib::dse_layout
+                      xsflib::common PRIVATE ntdlib::ntr_snd seqlib::seqlib)
 hokuto_set_options(hokuto_format)
 
 # hok, the command-line tool: sound archives into .hok files and back, the text form and the model form. It also writes
 # an archive's items, its waves as WAV files and its banks as SoundFont 2 or SFZ files, measures the lengths of the
 # sequence sounds, and sends a sequence sound to another console. Its import finds the group files beside an archive as
 # the program does.
-add_executable(hok src/cli/hok.cpp)
+add_executable(hok src/cli/hok.cpp src/cli/hok_items.cpp)
 target_link_libraries(hok PRIVATE hokuto_edit hokuto_format hokuto_song)
+# On Windows, UTF-8 is hok's code page, so the paths that it's given can hold any character.
+xsflib_add_utf8_manifest(hok)
 hokuto_set_options(hok)
 xsflib_add_version(hok VERSION ${PROJECT_VERSION} DEFINE HOKUTO_VERSION DESCRIPTION "Hokuto's command-line tool"
                    PRODUCT Hokuto COPYRIGHT ${HOKUTO_COPYRIGHT})
 
 # The history of a file's versions, for undo and redo, the edits of a sequence's notes, of its tracks' mix and
-# instruments and of any of its commands, what else such an edit reaches, new tracks, copies and removals of tracks, the
-# replacement of a sound's sequence, an item's file or a stream, new sequence sounds, new items in groups, a sound's
-# values in the archive's tables, a sequence sound as a file of another console, with the banks of its slots as one bank
-# on the Wii, the layout of the songs that NintendoWare's MIDI converter wrote, and the timelines that edit them. The
-# edits of banks, waves, streams and wave sound files go through models of them. Every edit goes through the history.
-# Its tests run without a window.
-add_library(hokuto_edit STATIC src/edit/banks.cpp src/edit/bytecode.cpp src/edit/commands.cpp src/edit/converter.cpp
-            src/edit/effects.cpp src/edit/files.cpp src/edit/groups.cpp src/edit/history.cpp src/edit/instruments.cpp
-            src/edit/lengths.cpp src/edit/mix.cpp src/edit/new_items.cpp src/edit/notes.cpp src/edit/other_console.cpp
-            src/edit/reach.cpp src/edit/replace.cpp src/edit/streams.cpp src/edit/subroutines.cpp src/edit/tables.cpp
-            src/edit/timelines.cpp src/edit/tracks.cpp src/edit/variables.cpp src/edit/waves.cpp
-            src/edit/wii_programs.cpp)
+# instruments and of any of its commands, what else such an edit reaches, new tracks, copies and removals of tracks,
+# the replacement of a sound's sequence, an item's file or a stream, new sequence sounds, new items in groups, a
+# sound's values in the archive's tables, a sequence sound as a file of another console, with the banks of its slots
+# as one bank on the Wii, the layout of the songs that NintendoWare's MIDI converter wrote, and the timelines that
+# edit them. A MIDI file becomes such a song, and a SoundFont's presets a bank. A GBA song's edits follow the rules of
+# MusicPlayer2000's bytes, and a GBA song goes to another console through the MIDI file and the SoundFont of its export.
+# The edits of banks, waves, streams and wave sound files go through models of them. A DS bank's regions and a DS wave's
+# parameters change in place. Every edit goes through the history. Its tests run without a window.
+add_library(hokuto_edit STATIC src/edit/aac_streams.cpp src/edit/banks.cpp src/edit/bytecode.cpp
+            src/edit/command_changes.cpp src/edit/command_ranges.cpp src/edit/command_removals.cpp
+            src/edit/command_rows.cpp src/edit/console_commands.cpp src/edit/converted_song.cpp
+            src/edit/converter.cpp src/edit/converter_header.cpp src/edit/converter_hints.cpp
+            src/edit/converter_layout.cpp src/edit/converter_loops.cpp src/edit/ctr_memory.cpp
+            src/edit/ds_bank_conversion.cpp src/edit/ds_banks.cpp src/edit/ds_conversion.cpp src/edit/ds_files.cpp
+            src/edit/dse_bank_files.cpp src/edit/dse_banks.cpp src/edit/dse_files.cpp src/edit/dse_tracks.cpp
+            src/edit/ds_new_items.cpp src/edit/ds_streams.cpp src/edit/ds_tables.cpp src/edit/ds_waves.cpp
+            src/edit/effects.cpp src/edit/file_replace.cpp src/edit/files.cpp src/edit/files_internal.cpp
+            src/edit/from_converters.cpp src/edit/from_wii.cpp src/edit/gba_midi.cpp src/edit/gba_midi_reader.cpp
+            src/edit/gba_midi_tracks.cpp src/edit/gba_sound_fonts.cpp src/edit/gba_tables.cpp src/edit/gba_tracks.cpp
+            src/edit/gba_voices.cpp src/edit/groups.cpp src/edit/history.cpp src/edit/instruments.cpp
+            src/edit/lengths.cpp src/edit/midi_events.cpp src/edit/midi_import.cpp src/edit/midi_imports.cpp
+            src/edit/midi_songs.cpp src/edit/mix.cpp src/edit/konami.cpp src/edit/konami_notes.cpp
+            src/edit/konami_samples.cpp src/edit/konami_tracks.cpp src/edit/brownie.cpp src/edit/brownie_lengths.cpp
+            src/edit/brownie_notes.cpp src/edit/brownie_timeline.cpp src/edit/drivers.cpp src/edit/engine_edits.cpp
+            src/edit/krawall.cpp src/edit/krawall_patterns.cpp src/edit/mp2k.cpp src/edit/native_runs.cpp
+            src/edit/quintet.cpp src/edit/rare.cpp src/edit/rd2.cpp src/edit/rd2_tracks.cpp src/edit/ubimilan.cpp
+            src/edit/new_items.cpp src/edit/new_stream_items.cpp src/edit/note_blocks.cpp src/edit/note_rewrite.cpp
+            src/edit/note_wait_edits.cpp src/edit/notes.cpp src/edit/other_console.cpp src/edit/other_console_parts.cpp
+            src/edit/reach.cpp src/edit/replace.cpp src/edit/single_bank.cpp src/edit/sound_font_banks.cpp
+            src/edit/sound_font_imports.cpp src/edit/sound_font_voices.cpp src/edit/sfz_imports.cpp
+            src/edit/sfz_parser.cpp src/edit/streams.cpp src/edit/subroutines.cpp src/edit/tables.cpp
+            src/edit/timelines.cpp src/edit/to_ds.cpp src/edit/to_wii.cpp src/edit/track_common.cpp
+            src/edit/track_copies.cpp src/edit/tracks.cpp src/edit/variables.cpp src/edit/wav_waves.cpp
+            src/edit/waves.cpp src/edit/wii_files.cpp src/edit/wii_new_items.cpp src/edit/wii_programs.cpp
+            src/edit/wii_streams.cpp src/edit/wii_waves.cpp)
 target_include_directories(hokuto_edit PUBLIC src)
-target_link_libraries(hokuto_edit PUBLIC hokuto_format hokuto_song PRIVATE ntdlib::nwsnd_commands ntdlib::wave
-                      seqlib::seqlib)
+target_link_libraries(hokuto_edit PUBLIC hokuto_format hokuto_song PRIVATE hokuto_sound_font ntdlib::nwsnd_commands
+                      ntdlib::brownie ntdlib::sequence_export ntdlib::rd2 ntdlib::wave seqlib::seqlib)
 hokuto_set_options(hokuto_edit)
 
 # The transport and the ruler's gestures. They use neither SDL3 nor Dear ImGui, and their tests run without a window.
-add_library(hokuto_transport STATIC src/app/ruler.cpp src/app/transport.cpp)
+add_library(hokuto_transport STATIC src/app/ruler.cpp src/app/time_text.cpp src/app/transport.cpp)
 target_include_directories(hokuto_transport PUBLIC src)
 hokuto_set_options(hokuto_transport)
 
@@ -287,7 +370,8 @@ hokuto_set_options(hokuto_key_edits)
 
 # What the List Editor works out about a track's commands: the rows, the text of each column, the typed values, and the
 # commands that it inserts and deletes. Its tests run without a window. The Key Editor's tests do too.
-add_library(hokuto_list_edits STATIC src/app/list_edits.cpp)
+add_library(hokuto_list_edits STATIC src/app/list_edits.cpp src/app/list_edits_rows.cpp src/app/list_edits_text.cpp
+                                     src/app/list_edits_typing.cpp)
 target_include_directories(hokuto_list_edits PUBLIC src)
 target_link_libraries(hokuto_list_edits PUBLIC hokuto_key_edits)
 hokuto_set_options(hokuto_list_edits)
@@ -315,7 +399,8 @@ hokuto_set_options(hokuto_editor_view)
 
 # What the Bank Editor and the properties of a wave or a stream show of their items, the waves that a drop places on a
 # bank, and the places of a loop's markers. Its tests run without a window.
-add_library(hokuto_item_views STATIC src/app/item_views.cpp)
+add_library(hokuto_item_views STATIC src/app/item_views.cpp src/app/item_views_ds.cpp src/app/item_views_gba.cpp
+                                     src/app/item_views_sar.cpp)
 target_include_directories(hokuto_item_views PUBLIC src)
 target_link_libraries(hokuto_item_views PUBLIC hokuto_key_edits)
 hokuto_set_options(hokuto_item_views)
@@ -330,22 +415,98 @@ hokuto_set_options(hokuto_audio_output)
 # The program. On macOS it's the app bundle Hokuto.app.
 add_executable(hokuto WIN32 MACOSX_BUNDLE
     src/app/app.cpp
+    src/app/app_bank_editor.cpp
+    src/app/app_bank_editor_ds.cpp
+    src/app/app_bank_editor_gba.cpp
+    src/app/app_browser.cpp
+    src/app/app_browser_ds.cpp
+    src/app/app_browser_gba.cpp
+    src/app/app_commands.cpp
+    src/app/app_dialogs.cpp
+    src/app/app_engines.cpp
+    src/app/app_export.cpp
+    src/app/app_export_measure.cpp
+    src/app/app_export_midi.cpp
+    src/app/app_export_write.cpp
+    src/app/app_files.cpp
+    src/app/app_history.cpp
+    src/app/app_import.cpp
+    src/app/app_import_items.cpp
+    src/app/app_import_waves.cpp
+    src/app/app_internal.cpp
+    src/app/app_item_export.cpp
+    src/app/app_item_export_ds_gba.cpp
+    src/app/app_key_editor.cpp
+    src/app/app_key_feedback.cpp
+    src/app/app_list_editor.cpp
+    src/app/app_menus.cpp
+    src/app/app_output.cpp
+    src/app/app_playback.cpp
+    src/app/app_previews.cpp
+    src/app/app_properties.cpp
+    src/app/app_replace.cpp
+    src/app/app_replace_ds_gba.cpp
+    src/app/app_replace_window.cpp
+    src/app/app_settings.cpp
+    src/app/app_setup.cpp
+    src/app/app_shown_song.cpp
+    src/app/app_song_edits.cpp
+    src/app/app_sound_section.cpp
+    src/app/app_variables.cpp
+    src/app/arrangement.cpp
+    src/app/arrangement_markers.cpp
+    src/app/arrangement_tempo.cpp
+    src/app/arrangement_tracks.cpp
     src/app/bank_editor.cpp
+    src/app/bank_editor_driver.cpp
+    src/app/bank_editor_ds.cpp
+    src/app/bank_editor_dse.cpp
+    src/app/bank_editor_gba.cpp
+    src/app/bank_editor_sar.cpp
+    src/app/browser.cpp
+    src/app/channel_strip.cpp
     src/app/control_bar.cpp
     src/app/effect_editor.cpp
+    src/app/engine_names.cpp
+    src/app/export_warnings.cpp
     src/app/export_window.cpp
+    src/app/faders.cpp
+    src/app/file_dialogs.cpp
+    src/app/icons.cpp
+    src/app/info_line.cpp
+    src/app/inspector.cpp
+    src/app/key_canvas.cpp
     src/app/key_editor.cpp
+    src/app/key_editor_draw.cpp
+    src/app/key_editor_mouse.cpp
     src/app/list_editor.cpp
     src/app/main.cpp
     src/app/menus.cpp
+    src/app/mixer.cpp
     src/app/preview_song.cpp
+    src/app/replace_common.cpp
+    src/app/replace_driver_views.cpp
+    src/app/replace_ds_views.cpp
+    src/app/replace_file_views.cpp
+    src/app/replace_flow.cpp
+    src/app/replace_midi_maps.cpp
+    src/app/replace_sequence_views.cpp
+    src/app/replace_stream_views.cpp
+    src/app/replace_view.cpp
+    src/app/replace_wave_views.cpp
+    src/app/replace_wii_file_views.cpp
     src/app/replace_window.cpp
+    src/app/scene_values.cpp
     src/app/sequence_view.cpp
     src/app/sound_section.cpp
     src/app/theme.cpp
+    src/app/undo_history.cpp
+    src/app/variables_zone.cpp
     src/app/views.cpp
+    src/app/wave_sound_section.cpp
     src/app/wave_window.cpp
     src/app/widgets.cpp
+    src/app/zone_parts.cpp
 )
 target_link_libraries(hokuto PRIVATE hokuto_editor_view hokuto_item_views hokuto_lanes hokuto_markers hokuto_list_edits
                       hokuto_key_edits hokuto_edit hokuto_format hokuto_measure hokuto_recent_projects hokuto_song
@@ -399,9 +560,28 @@ elseif (WIN32)
 endif()
 
 # The tools. hokuto_check_playback checks the playback of every sequence of a sound archive against ntdlib's model run
-# directly. hokuto_check_layout checks ntdlib's cutting and joining of sound archives and its additions to their tables:
-# the round trip, the tables after every sequence grows, and new files, sounds, banks, wave archives and groups.
+# directly. hokuto_check_gba_playback does the same for the songs of GBA ROMs, and hokuto_check_ds_playback for the
+# sequences of the DS's sound archives. hokuto_check_dse_playback checks the playback of DSE's songs and sound effects
+# in DS images against ntdlib's dse::Player, run directly. hokuto_check_driver_playback checks the playback of the songs
+# of GBA ROMs with one of the GBA's other drivers against the driver's ArchivePlayer in ntdlib, run directly.
+# hokuto_check_konami_mix checks the edits of the mixer and the inspector on a GBA ROM with Konami's driver.
+# hokuto_check_konami_starts compares the order of a track's commands that the edits of Konami's driver walk with the
+# read of each song of a ROM.
+# hokuto_check_konami_samples checks the edits of the samples of Konami's driver on a ROM. hokuto_check_ds_layout checks
+# the import and the export of the sound archives of DS images, with longer sequences, and hokuto_check_dse_layout of
+# their DSE files. hokuto_check_layout checks ntdlib's cutting and joining of sound archives and its additions to their
+# tables: the round trip, the tables after every sequence grows, and new files, sounds, banks, wave archives and groups.
 # hokuto_check_edits edits every note command of a sound archive, and checks what ntdlib's performer plays afterwards.
+# hokuto_check_gba_edits does the same for the songs of GBA ROMs. hokuto_check_gba_voices edits the voices and patterns
+# of GBA ROMs as the Bank Editor does, and checks the ROM and the level of a held note. hokuto_check_gba_sources writes
+# the songs of GBA ROMs as assembly, and checks the bytes that the text gives. hokuto_check_ds_banks does the same for
+# the regions of the banks of DS images. hokuto_check_dse_banks does the same for the splits and waves of the banks of
+# DSE's images. hokuto_check_gba_sound_fonts sends the voices of GBA ROMs out as a SoundFont and back in, and plays
+# them. hokuto_check_midi_imports sends the sequence sounds of sound archives out as MIDI and SoundFont 2 files and back
+# into a new file, and compares what ntdlib's models play. hokuto_check_sound_font_imports sends the banks of sound
+# archives out as SoundFont 2 or SFZ files and back in, and plays them. hokuto_check_ds_replace checks Replace… on the
+# sequences, the banks, the wave archives and the waves of DS images. hokuto_check_gba_midi writes a MIDI file of each
+# song of GBA ROMs, imports it in the song's place, and checks what ntdlib's performer plays afterwards.
 # hokuto_check_mix edits the volume, pan and sends of a track of each sequence, and checks the same.
 # hokuto_check_exports compares the exports to MIDI with the converters' files. hokuto_check_items checks the exports of
 # single items, waves, wave sounds, streams and the instruments of banks, and the conversions of each file for the other
@@ -426,56 +606,148 @@ endif()
 # tests/conformance/.
 option(HOKUTO_TOOLS "Build the tools in tools/" OFF)
 if (HOKUTO_TOOLS)
-    add_executable(hokuto_check_playback tools/check_playback.cpp)
-    target_link_libraries(hokuto_check_playback PRIVATE hokuto_song)
+    # The helpers that several tools use.
+    add_library(hokuto_check_support STATIC tools/check_support.cpp tools/checked_archive.cpp tools/checked_saves.cpp
+                tools/notes_apart.cpp tools/check_playback_steps.cpp)
+    target_link_libraries(hokuto_check_support PUBLIC hokuto_edit hokuto_format hokuto_song)
+    hokuto_set_options(hokuto_check_support)
+
+    add_executable(hokuto_check_playback tools/check_playback.cpp tools/check_playback_common.cpp
+                   tools/check_playback_ctr.cpp tools/check_playback_switch.cpp tools/check_playback_wii.cpp
+                   tools/check_playback_wii_u.cpp)
+    target_link_libraries(hokuto_check_playback PRIVATE hokuto_check_support)
     hokuto_set_options(hokuto_check_playback)
-    add_executable(hokuto_check_layout tools/check_layout.cpp)
+    add_executable(hokuto_check_gba_playback tools/check_gba_playback.cpp)
+    target_link_libraries(hokuto_check_gba_playback PRIVATE hokuto_check_support)
+    hokuto_set_options(hokuto_check_gba_playback)
+    add_executable(hokuto_check_ds_playback tools/check_ds_playback.cpp)
+    target_link_libraries(hokuto_check_ds_playback PRIVATE hokuto_check_support)
+    hokuto_set_options(hokuto_check_ds_playback)
+    add_executable(hokuto_check_dse_playback tools/check_dse_playback.cpp)
+    target_link_libraries(hokuto_check_dse_playback PRIVATE hokuto_check_support)
+    hokuto_set_options(hokuto_check_dse_playback)
+    add_executable(hokuto_check_ds_layout tools/check_ds_layout.cpp)
+    target_link_libraries(hokuto_check_ds_layout PRIVATE hokuto_format xsflib::console)
+    hokuto_set_options(hokuto_check_ds_layout)
+
+    add_executable(hokuto_check_dse_layout tools/check_dse_layout.cpp)
+    target_link_libraries(hokuto_check_dse_layout PRIVATE hokuto_format hokuto_song)
+    hokuto_set_options(hokuto_check_dse_layout)
+    add_executable(hokuto_check_driver_playback tools/check_driver_playback.cpp tools/check_driver_playback_commands.cpp
+                   tools/check_driver_playback_reference.cpp)
+    target_link_libraries(hokuto_check_driver_playback PRIVATE hokuto_check_support)
+    hokuto_set_options(hokuto_check_driver_playback)
+    add_executable(hokuto_check_konami_mix tools/check_konami_mix.cpp)
+    target_link_libraries(hokuto_check_konami_mix PRIVATE hokuto_check_support hokuto_edit)
+    hokuto_set_options(hokuto_check_konami_mix)
+    add_executable(hokuto_check_konami_starts tools/check_konami_starts.cpp)
+    target_link_libraries(hokuto_check_konami_starts PRIVATE hokuto_check_support hokuto_edit)
+    hokuto_set_options(hokuto_check_konami_starts)
+    add_executable(hokuto_check_konami_samples tools/check_konami_samples.cpp)
+    target_link_libraries(hokuto_check_konami_samples PRIVATE hokuto_edit)
+    hokuto_set_options(hokuto_check_konami_samples)
+    add_executable(hokuto_check_gba_edits tools/check_gba_edits.cpp tools/check_gba_edits_compare.cpp)
+    target_link_libraries(hokuto_check_gba_edits PRIVATE hokuto_check_support hokuto_markers)
+    hokuto_set_options(hokuto_check_gba_edits)
+    add_executable(hokuto_check_gba_midi tools/check_gba_midi.cpp tools/check_gba_midi_write.cpp)
+    target_link_libraries(hokuto_check_gba_midi PRIVATE hokuto_check_support hokuto_edit)
+    hokuto_set_options(hokuto_check_gba_midi)
+    add_executable(hokuto_check_gba_sources tools/check_gba_sources.cpp)
+    target_link_libraries(hokuto_check_gba_sources PRIVATE hokuto_edit)
+    hokuto_set_options(hokuto_check_gba_sources)
+    add_executable(hokuto_check_gba_voices tools/check_gba_voices.cpp tools/check_gba_voices_new.cpp
+                   tools/check_gba_voices_rounds.cpp tools/check_gba_voices_songs.cpp)
+    target_link_libraries(hokuto_check_gba_voices PRIVATE hokuto_check_support hokuto_item_views)
+    hokuto_set_options(hokuto_check_gba_voices)
+    add_executable(hokuto_check_gba_sound_fonts tools/check_gba_sound_fonts.cpp)
+    target_link_libraries(hokuto_check_gba_sound_fonts PRIVATE hokuto_check_support hokuto_edit hokuto_song)
+    hokuto_set_options(hokuto_check_gba_sound_fonts)
+    add_executable(hokuto_check_midi_imports tools/check_midi_imports.cpp)
+    target_link_libraries(hokuto_check_midi_imports PRIVATE hokuto_check_support hokuto_edit hokuto_song)
+    hokuto_set_options(hokuto_check_midi_imports)
+    add_executable(hokuto_check_sound_font_imports tools/check_sound_font_imports.cpp)
+    target_link_libraries(hokuto_check_sound_font_imports PRIVATE hokuto_check_support hokuto_edit hokuto_song)
+    hokuto_set_options(hokuto_check_sound_font_imports)
+    add_executable(hokuto_check_ds_banks tools/check_ds_banks.cpp tools/check_ds_banks_levels.cpp
+                   tools/check_ds_banks_structure.cpp tools/check_ds_banks_values.cpp)
+    target_link_libraries(hokuto_check_ds_banks PRIVATE hokuto_check_support hokuto_item_views)
+    hokuto_set_options(hokuto_check_ds_banks)
+    add_executable(hokuto_check_dse_banks tools/check_dse_banks.cpp tools/check_dse_banks_bytes.cpp
+                   tools/check_dse_banks_edits.cpp tools/check_dse_banks_renders.cpp tools/check_dse_banks_replace.cpp
+                   tools/check_dse_banks_sounds.cpp)
+    target_link_libraries(hokuto_check_dse_banks PRIVATE hokuto_item_views)
+    hokuto_set_options(hokuto_check_dse_banks)
+    add_executable(hokuto_check_ds_replace tools/check_ds_replace.cpp tools/check_ds_replace_common.cpp
+                   tools/check_ds_replace_files.cpp tools/check_ds_replace_new_items.cpp
+                   tools/check_ds_replace_streams.cpp tools/check_ds_replace_values.cpp
+                   tools/check_ds_replace_waves.cpp)
+    target_link_libraries(hokuto_check_ds_replace PRIVATE hokuto_check_support hokuto_edit)
+    hokuto_set_options(hokuto_check_ds_replace)
+    add_executable(hokuto_check_layout tools/check_layout.cpp tools/check_layout_common.cpp
+                   tools/check_layout_files.cpp tools/check_layout_instruments.cpp tools/check_layout_new_items.cpp
+                   tools/check_layout_tables.cpp tools/check_layout_wii.cpp)
     target_link_libraries(hokuto_check_layout PRIVATE hokuto_format hokuto_song)
     hokuto_set_options(hokuto_check_layout)
-    add_executable(hokuto_check_edits tools/check_edits.cpp)
-    target_link_libraries(hokuto_check_edits PRIVATE hokuto_edit)
+    add_executable(hokuto_check_edits tools/check_edits.cpp tools/check_edits_compare.cpp tools/check_edits_plans.cpp
+                   tools/check_edits_sounds.cpp)
+    target_link_libraries(hokuto_check_edits PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_edits)
-    add_executable(hokuto_check_mix tools/check_mix.cpp)
-    target_link_libraries(hokuto_check_mix PRIVATE hokuto_edit)
+    add_executable(hokuto_check_mix tools/check_mix.cpp tools/check_mix_compare.cpp tools/check_mix_plans.cpp
+                   tools/check_mix_sounds.cpp)
+    target_link_libraries(hokuto_check_mix PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_mix)
-    add_executable(hokuto_check_exports tools/check_exports.cpp)
-    target_link_libraries(hokuto_check_exports PRIVATE hokuto_song hokuto_format)
+    add_executable(hokuto_check_exports tools/check_exports.cpp tools/check_exports_drivers.cpp tools/check_exports_ds.cpp
+                   tools/check_exports_gba.cpp)
+    target_link_libraries(hokuto_check_exports PRIVATE hokuto_edit hokuto_format hokuto_song)
     hokuto_set_options(hokuto_check_exports)
-    add_executable(hokuto_check_items tools/check_items.cpp)
-    target_link_libraries(hokuto_check_items PRIVATE hokuto_song hokuto_format)
+    add_executable(hokuto_check_items tools/check_items.cpp tools/check_items_other_console.cpp
+                   tools/check_items_streams.cpp tools/check_items_wav.cpp tools/check_items_wii.cpp)
+    target_link_libraries(hokuto_check_items PRIVATE hokuto_check_support)
     hokuto_set_options(hokuto_check_items)
-    add_executable(hokuto_check_replace tools/check_replace.cpp)
-    target_link_libraries(hokuto_check_replace PRIVATE hokuto_edit)
+    add_executable(hokuto_check_replace tools/check_replace.cpp tools/check_replace_common.cpp
+                   tools/check_replace_files.cpp tools/check_replace_joins.cpp tools/check_replace_new_banks.cpp
+                   tools/check_replace_new_sounds.cpp tools/check_replace_new_waves.cpp
+                   tools/check_replace_sequences.cpp tools/check_replace_streams.cpp tools/check_replace_variables.cpp
+                   tools/check_replace_wave_sounds.cpp tools/check_replace_waves.cpp tools/check_replace_wii.cpp
+                   tools/check_replace_wii_donor.cpp tools/check_replace_wii_imports.cpp
+                   tools/check_replace_wii_streams.cpp)
+    target_link_libraries(hokuto_check_replace PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_replace)
-    add_executable(hokuto_check_sounds tools/check_sounds.cpp)
-    target_link_libraries(hokuto_check_sounds PRIVATE hokuto_edit)
+    add_executable(hokuto_check_sounds tools/check_sounds.cpp tools/check_sounds_wii.cpp)
+    target_link_libraries(hokuto_check_sounds PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_sounds)
-    add_executable(hokuto_check_commands tools/check_commands.cpp)
-    target_link_libraries(hokuto_check_commands PRIVATE hokuto_markers)
+    add_executable(hokuto_check_commands tools/check_commands.cpp tools/check_commands_common.cpp
+                   tools/check_commands_frames.cpp tools/check_commands_moves.cpp tools/check_commands_settings.cpp
+                   tools/check_commands_tempo.cpp tools/check_commands_values.cpp)
+    target_link_libraries(hokuto_check_commands PRIVATE hokuto_check_support hokuto_markers)
     hokuto_set_options(hokuto_check_commands)
-    add_executable(hokuto_check_tracks tools/check_tracks.cpp)
-    target_link_libraries(hokuto_check_tracks PRIVATE hokuto_edit)
+    add_executable(hokuto_check_tracks tools/check_tracks.cpp tools/check_tracks_add.cpp tools/check_tracks_compare.cpp
+                   tools/check_tracks_paste.cpp tools/check_tracks_remove.cpp)
+    target_link_libraries(hokuto_check_tracks PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_tracks)
-    add_executable(hokuto_check_instruments tools/check_instruments.cpp)
-    target_link_libraries(hokuto_check_instruments PRIVATE hokuto_edit)
+    add_executable(hokuto_check_instruments tools/check_instruments.cpp tools/check_instruments_commands.cpp
+                   tools/check_instruments_compare.cpp)
+    target_link_libraries(hokuto_check_instruments PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_instruments)
-    add_executable(hokuto_check_converter tools/check_converter.cpp)
-    target_link_libraries(hokuto_check_converter PRIVATE hokuto_edit)
+    add_executable(hokuto_check_converter tools/check_converter.cpp tools/check_converter_edits.cpp)
+    target_link_libraries(hokuto_check_converter PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_converter)
     add_executable(hokuto_check_subroutines tools/check_subroutines.cpp)
-    target_link_libraries(hokuto_check_subroutines PRIVATE hokuto_list_edits)
+    target_link_libraries(hokuto_check_subroutines PRIVATE hokuto_check_support hokuto_list_edits)
     hokuto_set_options(hokuto_check_subroutines)
-    add_executable(hokuto_check_players tools/check_players.cpp)
-    target_link_libraries(hokuto_check_players PRIVATE hokuto_song)
+    add_executable(hokuto_check_players tools/check_players.cpp tools/check_players_fit.cpp
+                   tools/check_players_tallies.cpp)
+    target_link_libraries(hokuto_check_players PRIVATE hokuto_check_support)
     hokuto_set_options(hokuto_check_players)
     add_executable(hokuto_check_model tools/check_model.cpp)
-    target_link_libraries(hokuto_check_model PRIVATE hokuto_song hokuto_format)
+    target_link_libraries(hokuto_check_model PRIVATE hokuto_check_support)
     hokuto_set_options(hokuto_check_model)
-    add_executable(hokuto_check_banks tools/check_banks.cpp)
-    target_link_libraries(hokuto_check_banks PRIVATE hokuto_edit)
+    add_executable(hokuto_check_banks tools/check_banks.cpp tools/check_banks_common.cpp tools/check_banks_sar.cpp
+                   tools/check_banks_wii.cpp)
+    target_link_libraries(hokuto_check_banks PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_banks)
     add_executable(hokuto_check_sfz tools/check_sfz.cpp)
-    target_link_libraries(hokuto_check_sfz PRIVATE hokuto_song hokuto_synth)
+    target_link_libraries(hokuto_check_sfz PRIVATE hokuto_format hokuto_song hokuto_synth)
     hokuto_set_options(hokuto_check_sfz)
     add_executable(hokuto_check_synth tools/check_synth.cpp)
     target_link_libraries(hokuto_check_synth PRIVATE hokuto_song hokuto_synth)
@@ -483,8 +755,9 @@ if (HOKUTO_TOOLS)
     add_executable(hokuto_check_measure tools/check_measure.cpp)
     target_link_libraries(hokuto_check_measure PRIVATE hokuto_measure hokuto_edit)
     hokuto_set_options(hokuto_check_measure)
-    add_executable(hokuto_check_other_console tools/check_other_console.cpp)
-    target_link_libraries(hokuto_check_other_console PRIVATE hokuto_edit)
+    add_executable(hokuto_check_other_console tools/check_other_console.cpp tools/check_other_console_choose.cpp
+                   tools/check_other_console_play.cpp)
+    target_link_libraries(hokuto_check_other_console PRIVATE hokuto_check_support hokuto_measure hokuto_edit)
     hokuto_set_options(hokuto_check_other_console)
     add_executable(hokuto_check_lengths tools/check_lengths.cpp)
     target_link_libraries(hokuto_check_lengths PRIVATE hokuto_edit)
@@ -521,8 +794,9 @@ if (BUILD_TESTING)
     # plays a clip once, with its fades. The SoundFont 2 synth's test renders MIDI files through SoundFonts with
     # Hokuto's renderer, and the SFZ synth's test through SFZ files with sfizz. The measure's test measures the exports
     # of a small archive against the model's renders. The 3DS's test plays a 3DS archive on ntdlib's model of the DSP's
-    # audio firmware, in both mixing modes, dry and with the 3DS's effects. The frame resampler's test brings a sine
-    # between the frames of the 3DS's two modes. The biquads' test works out the passbands of the biquad filters'
+    # audio firmware, in both mixing modes, dry and with the 3DS's effects. The DS's test plays a small DS archive on
+    # ntdlib's models of NITRO-Composer and the DS's sound unit, in both mixing modes. The frame resampler's test brings
+    # a sine between the frames of the 3DS's two modes. The biquads' test works out the passbands of the biquad filters'
     # presets at each console's rate, and the types and values that a sequence's filters take on another console. The
     # Wii's programs' test gives the bank slots of made-up sequences ranges of one bank's programs, as a sound that goes
     # to the Wii takes them. The conformance test renders the files of the conformance suite, and checks the hashes of
@@ -540,28 +814,115 @@ if (BUILD_TESTING)
                                PRIVATE HOKUTO_CONFORMANCE_DIR="${PROJECT_SOURCE_DIR}/tests/conformance")
     xsflib_add_project_test(hokuto commands hokuto_edit)
     xsflib_add_project_test(hokuto converter hokuto_edit)
+    xsflib_add_project_test(hokuto timelines hokuto_edit)
     xsflib_add_project_test(hokuto ctr hokuto_edit)
     xsflib_add_project_test(hokuto declicker hokuto_audio)
+    xsflib_add_project_test(hokuto ds hokuto_song)
+    xsflib_add_project_test(hokuto dse hokuto_song)
+    xsflib_add_project_test(hokuto konami hokuto_edit)
+    xsflib_add_project_test(hokuto konami_edits hokuto_edit)
+    xsflib_add_project_test(hokuto konami_samples hokuto_edit)
+    xsflib_add_project_test(hokuto rd2 hokuto_edit)
+    xsflib_add_project_test(hokuto brownie hokuto_edit)
+    xsflib_add_project_test(hokuto ubimilan hokuto_edit)
+    xsflib_add_project_test(hokuto rare hokuto_edit)
+    xsflib_add_project_test(hokuto quintet hokuto_markers)
+    xsflib_add_project_test(hokuto krawall hokuto_edit)
+    xsflib_add_project_test(hokuto ds_files hokuto_edit)
+    xsflib_add_project_test(hokuto ds_new_items hokuto_edit)
+    xsflib_add_project_test(hokuto ds_conversion hokuto_edit)
+    xsflib_add_project_test(hokuto ds_tables hokuto_edit)
+    xsflib_add_project_test(hokuto gba_tables hokuto_edit)
+    xsflib_add_project_test(hokuto hangs hokuto_edit)
+    xsflib_add_project_test(hokuto ds_streams hokuto_edit)
     xsflib_add_project_test(hokuto edit hokuto_edit)
     xsflib_add_project_test(hokuto editor_view hokuto_editor_view)
     xsflib_add_project_test(hokuto files hokuto_edit)
-    xsflib_add_project_test(hokuto format hokuto_format)
+    xsflib_add_project_test(hokuto wii_files hokuto_edit)
+    xsflib_add_project_test(hokuto codes hokuto_format)
+    xsflib_add_project_test(hokuto file hokuto_format)
+    xsflib_add_project_test(hokuto file_chunks hokuto_format)
+    xsflib_add_project_test(hokuto format_archive hokuto_format)
+    xsflib_add_project_test(hokuto format_mix hokuto_format)
+    xsflib_add_project_test(hokuto format_roms hokuto_format)
+    xsflib_add_project_test(hokuto input_kinds hokuto_format)
     xsflib_add_project_test(hokuto frame_resampler hokuto_song)
+    xsflib_add_project_test(hokuto played hokuto_format hokuto_song)
     xsflib_add_project_test(hokuto frame_ring hokuto_audio)
+    xsflib_add_project_test(hokuto gba_assembly hokuto_edit)
+    xsflib_add_project_test(hokuto gba_midi hokuto_edit)
+    xsflib_add_project_test(hokuto gba_voices hokuto_edit)
     xsflib_add_project_test(hokuto groups hokuto_edit)
     xsflib_add_project_test(hokuto instruments hokuto_edit)
     xsflib_add_project_test(hokuto item_views hokuto_item_views)
+    xsflib_add_project_test(hokuto gba_item_views hokuto_item_views)
+    xsflib_add_project_test(hokuto ds_item_views hokuto_item_views)
+    xsflib_add_project_test(hokuto dse_banks hokuto_item_views)
+    xsflib_add_project_test(hokuto dse_files hokuto_edit)
+    # The windows of DSE's banks and waves, drawn without a display. Their sources belong to the program.
+    xsflib_add_project_test(hokuto bank_editor hokuto_item_views hokuto_key_edits hokuto_imgui)
+    target_sources(hokuto_bank_editor_test PRIVATE src/app/bank_editor.cpp src/app/bank_editor_driver.cpp
+                   src/app/bank_editor_ds.cpp src/app/bank_editor_dse.cpp src/app/bank_editor_gba.cpp
+                   src/app/bank_editor_sar.cpp src/app/faders.cpp src/app/icons.cpp src/app/info_line.cpp
+                   src/app/theme.cpp src/app/wave_window.cpp src/app/widgets.cpp)
+    target_include_directories(hokuto_bank_editor_test PRIVATE src)
+    # The messages that wait for a frame with no mouse button down.
+    xsflib_add_project_test(hokuto message_queue)
+    target_include_directories(hokuto_message_queue_test PRIVATE src)
+    # The Key Editor's window, drawn without a display. Its sources belong to the program.
+    xsflib_add_project_test(hokuto key_editor hokuto_item_views hokuto_key_edits hokuto_measure hokuto_imgui)
+    target_sources(hokuto_key_editor_test PRIVATE src/app/arrangement.cpp src/app/arrangement_markers.cpp
+                   src/app/arrangement_tempo.cpp src/app/arrangement_tracks.cpp src/app/export_warnings.cpp
+                   src/app/export_window.cpp src/app/faders.cpp src/app/icons.cpp src/app/info_line.cpp
+                   src/app/key_canvas.cpp src/app/key_editor.cpp src/app/key_editor_draw.cpp
+                   src/app/key_editor_mouse.cpp src/app/lanes.cpp src/app/list_edits_rows.cpp
+                   src/app/list_edits_text.cpp src/app/list_edits_typing.cpp src/app/markers.cpp src/app/tempo_row.cpp
+                   src/app/theme.cpp src/app/views.cpp src/app/widgets.cpp src/app/zone_parts.cpp)
+    target_include_directories(hokuto_key_editor_test PRIVATE src)
+    # The Export window's notes, without a window. Its sources belong to the program.
+    xsflib_add_project_test(hokuto export_window hokuto_item_views hokuto_measure)
+    target_sources(hokuto_export_window_test PRIVATE src/app/export_warnings.cpp src/app/export_window.cpp
+                   src/app/faders.cpp src/app/icons.cpp src/app/theme.cpp src/app/widgets.cpp)
+    target_include_directories(hokuto_export_window_test PRIVATE src)
+    # What each layer says about each engine, against one table. The names and the Export window's targets come from
+    # the program's sources.
+    xsflib_add_project_test(hokuto engines hokuto_item_views hokuto_measure)
+    target_sources(hokuto_engines_test PRIVATE src/app/engine_names.cpp src/app/export_warnings.cpp
+                   src/app/export_window.cpp src/app/faders.cpp src/app/icons.cpp src/app/theme.cpp
+                   src/app/widgets.cpp)
+    target_include_directories(hokuto_engines_test PRIVATE src)
+    # The controls' text, measured without a display. Their sources belong to the program.
+    xsflib_add_project_test(hokuto widgets hokuto_imgui hokuto_format)
+    target_sources(hokuto_widgets_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/info_line.cpp
+                   src/app/theme.cpp src/app/widgets.cpp)
+    target_include_directories(hokuto_widgets_test PRIVATE src)
+    # The Undo History, drawn without a display. Its sources belong to the program.
+    xsflib_add_project_test(hokuto undo_history hokuto_imgui hokuto_song)
+    target_sources(hokuto_undo_history_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/theme.cpp
+                   src/app/undo_history.cpp src/app/widgets.cpp src/app/zone_parts.cpp)
+    target_include_directories(hokuto_undo_history_test PRIVATE src)
     xsflib_add_project_test(hokuto key_edits hokuto_key_edits)
     xsflib_add_project_test(hokuto lanes hokuto_lanes)
     xsflib_add_project_test(hokuto lengths hokuto_edit)
     xsflib_add_project_test(hokuto list_edits hokuto_list_edits)
     xsflib_add_project_test(hokuto markers hokuto_markers)
     xsflib_add_project_test(hokuto measure hokuto_measure hokuto_edit)
+    xsflib_add_project_test(hokuto midi_imports hokuto_edit)
+    xsflib_add_project_test(hokuto midi_songs hokuto_edit)
+    xsflib_add_project_test(hokuto sound_font_imports hokuto_edit)
+    xsflib_add_project_test(hokuto gba_sound_fonts hokuto_edit)
+    xsflib_add_project_test(hokuto sfz_imports hokuto_edit)
     xsflib_add_project_test(hokuto mix hokuto_edit)
     xsflib_add_project_test(hokuto model hokuto_edit)
     xsflib_add_project_test(hokuto new_items hokuto_edit)
     xsflib_add_project_test(hokuto notes hokuto_edit)
+    xsflib_add_project_test(hokuto gba_notes hokuto_edit)
+    xsflib_add_project_test(hokuto ds_notes hokuto_edit)
+    xsflib_add_project_test(hokuto dse_notes hokuto_edit)
     xsflib_add_project_test(hokuto other_console hokuto_edit)
+    xsflib_add_project_test(hokuto other_console_wii hokuto_edit)
+    xsflib_add_project_test(hokuto other_console_ds hokuto_edit)
+    xsflib_add_project_test(hokuto other_console_gba_dse hokuto_edit)
     xsflib_add_project_test(hokuto reach hokuto_edit)
     xsflib_add_project_test(hokuto recent_projects hokuto_recent_projects)
     xsflib_add_project_test(hokuto render_worker hokuto_audio)
@@ -570,12 +931,25 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto ruler hokuto_transport)
     xsflib_add_project_test(hokuto sf2_synth hokuto_synth)
     xsflib_add_project_test(hokuto sfz_synth hokuto_song hokuto_synth)
-    xsflib_add_project_test(hokuto song hokuto_song)
+    xsflib_add_project_test(hokuto catch_up hokuto_song)
+    xsflib_add_project_test(hokuto console_playback hokuto_song)
+    xsflib_add_project_test(hokuto gba_song hokuto_song)
+    xsflib_add_project_test(hokuto items hokuto_song)
+    xsflib_add_project_test(hokuto midi_export hokuto_song)
+    xsflib_add_project_test(hokuto player hokuto_song)
+    xsflib_add_project_test(hokuto preview hokuto_song)
+    xsflib_add_project_test(hokuto sequence hokuto_song)
+    xsflib_add_project_test(hokuto sequence_model hokuto_song)
+    xsflib_add_project_test(hokuto sequence_reader hokuto_song)
+    xsflib_add_project_test(hokuto song_archive hokuto_song)
     xsflib_add_project_test(hokuto streams hokuto_edit)
+    xsflib_add_project_test(hokuto ctr_streams hokuto_edit)
+    xsflib_add_project_test(hokuto wii_streams hokuto_edit)
     xsflib_add_project_test(hokuto subroutines hokuto_edit)
     xsflib_add_project_test(hokuto tables hokuto_edit)
     xsflib_add_project_test(hokuto tempo_row hokuto_markers)
     xsflib_add_project_test(hokuto tracks hokuto_edit)
+    xsflib_add_project_test(hokuto engine_tracks hokuto_edit)
     xsflib_add_project_test(hokuto transport hokuto_transport)
     xsflib_add_project_test(hokuto variables hokuto_edit)
     xsflib_add_project_test(hokuto wii_programs hokuto_edit)
