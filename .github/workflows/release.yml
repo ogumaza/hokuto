@@ -65,10 +65,11 @@ jobs:
         with:
           submodules: recursive
 
+      # The runner has 3 cores and 7 GB of memory. A build without a limit on its jobs runs out of memory.
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
-          cmake --build build --config Release --parallel --target hokuto hok
+          cmake --build build --config Release --parallel 3 --target hokuto hok
 
       # hok reports the version, and the app's Info.plist holds it. The build signs the app ad hoc.
       - name: Check the version and the signature
