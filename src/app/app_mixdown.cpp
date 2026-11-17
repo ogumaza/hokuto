@@ -24,6 +24,7 @@
 #include "app/app_internal.h"
 #include "app/mixdown_jobs.h"
 #include "app/mixdown_window.h"
+#include "app/system_ui.h"
 #include "app/widgets.h"
 #include "edit/other_console.h"
 #include "edit/sound_exports.h"
@@ -243,6 +244,32 @@ bool App::MixdownMoving() const
     return mixdown_ && mixdown_->open && (mixdown_->run || mixdown_->reading.valid());
 }
 
+bool App::MixdownRunning() const
+{
+    // DrawMixdown clears `run` only in a frame. With the window closed, no frame may draw once the exports end.
+    return mixdown_ && mixdown_->running.valid() &&
+           mixdown_->running.wait_for(std::chrono::seconds(0)) != std::future_status::ready;
+}
+
+bool App::AskToStopMixdown()
+{
+    ShowMessagesBeforeBox();
+
+    // Cancel answers Escape, and Stop and Quit answers Return. In SDL3's right-to-left order, Stop and Quit comes on the
+    // right on macOS and on the left on Windows. Each system places a dialog's main button there.
+    const SDL_MessageBoxButtonData buttons[] = {{SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "Cancel"},
+                                                {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, "Stop and Quit"}};
+    SDL_MessageBoxData box{};
+    box.flags = SDL_MESSAGEBOX_WARNING | SDL_MESSAGEBOX_BUTTONS_RIGHT_TO_LEFT;
+    box.window = window_;
+    box.title = "Hokuto";
+    box.message = "An export is running. Stop it and quit?";
+    box.numbuttons = 2;
+    box.buttons = buttons;
+    int chosen = 0;
+    return ShowSystemBox(box, &chosen) && chosen == 1;
+}
+
 void App::DropMixdown()
 {
     if (mixdown_)
@@ -409,13 +436,18 @@ void App::DrawMixdown()
             }
             work.run = run;
             work.view.running = true;
+            // The thread wakes the program's loop when it ends. The commands that wait for it are then enabled at once,
+            // with the window closed too.
             work.running = std::async(std::launch::async,
-                                      [run, jobs = std::move(jobs)]
+                                      [run, jobs = std::move(jobs), wake = wake_event_]
                                       {
                                           for (std::size_t i = 0; i < jobs.size() && !run->stop; i++)
                                           {
                                               RunMixdownJob(jobs[i].first, jobs[i].second, run->progress[i], run->stop);
                                           }
+                                          SDL_Event event{};
+                                          event.type = wake;
+                                          SDL_PushEvent(&event);
                                       });
             break;
         }

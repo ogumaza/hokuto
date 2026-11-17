@@ -35,6 +35,7 @@
 #include "app/bank_editor.h"
 #include "app/effect_editor.h"
 #include "app/export_window.h"
+#include "app/input_queue.h"
 #include "app/item_edit.h"
 #include "app/item_views.h"
 #include "app/key_edits.h"
@@ -253,6 +254,15 @@ private:
     void SetWaiting(bool waiting);
     void Wake() const;
 
+    // Gives Dear ImGui the pointer's place after it cleared its place or the window dropped the pointer's moves
+    // (ShowPointerPlace). Iterate calls it at the start of each frame. A click at the resting pointer then lands there.
+    void FollowPointer();
+
+    // Drops the input that waits for a later frame and that the window leaves out during a message box or a file
+    // dialog, on systems other than macOS and Windows (LeftOutDuringBox). A press from before the box then doesn't act
+    // once the box closes, as with the presses that SDL3's queue contained.
+    void LeaveOutWaitingInput();
+
     // Logs a message for the user and shows it in a box over the main window, with the icon of its kind. The box opens
     // at the end of the first frame in which no mouse button is down (MessageQueue). Messages keep their order. One
     // that already waits isn't added or logged again.
@@ -261,7 +271,8 @@ private:
 
     // Shows the waiting messages before a direct box or a system dialog opens, so that they keep their order. Those
     // open only from controls that act at the release, keys, the window's close and dialogs: with no button down. A
-    // button that is down all the same goes to the log.
+    // button that is down all the same goes to the log. The input that waits for a later frame is left out as during
+    // the box (LeaveOutWaitingInput).
     void ShowMessagesBeforeBox();
     void OpenMessageBoxes(bool button_down);
 
@@ -378,9 +389,13 @@ private:
     // The window keeps its settings and its queue until another file opens: DropMixdown then stops its work. Choose…
     // opens a dialog of folders, and SetMixdownFolder sets the folder that the user chose. MixdownSourcesNow collects
     // what an export renders: the last edit, the variables, the mix and the shown song's muted tracks. MixdownMoving
-    // says that the shown window reads its songs or runs exports: Pace then draws each frame.
+    // says that the shown window reads its songs or runs exports: Pace then draws each frame. MixdownRunning says that
+    // exports of the queue run, with the window shown or not. The commands that close the file wait for them
+    // (WaitsForMixdown), and Quit asks whether to stop them (AskToStopMixdown). Returns true for Stop and Quit.
     void OpenMixdown();
     bool MixdownMoving() const;
+    bool MixdownRunning() const;
+    bool AskToStopMixdown();
     void DrawMixdown();
     void SetMixdownFolder(const std::string& folder);
     void DropMixdown();
@@ -1939,6 +1954,11 @@ private:
 
     // The messages that wait for a frame with no mouse button down (ShowMessage).
     MessageQueue messages_;
+
+    // The input events that wait for a later frame of Dear ImGui (HandleEvent), and the place of the pointer's last
+    // move that the window passed on.
+    InputQueue input_;
+    std::optional<ImVec2> pointer_;
 
     ArrangementState arrangement_;
     MasterBus master_;

@@ -23,6 +23,7 @@
 namespace
 {
 
+using hokuto::app::Command;
 using hokuto::app::DrawMixdownWindow;
 using hokuto::app::FollowSongs;
 using hokuto::app::MatchesFilter;
@@ -39,6 +40,7 @@ using hokuto::app::MixdownSetup;
 using hokuto::app::MixdownSong;
 using hokuto::app::MixdownView;
 using hokuto::app::QueueActions;
+using hokuto::app::WaitsForMixdown;
 using hokuto::song::BatchSound;
 using hokuto::song::NameToken;
 using hokuto::song::SampleFormat;
@@ -208,6 +210,44 @@ void TestFrames()
     ImGui::DestroyContext();
 }
 
+// A song name and a status wider than their columns draw cut short, and stay whole in the view.
+void TestLongTexts()
+{
+    hokuto::testing::CreateHeadlessContext();
+    MixdownView view = ThreeSongs();
+    const std::string name(300, 'N');
+    view.songs[0].name = name;
+    const std::string status = "Done. Tails cut at the limit: " + std::string(300, 'S') + ".";
+    view.queue.push_back(MixdownJob{.setup = view.setup, .songs = {{.sound = 0, .name = name}}, .status = status});
+    bool open = true;
+    for (int frame = 0; frame < 3; frame++)
+    {
+        ImGui::NewFrame();
+        SEQLIB_CHECK(DrawMixdownWindow(view, &open) == MixdownChoice::kNone);
+        hokuto::testing::EndHeadlessFrame();
+    }
+
+    SEQLIB_CHECK(open && view.songs[0].name == name && view.queue[0].status == status);
+    ImGui::DestroyContext();
+}
+
+// While an export runs, the commands that close the file wait: New Project, Open, Recent Projects and Import > Sound
+// Archive. Quit asks instead. Save, the other imports and the other exports don't close the file.
+void TestWaitsForMixdown()
+{
+    for (const Command command :
+         {Command::kNewProject, Command::kOpen, Command::kRecentProjects, Command::kImportSoundArchive})
+    {
+        SEQLIB_CHECK(WaitsForMixdown(command));
+    }
+    for (const Command command :
+         {Command::kQuit, Command::kSave, Command::kSaveAs, Command::kImportSequence, Command::kExportAudioMixdown,
+          Command::kExportMidiSoundFont, Command::kUndo, Command::kStartStop})
+    {
+        SEQLIB_CHECK(!WaitsForMixdown(command));
+    }
+}
+
 // The files in `folder`, sorted.
 std::vector<std::string> FilesIn(const std::filesystem::path& folder)
 {
@@ -303,6 +343,8 @@ int main()
                                         TestFilter();
                                         TestQueueActions();
                                         TestFrames();
+                                        TestLongTexts();
+                                        TestWaitsForMixdown();
                                         TestJobs();
                                     });
 }

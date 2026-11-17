@@ -141,7 +141,9 @@ void DrawSongs(MixdownView& view, float height)
                std::to_string(looped) + " with a loop")
                   .c_str());
 
-    constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter;
+    // The user widens a column by dragging its border.
+    constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
+                                       ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
     if (!ImGui::BeginTable("##songs", 3, kFlags, ImVec2(0.0f, height)))
     {
         return;
@@ -163,7 +165,15 @@ void DrawSongs(MixdownView& view, float height)
             ImGui::PushID(static_cast<int>(index));
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::Checkbox(song.name.c_str(), &song.chosen);
+            // A name wider than the column ends with an ellipsis, and its tooltip shows it in full.
+            const float room =
+                ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x;
+            const std::string label = FittedText(song.name, room);
+            ImGui::Checkbox((label + "###chosen").c_str(), &song.chosen);
+            if (label != song.name)
+            {
+                ItemTooltip(song.name);
+            }
             ImGui::TableSetColumnIndex(1);
             if (!song.error.empty())
             {
@@ -466,7 +476,8 @@ MixdownChoice DrawQueue(MixdownView& view, int console_rate)
 {
     MixdownChoice choice = MixdownChoice::kNone;
     DrawDialogHeading(ImGui::GetWindowDrawList(), "Export Queue");
-    constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_ScrollY;
+    constexpr ImGuiTableFlags kFlags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_ScrollY |
+                                       ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable;
     if (ImGui::BeginTable("##queue", 5, kFlags, ImVec2(0.0f, Px(110.0f))))
     {
         ImGui::TableSetupScrollFreeze(0, 1);
@@ -490,7 +501,7 @@ MixdownChoice DrawQueue(MixdownView& view, int console_rate)
             ImGui::TableSetColumnIndex(4);
             if (!job.status.empty())
             {
-                ImGui::TextUnformatted(job.status.c_str());
+                ImGui::TextUnformatted(FittedText(job.status, ImGui::GetContentRegionAvail().x).c_str());
                 ItemTooltip(job.status);
             }
             else
@@ -666,6 +677,20 @@ std::string MixdownLengthText(double seconds)
     return text;
 }
 
+bool WaitsForMixdown(Command command)
+{
+    switch (command)
+    {
+    case Command::kNewProject:
+    case Command::kOpen:
+    case Command::kRecentProjects:
+    case Command::kImportSoundArchive:
+        return true;
+    default:
+        return false;
+    }
+}
+
 MixdownChoice DrawMixdownWindow(MixdownView& view, bool* open)
 {
     // The window opens again at the size and the place that it had.
@@ -691,7 +716,11 @@ MixdownChoice DrawMixdownWindow(MixdownView& view, bool* open)
 
     // The songs on the left, the settings on the right, and the queue below both.
     ImGui::BeginDisabled(running);
-    if (ImGui::BeginTable("##columns", 2, ImGuiTableFlags_None, ImVec2(0.0f, height)))
+    // The user drags the border between the songs and the settings to widen the list of songs. The border shows while
+    // the pointer rests on it.
+    constexpr ImGuiTableFlags kColumns =
+        ImGuiTableFlags_Resizable | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_NoBordersInBodyUntilResize;
+    if (ImGui::BeginTable("##columns", 2, kColumns, ImVec2(0.0f, height)))
     {
         ImGui::TableSetupColumn("##songs", ImGuiTableColumnFlags_WidthStretch, 0.42f);
         ImGui::TableSetupColumn("##settings", ImGuiTableColumnFlags_WidthStretch, 0.58f);

@@ -134,17 +134,8 @@ bool ShowZenityBox(const SDL_MessageBoxData& box, int& chosen)
         SDL_RaiseWindow(focused);
     }
 
-    // The filter removed the pointer's moves during the box. A motion event brings the pointer's place to the window
-    // under the pointer.
-    if (SDL_Window* const under = SDL_GetMouseFocus())
-    {
-        SDL_Event moved{};
-        moved.type = SDL_EVENT_MOUSE_MOTION;
-        moved.motion.windowID = SDL_GetWindowID(under);
-        moved.motion.state = SDL_GetMouseState(&moved.motion.x, &moved.motion.y);
-        SDL_PushEvent(&moved);
-    }
-
+    // The filter removed the pointer's moves during the box. The program's next frame reads the pointer's place
+    // (App::FollowPointer).
     return ended && ReadZenityAnswer(box, ended->exit_code, ended->output, chosen);
 }
 

@@ -162,7 +162,8 @@ void App::DrawMenuItems(const std::vector<MenuItem>& items)
 
 void App::DrawListedMenu(const MenuItem& item)
 {
-    if (ImGui::BeginMenu(item.name))
+    // A command that waits, such as Recent Projects during an export, greys the whole submenu, as Cubase and Logic do.
+    if (ImGui::BeginMenu(item.name, IsEnabled(item.command)))
     {
         const std::vector<std::string> titles = Listed(item.command);
         if (titles.empty())

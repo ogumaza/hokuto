@@ -156,21 +156,11 @@ void SetImeData(ImGuiContext* context, ImGuiViewport* viewport, ImGuiPlatformIme
     SDL_SetTextInputArea(window, &area, 0);
 }
 
-#if !defined(__APPLE__) && !defined(_WIN32)
-// Sends the window under the pointer a motion event at the pointer's place. The window dropped the pointer's moves
-// while another program's window was open in front of it.
-void MovePointerToWindow()
+// Passes an event to Dear ImGui's back end for SDL3.
+void PassToImGui(const SDL_Event& event)
 {
-    if (SDL_Window* const under = SDL_GetMouseFocus())
-    {
-        SDL_Event moved{};
-        moved.type = SDL_EVENT_MOUSE_MOTION;
-        moved.motion.windowID = SDL_GetWindowID(under);
-        moved.motion.state = SDL_GetMouseState(&moved.motion.x, &moved.motion.y);
-        SDL_PushEvent(&moved);
-    }
+    ImGui_ImplSDL3_ProcessEvent(&event);
 }
-#endif
 
 } // namespace
 
@@ -479,11 +469,10 @@ SDL_AppResult App::HandleEvent(const SDL_Event& event)
 {
 #if !defined(__APPLE__) && !defined(_WIN32)
     // While a file dialog is open, the window drops the input that it drops during a message box (LeftOutDuringBox).
-    // Once the dialog closes, a motion event brings the pointer's place to the window under the pointer.
+    // Once the dialog closes, the next frame reads the pointer's place (FollowPointer).
     if (file_dialog_shown_ && !file_dialog_open_)
     {
         file_dialog_shown_ = false;
-        MovePointerToWindow();
     }
     if (file_dialog_shown_ && LeftOutDuringBox(event.type))
     {
@@ -493,7 +482,14 @@ SDL_AppResult App::HandleEvent(const SDL_Event& event)
 
     // Each event, a wake included, makes the window draw on for a moment (see Pace).
     last_event_ = SDL_GetTicksNS();
-    ImGui_ImplSDL3_ProcessEvent(&event);
+
+    // Dear ImGui receives the event now, or at the start of a later frame after a key press (InputQueue). `pointer_`
+    // follows the pointer's moves on their way there.
+    if (event.type == SDL_EVENT_MOUSE_MOTION && event.motion.windowID == SDL_GetWindowID(window_))
+    {
+        pointer_ = ImVec2(event.motion.x, event.motion.y);
+    }
+    input_.Add(event, PassToImGui);
 
     // A quit goes through the command Quit. A text field that's being typed in keeps its text. The user then decides
     // about the document's changes. The quit of macOS's menus, the Dock and a logout come as SDL_EVENT_QUIT. The
@@ -622,6 +618,10 @@ SDL_AppResult App::Iterate()
     ImGui_ImplSDLGPU3_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+
+    // The input that waited for this frame goes to Dear ImGui now. Dear ImGui applies it at the start of the next one.
+    input_.StartFrame(PassToImGui);
+    FollowPointer();
     if (const char* window = std::exchange(focus_next_frame_, nullptr))
     {
         ImGui::SetWindowFocus(window);
@@ -952,7 +952,40 @@ void App::Pace()
     {
         last_event_ = SDL_GetTicksNS();
     }
-    SetWaiting(!moving && !Holding() && SDL_GetTicksNS() - last_event_ >= kLinger);
+    SetWaiting(!moving && !Holding() && input_.Empty() && SDL_GetTicksNS() - last_event_ >= kLinger);
+}
+
+void App::FollowPointer()
+{
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // While a file dialog is open, the window drops the pointer's moves, and Dear ImGui keeps the place that it has.
+    if (file_dialog_shown_)
+    {
+        return;
+    }
+#endif
+
+    // A move that waits for a later frame brings its place. Outside the window, the pointer's next move comes when it
+    // enters.
+    if (!input_.Empty() || SDL_GetMouseFocus() != window_)
+    {
+        return;
+    }
+
+    float x = 0.0f;
+    float y = 0.0f;
+    SDL_GetMouseState(&x, &y);
+    if (ShowPointerPlace(ImVec2(x, y), pointer_))
+    {
+        Wake();
+    }
+}
+
+void App::LeaveOutWaitingInput()
+{
+#if !defined(__APPLE__) && !defined(_WIN32)
+    input_.Drop(LeftOutDuringBox);
+#endif
 }
 
 void App::SetWaiting(bool waiting)
@@ -987,6 +1020,7 @@ void App::OpenMessageBoxes(bool button_down)
 {
     for (const Message& message : messages_.Ready(button_down))
     {
+        LeaveOutWaitingInput();
         ShowSimpleBox(message.kind == MessageKind::kNote ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR,
                       message.text, window_);
     }
@@ -1004,6 +1038,7 @@ void App::ShowMessagesBeforeBox()
         SDL_Log("A box opens while a mouse button is down. The window may drop the next click.");
     }
     OpenMessageBoxes(false);
+    LeaveOutWaitingInput();
 }
 
 bool App::ReadChosenFile(const std::filesystem::path& file, std::vector<uint8_t>& bytes)

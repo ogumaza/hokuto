@@ -5,9 +5,9 @@
 // the text. Each width comes from the text's width in that font. The cuts then don't rest on the font's metrics. Also
 // tests Return in the search field of a menu (FilteredCombo). The mouse and the keys reach Dear ImGui through its queue
 // of events.
-// A field of an info line that the user opened before the program turned busy checks BusyInfoEntry. WaitingValues
-// keeps a typed value for its item only, and only while its version exists. A dialog window opens in the middle at its
-// measured size (BeginDialogWindow).
+// A field of an info line that the user opened before the program turned busy checks BusyInfoEntry. Escape in a field
+// of an info line puts the value back (InfoEntry). WaitingValues keeps a typed value for its item only, and only while
+// its version exists. A dialog window opens in the middle at its measured size (BeginDialogWindow).
 
 #include "app/widgets.h"
 
@@ -238,6 +238,94 @@ void TestBusyInfoEntry(bool hover)
     XSFLIB_CHECK(ended);
     XSFLIB_CHECK(made == "64");
     XSFLIB_CHECK(!after);
+    ImGui::DestroyContext();
+}
+
+// Escape in a field of an info line puts the value back: the field ends with the value's text, whatever the user
+// typed, and the callers drop a text that equals the value. A text that Return gave before, such as one that the
+// program then refused, doesn't come back at a later Escape.
+void TestInfoEntryEscape()
+{
+    hokuto::testing::CreateHeadlessContext();
+    app::InfoTyping typing;
+    std::vector<std::string> given;
+    const auto draw = [&]
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+        ImGui::SetNextWindowSize(ImVec2(600.0f, 200.0f));
+        ImGui::Begin("Line");
+        app::InfoLine line = app::BeginInfoLine();
+        if (std::optional<std::string> text = app::InfoEntry(line, "START", "1. 1.   0", typing))
+        {
+            given.push_back(std::move(*text));
+        }
+        app::EndInfoLine(line);
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        ImGui::End();
+        hokuto::testing::EndHeadlessFrame();
+    };
+    const auto frame = [&](const std::function<void()>& event)
+    {
+        event();
+        draw();
+    };
+    ImGuiIO& io = ImGui::GetIO();
+    const auto click = [&]
+    {
+        frame([&] { io.AddMouseButtonEvent(ImGuiMouseButton_Left, true); });
+        frame([&] { io.AddMouseButtonEvent(ImGuiMouseButton_Left, false); });
+        draw();
+    };
+    const auto press = [&](ImGuiKey key)
+    {
+        frame([&] { io.AddKeyEvent(key, true); });
+        frame([&] { io.AddKeyEvent(key, false); });
+        draw();
+    };
+    draw();
+
+    // Click each place on the line until the value turns into a text field.
+    bool found = false;
+    for (float y = 2.0f; y < 80.0f && !found; y += 4.0f)
+    {
+        for (float x = 2.0f; x < 600.0f && !found; x += 8.0f)
+        {
+            frame([&] { io.AddMousePosEvent(x, y); });
+            click();
+            found = typing.field == "START";
+        }
+    }
+
+    // Typed text, then Escape.
+    frame([&] { io.AddInputCharacter('6'); });
+    frame([&] { io.AddInputCharacter('4'); });
+    press(ImGuiKey_Escape);
+    const bool ended = typing.field.empty();
+    const std::vector<std::string> after_escape = given;
+
+    // A text that Return gives, as one that the program then refuses. The field opens again, and Escape ends it.
+    click();
+    const bool opened = typing.field == "START";
+    frame([&] { io.AddInputCharacter('2'); });
+    frame([&] { io.AddInputCharacter('.'); });
+    frame([&] { io.AddInputCharacter('1'); });
+    press(ImGuiKey_Enter);
+    const std::vector<std::string> after_return = given;
+    click();
+    const bool opened_again = typing.field == "START";
+    frame([&] { io.AddInputCharacter('5'); });
+    press(ImGuiKey_Escape);
+
+    const std::string value = "1. 1.   0";
+    XSFLIB_CHECK(found);
+    XSFLIB_CHECK(ended);
+    XSFLIB_CHECK(after_escape == std::vector<std::string>{value});
+    XSFLIB_CHECK(opened);
+    XSFLIB_CHECK((after_return == std::vector<std::string>{value, "2.1"}));
+    XSFLIB_CHECK(opened_again);
+    XSFLIB_CHECK(typing.field.empty());
+    XSFLIB_CHECK((given == std::vector<std::string>{value, "2.1", value}));
     ImGui::DestroyContext();
 }
 
@@ -511,6 +599,7 @@ int main()
                                         TestFilteredComboReturn();
                                         TestBusyInfoEntry(false);
                                         TestBusyInfoEntry(true);
+                                        TestInfoEntryEscape();
                                         TestWaitingValuesOfAnotherItem();
                                         TestWaitingValuesOfAnotherSound();
                                         TestWaitingValuesOfAVersionThatIsGone();

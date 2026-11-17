@@ -512,10 +512,13 @@ void App::DrawNewProject()
         new_project_open_ = false;
     }
     ImGui::SameLine();
+    // Create waits for the exports of the Audio Mixdown window, as New Project does. The new file would stop them.
+    ImGui::BeginDisabled(MixdownRunning());
     if (PrimaryButton("Create"))
     {
         create = true;
     }
+    ImGui::EndDisabled();
     ImGui::End();
 
     // The user decides about the document's changes once Create replaces it, edits made meanwhile included.

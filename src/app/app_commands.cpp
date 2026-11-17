@@ -9,6 +9,7 @@
 
 #include "app/app.h"
 #include "app/app_internal.h"
+#include "app/mixdown_window.h"
 #include "app/recent_projects.h"
 #include "format/drivers.h"
 #include "format/file.h"
@@ -160,8 +161,12 @@ void App::Execute(Command command)
     case Command::kRecentProjects:
         break;
 
+    // An export of the Audio Mixdown window stops with the program. The user decides first.
     case Command::kQuit:
-        AfterChanges([this] { quit_ = true; });
+        if (!MixdownRunning() || AskToStopMixdown())
+        {
+            AfterChanges([this] { quit_ = true; });
+        }
         break;
 
     case Command::kUndo:
@@ -449,6 +454,12 @@ bool App::IsEnabled(Command command) const
 {
     // While a file opens, every command but Quit waits for it.
     if (opening_ && command != Command::kQuit)
+    {
+        return false;
+    }
+
+    // While exports of the Audio Mixdown window run, the commands that close the file wait for them.
+    if (MixdownRunning() && WaitsForMixdown(command))
     {
         return false;
     }

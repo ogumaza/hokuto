@@ -138,6 +138,11 @@ void App::DropFilesOnWindow(const std::vector<std::string>& paths)
                     " To add a WAV or wave file, drag it onto the Bank Editor or use File > Import.");
         return;
     }
+    if (MixdownRunning() && !(history_ && IsMidiFile(path)))
+    {
+        ShowMessage("An export is running. Drop " + name + " again once it ends.", MessageKind::kNote);
+        return;
+    }
 
     if (paths.size() > 1)
     {

@@ -9,7 +9,7 @@ if (CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MAC
 endif()
 # The program shows this version. The file properties of the Windows program and the Info.plist of the macOS app show
 # it too.
-project(hokuto VERSION 2.1.0 LANGUAGES C CXX)
+project(hokuto VERSION 2.1.1 LANGUAGES C CXX)
 # On macOS, the menu bar and the title bar come from AppKit, through Objective-C++.
 if (APPLE)
     enable_language(OBJCXX)
@@ -966,6 +966,11 @@ if (BUILD_TESTING)
     # The messages that wait for a frame with no mouse button down.
     xsflib_add_project_test(hokuto message_queue)
     target_include_directories(hokuto_message_queue_test PRIVATE src)
+    # The order and the frames in which Dear ImGui receives the window's input, and the pointer's place after the
+    # window dropped its moves, without a display.
+    xsflib_add_project_test(hokuto input_queue hokuto_imgui)
+    target_sources(hokuto_input_queue_test PRIVATE src/app/theme.cpp)
+    target_include_directories(hokuto_input_queue_test PRIVATE src)
     # The message boxes through zenity: the arguments, the answer and the events that the window leaves out. The test
     # runs on every system and without a display. It uses SDL3's types and none of its functions.
     xsflib_add_project_test(hokuto zenity_box SDL3::Headers)

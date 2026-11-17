@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "app/menus.h"
 #include "song/batch.h"
 #include "song/mixdown.h"
 #include "song/mixdown_files.h"
@@ -147,6 +148,10 @@ std::string MixdownChannelsText(const MixdownSetup& setup);
 
 // The text of a song's length in the list, in minutes, seconds and tenths: "2:31.4".
 std::string MixdownLengthText(double seconds);
+
+// Whether `command` waits while an export of the window runs: the commands that close the file, New Project, Open,
+// Recent Projects and Import > Sound Archive. An export would stop with its file. Quit asks first.
+bool WaitsForMixdown(Command command);
 
 // Draws the window while `open` is true. The window closes when the user clicks its close button. While the queue's
 // exports run (MixdownView::running), the settings and the queue stay disabled, and Stop replaces Close.
