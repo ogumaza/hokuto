@@ -51,7 +51,7 @@ std::optional<Command> Stepped(const hokuto::song::Console& console, const Comma
     if (ntdlib::commands::UnitOf(command.kind))
     {
         const ntdlib::nwsnd::Scale scale =
-            console.engine == hokuto::format::Engine::kGba ? ntdlib::mp2k::ScaleOf(command.kind)
+            console.engine == hokuto::format::Engine::kGba ? agblib::mp2k::ScaleOf(command.kind)
             : console.driver ? console.driver->ScaleOf(command.kind)
                              : ntdlib::nwsnd::ScaleOf(command.kind, hokuto::song::GrammarOf(console));
         if (const std::optional<int64_t> value = step(command.value, scale, false))

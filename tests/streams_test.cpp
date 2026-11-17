@@ -9,6 +9,8 @@
 // into the same archive laid out as NintendoWare's tools lay it out, with a wave sound after the stream sounds. A mono
 // WAV file in place of an AAC stream takes the channels of the sound's entry.
 
+#include <cstdio>
+
 #include "streams_fixtures.h"
 
 namespace
@@ -552,9 +554,16 @@ void TestStreamValues(sar::Flavor flavor)
 // A WAV file in place of an AAC stream that the file lacks takes the channels that the sound's entry gives. A mono file
 // fills both channels of a stereo stream. It does the same in place of a present stereo stream. An entry of no channels
 // leaves the file's. The WAV file's rate is 32 kHz. In place of a stream that the file lacks, the system's encoder
-// encodes it at 48 kHz. In place of a present stream, the encoder takes the present stream's rate: 44.1 kHz here.
+// encodes it at 48 kHz. In place of a present stream, the encoder takes the present stream's rate: 44.1 kHz here. A
+// system without an AAC codec, such as Linux without FFmpeg, skips the test.
 void TestAacChannels()
 {
+    if (!hokuto::song::HasAacCodec())
+    {
+        std::printf("No AAC codec: the AAC test is skipped. Install FFmpeg to run it.\n");
+        return;
+    }
+
     hokuto::edit::AacChanges changes;
     changes.present = false;
     changes.channels = 2;

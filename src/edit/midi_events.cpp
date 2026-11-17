@@ -2,7 +2,6 @@
 
 #include "edit/midi_events.h"
 
-#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -12,6 +11,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "xsflib/ascii.h"
 
 #include "format/kinds.h"
 
@@ -50,7 +51,7 @@ bool NamesLoop(const std::vector<uint8_t>& text, bool end)
     {
         if (c != '_' && c != ' ')
         {
-            name.push_back(static_cast<char>(std::tolower(c)));
+            name.push_back(xsflib::AsciiLower(static_cast<char>(c)));
         }
     }
 

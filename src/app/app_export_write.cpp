@@ -17,6 +17,7 @@
 
 #include "app/app.h"
 #include "app/file_dialogs.h"
+#include "app/system_ui.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "measure/measure.h"
@@ -277,8 +278,18 @@ bool App::WriteItemExport(const std::string& path, const ExportWork& work)
 {
     if (export_->item->kind == song::ItemKind::kWaveArchive && export_->Target() == ExportTarget::kWav)
     {
+        // A folder dialog can give a folder that doesn't exist yet, such as a name typed in Wine's dialog. The export
+        // makes it, as the SFZ export makes its folder.
+        const std::filesystem::path folder = xsflib::PathFromUtf8(path);
+        std::error_code error;
+        std::filesystem::create_directories(folder, error);
+        if (error)
+        {
+            throw std::runtime_error(song::FolderFailure(xsflib::Utf8(folder.filename()), error));
+        }
+
         const std::vector<std::pair<std::string, std::span<const uint8_t>>> files(work.files.begin(), work.files.end());
-        if (!WriteIntoFolder(xsflib::PathFromUtf8(path), files))
+        if (!WriteIntoFolder(folder, files))
         {
             return false;
         }
@@ -403,7 +414,7 @@ bool App::AskToReplace(const std::string& message)
     box.numbuttons = 2;
     box.buttons = buttons;
     int chosen = 0;
-    return SDL_ShowMessageBox(&box, &chosen) && chosen == 1;
+    return ShowSystemBox(box, &chosen) && chosen == 1;
 }
 
 bool App::MayWriteTo(const std::string& chosen, const std::filesystem::path& file)

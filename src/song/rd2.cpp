@@ -19,18 +19,19 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/rd2/archive_player.h"
+#include "agblib/rd2/commands.h"
+#include "agblib/rd2/output.h"
+#include "agblib/rd2/sequencer.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/rd2/convert.h"
+#include "agblib/sequence_export/rd2/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/rd2/archive_player.h"
-#include "ntdlib/rd2/commands.h"
-#include "ntdlib/rd2/output.h"
-#include "ntdlib/rd2/sequencer.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/rd2/convert.h"
-#include "ntdlib/sequence_export/rd2/soundfont.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "song/driver_player.h"
 #include "song/gba_bytes.h"
@@ -43,7 +44,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace rd2 = ntdlib::rd2;
+namespace rd2 = agblib::rd2;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
@@ -69,7 +70,7 @@ uint32_t BankListAddress(const rd2::DriverInfo& info, int sequence)
 }
 
 // The entries of a table of offsets from its start: the first entry points past the table.
-uint32_t TableEntries(const ntdlib::agb::Rom& rom, uint32_t table)
+uint32_t TableEntries(const agblib::agb::Rom& rom, uint32_t table)
 {
     if (table == 0 || !rom.Contains(table, 4))
     {
@@ -83,7 +84,7 @@ uint32_t TableEntries(const ntdlib::agb::Rom& rom, uint32_t table)
 // The number of instruments of bank `bank`. A bank starts with a halfword for each instrument: the instrument's offset
 // from the bank's start, or 0 for none. The table ends where the first instrument's settings start. A note's
 // instrument has 7 bits: at most 128.
-uint32_t InstrumentCount(const ntdlib::agb::Rom& rom, const rd2::DriverInfo& info, uint16_t bank)
+uint32_t InstrumentCount(const agblib::agb::Rom& rom, const rd2::DriverInfo& info, uint16_t bank)
 {
     const uint32_t base = rd2::BankAddress(rom, info, bank);
     uint32_t end = 2 * 256;
@@ -115,7 +116,7 @@ struct SampleHeader
     }
 };
 
-SampleHeader HeaderAt(const ntdlib::agb::Rom& rom, uint32_t address)
+SampleHeader HeaderAt(const agblib::agb::Rom& rom, uint32_t address)
 {
     return {rom.U32(address), rom.U32(address + 4), rom.U32(address + 8), rom.U32(address + 12)};
 }
@@ -184,7 +185,7 @@ private:
     rd2::Revision revision_;
 };
 
-// The model of the driver and the GBA's sound hardware, for one ROM (ntdlib::rd2::ArchivePlayer).
+// The model of the driver and the GBA's sound hardware, for one ROM (agblib::rd2::ArchivePlayer).
 class Rd2Player final : public ArchiveDriverPlayer<rd2::ArchivePlayer>
 {
 public:
@@ -244,7 +245,7 @@ struct SamplePlace
 // The address of the sample that `lookup`, an instrument's settings for a note of bank `bank`, plays. Nothing for a
 // note that plays no sample: a PSG voice, the wave voice, or a region that is missing from the bank. An instrument with
 // a sample for each key plays the sample of the note's entry (ntdlib's Sequencer::SetVoiceSound).
-std::optional<uint32_t> SampleOfLookup(const ntdlib::agb::Rom& rom, const rd2::DriverInfo& info, uint16_t bank,
+std::optional<uint32_t> SampleOfLookup(const agblib::agb::Rom& rom, const rd2::DriverInfo& info, uint16_t bank,
                                        const rd2::Lookup& lookup)
 {
     if (!lookup.found || lookup.missing)
@@ -449,7 +450,7 @@ const DriverRules& Rd2Rom::Rules() const
 
 std::span<const uint8_t> Rd2Rom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 int Rd2Rom::SongOf(uint32_t sound) const
@@ -488,14 +489,14 @@ uint32_t Rd2Rom::SoundCount() const
 std::string Rd2Rom::SoundName(uint32_t sound) const
 {
     const int song = SongOf(sound);
-    return VersionedSoundName(song, rd2::SongCount(info), ntdlib::sequence_export::rd2::SongVersions(info, song),
+    return VersionedSoundName(song, rd2::SongCount(info), agblib::sequence_export::rd2::SongVersions(info, song),
                               static_cast<std::size_t>(VersionOf(sound)));
 }
 
 SoundFields Rd2Rom::FieldsOf(uint32_t sound) const
 {
     // A field of the table of sequences, or of the sound effects' sequences, names a song's sequence. Its header names
-    // the tracks' starts (ntdlib::rd2::Cut): a song plays each of them, and a sound effect one.
+    // the tracks' starts (agblib::rd2::Cut): a song plays each of them, and a sound effect one.
     SoundFields fields;
     const int song = SongOf(sound);
     if (song < 0 || song >= rd2::SongCount(info))
@@ -506,7 +507,7 @@ SoundFields Rd2Rom::FieldsOf(uint32_t sound) const
     const auto sequence = static_cast<uint32_t>(rd2::SequenceOfSong(info, song));
     const auto music = static_cast<uint32_t>(info.sequence_addresses.size());
     const uint32_t entry = sequence < music ? info.sequences + 4 * sequence : info.effects + 4 * (sequence - music);
-    fields.sequence = uint64_t{entry} - ntdlib::agb::kRomBase;
+    fields.sequence = uint64_t{entry} - agblib::agb::kRomBase;
     if (const rd2::Effect* effect = rd2::SongEffect(info, song))
     {
         fields.entries.push_back(effect->track);
@@ -534,7 +535,7 @@ std::vector<int> Rd2Rom::Samples() const
     std::vector<int> numbers;
     for (std::size_t sample = 0; sample < sample_addresses.size(); ++sample)
     {
-        if (ntdlib::sequence_export::rd2::SampleReadable(rom, sample_addresses[sample]))
+        if (agblib::sequence_export::rd2::SampleReadable(rom, sample_addresses[sample]))
         {
             numbers.push_back(static_cast<int>(sample));
         }
@@ -558,7 +559,7 @@ std::string Rd2Rom::SampleName(int sample) const
 void Rd2Rom::CheckSample(int sample) const
 {
     if (sample < 0 || static_cast<std::size_t>(sample) >= sample_addresses.size() ||
-        !ntdlib::sequence_export::rd2::SampleReadable(rom, sample_addresses[static_cast<std::size_t>(sample)]))
+        !agblib::sequence_export::rd2::SampleReadable(rom, sample_addresses[static_cast<std::size_t>(sample)]))
     {
         throw std::invalid_argument("The ROM holds no " + SampleName(sample) + ".");
     }
@@ -680,11 +681,11 @@ Sequence Rd2Rom::ReadSequence(uint32_t sound) const
 
 ntdlib::sequence_export::Conversion Rd2Rom::ConvertToMidi(uint32_t sound, const std::string& program) const
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
     settings.version = VersionOf(sound);
-    ntdlib::sequence_export::rd2::SongFiles files =
-        ntdlib::sequence_export::rd2::ConvertSongFiles(rom, info, SongOf(sound), settings);
+    agblib::sequence_export::rd2::SongFiles files =
+        agblib::sequence_export::rd2::ConvertSongFiles(rom, info, SongOf(sound), settings);
 
     return AgbConversion(SoundName(sound), std::move(files));
 }
@@ -692,8 +693,8 @@ ntdlib::sequence_export::Conversion Rd2Rom::ConvertToMidi(uint32_t sound, const 
 ntdlib::sequence_export::BankConversion Rd2Rom::ConvertSamples(std::span<const int> samples,
                                                                const std::string& program) const
 {
-    namespace agb = ntdlib::sequence_export::agb;
-    ntdlib::sequence_export::rd2::SoundfontBuilder builder(rom, ntdlib::sequence_export::rd2::PsgShare(info.revision));
+    namespace agb = agblib::sequence_export::agb;
+    agblib::sequence_export::rd2::SoundfontBuilder builder(rom, agblib::sequence_export::rd2::PsgShare(info.revision));
     agb::Sf2File& file = builder.File();
     ntdlib::sequence_export::BankConversion conversion;
     for (const int sample : samples)
@@ -824,8 +825,7 @@ std::shared_ptr<const DriverRom> Rd2Rom::AuditionRom(const DriverAudition& audit
     const uint32_t list = EndAddress(bytes);
     for (const uint16_t bank : banks)
     {
-        bytes.push_back(static_cast<uint8_t>(bank));
-        bytes.push_back(static_cast<uint8_t>(bank >> 8));
+        xsflib::AppendLe16(bytes, bank);
     }
 
     PadToWord(bytes);
@@ -859,7 +859,7 @@ std::shared_ptr<const Rd2Rom> LoadRd2Rom(std::vector<uint8_t> bytes)
 
     // Each song's first version, then the other versions.
     rom->sounds = VersionedSounds(rd2::SongCount(rom->info), [&rom](int song)
-                                  { return ntdlib::sequence_export::rd2::SongVersions(rom->info, song).size(); });
+                                  { return agblib::sequence_export::rd2::SongVersions(rom->info, song).size(); });
 
     // The samples of each sample set, once each.
     const uint32_t sets = TableEntries(rom->rom, rom->info.sample_sets);

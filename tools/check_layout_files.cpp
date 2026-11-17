@@ -270,23 +270,13 @@ void CheckLongerCopy(const std::filesystem::path& path, const GroupFilesBeside& 
 } // namespace
 
 void CheckGroupFiles(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                     const sar::Options& options, Totals& totals)
+                     const sar::Options& options, Readings& readings, Totals& totals)
 {
     const sar::Flavor flavor = options.flavor;
 
     // Each group's file in the archive, at the size that the header gives. A group's file that ends the archive can end
     // without the zeros that pad INFX.
-    sar::Options strict = options;
-    strict.rules = sar::Rules::kStopAtFirstProblem;
-    std::optional<sar::SoundArchive> read;
-    try
-    {
-        read = sar::SoundArchive::Load(original, strict);
-    }
-    catch (const std::exception&)
-    {
-        read.reset();
-    }
+    const std::optional<sar::SoundArchive>& read = readings.Strict();
     std::set<uint32_t> sequence_files;
     for (std::size_t i = 0; read && i < read->Sounds().size(); ++i)
     {
@@ -469,8 +459,8 @@ void CheckReplaceInRuns(const std::filesystem::path& path, const sar::SoundArchi
 
 } // namespace
 
-void CheckRuns(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-               const sar::Options& options, Totals& totals)
+void CheckRuns(const std::filesystem::path& path, const sar::Layout& layout, const sar::Options& options,
+               Readings& readings, Totals& totals)
 {
     // A run that padding follows holds a file.
     sar::Layout grown = layout;
@@ -487,7 +477,7 @@ void CheckRuns(const std::filesystem::path& path, const std::vector<uint8_t>& or
     }
     totals.runs += static_cast<int>(runs.size());
     const std::vector<uint8_t> joined = sar::Join(grown.flavor, grown.sequences, grown.pieces, grown.fields);
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     const sar::SoundArchive after = sar::SoundArchive::Load(joined, options);
     if (after.GroupErrors().size() != before.GroupErrors().size() || after.Truncated() != before.Truncated() ||
         after.FileCount() != before.FileCount() || after.Sounds().size() != before.Sounds().size())

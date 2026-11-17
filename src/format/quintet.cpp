@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Quintet's driver for the GBA (ntdlib/quintet/layout.h) as one of the drivers of format/drivers.h. The driver's
+// Quintet's driver for the GBA (agblib/quintet/layout.h) as one of the drivers of format/drivers.h. The driver's
 // songs are back to back in lists, and each list keeps its place. A list can grow into its room: the bytes of one value
 // after it, up to the end of its part of the music file. A file keeps the rooms (NativeDriver::rooms). The driver's
 // revisions differ in the traits of their commands, and a file stores lengths in the performer's ticks
@@ -18,10 +18,10 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/quintet/commands.h"
-#include "ntdlib/quintet/driver.h"
-#include "ntdlib/quintet/layout.h"
+#include "agblib/agb/rom.h"
+#include "agblib/quintet/commands.h"
+#include "agblib/quintet/driver.h"
+#include "agblib/quintet/layout.h"
 #include "xsflib/binary.h"
 
 #include "format/archive.h"
@@ -35,15 +35,15 @@ namespace
 {
 
 // The music files of the driver that `rom` contains, or none.
-std::vector<ntdlib::quintet::DriverInfo> Detect(const ntdlib::agb::Rom& rom, std::string& error)
+std::vector<agblib::quintet::DriverInfo> Detect(const agblib::agb::Rom& rom, std::string& error)
 {
-    ntdlib::quintet::DriverInfo info;
-    if (!ntdlib::quintet::DetectDriver(rom, {}, info, error))
+    agblib::quintet::DriverInfo info;
+    if (!agblib::quintet::DetectDriver(rom, {}, info, error))
     {
         return {};
     }
 
-    return ntdlib::quintet::ReadMusicFiles(rom, info);
+    return agblib::quintet::ReadMusicFiles(rom, info);
 }
 
 // `fields` with each place that names an item of a sequence piece of `pieces` renumbered by `items`: the new index of
@@ -98,16 +98,16 @@ public:
 
     File Import(std::span<const uint8_t> rom) const override
     {
-        const ntdlib::agb::Rom read = RomOf(rom);
+        const agblib::agb::Rom read = RomOf(rom);
         std::string error;
-        const std::vector<ntdlib::quintet::DriverInfo> files = Detect(read, error);
+        const std::vector<agblib::quintet::DriverInfo> files = Detect(read, error);
         if (files.empty())
         {
             throw xsflib::FormatError(error.empty() ? "the ROM shows no sign of Quintet's driver"
                                                     : "Can't read the tables of Quintet's driver: " + error);
         }
 
-        ntdlib::quintet::Layout layout = ntdlib::quintet::Cut(read, files);
+        agblib::quintet::Layout layout = agblib::quintet::Cut(read, files);
         if (layout.sequences.empty())
         {
             throw xsflib::FormatError("Quintet's driver plays no song of this ROM that Hokuto can read");
@@ -122,7 +122,7 @@ public:
         }
 
         NativeDriver driver{.revision = *revision, .free_start = 0, .padding = 0};
-        for (const ntdlib::quintet::Room& room : layout.rooms)
+        for (const agblib::quintet::Room& room : layout.rooms)
         {
             driver.rooms.push_back({.piece = room.piece, .end = room.end, .fill = room.fill});
         }
@@ -155,7 +155,7 @@ public:
                               std::span<const ntdlib::sar::Field> fields) const override
     {
         const NativeDriver& driver = *native.driver;
-        std::vector<ntdlib::quintet::Room> rooms;
+        std::vector<agblib::quintet::Room> rooms;
         for (const DriverRoom& room : driver.rooms)
         {
             if (room.piece > pieces.size())
@@ -177,20 +177,20 @@ public:
         std::vector<ntdlib::sar::Field> driver_fields(fields.begin(), fields.end());
         RenumberItems(driver_fields, pieces, unfolded);
 
-        return ntdlib::quintet::Join(QuintetTraits(driver.revision), driver_ticks, pieces, driver_fields, rooms);
+        return agblib::quintet::Join(QuintetTraits(driver.revision), driver_ticks, pieces, driver_fields, rooms);
     }
 
     std::vector<uint32_t> ItemOffsets(const ntdlib::commands::Sequence& sequence, uint8_t revision) const override
     {
         return QuintetFoldedOffsets(
-            sequence, ntdlib::quintet::ItemOffsets(QuintetDriverTicks(sequence), QuintetTraits(revision)));
+            sequence, agblib::quintet::ItemOffsets(QuintetDriverTicks(sequence), QuintetTraits(revision)));
     }
 
     uint64_t PieceBytes(const ntdlib::commands::Sequence& sequence, const ntdlib::sar::SequencePiece& /*piece*/,
                         uint8_t revision) const override
     {
         // The join lays each song out at the size of its commands. A zero follows an odd size. The song's place
-        // keeps no size (ntdlib::quintet::Cut).
+        // keeps no size (agblib::quintet::Cut).
         const uint64_t bytes = ItemOffsets(sequence, revision).back();
         return bytes + bytes % 2;
     }
@@ -203,7 +203,7 @@ public:
     std::vector<std::vector<uint32_t>> TrackEntries(std::span<const ntdlib::sar::Piece> pieces,
                                                     std::span<const ntdlib::sar::Field> fields, uint8_t) const override
     {
-        // The fields of a song's header after its length name the items where the channels start (ntdlib::quintet::
+        // The fields of a song's header after its length name the items where the channels start (agblib::quintet::
         // Cut). The length's field, at the header's start, names the end of the song's items. Each item counts once, in
         // the order of the items.
         std::vector<std::vector<uint32_t>> entries(pieces.size());
@@ -234,7 +234,7 @@ public:
             driver_entries.push_back(entry < unfolded.size() ? unfolded[entry] : entry);
         }
 
-        ntdlib::quintet::EncodeSequence(QuintetDriverTicks(sequence), driver_entries, QuintetTraits(revision));
+        agblib::quintet::EncodeSequence(QuintetDriverTicks(sequence), driver_entries, QuintetTraits(revision));
     }
 };
 

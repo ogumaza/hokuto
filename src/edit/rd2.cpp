@@ -14,11 +14,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/rd2/commands.h"
+#include "agblib/rd2/sequencer.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/rd2/commands.h"
-#include "ntdlib/rd2/sequencer.h"
 
 #include "edit/bytecode.h"
 #include "edit/drivers.h"
@@ -59,17 +59,17 @@ bool SameValues(const Command& wanted, const Command& read)
 // byte that would read other values from the track's last note or wait stores its values in its bytes.
 Edited Rd2Writable(const format::File&, Edited edited, uint32_t sequence)
 {
-    const ntdlib::rd2::Revision revision = *Rd2Of(ConsoleOf(edited.file));
+    const agblib::rd2::Revision revision = *Rd2Of(ConsoleOf(edited.file));
     Sequence changed = *edited.file.sequences[sequence];
     const bool effects = IsRd2EffectSequence(changed);
     for (int round = 0;; round++)
     {
-        ntdlib::rd2::Encoded encoded;
-        ntdlib::rd2::Decoded decoded;
+        agblib::rd2::Encoded encoded;
+        agblib::rd2::Decoded decoded;
         const auto encode = [&]
         {
-            encoded = ntdlib::rd2::EncodeSequence(changed, revision);
-            decoded = ntdlib::rd2::DecodeSequence(encoded.bytes, revision, effects);
+            encoded = agblib::rd2::EncodeSequence(changed, revision);
+            decoded = agblib::rd2::DecodeSequence(encoded.bytes, revision, effects);
         };
         CheckEncodes("Nintendo R&D2's driver can't hold this edit: ", encode);
         if (decoded.opaque)
@@ -79,7 +79,7 @@ Edited Rd2Writable(const format::File&, Edited edited, uint32_t sequence)
         }
 
         std::map<uint32_t, uint32_t> read;
-        const std::vector<uint32_t> offsets = ntdlib::rd2::ItemOffsets(decoded.sequence, revision);
+        const std::vector<uint32_t> offsets = agblib::rd2::ItemOffsets(decoded.sequence, revision);
         for (std::size_t item = 0; item + 1 < offsets.size(); item++)
         {
             read.emplace(offsets[item], static_cast<uint32_t>(item));
@@ -117,12 +117,12 @@ Edited Rd2Writable(const format::File&, Edited edited, uint32_t sequence)
     return edited;
 }
 
-// The values that the driver's bytes hold in the value of `command` (ntdlib/rd2/commands.h). A note's length, a wait
+// The values that the driver's bytes hold in the value of `command` (agblib/rd2/commands.h). A note's length, a wait
 // and a tempo of the revisions that give it a length take 15 bits. A pan, a bend and a transpose take a byte about the
 // zero of their scale, and the flags of a tie and the note wait 0 or 1. The other commands take a byte. A jump, a call,
 // a track start, a return, an end and a portamento's end hold no value. No command takes a time, a random value or a
 // variable.
-std::optional<ValueRange> Rd2Range(const Command& command, Source source, bool time, ntdlib::rd2::Revision revision)
+std::optional<ValueRange> Rd2Range(const Command& command, Source source, bool time, agblib::rd2::Revision revision)
 {
     if (time || source != Source::kValue)
     {
@@ -147,7 +147,7 @@ std::optional<ValueRange> Rd2Range(const Command& command, Source source, bool t
         highest = kLongestLength;
         break;
     case Kind::kTempo:
-        highest = ntdlib::rd2::TraitsOf(revision).byte_tempo ? 0xFF : kLongestLength;
+        highest = agblib::rd2::TraitsOf(revision).byte_tempo ? 0xFF : kLongestLength;
         break;
     case Kind::kPan:
         lowest = -64;
@@ -166,7 +166,7 @@ std::optional<ValueRange> Rd2Range(const Command& command, Source source, bool t
         break;
     }
 
-    const Scale scale = ntdlib::rd2::ScaleOf(command.kind);
+    const Scale scale = agblib::rd2::ScaleOf(command.kind);
     const auto unit = [&scale](int64_t value)
     {
         return ntdlib::commands::ToUnit(value, scale);
@@ -209,7 +209,7 @@ public:
     std::optional<ValueRange> Range(const song::Console& console, int /*track*/, const Command& command, Source source,
                                     bool time) const override
     {
-        return Rd2Range(command, source, time, static_cast<ntdlib::rd2::Revision>(console.driver->Revision()));
+        return Rd2Range(command, source, time, static_cast<agblib::rd2::Revision>(console.driver->Revision()));
     }
 
     // As on MusicPlayer2000, the tracks loop through jumps. A note waits only with the note wait on.
@@ -232,7 +232,7 @@ public:
         for (std::size_t item = IsRd2EffectSequence(sequence) ? 0 : 1; item < sequence.items.size(); item++)
         {
             const Command& entry = sequence.items[item];
-            if (entry.kind != Kind::kOpenTrack || entry.encoding.opcode != ntdlib::rd2::kHeaderEntry)
+            if (entry.kind != Kind::kOpenTrack || entry.encoding.opcode != agblib::rd2::kHeaderEntry)
             {
                 break;
             }
@@ -252,7 +252,7 @@ public:
     {
         return item.kind == Kind::kOpenTrack &&
                (item.index == track ||
-                (track == 0 && item.encoding.opcode == ntdlib::rd2::kHeaderEntry && IsRd2EffectSequence(sequence)));
+                (track == 0 && item.encoding.opcode == agblib::rd2::kHeaderEntry && IsRd2EffectSequence(sequence)));
     }
 
     // F8 copies the settings of the starting track to the track that it starts (ntdlib's sequencer).
@@ -269,7 +269,7 @@ public:
 
     bool IsTableEntry(const Command& item) const override
     {
-        return item.kind == Kind::kOpenTrack && item.encoding.opcode == ntdlib::rd2::kHeaderEntry;
+        return item.kind == Kind::kOpenTrack && item.encoding.opcode == agblib::rd2::kHeaderEntry;
     }
 
     TrackEdit AddTrack(const format::File& file, std::span<const std::optional<SoundPlace>> places, uint32_t sound,
@@ -319,8 +319,8 @@ public:
 // The ROM that a file builds, with the driver's tables.
 struct BuiltRom
 {
-    ntdlib::rd2::Rom rom;
-    ntdlib::rd2::DriverInfo info;
+    agblib::rd2::Rom rom;
+    agblib::rd2::DriverInfo info;
 };
 
 // The ROM that `file` builds. Throws std::invalid_argument with a message for the user when Hokuto can't read the
@@ -330,7 +330,7 @@ BuiltRom BuiltRomOf(const format::File& file)
     BuiltRom built;
     built.rom.Assign(format::ExportArchive(file));
     std::string error;
-    if (!ntdlib::rd2::DetectDriver(built.rom, {}, built.info, error))
+    if (!agblib::rd2::DetectDriver(built.rom, {}, built.info, error))
     {
         throw std::invalid_argument("Hokuto can't read the driver's tables of the ROM that the file builds.");
     }
@@ -342,14 +342,14 @@ BuiltRom BuiltRomOf(const format::File& file)
 // message for the user when Hokuto can't find the list.
 uint32_t BankListOf(const BuiltRom& built, const format::File& file, uint32_t sequence)
 {
-    const ntdlib::rd2::DriverInfo& info = built.info;
+    const agblib::rd2::DriverInfo& info = built.info;
     const auto music = static_cast<int>(info.sequence_addresses.size());
-    for (int number = 0; number < ntdlib::rd2::SequenceCount(info); number++)
+    for (int number = 0; number < agblib::rd2::SequenceCount(info); number++)
     {
-        const bool effects = ntdlib::rd2::IsEffectSequence(info, number);
+        const bool effects = agblib::rd2::IsEffectSequence(info, number);
         const uint32_t entry = effects ? info.effects + 4 * static_cast<uint32_t>(number - music)
                                        : info.sequences + 4 * static_cast<uint32_t>(number);
-        if (format::SequenceNamedAt(file, entry - ntdlib::agb::kRomBase) == sequence)
+        if (format::SequenceNamedAt(file, entry - agblib::agb::kRomBase) == sequence)
         {
             return effects ? info.effect_bank_list_addresses[static_cast<std::size_t>(number - music)]
                            : info.bank_list_addresses[static_cast<std::size_t>(number)];
@@ -366,22 +366,22 @@ uint32_t BankListOf(const BuiltRom& built, const format::File& file, uint32_t se
 // the region's pitch. A sample's note and the noise's keep the note.
 std::optional<int> ShownKeyOf(const BuiltRom& built, uint16_t bank, uint16_t instrument, uint8_t note)
 {
-    const ntdlib::rd2::Lookup lookup = ntdlib::rd2::LookUpInstrument(built.rom, built.info, bank, instrument, note);
+    const agblib::rd2::Lookup lookup = agblib::rd2::LookUpInstrument(built.rom, built.info, bank, instrument, note);
     if (!lookup.found || lookup.missing)
     {
         return std::nullopt;
     }
 
-    const uint8_t type = ntdlib::rd2::RegionType(built.rom, lookup.region);
+    const uint8_t type = agblib::rd2::RegionType(built.rom, lookup.region);
     const bool fixed = lookup.drum || lookup.key_sample;
-    const int index = ntdlib::rd2::PitchIndex(fixed ? ntdlib::rd2::kFixedNote : note,
-                                              ntdlib::rd2::RegionTuning(built.rom, lookup.region));
+    const int index = agblib::rd2::PitchIndex(fixed ? agblib::rd2::kFixedNote : note,
+                                              agblib::rd2::RegionTuning(built.rom, lookup.region));
     switch (type)
     {
-    case ntdlib::rd2::kSquare1Type:
-    case ntdlib::rd2::kSquare2Type:
+    case agblib::rd2::kSquare1Type:
+    case agblib::rd2::kSquare2Type:
         return index + 12;
-    case ntdlib::rd2::kWaveType:
+    case agblib::rd2::kWaveType:
         return index;
     default:
         return note;
@@ -428,20 +428,20 @@ const DriverEdits& Rd2Edits()
     return edits;
 }
 
-std::optional<ntdlib::rd2::Revision> Rd2Of(const song::Console& console)
+std::optional<agblib::rd2::Revision> Rd2Of(const song::Console& console)
 {
     if (!RunsDriver(console, format::Engine::kRd2))
     {
         return std::nullopt;
     }
 
-    return static_cast<ntdlib::rd2::Revision>(console.driver->Revision());
+    return static_cast<agblib::rd2::Revision>(console.driver->Revision());
 }
 
 bool IsRd2EffectSequence(const Sequence& sequence)
 {
     return !sequence.items.empty() && sequence.items[0].kind == Kind::kOpenTrack &&
-           sequence.items[0].encoding.opcode == ntdlib::rd2::kHeaderEntry;
+           sequence.items[0].encoding.opcode == agblib::rd2::kHeaderEntry;
 }
 
 std::vector<uint32_t> Rd2BanksOf(const format::File& file, uint32_t sequence, int last)
@@ -487,9 +487,9 @@ std::optional<uint8_t> Rd2VoiceTypeOf(const format::File& file, uint32_t sequenc
         return std::nullopt;
     }
 
-    const ntdlib::rd2::Lookup lookup = ntdlib::rd2::LookUpInstrument(
+    const agblib::rd2::Lookup lookup = agblib::rd2::LookUpInstrument(
         built.rom, built.info, *bank, static_cast<uint16_t>(program), static_cast<uint8_t>(*key));
-    return lookup.region != 0 ? ntdlib::rd2::RegionType(built.rom, lookup.region) : ntdlib::rd2::kSampleType;
+    return lookup.region != 0 ? agblib::rd2::RegionType(built.rom, lookup.region) : agblib::rd2::kSampleType;
 }
 
 } // namespace hokuto::edit

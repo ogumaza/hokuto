@@ -103,6 +103,10 @@ struct BrowserState
     std::optional<BrowserPlace> export_place;
     std::optional<BrowserPlace> replace_place;
     std::optional<BrowserPlace> edit_place;
+    // Whether the Sound section under the tree is open. The program's settings keep it. The browser takes it
+    // as the section's state in its first frame, and gives the section's state back in each frame after.
+    bool sound_open = false;
+    bool sound_restored = false;
 };
 
 } // namespace hokuto::app

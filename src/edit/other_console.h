@@ -65,6 +65,7 @@
 
 #include "format/file.h"
 #include "song/archive.h"
+#include "song/sequence_model.h"
 
 namespace hokuto::edit
 {
@@ -169,6 +170,10 @@ OtherConsoleSong ForDs(const format::File& file, uint32_t sound, std::size_t ds_
 // (ForEngine). The engines of the 3DS, the Wii U, the Switch, the Wii and the DS play the sounds of every other
 // console. The engines of the GBA, DSE and the other drivers play no sound of another console.
 std::optional<std::string> EngineRefused(const format::File& file, format::Engine engine);
+
+// The mixing mode in which sound `sound` of `file` plays: the file's mode for the sound, or strict mixing on an engine
+// that takes no other (format::MixingRefused), such as the Wii's. The mode that the file keeps for the sound stays.
+song::Mixing PlayedMixing(const format::File& file, uint32_t sound);
 
 // Sequence sound `sound` of `file` converted for the console of `engine`. ForOtherConsole or ForWii converts it from
 // the file as a saved file holds it. `file` holds its timelines as the program edits them. Throws std::invalid_argument

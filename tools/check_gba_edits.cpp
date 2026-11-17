@@ -32,7 +32,7 @@
 // play as one. Two commands of one key on a track's tick play as one note too, and the note leads to one of them. A
 // move or a removal of that command parts the two, and the other command's note then plays alone at the old place. The
 // driver's channels play one note each, for every track: the DirectSound channels that the game's code assigns the song
-// (ntdlib::mp2k::SongChannels), and the four PSG channels. A note that finds every channel of its kind playing takes
+// (agblib::mp2k::SongChannels), and the four PSG channels. A note that finds every channel of its kind playing takes
 // one from a note of the same or a lower priority, or is dropped. A note whose time, before or after its edit, meets
 // enough other notes of its kind to take every channel can therefore go, come, or end sooner. The notes in their
 // releases hold channels too, and the check doesn't count them. A note that the edited song lists among the notes that
@@ -79,14 +79,14 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/sequencer.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/sequencer.h"
-#include "ntdlib/mp2k/song.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
@@ -153,7 +153,7 @@ std::optional<uint32_t> Longer(uint32_t ticks, bool short_notes)
 {
     for (int code = 1; code <= 48; code++)
     {
-        const auto length = static_cast<uint32_t>(ntdlib::mp2k::ClockLength(code));
+        const auto length = static_cast<uint32_t>(agblib::mp2k::ClockLength(code));
         if (short_notes && length > ticks)
         {
             return length;
@@ -295,11 +295,11 @@ File Edit(const File& file, uint32_t sequence, const std::string& name, std::map
 
 // Whether `got`, a sequence that a cut of the exported ROM returns, contains `want`: its bytes start with those of
 // `want`, where a note reads up to `note_arguments` bytes. A song that shrank leaves zeros in its place up to its
-// header, and the cut reads them as data after the items of the song (ntdlib::mp2k::Join).
+// header, and the cut reads them as data after the items of the song (agblib::mp2k::Join).
 bool Holds(const ntdlib::commands::Sequence& want, const ntdlib::commands::Sequence& got, int note_arguments)
 {
-    const std::vector<uint8_t> wanted = ntdlib::mp2k::EncodeSequence(want, ntdlib::agb::kRomBase, note_arguments).bytes;
-    const std::vector<uint8_t> held = ntdlib::mp2k::EncodeSequence(got, ntdlib::agb::kRomBase, note_arguments).bytes;
+    const std::vector<uint8_t> wanted = agblib::mp2k::EncodeSequence(want, agblib::agb::kRomBase, note_arguments).bytes;
+    const std::vector<uint8_t> held = agblib::mp2k::EncodeSequence(got, agblib::agb::kRomBase, note_arguments).bytes;
     return held.size() >= wanted.size() && std::equal(wanted.begin(), wanted.end(), held.begin()) &&
            std::all_of(held.begin() + static_cast<std::ptrdiff_t>(wanted.size()), held.end(),
                        [](uint8_t b) { return b == 0; });
@@ -498,7 +498,7 @@ void CheckExportedEdits(const hokuto::song::GbaRom& rom, const File& current, co
         const std::optional<uint32_t> sequence =
             hokuto::format::GbaSongSequence(again, played.info.song_table, entry.song);
         if (!sequence || !Holds(*current.sequences[entry.sequence], *again.sequences[*sequence],
-                                ntdlib::mp2k::NoteArguments(played.info)))
+                                agblib::mp2k::NoteArguments(played.info)))
         {
             std::printf("%s: the exported ROM doesn't give back the edited sequence%s\n", name.c_str(),
                         sequence ? "" : ": the cut leaves it among the ROM's bytes");
@@ -507,13 +507,13 @@ void CheckExportedEdits(const hokuto::song::GbaRom& rom, const File& current, co
         try
         {
             const Sequence after = hokuto::song::ReadSequence(played, entry.song);
-            ntdlib::mp2k::SongHeader header;
-            ntdlib::mp2k::ReadSong(rom.rom, rom.info, entry.song, header);
+            agblib::mp2k::SongHeader header;
+            agblib::mp2k::ReadSong(rom.rom, rom.info, entry.song, header);
             const ChannelOf channel_of = [&rom, &header](const Note& note)
             {
                 return hokuto::tools::GbaPsgChannel(rom.rom, header.voices, note.program, note.key);
             };
-            const int direct_channels = ntdlib::mp2k::SongChannels(rom.rom, rom.info, entry.song);
+            const int direct_channels = agblib::mp2k::SongChannels(rom.rom, rom.info, entry.song);
             totals.differ += Compare(name, entry.before, after, entry.plans, channel_of, direct_channels, totals);
 
             const hokuto::song::Collisions then = hokuto::song::CollisionsOf(entry.before);

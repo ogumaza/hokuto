@@ -15,10 +15,11 @@
 #include <variant>
 #include <vector>
 
+#include "agblib/konami/commands.h"
+#include "agblib/konami/layout.h"
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/konami/layout.h"
 #include "ntdlib/sar/layout.h"
 
 #include "edit/drivers.h"
@@ -291,22 +292,22 @@ std::size_t KonamiLoopsWithoutWaits(const Sequence& commands, std::span<const ui
                               { return WayFrom(commands, ranges, place, size, 0) == Way::kSongLoop; }));
 }
 
-bool KonamiStartsNoteAgain(const Command& command, const Command& note, ntdlib::konami::Revision revision)
+bool KonamiStartsNoteAgain(const Command& command, const Command& note, agblib::konami::Revision revision)
 {
     // Index 0 is the volume command (C0-CF). A PSG track's channel starts again at the new volume. The Dungeon Dice
     // Monsters revision plays the track's sound again at it on any track.
     return command.kind == Kind::kVolume && command.index == 0 &&
-           (!note.sample || revision == ntdlib::konami::Revision::kDungeonDiceMonsters);
+           (!note.sample || revision == agblib::konami::Revision::kDungeonDiceMonsters);
 }
 
-uint32_t KonamiLongestWait(ntdlib::konami::Revision revision)
+uint32_t KonamiLongestWait(agblib::konami::Revision revision)
 {
-    if (ntdlib::konami::EternalDuelistLayout(revision) || revision == ntdlib::konami::Revision::kDungeonDiceMonsters)
+    if (agblib::konami::EternalDuelistLayout(revision) || revision == agblib::konami::Revision::kDungeonDiceMonsters)
     {
         return 0xFFF;
     }
 
-    return revision == ntdlib::konami::Revision::kUltimateMasters ? 0xFFFF : 0x1FFF;
+    return revision == agblib::konami::Revision::kUltimateMasters ? 0xFFFF : 0x1FFF;
 }
 
 bool KonamiPlaysOnNextTrack(const Command& command)
@@ -495,11 +496,11 @@ JoinedDelays JoinDelays(Sequence& changed, const std::set<uint32_t>& entered)
 // Throws std::invalid_argument with a message for the user where revision `revision` of Konami's driver can't encode
 // `after`, sequence `sequence` of `native`, for each piece that contains it (KonamiWritable).
 void CheckPieces(const format::NativeArchive& native, const Sequence& after, uint32_t sequence,
-                 ntdlib::konami::Revision revision)
+                 agblib::konami::Revision revision)
 {
     // The bytes have to hold each command where its track reads it, or an export would refuse the edit much later.
     const std::vector<std::vector<uint32_t>> entries =
-        ntdlib::konami::TrackEntries(*native.pieces, native.fields, revision);
+        agblib::konami::TrackEntries(*native.pieces, native.fields, revision);
     for (std::size_t piece = 0; piece < native.pieces->size(); ++piece)
     {
         const auto* held = std::get_if<ntdlib::sar::SequencePiece>(&(*native.pieces)[piece]);
@@ -510,7 +511,7 @@ void CheckPieces(const format::NativeArchive& native, const Sequence& after, uin
 
         try
         {
-            ntdlib::konami::EncodeSequence(after, entries[piece], revision);
+            agblib::konami::EncodeSequence(after, entries[piece], revision);
         }
         catch (const std::invalid_argument&)
         {
@@ -527,7 +528,7 @@ void CheckPieces(const format::NativeArchive& native, const Sequence& after, uin
 // call that would play no command or more than 255, and a command that the revision has no bytes for.
 Edited KonamiWritable(const format::File& before, Edited edited, uint32_t sequence)
 {
-    const ntdlib::konami::Revision revision = *KonamiOf(ConsoleOf(edited.file));
+    const agblib::konami::Revision revision = *KonamiOf(ConsoleOf(edited.file));
     Sequence changed = *edited.file.sequences[sequence];
     FollowCalls(*before.sequences[sequence], edited, changed);
 
@@ -668,20 +669,18 @@ public:
         // A new volume command would sound on a PSG channel, and a sample track's next note sets its volume anyway.
         if (setting == song::Mix::kVolume && run_empty)
         {
-            throw std::invalid_argument(
-                "This track starts no notes and has no volume to change. Another track can play notes on this "
-                "channel through its pan setting. Change the volume on that track.");
+            throw std::invalid_argument(std::string(kKonamiVolumeWithoutNotes));
         }
     }
 
     void FollowPan(const song::Console& console, Command& command) const override
     {
         // A pan of Konami's driver lowers one side from the command's level. The level has to hold the position.
-        const std::optional<ntdlib::konami::Revision> konami = KonamiOf(console);
-        if (konami && !ntdlib::konami::UltimateMasters(*konami) && command.velocity != 0)
+        const std::optional<agblib::konami::Revision> konami = KonamiOf(console);
+        if (konami && !agblib::konami::UltimateMasters(*konami) && command.velocity != 0)
         {
             const int64_t position =
-                ntdlib::commands::FromUnit(command.value.value, ntdlib::konami::ScaleOf(Kind::kPan, *konami));
+                ntdlib::commands::FromUnit(command.value.value, agblib::konami::ScaleOf(Kind::kPan, *konami));
             command.velocity = std::max(command.velocity, std::abs(position) * kOne);
         }
     }
@@ -736,7 +735,7 @@ public:
     // Before a track has notes, a track whose notes select their samples has no instrument.
     void CheckOpeningInstrument(const song::Console& console, int track) const override
     {
-        if (!ntdlib::konami::IsPsgTrack(track) && *KonamiOf(console) != ntdlib::konami::Revision::kDungeonDiceMonsters)
+        if (!agblib::konami::IsPsgTrack(track) && *KonamiOf(console) != agblib::konami::Revision::kDungeonDiceMonsters)
         {
             throw std::invalid_argument(
                 "On this track of Konami's driver, each note selects its sample. The track has no instrument until it "
@@ -760,11 +759,11 @@ public:
         return true;
     }
 
-    // The wave channel selects a wave, and the other PSG channels a duty. The first revision reads a wave and a duty
-    // from the same bytes.
+    // The wave channel selects a wave, and the other PSG channels a duty. The Ultimate Masters revision and its later
+    // builds read a wave and a duty from the same bytes: agblib's encoder writes a wave as the duty's command.
     uint8_t ProgramIndex(const song::Console& console, int track) const override
     {
-        return track == kKonamiWaveTrack && *KonamiOf(console) != ntdlib::konami::Revision::kUltimateMasters ? 1 : 0;
+        return track == kKonamiWaveTrack && !agblib::konami::UltimateMasters(*KonamiOf(console)) ? 1 : 0;
     }
 };
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a song of Nintendo R&D2's GBA driver, by the rules of its bytes (ntdlib/rd2/commands.h). As on the later
+// The edits of a song of Nintendo R&D2's GBA driver, by the rules of its bytes (agblib/rd2/commands.h). As on the later
 // consoles, a note contains its key, its velocity and its length, and a wait its length. A note or a wait of one byte
 // reuses the values of the last note or wait of the track that set them (Command::encoding.repeated). After an edit,
 // such a note or wait stores its values in its bytes wherever the track would read other values there.
@@ -18,8 +18,8 @@
 #include <span>
 #include <vector>
 
+#include "agblib/rd2/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/rd2/driver.h"
 
 #include "edit/bytecode.h"
 #include "edit/commands.h"
@@ -37,7 +37,7 @@ namespace hokuto::edit
 const DriverEdits& Rd2Edits();
 
 // The revision of Nintendo R&D2's driver whose bytes `console` follows, or nothing for another driver or console.
-std::optional<ntdlib::rd2::Revision> Rd2Of(const song::Console& console);
+std::optional<agblib::rd2::Revision> Rd2Of(const song::Console& console);
 
 // Whether `sequence` is one of the sound effects' sequences: its header contains only the starts of its tracks.
 bool IsRd2EffectSequence(const ntdlib::commands::Sequence& sequence);
@@ -56,7 +56,7 @@ std::optional<int> Rd2CommandKey(const format::File& file, uint32_t sequence, in
 
 // The type of voice that a note of program `program` of the bank in slot `slot` of the list of banks of sequence
 // `sequence` plays where the arrangement shows it at `shown`, on a track without a transpose (Rd2CommandKey): a sample,
-// a square, the wave or the noise (ntdlib/rd2/sequencer.h). Nothing when no key shows there. Throws
+// a square, the wave or the noise (agblib/rd2/sequencer.h). Nothing when no key shows there. Throws
 // std::invalid_argument with a message for the user when Hokuto can't read the driver's tables.
 std::optional<uint8_t> Rd2VoiceTypeOf(const format::File& file, uint32_t sequence, int slot, uint32_t program,
                                       int shown);

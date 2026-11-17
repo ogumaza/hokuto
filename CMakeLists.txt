@@ -9,7 +9,7 @@ if (CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MAC
 endif()
 # The program shows this version. The file properties of the Windows program and the Info.plist of the macOS app show
 # it too.
-project(hokuto VERSION 2.0.0 LANGUAGES C CXX)
+project(hokuto VERSION 2.1.0 LANGUAGES C CXX)
 # On macOS, the menu bar and the title bar come from AppKit, through Objective-C++.
 if (APPLE)
     enable_language(OBJCXX)
@@ -19,7 +19,7 @@ endif()
 set(HOKUTO_APP_ID org.hokuto.Hokuto)
 set(HOKUTO_COPYRIGHT "Copyright (c) 2026 the Hokuto authors. MIT licence.")
 
-foreach (submodule seqlib xsflib ntdlib)
+foreach (submodule seqlib xsflib ntdlib agblib)
     if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/${submodule}/CMakeLists.txt")
         message(FATAL_ERROR "externals/${submodule} is missing. Run: git submodule update --init")
     endif()
@@ -32,11 +32,13 @@ include(externals/xsflib/cmake/XsflibProject.cmake)
 xsflib_project(CHECK_COMPILERS NAME Hokuto PREFIX HOKUTO NOMINMAX)
 
 # The shared libraries, each a submodule in externals/: seqlib for MIDI, SoundFont 2 and SFZ, xsflib for the player
-# framework and the tests' checks, and ntdlib for the consoles. ntdlib's performer comes with its sequence export, and
-# its model of the 3DS with Teakra, an emulator of the 3DS's DSP.
+# framework and the tests' checks, ntdlib for the consoles, and agblib for the GBA's drivers and their sound hardware.
+# ntdlib's performer comes with its sequence export, and its model of the 3DS with Teakra, an emulator of the 3DS's DSP.
+# agblib's drivers come with their conversions.
 set(NTDLIB_SEQUENCE_EXPORT ON CACHE BOOL "" FORCE)
 set(NTDLIB_CTR ON CACHE BOOL "" FORCE)
-xsflib_add_libraries(seqlib xsflib ntdlib)
+set(AGBLIB_SEQUENCE_EXPORT ON CACHE BOOL "" FORCE)
+xsflib_add_libraries(seqlib xsflib ntdlib agblib)
 find_package(Threads REQUIRED)
 
 # Hokuto's designated initializers leave the fields they don't name at their defaults on purpose. Clang 19 and later
@@ -58,7 +60,17 @@ endif()
 include(FetchContent)
 
 # SDL3 supplies the window, input, the GPU, audio output and file dialogs. Hokuto links it statically. The subsystems
-# that Hokuto doesn't use stay out of the build. They would only add code and licences to the program.
+# that Hokuto doesn't use stay out of the build. They would only add code and licences to the program. The build makes
+# two changes to the download. The WASAPI driver keeps SDL3's buffer size under Wine (cmake/sdl3_wine_period.cmake).
+# On Linux alone, during a resize, the Wayland driver commits libdecor's frame once for each event pump
+# (cmake/sdl3_libdecor_resize.cmake). The second change was written for this version of SDL3 alone. The Mac and Windows
+# build no Wayland driver, so their configures leave its sources as they are.
+set(hokuto_sdl3_version 3.4.20)
+set(hokuto_sdl3_patch PATCH_COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_LIST_DIR}/cmake/sdl3_wine_period.cmake)
+if (NOT APPLE AND NOT WIN32)
+    list(APPEND hokuto_sdl3_patch COMMAND ${CMAKE_COMMAND} -Dpinned_version=${hokuto_sdl3_version}
+         -P ${CMAKE_CURRENT_LIST_DIR}/cmake/sdl3_libdecor_resize.cmake)
+endif()
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_STATIC ON CACHE BOOL "" FORCE)
 set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
@@ -66,10 +78,59 @@ foreach (subsystem CAMERA HAPTIC HIDAPI JOYSTICK POWER RENDER SENSOR TRAY)
     set(SDL_${subsystem} OFF CACHE BOOL "" FORCE)
 endforeach()
 FetchContent_Declare(SDL3
-    URL https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20.tar.gz
+    URL https://github.com/libsdl-org/SDL/releases/download/release-${hokuto_sdl3_version}/SDL3-${hokuto_sdl3_version}.tar.gz
     URL_HASH SHA256=f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    ${hokuto_sdl3_patch})
 FetchContent_MakeAvailable(SDL3)
+unset(hokuto_sdl3_patch)
+file(READ ${sdl3_SOURCE_DIR}/src/audio/wasapi/SDL_wasapi.c wasapi)
+string(FIND "${wasapi}" "if (!WIN_IsWine() || period_in_frames < max_period_in_frames) {" changed)
+if (changed EQUAL -1)
+    message(FATAL_ERROR "The SDL3 sources in ${sdl3_SOURCE_DIR} lack the change that the build makes to the WASAPI "
+                        "driver (cmake/sdl3_wine_period.cmake). Run the script in that folder with cmake -P, or "
+                        "point FETCHCONTENT_SOURCE_DIR_SDL3 at the _deps/sdl3-src folder of a build folder that "
+                        "downloaded SDL3 since the change.")
+endif()
+unset(wasapi)
+# Only the systems with Wayland build the Wayland driver. The configure checks the sources for the version of SDL3 and
+# for the line of the change's current revision, with the mark that cmake/sdl3_libdecor_resize.cmake writes. A mark
+# without that revision's number comes from an older revision.
+if (NOT APPLE AND NOT WIN32)
+    file(READ ${sdl3_SOURCE_DIR}/include/SDL3/SDL_version.h version_text)
+    set(source_version "")
+    foreach (part MAJOR MINOR MICRO)
+        if (version_text MATCHES "#define SDL_${part}_VERSION +([0-9]+)")
+            list(APPEND source_version ${CMAKE_MATCH_1})
+        endif()
+    endforeach()
+    list(JOIN source_version . source_version)
+    if (NOT source_version STREQUAL hokuto_sdl3_version)
+        message(FATAL_ERROR "The SDL3 sources in ${sdl3_SOURCE_DIR} are version ${source_version}. The build changes "
+                            "the Wayland driver of SDL3 ${hokuto_sdl3_version} alone "
+                            "(cmake/sdl3_libdecor_resize.cmake). Point FETCHCONTENT_SOURCE_DIR_SDL3 at the sources of "
+                            "SDL3 ${hokuto_sdl3_version}, or leave it unset to download them.")
+    endif()
+    file(READ ${sdl3_SOURCE_DIR}/src/video/wayland/SDL_waylandevents.c wayland)
+    string(FIND "${wayland}"
+           "Wayland_CommitDeferredResizes(_this); // Hokuto: cmake/sdl3_libdecor_resize.cmake, revision 2" changed)
+    string(FIND "${wayland}" "Hokuto: cmake/sdl3_libdecor_resize.cmake" changed_before)
+    if (changed EQUAL -1 AND NOT changed_before EQUAL -1)
+        message(FATAL_ERROR "The SDL3 sources in ${sdl3_SOURCE_DIR} have an older revision of the change that the "
+                            "build makes to the Wayland driver (cmake/sdl3_libdecor_resize.cmake). Download SDL3 "
+                            "again: leave FETCHCONTENT_SOURCE_DIR_SDL3 unset, or point it at the _deps/sdl3-src "
+                            "folder of a build folder that downloaded SDL3 since the revision. Or run the script with "
+                            "cmake -P in a fresh copy of SDL3 ${hokuto_sdl3_version}'s sources.")
+    elseif (changed EQUAL -1)
+        message(FATAL_ERROR "The SDL3 sources in ${sdl3_SOURCE_DIR} don't have the change that the build makes to the "
+                            "Wayland driver (cmake/sdl3_libdecor_resize.cmake). Run the script in that folder with "
+                            "cmake -P, or point FETCHCONTENT_SOURCE_DIR_SDL3 at the _deps/sdl3-src folder of a build "
+                            "folder that downloaded SDL3 since the change.")
+    endif()
+    unset(version_text)
+    unset(source_version)
+    unset(wayland)
+endif()
 
 # Dear ImGui draws the interface. Its docking branch lets the user arrange the views. Dear ImGui has no CMake build.
 # This library builds its core and its back ends for SDL3 and SDL_GPU.
@@ -92,6 +153,15 @@ target_include_directories(hokuto_imgui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${imgu
 # Dear ImGui's headers requires the same definitions.
 target_compile_definitions(hokuto_imgui PUBLIC IMGUI_USE_WCHAR32 IMGUI_DISABLE_OBSOLETE_FUNCTIONS)
 target_link_libraries(hokuto_imgui PUBLIC SDL3::SDL3)
+# On Linux and the other systems without Core Text or DirectWrite, FreeType draws the text, with the hinting that
+# GNOME's text has. Dear ImGui's loader for FreeType then replaces stb_truetype. Hokuto uses FreeType under the FreeType
+# License.
+if (NOT APPLE AND NOT WIN32)
+    find_package(Freetype REQUIRED)
+    target_sources(hokuto_imgui PRIVATE ${imgui_SOURCE_DIR}/misc/freetype/imgui_freetype.cpp)
+    target_compile_definitions(hokuto_imgui PUBLIC IMGUI_ENABLE_FREETYPE)
+    target_link_libraries(hokuto_imgui PRIVATE Freetype::Freetype)
+endif()
 
 # The tests' switch, BUILD_TESTING, comes before sfizz. sfizz's build would otherwise turn it off.
 include(CTest)
@@ -199,7 +269,7 @@ target_compile_options(hokuto_audio PRIVATE ${hokuto_float_options})
 add_library(hokuto_driver_rules STATIC src/format/brownie_items.cpp src/format/quintet_rules.cpp
             src/format/ubimilan_rules.cpp)
 target_include_directories(hokuto_driver_rules PUBLIC src)
-target_link_libraries(hokuto_driver_rules PUBLIC ntdlib::brownie ntdlib::commands ntdlib::quintet ntdlib::ubimilan)
+target_link_libraries(hokuto_driver_rules PUBLIC agblib::brownie ntdlib::commands agblib::quintet agblib::ubimilan)
 hokuto_set_options(hokuto_driver_rules)
 
 # The songs: a sound archive of any of the four consoles opened from a file, its sequences as the zones show them, and
@@ -212,13 +282,16 @@ hokuto_set_options(hokuto_driver_rules)
 # ntdlib's archive mode of the 3DS, on ntdlib's model of the DSP's audio firmware. A player whose model changes its rate
 # brings the model's frames to its rate, with ntdlib's windowed sinc. A sequence's biquad filters take their types and
 # values on another console. A flow analysis follows the settings that a sequence's tracks hold. A GBA ROM's songs play
-# on ntdlib's models of MusicPlayer2000 and of the GBA's sound hardware. A DS archive's sequences play on ntdlib's
-# models of NITRO-Composer and of the DS's sound unit.
+# on agblib's models of MusicPlayer2000 and of the GBA's sound hardware. A DS archive's sequences play on ntdlib's
+# models of NITRO-Composer and of the DS's sound unit. A mixdown renders a sequence through its player, faster than real
+# time, into a WAV file. A batch exports several sequence sounds at once.
 add_library(hokuto_song STATIC src/song/aac.cpp src/song/archive.cpp src/song/audibility.cpp src/song/aux_effects.cpp
+            src/song/batch.cpp
             src/song/biquads.cpp src/song/catch_up.cpp src/song/ctr_model.cpp src/song/dry_render.cpp src/song/ds.cpp
             src/song/dse.cpp src/song/frame_resampler.cpp src/song/gba.cpp src/song/gba_assembler.cpp
             src/song/gba_assembly.cpp src/song/gba_samples.cpp src/song/driver.cpp src/song/items.cpp
             src/song/items_convert.cpp src/song/items_wii.cpp src/song/konami.cpp src/song/lengths.cpp
+            src/song/mixdown.cpp src/song/mixdown_files.cpp
             src/song/brownie.cpp src/song/krawall.cpp src/song/quintet.cpp src/song/rare.cpp src/song/rd2.cpp
             src/song/ubimilan.cpp src/song/midi_export.cpp src/song/played.cpp src/song/player.cpp src/song/preview.cpp
             src/song/preview_ds.cpp src/song/preview_gba.cpp src/song/sequence.cpp src/song/sequence_brownie.cpp
@@ -230,29 +303,29 @@ add_library(hokuto_song STATIC src/song/aac.cpp src/song/archive.cpp src/song/au
             src/song/sequence_reader.cpp src/song/streams.cpp src/song/track_flow.cpp)
 target_include_directories(hokuto_song PUBLIC src)
 target_link_libraries(hokuto_song PUBLIC hokuto_audio hokuto_driver_rules ntdlib::cafe ntdlib::ctr ntdlib::ctr_fx
-                      ntdlib::dse_layout ntdlib::brownie_player ntdlib::konami_player ntdlib::krawall_player
-                      ntdlib::mp2k_player
-                      ntdlib::quintet_player ntdlib::rare_player ntdlib::rd2_player ntdlib::ntr_profiles
-                      ntdlib::ubimilan_player
+                      ntdlib::dse_layout agblib::brownie_player agblib::konami_player agblib::krawall_player
+                      agblib::mp2k_player
+                      agblib::quintet_player agblib::rare_player agblib::rd2_player ntdlib::ntr_profiles
+                      agblib::ubimilan_player
                       ntdlib::nwsnd_commands ntdlib::nwsnd_lengths ntdlib::nx ntdlib::rsar ntdlib::rsar_layout
                       ntdlib::rvl_snd ntdlib::sar ntdlib::sar_layout ntdlib::sequence_export
-                      ntdlib::sequence_export_dse ntdlib::sequence_export_konami ntdlib::sequence_export_mp2k
-                      ntdlib::sequence_export_brownie ntdlib::sequence_export_krawall ntdlib::sequence_export_quintet
-                      ntdlib::sequence_export_rare ntdlib::sequence_export_rd2 ntdlib::sequence_export_ubimilan
+                      ntdlib::sequence_export_dse agblib::sequence_export_konami agblib::sequence_export_mp2k
+                      agblib::sequence_export_brownie agblib::sequence_export_krawall agblib::sequence_export_quintet
+                      agblib::sequence_export_rare agblib::sequence_export_rd2 agblib::sequence_export_ubimilan
                       ntdlib::sequence_export_ntr
                       ntdlib::wave)
 hokuto_set_options(hokuto_song)
 
-# The system's codec decodes and encodes AAC streams: Audio Toolbox on macOS and Media Foundation on Windows. Other
-# systems get none.
+# The system's codec decodes and encodes AAC streams: Audio Toolbox on macOS and Media Foundation on Windows. Where the
+# system has none, such as on Linux or under Wine, the ffmpeg program that the user installed decodes and encodes.
 if (APPLE)
     target_sources(hokuto_song PRIVATE src/song/aac_mac.cpp)
     target_link_libraries(hokuto_song PUBLIC "-framework AudioToolbox" "-framework CoreFoundation")
 elseif (WIN32)
-    target_sources(hokuto_song PRIVATE src/song/aac_windows.cpp)
-    target_link_libraries(hokuto_song PUBLIC mfplat mfuuid ole32)
+    target_sources(hokuto_song PRIVATE src/song/aac_windows.cpp src/song/ffmpeg.cpp src/song/ffmpeg_windows.cpp)
+    target_link_libraries(hokuto_song PUBLIC mfplat mfuuid ole32 ws2_32)
 else()
-    target_sources(hokuto_song PRIVATE src/song/aac_other.cpp)
+    target_sources(hokuto_song PRIVATE src/song/aac_other.cpp src/song/ffmpeg.cpp src/song/ffmpeg_posix.cpp)
 endif()
 
 # Hokuto's reader of SoundFont 2 files: the renderer reads them, and the imports make banks of them.
@@ -280,8 +353,8 @@ target_link_libraries(hokuto_measure PUBLIC hokuto_song hokuto_synth)
 hokuto_set_options(hokuto_measure)
 
 # Hokuto's files (.hok): the model, the binary form and the text form, and the sound archives of the four consoles and
-# the GBA's ROMs into files and back. ntdlib cuts an archive into pieces, through its rsar layout on the Wii and its
-# mp2k layout on the GBA. seqlib names the group files that an export writes.
+# the GBA's ROMs into files and back. ntdlib cuts an archive into pieces through its rsar layout on the Wii, and agblib
+# through its mp2k layout on the GBA. seqlib names the group files that an export writes.
 add_library(hokuto_format STATIC src/format/archive.cpp src/format/archive_ds.cpp src/format/archive_gba.cpp
             src/format/archive_tables.cpp src/format/brownie.cpp src/format/codes.cpp src/format/command_values.cpp
             src/format/drivers.cpp src/format/file.cpp src/format/file_checks.cpp src/format/file_chunks.cpp
@@ -290,8 +363,8 @@ add_library(hokuto_format STATIC src/format/archive.cpp src/format/archive_ds.cp
             src/format/rare.cpp src/format/rd2.cpp src/format/text.cpp src/format/text_commands.cpp
             src/format/text_read.cpp src/format/text_sections.cpp src/format/text_values.cpp src/format/ubimilan.cpp)
 target_include_directories(hokuto_format PUBLIC src)
-target_link_libraries(hokuto_format PUBLIC hokuto_driver_rules ntdlib::brownie ntdlib::commands ntdlib::konami
-                      ntdlib::krawall ntdlib::mp2k ntdlib::quintet ntdlib::rare ntdlib::rd2 ntdlib::ubimilan ntdlib::ntr
+target_link_libraries(hokuto_format PUBLIC hokuto_driver_rules agblib::brownie ntdlib::commands agblib::konami
+                      agblib::krawall agblib::mp2k agblib::quintet agblib::rare agblib::rd2 agblib::ubimilan ntdlib::ntr
                       ntdlib::rsar_layout ntdlib::sar ntdlib::sar_layout ntdlib::sdat_cut ntdlib::dse_layout
                       xsflib::common PRIVATE ntdlib::ntr_snd seqlib::seqlib)
 hokuto_set_options(hokuto_format)
@@ -300,7 +373,8 @@ hokuto_set_options(hokuto_format)
 # an archive's items, its waves as WAV files and its banks as SoundFont 2 or SFZ files, measures the lengths of the
 # sequence sounds, and sends a sequence sound to another console. Its import finds the group files beside an archive as
 # the program does.
-add_executable(hok src/cli/hok.cpp src/cli/hok_items.cpp)
+add_executable(hok src/cli/hok.cpp src/cli/hok_items.cpp src/cli/hok_midi.cpp
+               src/cli/hok_mixdown.cpp)
 target_link_libraries(hok PRIVATE hokuto_edit hokuto_format hokuto_song)
 # On Windows, UTF-8 is hok's code page, so the paths that it's given can hold any character.
 xsflib_add_utf8_manifest(hok)
@@ -318,6 +392,7 @@ xsflib_add_version(hok VERSION ${PROJECT_VERSION} DEFINE HOKUTO_VERSION DESCRIPT
 # The edits of banks, waves, streams and wave sound files go through models of them. A DS bank's regions and a DS wave's
 # parameters change in place. Every edit goes through the history. Its tests run without a window.
 add_library(hokuto_edit STATIC src/edit/aac_streams.cpp src/edit/banks.cpp src/edit/bytecode.cpp
+            src/edit/sound_exports.cpp
             src/edit/command_changes.cpp src/edit/command_ranges.cpp src/edit/command_removals.cpp
             src/edit/command_rows.cpp src/edit/console_commands.cpp src/edit/converted_song.cpp
             src/edit/converter.cpp src/edit/converter_header.cpp src/edit/converter_hints.cpp
@@ -346,7 +421,7 @@ add_library(hokuto_edit STATIC src/edit/aac_streams.cpp src/edit/banks.cpp src/e
             src/edit/wii_streams.cpp src/edit/wii_waves.cpp)
 target_include_directories(hokuto_edit PUBLIC src)
 target_link_libraries(hokuto_edit PUBLIC hokuto_format hokuto_song PRIVATE hokuto_sound_font ntdlib::nwsnd_commands
-                      ntdlib::brownie ntdlib::sequence_export ntdlib::rd2 ntdlib::wave seqlib::seqlib)
+                      agblib::brownie ntdlib::sequence_export agblib::rd2 ntdlib::wave seqlib::seqlib)
 hokuto_set_options(hokuto_edit)
 
 # The transport and the ruler's gestures. They use neither SDL3 nor Dear ImGui, and their tests run without a window.
@@ -440,6 +515,7 @@ add_executable(hokuto WIN32 MACOSX_BUNDLE
     src/app/app_key_feedback.cpp
     src/app/app_list_editor.cpp
     src/app/app_menus.cpp
+    src/app/app_mixdown.cpp
     src/app/app_output.cpp
     src/app/app_playback.cpp
     src/app/app_previews.cpp
@@ -472,6 +548,7 @@ add_executable(hokuto WIN32 MACOSX_BUNDLE
     src/app/export_window.cpp
     src/app/faders.cpp
     src/app/file_dialogs.cpp
+    src/app/file_saves.cpp
     src/app/icons.cpp
     src/app/info_line.cpp
     src/app/inspector.cpp
@@ -483,6 +560,8 @@ add_executable(hokuto WIN32 MACOSX_BUNDLE
     src/app/main.cpp
     src/app/menus.cpp
     src/app/mixer.cpp
+    src/app/mixdown_jobs.cpp
+    src/app/mixdown_window.cpp
     src/app/preview_song.cpp
     src/app/replace_common.cpp
     src/app/replace_driver_views.cpp
@@ -516,20 +595,27 @@ hokuto_set_options(hokuto)
 xsflib_add_version(hokuto VERSION ${PROJECT_VERSION} DEFINE HOKUTO_VERSION DESCRIPTION Hokuto PRODUCT Hokuto
                    COPYRIGHT ${HOKUTO_COPYRIGHT})
 
-# The system's fonts come from Core Text on macOS and DirectWrite on Windows. Other systems get Dear ImGui's font. The
-# Mac's menu bar and title bar come from AppKit. Other systems get the menus that the program draws. On Windows, the
-# Desktop Window Manager colours the title bar, and the manifest gives the message boxes the system's look.
+# The system's fonts come from Core Text on macOS and DirectWrite on Windows. On other systems, fontconfig finds them,
+# and FreeType draws them. The loaders of Windows and of the other systems share system_fonts_shared.cpp. The Mac's
+# menu bar and title bar come from AppKit. Other systems get the menus that the program draws. On Windows, the Desktop
+# Window Manager colours the title bar, and the manifest gives the message boxes the system's look. On other systems,
+# zenity draws the message boxes.
 if (APPLE)
     target_sources(hokuto PRIVATE src/app/system_fonts_mac.cpp src/app/system_ui_mac.mm)
     set_source_files_properties(src/app/system_ui_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
     target_link_libraries(hokuto PRIVATE "-framework AppKit" "-framework CoreFoundation" "-framework CoreGraphics"
                           "-framework CoreText")
 elseif (WIN32)
-    target_sources(hokuto PRIVATE src/app/system_fonts_windows.cpp src/app/system_ui_windows.cpp
-                   src/app/hokuto.manifest)
+    target_sources(hokuto PRIVATE src/app/system_fonts_shared.cpp src/app/system_fonts_windows.cpp
+                   src/app/system_ui_windows.cpp src/app/hokuto.manifest)
     target_link_libraries(hokuto PRIVATE dwmapi dwrite)
 else()
-    target_sources(hokuto PRIVATE src/app/system_fonts_other.cpp src/app/system_ui_other.cpp)
+    # CMake's Fontconfig::Fontconfig links libfontconfig alone. fontconfig's pkg-config package names FreeType among its
+    # requirements, and a target made from the package would link FreeType too.
+    find_package(Fontconfig REQUIRED)
+    target_sources(hokuto PRIVATE src/app/system_fonts_other.cpp src/app/system_fonts_shared.cpp
+                   src/app/system_ui_other.cpp src/app/zenity_box.cpp)
+    target_link_libraries(hokuto PRIVATE Fontconfig::Fontconfig)
 endif()
 
 # The icon. macOS takes it from the bundle's resources. Windows takes the first icon in the program's resources, for
@@ -563,7 +649,7 @@ endif()
 # directly. hokuto_check_gba_playback does the same for the songs of GBA ROMs, and hokuto_check_ds_playback for the
 # sequences of the DS's sound archives. hokuto_check_dse_playback checks the playback of DSE's songs and sound effects
 # in DS images against ntdlib's dse::Player, run directly. hokuto_check_driver_playback checks the playback of the songs
-# of GBA ROMs with one of the GBA's other drivers against the driver's ArchivePlayer in ntdlib, run directly.
+# of GBA ROMs with one of the GBA's other drivers against the driver's ArchivePlayer in agblib, run directly.
 # hokuto_check_konami_mix checks the edits of the mixer and the inspector on a GBA ROM with Konami's driver.
 # hokuto_check_konami_starts compares the order of a track's commands that the edits of Konami's driver walk with the
 # read of each song of a ROM.
@@ -602,7 +688,8 @@ endif()
 # sequence of an archive to MIDI as the Export window does, and reports the places that may be audible.
 # hokuto_check_other_console sends sequence sounds to another console, and compares the levels of their dry renders on
 # the models of both consoles. hokuto_check_lengths plays each sound of a file with lengths past its length, and checks
-# that an end stays silent and a loop plays on. hokuto_make_conformance makes the files of the conformance suite in
+# that an end stays silent and a loop plays on. hokuto_check_mixdown renders sounds of each console to WAV and checks
+# the renders against playback. hokuto_make_conformance makes the files of the conformance suite in
 # tests/conformance/.
 option(HOKUTO_TOOLS "Build the tools in tools/" OFF)
 if (HOKUTO_TOOLS)
@@ -627,7 +714,7 @@ if (HOKUTO_TOOLS)
     target_link_libraries(hokuto_check_dse_playback PRIVATE hokuto_check_support)
     hokuto_set_options(hokuto_check_dse_playback)
     add_executable(hokuto_check_ds_layout tools/check_ds_layout.cpp)
-    target_link_libraries(hokuto_check_ds_layout PRIVATE hokuto_format xsflib::console)
+    target_link_libraries(hokuto_check_ds_layout PRIVATE hokuto_edit hokuto_format)
     hokuto_set_options(hokuto_check_ds_layout)
 
     add_executable(hokuto_check_dse_layout tools/check_dse_layout.cpp)
@@ -644,6 +731,7 @@ if (HOKUTO_TOOLS)
     target_link_libraries(hokuto_check_konami_starts PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_konami_starts)
     add_executable(hokuto_check_konami_samples tools/check_konami_samples.cpp)
+    target_link_libraries(hokuto_check_konami_samples PRIVATE hokuto_check_support)
     target_link_libraries(hokuto_check_konami_samples PRIVATE hokuto_edit)
     hokuto_set_options(hokuto_check_konami_samples)
     add_executable(hokuto_check_gba_edits tools/check_gba_edits.cpp tools/check_gba_edits_compare.cpp)
@@ -687,6 +775,7 @@ if (HOKUTO_TOOLS)
                    tools/check_layout_files.cpp tools/check_layout_instruments.cpp tools/check_layout_new_items.cpp
                    tools/check_layout_tables.cpp tools/check_layout_wii.cpp)
     target_link_libraries(hokuto_check_layout PRIVATE hokuto_format hokuto_song)
+    target_link_libraries(hokuto_check_layout PRIVATE hokuto_check_support)
     hokuto_set_options(hokuto_check_layout)
     add_executable(hokuto_check_edits tools/check_edits.cpp tools/check_edits_compare.cpp tools/check_edits_plans.cpp
                    tools/check_edits_sounds.cpp)
@@ -728,6 +817,7 @@ if (HOKUTO_TOOLS)
     add_executable(hokuto_check_instruments tools/check_instruments.cpp tools/check_instruments_commands.cpp
                    tools/check_instruments_compare.cpp)
     target_link_libraries(hokuto_check_instruments PRIVATE hokuto_check_support hokuto_edit)
+    target_sources(hokuto_check_instruments PRIVATE tools/check_instruments_dse.cpp)
     hokuto_set_options(hokuto_check_instruments)
     add_executable(hokuto_check_converter tools/check_converter.cpp tools/check_converter_edits.cpp)
     target_link_libraries(hokuto_check_converter PRIVATE hokuto_check_support hokuto_edit)
@@ -753,6 +843,7 @@ if (HOKUTO_TOOLS)
     target_link_libraries(hokuto_check_synth PRIVATE hokuto_song hokuto_synth)
     hokuto_set_options(hokuto_check_synth)
     add_executable(hokuto_check_measure tools/check_measure.cpp)
+    target_link_libraries(hokuto_check_measure PRIVATE hokuto_check_support)
     target_link_libraries(hokuto_check_measure PRIVATE hokuto_measure hokuto_edit)
     hokuto_set_options(hokuto_check_measure)
     add_executable(hokuto_check_other_console tools/check_other_console.cpp tools/check_other_console_choose.cpp
@@ -762,6 +853,9 @@ if (HOKUTO_TOOLS)
     add_executable(hokuto_check_lengths tools/check_lengths.cpp)
     target_link_libraries(hokuto_check_lengths PRIVATE hokuto_edit)
     hokuto_set_options(hokuto_check_lengths)
+    add_executable(hokuto_check_mixdown tools/check_mixdown.cpp)
+    target_link_libraries(hokuto_check_mixdown PRIVATE hokuto_check_support)
+    hokuto_set_options(hokuto_check_mixdown)
     add_executable(hokuto_make_conformance tools/make_conformance.cpp)
     target_include_directories(hokuto_make_conformance PRIVATE tests)
     target_link_libraries(hokuto_make_conformance PRIVATE hokuto_edit)
@@ -801,7 +895,8 @@ if (BUILD_TESTING)
     # Wii's programs' test gives the bank slots of made-up sequences ranges of one bank's programs, as a sound that goes
     # to the Wii takes them. The conformance test renders the files of the conformance suite, and checks the hashes of
     # the renders. The AAC test decodes an AAC stream on the system's decoder, and exports and plays it as Hokuto does.
-    # It also encodes on the system's encoder, and checks what the encoder and the decoder refuse.
+    # It also encodes on the system's encoder, and checks what the encoder and the decoder refuse. The mixdown's test
+    # renders sequences through the player, and checks the ranges, the fades, the stems and the files against playback.
     xsflib_add_project_test(hokuto aac hokuto_song)
     target_compile_definitions(hokuto_aac_test PRIVATE HOKUTO_AAC_DIR="${PROJECT_SOURCE_DIR}/tests/aac")
     xsflib_add_project_test(hokuto audibility hokuto_song)
@@ -817,6 +912,7 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto timelines hokuto_edit)
     xsflib_add_project_test(hokuto ctr hokuto_edit)
     xsflib_add_project_test(hokuto declicker hokuto_audio)
+    xsflib_add_project_test(hokuto mixdown hokuto_edit)
     xsflib_add_project_test(hokuto ds hokuto_song)
     xsflib_add_project_test(hokuto dse hokuto_song)
     xsflib_add_project_test(hokuto konami hokuto_edit)
@@ -831,6 +927,7 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto ds_files hokuto_edit)
     xsflib_add_project_test(hokuto ds_new_items hokuto_edit)
     xsflib_add_project_test(hokuto ds_conversion hokuto_edit)
+    xsflib_add_project_test(hokuto ds_wave_rates hokuto_edit)
     xsflib_add_project_test(hokuto ds_tables hokuto_edit)
     xsflib_add_project_test(hokuto gba_tables hokuto_edit)
     xsflib_add_project_test(hokuto hangs hokuto_edit)
@@ -869,6 +966,23 @@ if (BUILD_TESTING)
     # The messages that wait for a frame with no mouse button down.
     xsflib_add_project_test(hokuto message_queue)
     target_include_directories(hokuto_message_queue_test PRIVATE src)
+    # The message boxes through zenity: the arguments, the answer and the events that the window leaves out. The test
+    # runs on every system and without a display. It uses SDL3's types and none of its functions.
+    xsflib_add_project_test(hokuto zenity_box SDL3::Headers)
+    target_sources(hokuto_zenity_box_test PRIVATE src/app/zenity_box.cpp)
+    target_include_directories(hokuto_zenity_box_test PRIVATE src)
+    # The paths that the file dialogs give. Its sources belong to the program.
+    xsflib_add_project_test(hokuto file_dialogs xsflib::common)
+    target_sources(hokuto_file_dialogs_test PRIVATE src/app/file_dialogs.cpp)
+    target_include_directories(hokuto_file_dialogs_test PRIVATE src)
+    # The save of a file over the last save: symbolic links, read-only files and permissions. Its sources belong to the
+    # program.
+    xsflib_add_project_test(hokuto file_saves xsflib::common)
+    target_sources(hokuto_file_saves_test PRIVATE src/app/file_saves.cpp)
+    target_include_directories(hokuto_file_saves_test PRIVATE src)
+    # The work of an item's edit away from the program's thread.
+    xsflib_add_project_test(hokuto item_edit hokuto_song Threads::Threads)
+    target_include_directories(hokuto_item_edit_test PRIVATE src)
     # The Key Editor's window, drawn without a display. Its sources belong to the program.
     xsflib_add_project_test(hokuto key_editor hokuto_item_views hokuto_key_edits hokuto_measure hokuto_imgui)
     target_sources(hokuto_key_editor_test PRIVATE src/app/arrangement.cpp src/app/arrangement_markers.cpp
@@ -896,6 +1010,11 @@ if (BUILD_TESTING)
     target_sources(hokuto_widgets_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/info_line.cpp
                    src/app/theme.cpp src/app/widgets.cpp)
     target_include_directories(hokuto_widgets_test PRIVATE src)
+    # The Export Audio Mixdown window, drawn without a display. Its sources belong to the program.
+    xsflib_add_project_test(hokuto mixdown_window hokuto_imgui hokuto_edit)
+    target_sources(hokuto_mixdown_window_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/mixdown_jobs.cpp
+                   src/app/mixdown_window.cpp src/app/theme.cpp src/app/widgets.cpp)
+    target_include_directories(hokuto_mixdown_window_test PRIVATE src)
     # The Undo History, drawn without a display. Its sources belong to the program.
     xsflib_add_project_test(hokuto undo_history hokuto_imgui hokuto_song)
     target_sources(hokuto_undo_history_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/theme.cpp
@@ -909,6 +1028,7 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto measure hokuto_measure hokuto_edit)
     xsflib_add_project_test(hokuto midi_imports hokuto_edit)
     xsflib_add_project_test(hokuto midi_songs hokuto_edit)
+    xsflib_add_project_test(hokuto midi_channels hokuto_edit)
     xsflib_add_project_test(hokuto sound_font_imports hokuto_edit)
     xsflib_add_project_test(hokuto gba_sound_fonts hokuto_edit)
     xsflib_add_project_test(hokuto sfz_imports hokuto_edit)

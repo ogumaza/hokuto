@@ -2,10 +2,10 @@
 
 // The waits of Ubisoft Milan's GBA driver in a Hokuto file (format/ubimilan.h).
 
-#include "format/ubimilan.h"
-
 #include <stdexcept>
 #include <string>
+
+#include "format/ubimilan.h"
 
 namespace hokuto::format
 {
@@ -81,15 +81,15 @@ std::vector<uint32_t> UbiMilanItemOffsets(const ntdlib::commands::Sequence& sequ
     using ntdlib::commands::Kind;
     const std::vector<Command>& items = sequence.items;
     const bool whole = items.size() > 1 && items[0].kind == Kind::kData &&
-                       items[0].bytes.size() == ntdlib::ubimilan::kSequenceHeader &&
-                       items[0].bytes[0] == ntdlib::ubimilan::kSequence && items[1].kind == Kind::kWait;
+                       items[0].bytes.size() == agblib::ubimilan::kSequenceHeader &&
+                       items[0].bytes[0] == agblib::ubimilan::kSequence && items[1].kind == Kind::kWait;
     if (whole)
     {
-        return ntdlib::ubimilan::EncodeSequence(UbiMilanCountdowns(sequence)).offsets;
+        return agblib::ubimilan::EncodeSequence(UbiMilanCountdowns(sequence)).offsets;
     }
 
     // Each item is placed between a first wait and an end. It then uses the same bytes as in any sequence.
-    const Command header{.kind = Kind::kData, .bytes = {ntdlib::ubimilan::kSequence, 0, 0, 0}};
+    const Command header{.kind = Kind::kData, .bytes = {agblib::ubimilan::kSequence, 0, 0, 0}};
     const Command wait{.kind = Kind::kWait};
     const Command end{.kind = Kind::kEnd};
     const Command command{.kind = Kind::kProgram};
@@ -109,7 +109,7 @@ std::vector<uint32_t> UbiMilanItemOffsets(const ntdlib::commands::Sequence& sequ
                       : item.kind == Kind::kEnd ? std::vector<Command>{header, wait, item}
                                                 : std::vector<Command>{header, wait, item, wait, end};
         const std::size_t place = item.kind == Kind::kWait ? 3 : 2;
-        const std::vector<uint32_t> encoded = ntdlib::ubimilan::EncodeSequence(UbiMilanCountdowns(alone)).offsets;
+        const std::vector<uint32_t> encoded = agblib::ubimilan::EncodeSequence(UbiMilanCountdowns(alone)).offsets;
         size += encoded[place + 1] - encoded[place];
     }
 

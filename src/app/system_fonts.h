@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Adds the system's interface fonts to Dear ImGui's font atlas. The program draws its text with them, Japanese
-// included. system_fonts_mac.cpp draws them with Core Text, and system_fonts_windows.cpp with DirectWrite. Other
-// systems get no fonts from system_fonts_other.cpp, and Dear ImGui's font draws the text.
+// included. system_fonts_mac.cpp draws them with Core Text, and system_fonts_windows.cpp with DirectWrite. On other
+// systems, system_fonts_other.cpp finds them through fontconfig, and FreeType draws them. Where the system has none
+// of them, Dear ImGui's font draws the text.
 
 #pragma once
 

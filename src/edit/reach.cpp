@@ -197,15 +197,21 @@ std::set<uint32_t> ItemsRun(const std::vector<uint32_t>& offsets, std::span<cons
 }
 
 // Where an edit of `setters` on track `index` of `tracks` reaches besides the track. `runs` gives the items that each
-// track ran. `first` is the track's first item where its opening leads, if it has one. Track 0 opens where its sound
-// starts, and track starts open the other tracks. On the GBA, the fields of a song's header open its tracks. Where a
-// track that the command of a track starts gets the settings of the starting track, `started` contains the tracks that
-// the commands of each track started, and is empty otherwise.
+// track ran. `firsts` gives each track's first item where its opening leads, if it has one. Track 0 opens where its
+// sound starts, and track starts open the other tracks. On the GBA, the fields of a song's header open its tracks.
+// `field_firsts` gives the same item where no command opens the track by its number. Where a track that the command
+// of a track starts gets the settings of the starting track, `started` contains the tracks that the commands of each
+// track started, and is empty otherwise.
 Reach ReachOf(const Setters& setters, std::span<const std::set<uint32_t>> runs, std::span<const song::Track> tracks,
-              std::size_t index, std::optional<uint32_t> first, std::span<const OtherSound> others,
+              std::size_t index, std::span<const std::optional<uint32_t>> firsts,
+              std::span<const std::optional<uint32_t>> field_firsts, std::span<const OtherSound> others,
               std::span<const std::set<int>> started)
 {
-    // The sound's other tracks that ran the commands.
+    // The sound's other tracks that ran the commands, or that a field opens where a field opens the track: a new
+    // command at the opening goes into their commands too. A command that opens a track by its number leads to the
+    // new command only for the edited track (InsertAtOpening).
+    const std::optional<uint32_t> first = firsts[index];
+    const std::optional<uint32_t> field_first = field_firsts[index];
     Reach reach;
     for (std::size_t i = 0; i < tracks.size(); i++)
     {
@@ -213,7 +219,8 @@ Reach ReachOf(const Setters& setters, std::span<const std::set<uint32_t>> runs, 
         {
             return runs[i].contains(item);
         };
-        if (i != index && std::any_of(setters.items.begin(), setters.items.end(), ran))
+        const bool opens_here = setters.start && field_first && field_firsts[i] == field_first;
+        if (i != index && (opens_here || std::any_of(setters.items.begin(), setters.items.end(), ran)))
         {
             reach.tracks.push_back(tracks[i].number);
         }
@@ -322,14 +329,30 @@ std::vector<TrackReach> ReachOfTracks(const format::File& file, std::span<const 
     // What an edit of each setting of each track reaches.
     const DriverEdits* driver_edits = console.driver != nullptr ? &EditsOf(*console.driver) : nullptr;
     const bool notes_set_volume = driver_edits != nullptr && driver_edits->NotesSetVolume();
-    std::vector<TrackReach> reach(read.tracks.size());
-    for (std::size_t i = 0; i < read.tracks.size(); i++)
+    // The item where each track's opening leads, if it has one, and the same item where no command opens the track by
+    // its number. A field, such as a field of a GBA song's header, leads to the new command at the opening
+    // (MoveFieldPlaces).
+    std::vector<std::optional<uint32_t>> firsts;
+    std::vector<std::optional<uint32_t>> field_firsts;
+    for (const song::Track& track : read.tracks)
     {
-        const song::Track& track = read.tracks[i];
         const bool opens =
             !track.stretches.empty() && track.stretches.front().entry == ntdlib::sequence_export::Entry::kOpen;
         const std::optional<uint32_t> first =
             opens ? ItemAtOffset(offsets, track.stretches.front().first) : std::nullopt;
+        const auto opens_by_number = [&track, &first](const Command& command)
+        {
+            return command.kind == Kind::kOpenTrack && !command.target_outside && command.index == track.number &&
+                   command.target == *first;
+        };
+        firsts.push_back(first);
+        field_firsts.push_back(first && std::ranges::none_of(commands.items, opens_by_number) ? first : std::nullopt);
+    }
+
+    std::vector<TrackReach> reach(read.tracks.size());
+    for (std::size_t i = 0; i < read.tracks.size(); i++)
+    {
+        const song::Track& track = read.tracks[i];
 
         // On some drivers, such as Konami's driver, a note of the track before this one can play on this track.
         std::span<const song::Stretch> previous;
@@ -346,7 +369,7 @@ std::vector<TrackReach> ReachOfTracks(const format::File& file, std::span<const 
                 const auto mix = static_cast<song::Mix>(setting);
                 const Setters setters = MixSetters(commands, offsets, song::MixStretches(read, track), mix,
                                                    console.engine == format::Engine::kDse, notes_set_volume, previous);
-                reach[i].mix[setting] = ReachOf(setters, runs, read.tracks, i, first, others, started);
+                reach[i].mix[setting] = ReachOf(setters, runs, read.tracks, i, firsts, field_firsts, others, started);
 
                 // On DSE, the other tracks of the channel show the settings (song::Track::channel).
                 for (const song::Track& other : read.tracks)
@@ -367,7 +390,7 @@ std::vector<TrackReach> ReachOfTracks(const format::File& file, std::span<const 
                                          static_cast<int>(track.notes.front().program)};
                 const Setters setters =
                     InstrumentSetters(commands, offsets, track.stretches, instrument, console, previous, track.number);
-                reach[i].instrument = ReachOf(setters, runs, read.tracks, i, first, others, started);
+                reach[i].instrument = ReachOf(setters, runs, read.tracks, i, firsts, field_firsts, others, started);
             }
         }
         catch (const std::invalid_argument&)

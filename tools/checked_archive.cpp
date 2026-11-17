@@ -92,6 +92,24 @@ bool IsWiiArchive(std::span<const uint8_t> bytes)
     return bytes.size() >= 4 && std::memcmp(bytes.data(), "RSAR", 4) == 0;
 }
 
+std::optional<std::string> FreeName(std::span<const uint8_t> archive, ntdlib::sar::Flavor flavor,
+                                    const std::string& stem)
+{
+    const std::optional<std::span<const uint8_t>> strings = ntdlib::sar::TablesOf(archive, flavor).strings;
+    if (!strings)
+    {
+        return std::nullopt;
+    }
+
+    std::string name = stem;
+    while (ntdlib::sar::FindItem(*strings, flavor, name))
+    {
+        name += "_";
+    }
+
+    return name;
+}
+
 std::optional<ntdlib::SndBuild> GameBuildOf(const std::filesystem::path& path)
 {
     const std::optional<std::filesystem::path> dol = song::FindMainDol(path);
@@ -225,23 +243,11 @@ std::vector<std::optional<uint32_t>> SequencesOfChecked(const format::File& file
     }
     if (archive.gba)
     {
-        std::vector<std::optional<uint32_t>> sequences;
-        for (std::size_t song = 0; song < archive.names.size(); song++)
-        {
-            sequences.push_back(format::GbaSongSequence(file, archive.gba->info.song_table, static_cast<int>(song)));
-        }
-        return sequences;
+        return edit::GbaSongSequences(file, *archive.gba);
     }
     if (archive.driver)
     {
-        std::vector<std::optional<uint32_t>> sequences(archive.names.size());
-        const std::vector<uint64_t> starts = format::NativePieceStarts(file);
-        for (const uint32_t sound : archive.driver->Sounds())
-        {
-            const std::optional<uint64_t> place = archive.driver->FieldsOf(sound).sequence;
-            sequences[sound] = place ? format::SequenceNamedAt(file, *place, starts) : std::nullopt;
-        }
-        return sequences;
+        return edit::DriverSoundSequences(file, *archive.driver);
     }
 
     return archive.wii ? format::SequencesOfFiles(file, bytes, *archive.wii)

@@ -70,7 +70,7 @@ void TestEffects()
     // number. MIXR's byte 4 holds the first effect's kind and byte 8 the number of its parameters. A third byte of 0xFF
     // makes its second parameter, the largest float, a NaN.
     const std::vector<uint8_t> binary = format::Write(Unusual());
-    XSFLIB_CHECK(Patched(binary, 1, 4, 17).starts_with("The file contains an effect (17) that this version"));
+    XSFLIB_CHECK(Patched(binary, 1, 4, 20).starts_with("The file contains an effect (20) that this version"));
     XSFLIB_CHECK(Patched(binary, 1, 8, 11) ==
                  "The file is damaged: an effect on aux bus A has 11 parameters, and its kind has 12.");
     XSFLIB_CHECK(Patched(binary, 1, 18, 0xFF) ==
@@ -353,6 +353,125 @@ void TestCtrEffectValuesOutside()
                  "Line 3: the effect has a value of comb_size_0 that isn't a multiple of 160 from 160 to 32000.");
     XSFLIB_CHECK(TextError(kHeader + "effect A 3ds_delay delay_time 250.5\n") ==
                  "Line 3: the effect has a value of delay_time that isn't a whole number from 1 to 5000.");
+}
+
+// nn::atk's delay, light limiter and reverb are 17 to 19. Their parameters are the values of the classes' setters in
+// the order in which the classes pass them to the renderer, with the channel mode last. The times are whole
+// microseconds within the setters' limits. The channel mode has 4 choices, and the reverb's two modes 5 each. The
+// gains, factors and ratios have no limits: a player holds them as nn::atk does.
+void TestAtkEffectKinds()
+{
+    for (const auto& [kind, code, name, parameters] :
+         {EffectKindCode{EffectKind::kSwitchDelay, 17, "switch_delay", 8},
+          EffectKindCode{EffectKind::kSwitchLightLimiter, 18, "switch_light_limiter", 8},
+          EffectKindCode{EffectKind::kSwitchReverb, 19, "switch_reverb", 12}})
+    {
+        XSFLIB_CHECK(format::CodeOf(kind) == code && format::EffectKindOfCode(code) == kind);
+        XSFLIB_CHECK(format::NameOf(kind) == name && format::EffectKindNamed(name) == kind);
+        XSFLIB_CHECK(format::ParameterNamesOf(kind).size() == parameters && format::IsAtkKind(kind) &&
+                     !format::IsCtrKind(kind));
+        XSFLIB_CHECK(format::ParameterNamesOf(kind).back() == "channel_mode" &&
+                     format::ChoicesOf(kind, parameters - 1) == 4);
+    }
+    XSFLIB_CHECK(!format::IsAtkKind(EffectKind::kI3dl2Reverb) && !format::IsAtkKind(EffectKind::kCtrDelay));
+    const std::span<const std::string_view> delay = format::ParameterNamesOf(EffectKind::kSwitchDelay);
+    XSFLIB_CHECK(delay[0] == "delay_time_max" && delay[1] == "delay_time" && delay[3] == "feedback_gain" &&
+                 delay[6] == "channel_spread");
+    const std::span<const std::string_view> limiter = format::ParameterNamesOf(EffectKind::kSwitchLightLimiter);
+    XSFLIB_CHECK(limiter[0] == "look_ahead_time_max" && limiter[2] == "release_time" && limiter[4] == "threshold");
+    const std::span<const std::string_view> reverb = format::ParameterNamesOf(EffectKind::kSwitchReverb);
+    XSFLIB_CHECK(reverb[0] == "early_mode" && reverb[2] == "predelay_time" && reverb[5] == "decay_time" &&
+                 reverb[10] == "dry_gain");
+    XSFLIB_CHECK(format::ChoicesOf(EffectKind::kSwitchReverb, 0) == 5 &&
+                 format::ChoicesOf(EffectKind::kSwitchReverb, 3) == 5 &&
+                 format::ChoicesOf(EffectKind::kSwitchReverb, 1) == 0 &&
+                 format::ChoicesOf(EffectKind::kSwitchDelay, 2) == 0);
+
+    const auto limits = [](EffectKind kind, std::size_t parameter)
+    {
+        const std::optional<format::ParameterLimits> found = format::LimitsOf(kind, parameter);
+        return found ? std::array{found->low, found->high, found->step} : std::array{-1.0f, -1.0f, -1.0f};
+    };
+    XSFLIB_CHECK((limits(EffectKind::kSwitchDelay, 0) == std::array{0.0f, 10'000'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchDelay, 1) == std::array{0.0f, 10'000'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchLightLimiter, 0) == std::array{0.0f, 50'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchLightLimiter, 1) == std::array{0.0f, 10'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchLightLimiter, 2) == std::array{0.0f, 5'000'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchLightLimiter, 3) == std::array{0.0f, 50'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchReverb, 2) == std::array{0.0f, 300'000.0f, 1.0f}));
+    XSFLIB_CHECK((limits(EffectKind::kSwitchReverb, 5) == std::array{100'000.0f, 20'000'000.0f, 1.0f}));
+    XSFLIB_CHECK(!format::LimitsOf(EffectKind::kSwitchDelay, 2) && !format::LimitsOf(EffectKind::kSwitchReverb, 1) &&
+                 !format::LimitsOf(EffectKind::kSwitchLightLimiter, 4));
+}
+
+// A Switch file with the delay of WarioWare: Move It! on bus A, Clubhouse Games' reverb EFFECT_GAM022 on bus B and
+// the limiter of Move It! on bus C (ntdlib's rules of the games), in both forms. The binary form gives each effect's
+// kind and the number of its parameters before them: the delay's 8 at 4, then the reverb's 12 at 48, and the limiter's
+// 8 at 108. Values outside a time's limits or a mode's choices are refused. A gain outside its range reads.
+void TestAtkEffectForms()
+{
+    File file;
+    file.aux_effects[0] = {{EffectKind::kSwitchDelay, {2'000'000.0f, 250'000.0f, 0.5f, 0.2f, 0.0f, 0.4f, 0.3f, 1.0f}}};
+    file.aux_effects[1] = {{EffectKind::kSwitchReverb,
+                            {2.0f, 0.7f, 15'000.0f, 1.0f, 0.7f, 2'500'000.0f, 0.8f, 0.7f, 0.4f, 1.0f, 0.0f, 2.0f}}};
+    file.aux_effects[2] = {
+        {EffectKind::kSwitchLightLimiter, {1000.0f, 0.0f, 50'000.0f, 0.0f, 0.3f, 1.0f, 1.0f, 1.0f}}};
+    const std::vector<uint8_t> binary = format::Write(file);
+    const std::string text = format::WriteText(file);
+
+    XSFLIB_CHECK(format::Read(binary) == file && format::ReadText(text) == file);
+    const std::span<const uint8_t> mixer = ChunkBytes(binary, 1);
+    SEQLIB_REQUIRE(mixer.size() == 148);
+    XSFLIB_CHECK(xsflib::LoadLe32(&mixer[0]) == 1 && mixer[4] == 17 && xsflib::LoadLe32(&mixer[8]) == 8);
+    XSFLIB_CHECK(xsflib::LoadLe32(&mixer[44]) == 1 && mixer[48] == 19 && xsflib::LoadLe32(&mixer[52]) == 12);
+    XSFLIB_CHECK(xsflib::LoadLe32(&mixer[104]) == 1 && mixer[108] == 18 && xsflib::LoadLe32(&mixer[112]) == 8);
+    XSFLIB_CHECK(text.find("\neffect A switch_delay delay_time_max 2000000 delay_time 250000 in_gain 0.5 "
+                           "feedback_gain 0.2 dry_gain 0 low_pass_amount 0.4 channel_spread 0.3 channel_mode 1\n"
+                           "effect B switch_reverb early_mode 2 early_gain 0.7 predelay_time 15000 late_mode 1 "
+                           "late_gain 0.7 decay_time 2500000 high_frequency_decay_ratio 0.8 coloration 0.7 "
+                           "reverb_gain 0.4 out_gain 1 dry_gain 0 channel_mode 2\neffect C switch_light_limiter "
+                           "look_ahead_time_max 1000 attack_time 0 release_time 50000 look_ahead_time 0 threshold 0.3 "
+                           "input_gain 1 output_gain 1 channel_mode 1\n") != std::string::npos);
+
+    struct Outside
+    {
+        std::size_t bus;
+        std::size_t parameter;
+        float value;
+        std::string_view problem;
+    };
+    for (const Outside& outside : {
+             Outside{0, 0, 10'000'001.0f, "a value of delay_time_max that isn't a whole number from 0 to 10000000"},
+             Outside{0, 1, 0.5f, "a value of delay_time that isn't a whole number from 0 to 10000000"},
+             Outside{0, 7, 4.0f, "a value of channel_mode that isn't a whole number from 0 to 3"},
+             Outside{1, 0, 5.0f, "a value of early_mode that isn't a whole number from 0 to 4"},
+             Outside{1, 2, 300'001.0f, "a value of predelay_time that isn't a whole number from 0 to 300000"},
+             Outside{1, 3, -1.0f, "a value of late_mode that isn't a whole number from 0 to 4"},
+             Outside{1, 5, 99'999.0f, "a value of decay_time that isn't a whole number from 100000 to 20000000"},
+             Outside{2, 1, 10'001.0f, "a value of attack_time that isn't a whole number from 0 to 10000"},
+             Outside{2, 2, 5'000'001.0f, "a value of release_time that isn't a whole number from 0 to 5000000"},
+             Outside{2, 3, 50'000.5f, "a value of look_ahead_time that isn't a whole number from 0 to 50000"},
+         })
+    {
+        File outside_file = file;
+        outside_file.aux_effects[outside.bus][0].parameters[outside.parameter] = outside.value;
+        const std::string problem = "an effect on aux bus " + std::string(1, static_cast<char>('A' + outside.bus)) +
+                                    " has " + std::string(outside.problem);
+        XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { format::Write(outside_file); }) == problem);
+        XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { format::WriteText(outside_file); }) == problem);
+    }
+
+    // A gain outside its range reads, and so does a delay longer than its maximum. A line that leaves out the decay
+    // time gives it 0, below its limit.
+    File loud = file;
+    loud.aux_effects[0][0].parameters[2] = 1.5f;
+    loud.aux_effects[0][0].parameters[1] = 3'000'000.0f;
+    loud.aux_effects[2][0].parameters[6] = 8.0f;
+    XSFLIB_CHECK(format::Read(format::Write(loud)) == loud && format::ReadText(format::WriteText(loud)) == loud);
+    const std::string kHeader = "hok 1.0\nengine switch\n";
+    XSFLIB_CHECK(TextError(kHeader + "effect A switch_delay delay_time 250000\n").empty());
+    XSFLIB_CHECK(TextError(kHeader + "effect A switch_reverb predelay_time 15000\n") ==
+                 "Line 3: the effect has a value of decay_time that isn't a whole number from 100000 to 20000000.");
 }
 
 // The buses' volumes, in a file without effects and in one with them. MIXR holds them after bus C's effects, and the
@@ -714,6 +833,8 @@ int main()
                                         TestCtrEffectLimits();
                                         TestCtrEffectForms();
                                         TestCtrEffectValuesOutside();
+                                        TestAtkEffectKinds();
+                                        TestAtkEffectForms();
                                         TestBusVolumes();
                                         TestScenesInBothForms();
                                         TestScenesInText();

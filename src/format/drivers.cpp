@@ -20,9 +20,9 @@
 namespace hokuto::format
 {
 
-ntdlib::agb::Rom RomOf(std::span<const uint8_t> bytes)
+agblib::agb::Rom RomOf(std::span<const uint8_t> bytes)
 {
-    ntdlib::agb::Rom rom;
+    agblib::agb::Rom rom;
     rom.Assign(std::vector<uint8_t>(bytes.begin(), bytes.end()));
     return rom;
 }

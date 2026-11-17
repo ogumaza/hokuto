@@ -14,7 +14,7 @@
 // note to aux bus A. A reverb there plays it as in ntdlib's model. A copy for the Wii U plays it with each of the Wii
 // U's four effects. On both consoles, a bus's volume scales what the bus adds to the output, and the bus's meter
 // measures it. A Wii archive's sequence plays as ntdlib's model of the Wii run directly, with the model of AX's
-// microcode in place of the DSP, and with each of the Wii's effects. A GBA song plays as ntdlib's player of MP2K
+// microcode in place of the DSP, and with each of the Wii's effects. A GBA song plays as agblib's player of MP2K
 // songs run directly, in both mixing modes. A model that the program offers during playback takes over at the player's
 // next frame. That frame crossfades from the old model's output to the new one's. While the render worker plays, a
 // catch-up runs the new model up to the player's frame on a thread of its own. A model at another tempo takes over at
@@ -53,10 +53,13 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/archive_player.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/mp2k/convert.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/archive_player.h"
-#include "ntdlib/mp2k/commands.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/rvl/snd/engine.h"
@@ -64,15 +67,12 @@
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/stream_file.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/consoles.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/sequence_export/frame.h"
-#include "ntdlib/sequence_export/mp2k/convert.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "ntdlib/sound_build.h"
 #include "ntdlib/testing/dol_files.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
 #include "seqlib/midi/reader.h"

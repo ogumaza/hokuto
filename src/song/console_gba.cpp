@@ -9,8 +9,8 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/mp2k/archive_player.h"
+#include "agblib/agb/gba.h"
+#include "agblib/mp2k/archive_player.h"
 #include "xsflib/rip/length.h"
 
 #include "song/console_model.h"
@@ -23,7 +23,7 @@ namespace
 
 using console_model::CopyScaled;
 
-// The GBA: ntdlib's models of the MP2K driver and the GBA sound hardware (ntdlib::mp2k::ArchivePlayer). A frame of the
+// The GBA: agblib's models of the MP2K driver and the GBA sound hardware (agblib::mp2k::ArchivePlayer). A frame of the
 // console contains 548.625 samples at 32,768 Hz, or 1,097.25 at 65,536 Hz: the output's samples don't fall evenly in
 // the display's frames. In strict mixing, the model's frames therefore last 15.625 ms each, a 64th of the output's rate
 // in samples, and each runs the console's frames that its samples require. The samples of a console's frame that the
@@ -42,7 +42,7 @@ public:
         : rom_(rom),
           player_(Driver::MakePlayer(rom)),
           enhanced_(mixing == Mixing::kEnhanced),
-          rate_(enhanced_ ? ntdlib::agb::kEnhancedRate : Driver::Rate(rom)),
+          rate_(enhanced_ ? agblib::agb::kEnhancedRate : Driver::Rate(rom)),
           frame_samples_(frame_samples)
     {
     }
@@ -327,8 +327,8 @@ private:
 struct Mp2kDriver
 {
     using Rom = GbaRom;
-    using Player = ntdlib::mp2k::ArchivePlayer;
-    static constexpr int kTracks = ntdlib::mp2k::kMaxTracks;
+    using Player = agblib::mp2k::ArchivePlayer;
+    static constexpr int kTracks = agblib::mp2k::kMaxTracks;
 
     static int Rate(const Rom& rom)
     {
@@ -342,7 +342,7 @@ struct Mp2kDriver
 
     static void Start(Player& player, const Rom&, uint32_t sound, bool enhanced)
     {
-        ntdlib::mp2k::ArchivePlayerOptions options;
+        agblib::mp2k::ArchivePlayerOptions options;
         options.enhanced = enhanced;
         player.Start(static_cast<int>(sound), options);
     }
@@ -365,7 +365,7 @@ struct Mp2kDriver
 
 using Gba = Agb<Mp2kDriver>;
 
-// A driver's player (song/driver.h) in the shape of ntdlib's ArchivePlayer, for Agb.
+// A driver's player (song/driver.h) in the shape of agblib's ArchivePlayer, for Agb.
 class BoxedPlayer
 {
 public:
@@ -496,19 +496,19 @@ constexpr int kStrictFramesASecond = 64;
 FrameMs GbaFrameMs(Mixing mixing)
 {
     // 280,896 cycles at 16,777,216 Hz, or 548,625 / 32,768 ms. A 64th of a second is 125 / 8 ms.
-    static_assert(ntdlib::agb::kFrameCycles * 1000 * 32768 == 548625 * ntdlib::agb::kSecondCycles);
+    static_assert(agblib::agb::kFrameCycles * 1000 * 32768 == 548625 * agblib::agb::kSecondCycles);
     return mixing == Mixing::kEnhanced ? kGbaFrameMs : FrameMs{125, 8};
 }
 
 std::size_t GbaFrameSamples(const GbaRom& rom, Mixing mixing)
 {
-    return mixing == Mixing::kEnhanced ? ntdlib::agb::kEnhancedFrameSamples
+    return mixing == Mixing::kEnhanced ? agblib::agb::kEnhancedFrameSamples
                                        : static_cast<std::size_t>(GbaRate(rom) / kStrictFramesASecond);
 }
 
 std::size_t DriverFrameSamples(const DriverRom& rom, Mixing mixing)
 {
-    return mixing == Mixing::kEnhanced ? ntdlib::agb::kEnhancedFrameSamples
+    return mixing == Mixing::kEnhanced ? agblib::agb::kEnhancedFrameSamples
                                        : static_cast<std::size_t>(rom.Rate() / kStrictFramesASecond);
 }
 

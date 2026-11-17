@@ -10,7 +10,7 @@
 #include <span>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
 
 namespace hokuto::song
 {
@@ -22,9 +22,9 @@ inline void PadToWord(std::vector<uint8_t>& bytes)
 }
 
 // The bytes of `rom`, padded to a whole number of words.
-inline std::vector<uint8_t> PaddedRomCopy(const ntdlib::agb::Rom& rom)
+inline std::vector<uint8_t> PaddedRomCopy(const agblib::agb::Rom& rom)
 {
-    std::vector<uint8_t> bytes(rom.Ptr(ntdlib::agb::kRomBase), rom.Ptr(ntdlib::agb::kRomBase) + rom.Size());
+    std::vector<uint8_t> bytes(rom.Ptr(agblib::agb::kRomBase), rom.Ptr(agblib::agb::kRomBase) + rom.Size());
     PadToWord(bytes);
     return bytes;
 }
@@ -32,7 +32,7 @@ inline std::vector<uint8_t> PaddedRomCopy(const ntdlib::agb::Rom& rom)
 // The GBA address of the end of `bytes`, a copy of a ROM: where the next bytes go.
 inline uint32_t EndAddress(const std::vector<uint8_t>& bytes)
 {
-    return ntdlib::agb::kRomBase + static_cast<uint32_t>(bytes.size());
+    return agblib::agb::kRomBase + static_cast<uint32_t>(bytes.size());
 }
 
 // Appends `appended` to `bytes`, a copy of a ROM padded to a whole number of words, and pads it again. Returns the GBA

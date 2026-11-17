@@ -520,7 +520,7 @@ void TestRates()
     XSFLIB_CHECK(std::abs(RmsOf(lowered) / (kAmplitude / std::sqrt(2.0)) - 1.0) < 0.03);
     XSFLIB_CHECK(crossings(lowered) >= crossings_in - 2 && crossings(lowered) <= crossings_in + 2);
     std::vector<std::string> warnings;
-    edit::AddDsBankWarnings(mix_rate, true, warnings);
+    edit::AddDsBankWarnings(mix_rate, warnings);
     XSFLIB_CHECK(warnings ==
                  std::vector<std::string>{"The DS mixes at 32,728 Hz. 1 wave above that rate is resampled to it."});
 

@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -40,6 +41,7 @@
 
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/ntr/snd/driver.h"
+#include "ntdlib/ntr/sound.h"
 #include "ntdlib/sar/bank_file.h"
 #include "ntdlib/sar/wave_file.h"
 
@@ -89,15 +91,32 @@ DsCommands AsDs(const ntdlib::commands::Sequence& sequence, uint32_t start, uint
 // Adds to `warnings` what `commands` changed on the way to the DS from the console `from` (AsDs).
 void AddDsCommandWarnings(const DsCommands& commands, const song::Console& from, std::vector<std::string>& warnings);
 
-// The rate at which the DS mixes. The sound unit reads a channel's sample once in each of its output samples. A wave at
-// a higher rate uses more memory, and its samples between stay unread.
-inline constexpr uint32_t kDsMixRate = 32728;
+// The rate at which the DS mixes, in whole Hz. The sound unit reads a channel's sample once in each of its output
+// samples. A wave at a higher rate uses more memory, and its samples between stay unread.
+inline constexpr auto kDsMixRate = static_cast<uint32_t>(ntdlib::ntr::kOutputRate);
+
+// The rates that the waves of a sound take one at a time where they don't fit on the DS at its mix rate: 3/4, 1/2, 3/8
+// and 1/4 of that rate, near enough.
+inline constexpr std::array<uint32_t, 4> kDsLowerRates = {24000, 16364, 12000, 8182};
+
+// The highest rates of some waves of a bank, by their entries in the bank's table of waves. The other waves play up to
+// the highest rate that the call gives.
+using DsWaveRates = std::map<uint32_t, uint32_t>;
 
 // The bytes that the waves of a bank take on the DS, before it encodes them: half a byte for each sample, and the
-// parameters and the state of each wave. A wave counts at `most_rate` where it plays at a higher rate. Each wave of
-// `waves` that an instrument of `bank` plays counts once for each rate and volume at which its regions play it.
+// parameters and the state of each wave. A wave counts at `most_rate`, or at its rate in `wave_rates` where that is
+// lower, where it plays at a higher rate. Each wave of `waves` that an instrument of `bank` plays counts once for each
+// rate and volume at which its regions play it.
 std::size_t DsWavesSize(const ntdlib::sar::BankFile& bank, std::span<const std::optional<ntdlib::sar::WaveFile>> waves,
-                        uint32_t most_rate = kDsMixRate);
+                        uint32_t most_rate = kDsMixRate, const DsWaveRates& wave_rates = {});
+
+// Gives a wave of `bank` the next rate of kDsLowerRates below the highest rate at which it plays, up to kDsMixRate and
+// `wave_rates`, in `wave_rates`. The wave whose next rate is the highest goes first, and of two such waves, the one
+// that takes the most bytes on the DS (DsWavesSize). No wave takes a rate before every wave above that rate has.
+// Returns the rate that the wave took, or nothing where no wave plays above the last of kDsLowerRates.
+std::optional<uint32_t> LowerLargestDsWave(const ntdlib::sar::BankFile& bank,
+                                           std::span<const std::optional<ntdlib::sar::WaveFile>> waves,
+                                           DsWaveRates& wave_rates);
 
 // A bank as a bank file and a wave archive file of the DS, and what changed on the way.
 struct DsBankFiles
@@ -115,8 +134,11 @@ struct DsBankFiles
     std::size_t key_groups = 0;      // the regions in a key group
     std::size_t lost_loops = 0;      // the waves whose loops start past the 65,535 words of the wave's field
     std::size_t rates_held = 0;      // the regions whose rate a wave doesn't support, clamped to the nearest
-    std::size_t rates_lowered = 0;   // the waves above `most_rate`
+    std::size_t rates_lowered = 0;   // the waves above `most_rate` that took a lower rate
     std::size_t silent_regions = 0;  // the regions whose waves are missing from `waves` or hold no samples
+
+    // The waves above their rate in `wave_rates` that took a lower rate, by their rate in `wave_rates`.
+    std::map<uint32_t, std::size_t> lowered_rates;
 };
 
 // The files of the DS for `bank`. The table of waves of `bank` has a place for each entry of `waves`. `stereo_gain`
@@ -124,18 +146,20 @@ struct DsBankFiles
 // written as one region where one region plays every key, or else as a key split of up to 8 runs of keys, with a region
 // that plays nothing in a gap. More runs take a drum set from its first key to its last.
 //
-// A wave above `most_rate` without a loop is resampled to `most_rate`. A loop on the DS fills whole words of 8 samples,
-// and ntdlib::sdat::EncodeWave repeats a loop until it does: up to 8 times its size. A looped wave above `most_rate`
-// therefore gets the whole words nearest the length of the loop at `most_rate`, and the rate that keeps its pitch
-// (audio::Resample). At `most_rate` or below, a loop of 64 samples or more that doesn't fill whole words gets the
+// A wave's highest rate is `most_rate`, or its rate in `wave_rates` where that is lower. A wave above its highest rate
+// without a loop is resampled to that rate. A loop on the DS fills whole words of 8 samples, and
+// ntdlib::sdat::EncodeWave repeats a loop until it does: up to 8 times its size. A looped wave above its highest rate
+// therefore gets the whole words nearest the length of the loop at that rate, and the rate that keeps its pitch
+// (audio::Resample). At its highest rate or below, a loop of 64 samples or more that doesn't fill whole words gets the
 // nearest length that does, and the rate that keeps its pitch too. A shorter loop repeats. A looped wave keeps its rate
 // where that nearest length is the loop's length, or where the new rate is outside the DS's range of 256 to 192,000 Hz.
 DsBankFiles DsBankFilesOf(const ntdlib::sar::BankFile& bank,
                           std::span<const std::optional<ntdlib::sar::WaveFile>> waves,
-                          const std::function<double(const MonoLevel&)>& stereo_gain, uint32_t most_rate = kDsMixRate);
+                          const std::function<double(const MonoLevel&)>& stereo_gain, uint32_t most_rate = kDsMixRate,
+                          const DsWaveRates& wave_rates = {});
 
-// Adds to `warnings` what changed on the way to `files`, in words for the user. With `at_mix_rate`, the waves that went
-// in at the DS's rate from a higher one count too.
-void AddDsBankWarnings(const DsBankFiles& files, bool at_mix_rate, std::vector<std::string>& warnings);
+// Adds to `warnings` what changed on the way to `files`, in words for the user. The waves that went in at the DS's rate
+// from a higher one count too.
+void AddDsBankWarnings(const DsBankFiles& files, std::vector<std::string>& warnings);
 
 } // namespace hokuto::edit

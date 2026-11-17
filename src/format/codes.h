@@ -62,11 +62,16 @@ std::span<const std::string_view> ParameterNamesOf(EffectKind kind);
 // The number of choices of parameter `parameter` of `kind` when it's a mode, or 0. A mode's value is a whole number
 // from 0 to one less than its choices. A reverb of the Wii U, and a reverb of the Wii of 2008, has two modes: the early
 // reflections' 8 delays, from 5 ms to 40 ms, and the fused reverb's 6 rooms. The 3DS's surround and high-pass damping
-// are switches: 0 for off and 1 for on.
+// are switches: 0 for off and 1 for on. nn::atk's channel mode has 4 choices, for 1, 2, 4 or 6 channels. Its reverb's
+// early and late modes have 5 each.
 uint32_t ChoicesOf(EffectKind kind, std::size_t parameter);
 
 // Whether `kind` is an effect of the 3DS.
 bool IsCtrKind(EffectKind kind);
+
+// Whether `kind` is one of nn::atk's effects that the Switch's audio renderer runs: the delay, the light limiter or the
+// reverb.
+bool IsAtkKind(EffectKind kind);
 
 // The values that a parameter takes: from `low` to `high`, and a whole number of steps from `low` where `step` isn't 0.
 struct ParameterLimits
@@ -76,10 +81,13 @@ struct ParameterLimits
     float step;
 };
 
-// The limits of parameter `parameter` of `kind`, or nothing. Only the 3DS's effects have limits here, apart from their
-// switches. A reverb's early reflection time and pre-delay time are whole milliseconds from 0 to 1,000, and its fused
-// time from 0 to 20,000. A delay's time is a whole number of milliseconds from 1 to 5,000. A filter's size is a whole
-// number of samples, a multiple of 160 from 160 to 32,000. Each gain and factor runs from 0 to 1.
+// The limits of parameter `parameter` of `kind`, or nothing. Only the times of nn::atk's effects and the 3DS's effects
+// have limits here, apart from their modes and switches. nn::atk's times are whole microseconds: a delay's from 0 to
+// 10 s, a limiter's look-ahead from 0 to 50 ms, its attack from 0 to 10 ms and its release from 0 to 5 s, and a
+// reverb's pre-delay from 0 to 300 ms and its decay time from 0.1 s to 20 s. On the 3DS, a reverb's early reflection
+// time and pre-delay time are whole milliseconds from 0 to 1,000, and its fused time from 0 to 20,000. A delay's time
+// is a whole number of milliseconds from 1 to 5,000. A filter's size is a whole number of samples, a multiple of 160
+// from 160 to 32,000. Each gain and factor runs from 0 to 1.
 std::optional<ParameterLimits> LimitsOf(EffectKind kind, std::size_t parameter);
 
 // The number and the name of a kind of sound in an archive's tables, and the kind of each.

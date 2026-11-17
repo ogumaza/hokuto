@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // A GBA ROM whose music Ubisoft Milan's driver plays. ntdlib finds the driver's sound bank and its tables in the ROM
-// (ntdlib::ubimilan::DetectDriver). A sound is a piece of music of the bank: the sequences that it plays one after
+// (agblib::ubimilan::DetectDriver). A sound is a piece of music of the bank: the sequences that it plays one after
 // another, and whether it plays them again. A piece has no name in the ROM: Hokuto names it by its number. ntdlib's
 // performer plays a piece on its model of the driver for the arrangement
-// (ntdlib::sequence_export::ubimilan::PerformSong), and ntdlib's ArchivePlayer plays it on its models of the driver and
+// (agblib::sequence_export::ubimilan::PerformSong), and agblib's ArchivePlayer plays it on its models of the driver and
 // the GBA's sound hardware (song/sequence_model.h).
 //
 // A sequence has one track of commands for its 16 channels, and each command names its channel. A track of the
@@ -22,16 +22,16 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/ubimilan/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/ubimilan/driver.h"
 
 #include "song/driver.h"
 
 namespace hokuto::song
 {
 
-// A GBA ROM, and what ntdlib found of Ubisoft Milan's driver in it.
+// A GBA ROM, and what agblib found of Ubisoft Milan's driver in it.
 struct UbiMilanRom final : DriverRom
 {
     const DriverRules& Rules() const override;
@@ -67,8 +67,8 @@ struct UbiMilanRom final : DriverRom
     // The sample resources that the kits name, in order of their numbers.
     std::vector<int> sample_resources;
 
-    ntdlib::agb::Rom rom;
-    ntdlib::ubimilan::DriverInfo info;
+    agblib::agb::Rom rom;
+    agblib::ubimilan::DriverInfo info;
 };
 
 // The rules of Ubisoft Milan's driver (song/driver.h).

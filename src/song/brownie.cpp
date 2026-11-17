@@ -18,16 +18,16 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/brownie/archive_player.h"
-#include "ntdlib/brownie/commands.h"
-#include "ntdlib/brownie/sequencer.h"
-#include "ntdlib/brownie/song.h"
+#include "agblib/agb/gba.h"
+#include "agblib/brownie/archive_player.h"
+#include "agblib/brownie/commands.h"
+#include "agblib/brownie/sequencer.h"
+#include "agblib/brownie/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/brownie/convert.h"
+#include "agblib/sequence_export/brownie/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
-#include "ntdlib/sequence_export/brownie/convert.h"
-#include "ntdlib/sequence_export/brownie/soundfont.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "xsflib/binary.h"
 
@@ -43,12 +43,12 @@ namespace hokuto::song
 namespace
 {
 
-namespace brownie = ntdlib::brownie;
+namespace brownie = agblib::brownie;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 
-// The output's rate: the driver leaves the sound bias register as the BIOS does (ntdlib/brownie/archive_player.h).
+// The output's rate: the driver leaves the sound bias register as the BIOS does (agblib/brownie/archive_player.h).
 constexpr int kBrownieRate = 32768;
 
 // The largest value of command F2.
@@ -165,7 +165,7 @@ private:
     brownie::Revision revision_;
 };
 
-// The model of the driver and the GBA's sound hardware, for one ROM (ntdlib::brownie::ArchivePlayer).
+// The model of the driver and the GBA's sound hardware, for one ROM (agblib::brownie::ArchivePlayer).
 class BrowniePlayer final : public ArchiveDriverPlayer<brownie::ArchivePlayer>
 {
 public:
@@ -217,13 +217,13 @@ private:
 };
 
 // A sample's entry in the driver's tables: three words with its start, its end and its loop.
-BrownieSample SampleAt(const ntdlib::agb::Rom& rom, uint32_t entry)
+BrownieSample SampleAt(const agblib::agb::Rom& rom, uint32_t entry)
 {
     return {rom.U32(entry), rom.U32(entry + 4), rom.U32(entry + 8)};
 }
 
 // Whether `sample`'s points fall within the ROM, with a loop among them.
-bool Readable(const ntdlib::agb::Rom& rom, const BrownieSample& sample)
+bool Readable(const agblib::agb::Rom& rom, const BrownieSample& sample)
 {
     return sample.end > sample.start && rom.Contains(sample.start, sample.end - sample.start) &&
            sample.loop >= sample.start && sample.loop <= sample.end;
@@ -393,7 +393,7 @@ const DriverRules& BrownieRom::Rules() const
 
 std::span<const uint8_t> BrownieRom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 int BrownieRom::SongOf(uint32_t sound) const
@@ -432,7 +432,7 @@ uint32_t BrownieRom::SoundCount() const
 
 std::string BrownieRom::SoundName(uint32_t sound) const
 {
-    return "Sound " + ntdlib::sequence_export::agb::SongNumber(SongOf(sound), info.song_count);
+    return "Sound " + agblib::sequence_export::agb::SongNumber(SongOf(sound), info.song_count);
 }
 
 SoundFields BrownieRom::FieldsOf(uint32_t sound) const
@@ -445,7 +445,7 @@ SoundFields BrownieRom::FieldsOf(uint32_t sound) const
         return fields;
     }
 
-    fields.sequence = uint64_t{info.song_table} + 4 * static_cast<uint64_t>(song) - ntdlib::agb::kRomBase;
+    fields.sequence = uint64_t{info.song_table} + 4 * static_cast<uint64_t>(song) - agblib::agb::kRomBase;
     fields.starts = true;
 
     return fields;
@@ -459,7 +459,7 @@ int BrownieRom::Rate() const
 std::vector<uint32_t> BrownieRom::SampleSelections() const
 {
     std::set<uint32_t> selected;
-    for (const ntdlib::brownie::Decoded& region : regions)
+    for (const agblib::brownie::Decoded& region : regions)
     {
         for (const Command& item : region.sequence.items)
         {
@@ -628,10 +628,10 @@ Sequence BrownieRom::ReadSequence(uint32_t sound) const
 
 ntdlib::sequence_export::Conversion BrownieRom::ConvertToMidi(uint32_t sound, const std::string& program) const
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
-    ntdlib::sequence_export::brownie::SongFiles files =
-        ntdlib::sequence_export::brownie::ConvertSongFiles(rom, info, SongOf(sound), settings);
+    agblib::sequence_export::brownie::SongFiles files =
+        agblib::sequence_export::brownie::ConvertSongFiles(rom, info, SongOf(sound), settings);
 
     return AgbConversion(SoundName(sound), std::move(files));
 }
@@ -639,8 +639,8 @@ ntdlib::sequence_export::Conversion BrownieRom::ConvertToMidi(uint32_t sound, co
 ntdlib::sequence_export::BankConversion BrownieRom::ConvertSamples(std::span<const int> numbers,
                                                                    const std::string& program) const
 {
-    namespace agb = ntdlib::sequence_export::agb;
-    ntdlib::sequence_export::brownie::SoundfontBuilder builder(rom, static_cast<uint32_t>(info.mix_rate));
+    namespace agb = agblib::sequence_export::agb;
+    agblib::sequence_export::brownie::SoundfontBuilder builder(rom, static_cast<uint32_t>(info.mix_rate));
     agb::Sf2File& file = builder.File();
     ntdlib::sequence_export::BankConversion conversion;
     for (const int sample : numbers)
@@ -736,7 +736,7 @@ DriverAudition BrownieRom::SampleAudition(int sample, int key, int) const
                 continue;
             }
 
-            const double rate = static_cast<double>(ntdlib::agb::kSecondCycles) / (0x10000 - reload);
+            const double rate = static_cast<double>(agblib::agb::kSecondCycles) / (0x10000 - reload);
             const double off = std::abs(std::log2(rate / info.mix_rate));
             if (off < distance)
             {
@@ -835,7 +835,7 @@ std::shared_ptr<const DriverRom> BrownieRom::AuditionRom(const DriverAudition& a
     table.kind = Kind::kJump;
     table.encoding.opcode = brownie::kAddressWord;
     table.target_outside = true;
-    table.target = ntdlib::agb::kRomBase;
+    table.target = agblib::agb::kRomBase;
     sequence.items.push_back(table);
     sequence.items.push_back(Command{.kind = Kind::kEnd, .index = 1});
     for (const Command& setup : audition.setup)
@@ -859,7 +859,7 @@ std::shared_ptr<const DriverRom> BrownieRom::AuditionRom(const DriverAudition& a
     const uint32_t base = EndAddress(bytes);
     const brownie::Encoded encoded = brownie::EncodeSequence(sequence, info.revision, base);
     AppendWordAligned(bytes, encoded.bytes);
-    xsflib::StoreLe32(&bytes[info.song_table + 4 * static_cast<uint32_t>(sound) - ntdlib::agb::kRomBase], base);
+    xsflib::StoreLe32(&bytes[info.song_table + 4 * static_cast<uint32_t>(sound) - agblib::agb::kRomBase], base);
 
     auto copy = std::make_shared<BrownieRom>();
     copy->rom.Assign(std::move(bytes));

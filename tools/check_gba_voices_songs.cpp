@@ -103,13 +103,13 @@ SongEdits EditSongHeaders(const Game& game, const std::vector<int>& songs, std::
         reverb_only = change(reverb_only, SoundValue::kReverb, hokuto::edit::kGbaReverbOn | level);
         totals.songs_edited++;
 
-        const std::size_t entry = rom.info.song_table + 8U * number - ntdlib::agb::kRomBase;
+        const std::size_t entry = rom.info.song_table + 8U * number - agblib::agb::kRomBase;
         for (std::size_t offset = 4; offset < 8; offset++)
         {
             allowed.push_back(entry + offset);
         }
-        allowed.push_back(header.address - ntdlib::agb::kRomBase + 2);
-        allowed.push_back(header.address - ntdlib::agb::kRomBase + 3);
+        allowed.push_back(header.address - agblib::agb::kRomBase + 2);
+        allowed.push_back(header.address - agblib::agb::kRomBase + 3);
     }
 
     return {std::move(edited_headers), std::move(edited),  std::move(back),
@@ -137,7 +137,7 @@ std::optional<std::vector<uint8_t>> CheckBytesAndPutBack(const Game& game, const
         if (exported[i] != game.bytes[i] && !std::ranges::binary_search(allowed, i))
         {
             Fail(game, totals,
-                 "a byte differs at " + ntdlib::agb::Hex(static_cast<uint32_t>(i + ntdlib::agb::kRomBase)));
+                 "a byte differs at " + agblib::agb::Hex(static_cast<uint32_t>(i + agblib::agb::kRomBase)));
             break;
         }
     }

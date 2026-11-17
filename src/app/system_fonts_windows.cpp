@@ -5,6 +5,10 @@
 // a display with one pixel to the point, such text comes out blurred. DirectWrite fits each glyph to the pixels as
 // Windows draws text without ClearType, and every glyph starts on a pixel. The text takes the Mac's type size. A line
 // of Segoe UI is 1.33 times its type size, and a line of the Mac's interface font 1.18.
+//
+// Under Wine on Linux, the system has none of Windows' fonts. The families of font_families.h draw the text there, and
+// after them the family that GDI answers a request for an interface font with. This loader and system_fonts_other.cpp
+// follow the rules of system_fonts_shared.h for the sizes, the figures, the contrast, the baseline and the roles.
 
 #include "app/system_fonts.h"
 
@@ -18,8 +22,15 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <initializer_list>
+#include <deque>
+#include <new>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
+
+#include "app/font_families.h"
+#include "app/system_fonts_shared.h"
 
 namespace hokuto::app
 {
@@ -27,17 +38,26 @@ namespace
 {
 
 using Microsoft::WRL::ComPtr;
+using system_fonts::BakedSource;
+using system_fonts::kFigureSpace;
+using system_fonts::kTypePerSize;
 
-// The type size for each unit of a font's size. Dear ImGui sizes a font by its line. The Mac's interface font has a
-// line of 1.18 times its type size.
-constexpr float kTypePerSize = 1.0f / 1.18f;
+// A font source: its face, where its baseline divides a line, and whether it draws the figures. The figures' source
+// gives the digits one width, and makes a figure space of that width where the face has none, or one of another width.
+struct Source
+{
+    ComPtr<IDWriteFontFace> face;
+    float ascent_per_line = font_families::kAscentPerLine;
+    bool figures = false;
+};
 
-// What the loader keeps for the program's run: DirectWrite, the font faces that the sources draw, and the contrast that
-// Windows adds to text drawn without ClearType, as a table from a pixel's coverage to its alpha.
+// What the loader keeps for the program's run: DirectWrite, the sources, and the contrast that Windows adds to text
+// drawn without ClearType, as a table from a pixel's coverage to its alpha. A deque keeps each source in its place: the
+// font atlas points at them.
 struct DirectWrite
 {
     ComPtr<IDWriteFactory2> factory;
-    std::vector<ComPtr<IDWriteFontFace>> faces;
+    std::deque<Source> sources;
     std::array<unsigned char, 256> contrast{};
 };
 
@@ -47,8 +67,10 @@ DirectWrite& State()
     return state;
 }
 
-// The face of the font family `family` at `weight`. Returns nothing if the system doesn't have the family.
-ComPtr<IDWriteFontFace> FindFace(IDWriteFontCollection* fonts, const wchar_t* family, DWRITE_FONT_WEIGHT weight)
+// The face of the font family `family` nearest `weight`. Returns nothing if the system doesn't have the family, or if
+// its nearest face is lighter than `lightest`.
+ComPtr<IDWriteFontFace> FindFace(IDWriteFontCollection* fonts, const wchar_t* family, DWRITE_FONT_WEIGHT weight,
+                                 int lightest)
 {
     UINT32 family_index = 0;
     BOOL exists = FALSE;
@@ -59,7 +81,7 @@ ComPtr<IDWriteFontFace> FindFace(IDWriteFontCollection* fonts, const wchar_t* fa
         FAILED(fonts->GetFontFamily(family_index, &font_family)) ||
         FAILED(
             font_family->GetFirstMatchingFont(weight, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, &font)) ||
-        FAILED(font->CreateFontFace(&face)))
+        static_cast<int>(font->GetWeight()) < lightest || FAILED(font->CreateFontFace(&face)))
     {
         return nullptr;
     }
@@ -67,24 +89,9 @@ ComPtr<IDWriteFontFace> FindFace(IDWriteFontCollection* fonts, const wchar_t* fa
     return face;
 }
 
-// The face of the first of `families` that the system has, at `weight`.
-ComPtr<IDWriteFontFace> FindFirst(IDWriteFontCollection* fonts, std::initializer_list<const wchar_t*> families,
-                                  DWRITE_FONT_WEIGHT weight)
+const Source& SourceOf(const ImFontConfig* src)
 {
-    for (const wchar_t* family : families)
-    {
-        if (ComPtr<IDWriteFontFace> face = FindFace(fonts, family, weight))
-        {
-            return face;
-        }
-    }
-
-    return nullptr;
-}
-
-IDWriteFontFace* FaceOf(const ImFontConfig* src)
-{
-    return static_cast<IDWriteFontFace*>(src->FontLoaderData);
+    return *static_cast<const Source*>(src->FontLoaderData);
 }
 
 // The glyph that `face` draws for `codepoint`, or 0 if it has none.
@@ -107,14 +114,44 @@ float TypePixels(float size, float density)
     return std::max(std::round(size * kTypePerSize * density), 1.0f);
 }
 
+// The advance of `glyph` at a type size of `type` pixels, as Windows measures it for text fitted to the pixels, rounded
+// to whole pixels. Returns nothing if `glyph` is 0, or if DirectWrite can't measure the glyph.
+std::optional<float> AdvancePixels(IDWriteFontFace* face, UINT16 glyph, float type)
+{
+    if (glyph == 0)
+    {
+        return std::nullopt;
+    }
+
+    DWRITE_FONT_METRICS metrics{};
+    face->GetMetrics(&metrics);
+    DWRITE_GLYPH_METRICS glyph_metrics{};
+    if (FAILED(face->GetGdiCompatibleGlyphMetrics(type, 1.0f, nullptr, FALSE, &glyph, 1, &glyph_metrics, FALSE)))
+    {
+        return std::nullopt;
+    }
+
+    return std::round(static_cast<float>(glyph_metrics.advanceWidth) * type / metrics.designUnitsPerEm);
+}
+
+// The advance of the widest digit of `face` at `type` pixels.
+float DigitPixels(IDWriteFontFace* face, float type)
+{
+    const auto advance_of = [&](ImWchar digit)
+    {
+        return AdvancePixels(face, GlyphOf(face, digit), type);
+    };
+    return system_fonts::WidestDigitPixels(advance_of);
+}
+
 bool SourceInit(ImFontAtlas* /*atlas*/, ImFontConfig* src)
 {
-    const DirectWrite& state = State();
-    if (src->FontLoaderFlags >= state.faces.size())
+    DirectWrite& state = State();
+    if (src->FontLoaderFlags >= state.sources.size())
     {
         return false;
     }
-    src->FontLoaderData = state.faces[src->FontLoaderFlags].Get();
+    src->FontLoaderData = &state.sources[src->FontLoaderFlags];
 
     return true;
 }
@@ -126,21 +163,21 @@ void SourceDestroy(ImFontAtlas* /*atlas*/, ImFontConfig* src)
 
 bool SourceContainsGlyph(ImFontAtlas* /*atlas*/, ImFontConfig* src, ImWchar codepoint)
 {
-    return GlyphOf(FaceOf(src), codepoint) != 0;
+    const Source& source = SourceOf(src);
+    return GlyphOf(source.face.Get(), codepoint) != 0 || (source.figures && codepoint == kFigureSpace);
 }
 
-bool BakedInit(ImFontAtlas* /*atlas*/, ImFontConfig* src, ImFontBaked* baked, void* /*loader_data*/)
+bool BakedInit(ImFontAtlas* /*atlas*/, ImFontConfig* src, ImFontBaked* baked, void* loader_data)
 {
-    // The baseline lies where it divides the font's line in the size. A merged font draws on the first font's.
-    if (!src->MergeMode)
+    const Source& source = SourceOf(src);
+    auto* baked_source = new (loader_data) BakedSource;
+    if (source.figures)
     {
-        DWRITE_FONT_METRICS metrics{};
-        FaceOf(src)->GetMetrics(&metrics);
-        const float ascent = static_cast<float>(metrics.ascent);
-        const float line = ascent + static_cast<float>(metrics.descent);
-        baked->Ascent = IM_ROUND(baked->Size * ascent / line);
-        baked->Descent = baked->Ascent - baked->Size;
+        const float density = src->RasterizerDensity * baked->RasterizerDensity;
+        baked_source->digit_pixels = DigitPixels(source.face.Get(), TypePixels(baked->Size, density));
     }
+
+    system_fonts::PlaceBaseline(*src, *baked, source.ascent_per_line);
 
     return true;
 }
@@ -149,33 +186,25 @@ void BakedDestroy(ImFontAtlas* /*atlas*/, ImFontConfig* /*src*/, ImFontBaked* /*
 {
 }
 
-bool LoadGlyph(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* /*loader_data*/, ImWchar codepoint,
+bool LoadGlyph(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* loader_data, ImWchar codepoint,
                ImFontGlyph* out_glyph, float* out_advance_x)
 {
-    IDWriteFontFace* face = FaceOf(src);
+    const Source& source = SourceOf(src);
+    IDWriteFontFace* face = source.face.Get();
     const UINT16 glyph = GlyphOf(face, codepoint);
-    if (glyph == 0)
-    {
-        return false;
-    }
-
-    // The advance as Windows measures it for text fitted to the pixels, rounded to whole pixels. Dear ImGui starts each
-    // line of text on a pixel. Every glyph then starts on one, and none is blurred by falling between pixels.
     const float density = src->RasterizerDensity * baked->RasterizerDensity;
     const float type = TypePixels(baked->Size, density);
-    DWRITE_FONT_METRICS metrics{};
-    face->GetMetrics(&metrics);
-    DWRITE_GLYPH_METRICS glyph_metrics{};
-    if (FAILED(face->GetGdiCompatibleGlyphMetrics(type, 1.0f, nullptr, FALSE, &glyph, 1, &glyph_metrics, FALSE)))
+
+    // The advance as Windows measures it for text fitted to the pixels, rounded to whole pixels.
+    const std::optional<system_fonts::GlyphFit> fit =
+        system_fonts::FitGlyph(source.figures, static_cast<const BakedSource*>(loader_data)->digit_pixels, codepoint,
+                               AdvancePixels(face, glyph, type));
+    if (!fit)
     {
         return false;
     }
-
-    const float advance_x =
-        std::round(static_cast<float>(glyph_metrics.advanceWidth) * type / metrics.designUnitsPerEm) / density;
-    if (out_advance_x != nullptr)
+    if (system_fonts::LoadWithoutBitmap(*fit, codepoint, density, out_glyph, out_advance_x))
     {
-        *out_advance_x = advance_x;
         return true;
     }
 
@@ -199,7 +228,7 @@ bool LoadGlyph(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* 
     }
 
     out_glyph->Codepoint = codepoint;
-    out_glyph->AdvanceX = advance_x;
+    out_glyph->AdvanceX = fit->advance_pixels / density;
     const int width = bounds.right - bounds.left;
     const int height = bounds.bottom - bounds.top;
     if (width <= 0 || height <= 0)
@@ -228,7 +257,7 @@ bool LoadGlyph(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* baked, void* 
 
     ImTextureRect* rect = ImFontAtlasPackGetRect(atlas, pack_id);
     const float baseline = IM_ROUND(baked->Ascent);
-    out_glyph->X0 = static_cast<float>(bounds.left) / density;
+    out_glyph->X0 = (static_cast<float>(bounds.left) + fit->shift_pixels) / density;
     out_glyph->Y0 = baseline + static_cast<float>(bounds.top) / density;
     out_glyph->X1 = out_glyph->X0 + static_cast<float>(rect->w) / density;
     out_glyph->Y1 = out_glyph->Y0 + static_cast<float>(rect->h) / density;
@@ -252,31 +281,137 @@ const ImFontLoader& DirectWriteLoader()
         loader.FontBakedInit = BakedInit;
         loader.FontBakedDestroy = BakedDestroy;
         loader.FontBakedLoadGlyph = LoadGlyph;
-        loader.FontBakedSrcLoaderDataSize = 0;
+        loader.FontBakedSrcLoaderDataSize = sizeof(BakedSource);
 
         return loader;
     }();
     return kLoader;
 }
 
-// Adds `face` to `atlas`. With `merge`, it fills in the glyphs that the font added before it lacks. `spacing` is the
+// Adds `source` to `atlas`. With `merge`, it fills in the glyphs that the font added before it lacks. `spacing` is the
 // space added after each glyph, in points.
-ImFont* AddFace(ImFontAtlas& atlas, const ComPtr<IDWriteFontFace>& face, bool merge, float spacing)
+ImFont* AddSource(ImFontAtlas& atlas, const Source& source, bool merge, float spacing)
 {
     DirectWrite& state = State();
     ImFontConfig config;
     config.FontLoader = &DirectWriteLoader();
-    config.FontLoaderFlags = static_cast<unsigned int>(state.faces.size());
+    config.FontLoaderFlags = static_cast<unsigned int>(state.sources.size());
     config.MergeMode = merge;
     config.GlyphExtraAdvanceX = spacing;
-    state.faces.push_back(face);
+    state.sources.push_back(source);
 
     return atlas.AddFont(&config);
 }
 
-// The table from a pixel's coverage to its alpha with the contrast that Windows adds to text drawn without ClearType.
-// The contrast thickens the thin strokes that grayscale coverage gives light text on a dark background.
-std::array<unsigned char, 256> ContrastTable(IDWriteFactory* factory)
+// An interface family that the system has: its face for the text, its face for the strong text, and where its
+// baseline divides a line.
+struct Family
+{
+    ComPtr<IDWriteFontFace> regular;
+    ComPtr<IDWriteFontFace> strong;
+    float ascent_per_line = font_families::kAscentPerLine;
+};
+
+std::wstring Wide(std::string_view name)
+{
+    return {name.begin(), name.end()}; // the names are ASCII
+}
+
+// The family that GDI draws a request for an interface font in `charset` with, or nothing. Windows and Wine both answer
+// with a family that the system has.
+std::wstring GdiFamily(BYTE charset)
+{
+    LOGFONTW request{};
+    request.lfHeight = -13;
+    request.lfCharSet = charset;
+    request.lfPitchAndFamily = FF_SWISS | VARIABLE_PITCH;
+    std::array<wchar_t, LF_FACESIZE> name{};
+    if (HDC dc = CreateCompatibleDC(nullptr))
+    {
+        if (HFONT font = CreateFontIndirectW(&request))
+        {
+            const HGDIOBJ before = SelectObject(dc, font);
+            GetTextFaceW(dc, static_cast<int>(name.size()), name.data());
+            SelectObject(dc, before);
+            DeleteObject(font);
+        }
+        DeleteDC(dc);
+    }
+
+    return name.data();
+}
+
+// The interface's families that the system has. Segoe UI alone where the system has it, as on Windows. Otherwise the
+// families of the list that it has, or else the family that GDI answers with.
+std::vector<Family> InterfaceFamilies(IDWriteFontCollection* collection)
+{
+    const auto family_named = [&](const std::wstring& name, Family& family)
+    {
+        family.regular = FindFace(collection, name.c_str(), DWRITE_FONT_WEIGHT_NORMAL, font_families::kLightestRegular);
+        if (!family.regular || GlyphOf(family.regular.Get(), 'A') == 0)
+        {
+            return false;
+        }
+        family.strong =
+            FindFace(collection, name.c_str(), DWRITE_FONT_WEIGHT_SEMI_BOLD, font_families::kLightestStrong);
+        return true;
+    };
+
+    // Segoe UI keeps the division of its own line.
+    Family segoe;
+    if (family_named(L"Segoe UI", segoe))
+    {
+        DWRITE_FONT_METRICS metrics{};
+        segoe.regular->GetMetrics(&metrics);
+        segoe.ascent_per_line =
+            static_cast<float>(metrics.ascent) / static_cast<float>(metrics.ascent + metrics.descent);
+        return {segoe};
+    }
+
+    std::vector<Family> families;
+    for (const std::string_view name : font_families::kInterface)
+    {
+        if (Family family; family_named(Wide(name), family))
+        {
+            families.push_back(family);
+        }
+    }
+    if (families.empty())
+    {
+        if (Family family; family_named(GdiFamily(DEFAULT_CHARSET), family))
+        {
+            families.push_back(family);
+        }
+    }
+
+    return families;
+}
+
+// The Japanese interface font of Windows 10 and 11, or of earlier versions, then the first family of the list that the
+// system has, then the family that GDI answers a request for Japanese with. Only a face with kana counts.
+ComPtr<IDWriteFontFace> JapaneseFace(IDWriteFontCollection* collection)
+{
+    std::vector<std::wstring> names = {L"Yu Gothic UI", L"Meiryo UI"};
+    for (const std::string_view name : font_families::kJapanese)
+    {
+        names.push_back(Wide(name));
+    }
+    names.push_back(GdiFamily(SHIFTJIS_CHARSET));
+    for (const std::wstring& name : names)
+    {
+        ComPtr<IDWriteFontFace> face =
+            FindFace(collection, name.c_str(), DWRITE_FONT_WEIGHT_NORMAL, font_families::kLightestRegular);
+        if (face && GlyphOf(face.Get(), 0x306E) != 0) // の
+        {
+            return face;
+        }
+    }
+
+    return nullptr;
+}
+
+// The contrast that Windows adds to text drawn without ClearType.
+float GrayscaleContrast(IDWriteFactory* factory)
 {
     float contrast = 1.0f;
     ComPtr<IDWriteRenderingParams> params;
@@ -286,15 +421,7 @@ std::array<unsigned char, 256> ContrastTable(IDWriteFactory* factory)
         contrast = std::max(params1->GetGrayscaleEnhancedContrast(), 0.0f);
     }
 
-    std::array<unsigned char, 256> table{};
-    for (std::size_t i = 0; i < table.size(); i++)
-    {
-        const float coverage = static_cast<float>(i) / 255.0f;
-        const float alpha = coverage * (contrast + 1.0f) / (coverage * contrast + 1.0f);
-        table[i] = static_cast<unsigned char>(std::lround(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
-    }
-
-    return table;
+    return contrast;
 }
 
 } // namespace
@@ -310,50 +437,28 @@ theme::Fonts AddSystemFonts(ImFontAtlas& atlas)
     {
         return fonts;
     }
-    state.contrast = ContrastTable(state.factory.Get());
+    state.contrast = system_fonts::ContrastTable(GrayscaleContrast(state.factory.Get()));
 
-    // The interface font, and the Japanese interface font of Windows 10 and 11, or of earlier versions.
-    const ComPtr<IDWriteFontFace> regular = FindFace(collection.Get(), L"Segoe UI", DWRITE_FONT_WEIGHT_NORMAL);
-    const ComPtr<IDWriteFontFace> semibold = FindFace(collection.Get(), L"Segoe UI", DWRITE_FONT_WEIGHT_SEMI_BOLD);
-    const ComPtr<IDWriteFontFace> japanese =
-        FindFirst(collection.Get(), {L"Yu Gothic UI", L"Meiryo UI"}, DWRITE_FONT_WEIGHT_NORMAL);
-
-    // The text and the strong text, each followed by the Japanese font.
-    if (regular)
+    const std::vector<Family> families = InterfaceFamilies(collection.Get());
+    if (families.empty())
     {
-        fonts.text = AddFace(atlas, regular, false, 0.0f);
-        if (japanese)
-        {
-            AddFace(atlas, japanese, true, 0.0f);
-        }
+        return fonts;
     }
-    if (semibold)
-    {
-        fonts.strong = AddFace(atlas, semibold, false, 0.0f);
-        if (japanese)
-        {
-            AddFace(atlas, japanese, true, 0.0f);
-        }
-        fonts.caps = AddFace(atlas, semibold, false, 1.0f);
-    }
+    const ComPtr<IDWriteFontFace> japanese = JapaneseFace(collection.Get());
 
-    // The figures are the text's font. The regular weight of Segoe UI gives its digits one width. The Mac's figures
-    // have one width too. Times pad their fields with figure spaces (U+2007). Where Segoe UI has no glyph for them, a
-    // space takes their place, and Dear ImGui draws no question mark.
-    if (regular)
+    // Every source draws on the first family's baseline.
+    const float ascent_per_line = families.front().ascent_per_line;
+    const auto add_face = [&](std::optional<std::size_t> family, bool strong, bool merge, bool figures, float spacing)
     {
-        fonts.figures = AddFace(atlas, regular, false, 0.0f);
-        if (fonts.figures != nullptr && !fonts.figures->IsGlyphInFont(0x2007))
+        if (!family)
         {
-            fonts.figures->AddRemapChar(0x2007, ' ');
+            return AddSource(atlas, Source{japanese, ascent_per_line, figures}, merge, spacing);
         }
-        if (japanese)
-        {
-            AddFace(atlas, japanese, true, 0.0f);
-        }
-    }
-
-    return fonts;
+        const Family& listed = families[*family];
+        const ComPtr<IDWriteFontFace>& face = strong && listed.strong ? listed.strong : listed.regular;
+        return AddSource(atlas, Source{face, ascent_per_line, figures}, merge, spacing);
+    };
+    return system_fonts::AddRoles(families.size(), families.front().strong != nullptr, japanese != nullptr, add_face);
 }
 
 } // namespace hokuto::app

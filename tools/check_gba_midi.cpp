@@ -81,7 +81,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/driver.h"
+#include "agblib/mp2k/driver.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
@@ -246,7 +246,7 @@ std::vector<Imported> ImportSongs(const File& file, const hokuto::song::GbaRom& 
             }
             Written written = MidiOf(file, *sequence, entry.before, totals);
             const hokuto::edit::GbaMidiSong midi =
-                hokuto::edit::GbaSongOfMidi(written.midi, {}, ntdlib::mp2k::NoteArguments(rom.info));
+                hokuto::edit::GbaSongOfMidi(written.midi, {}, agblib::mp2k::NoteArguments(rom.info));
             if (!midi.warnings.empty())
             {
                 std::printf("%s: %s\n", name.c_str(), midi.warnings.front().c_str());
@@ -305,7 +305,7 @@ std::shared_ptr<const hokuto::song::GbaRom> ExportImports(
                 const Written written = MidiOf(file, entry.sequence, entry.before, ignored);
                 current = hokuto::edit::WithGbaMidiSong(
                     current, places, static_cast<uint32_t>(entry.song),
-                    hokuto::edit::GbaSongOfMidi(written.midi, {}, ntdlib::mp2k::NoteArguments(rom.info)));
+                    hokuto::edit::GbaSongOfMidi(written.midi, {}, agblib::mp2k::NoteArguments(rom.info)));
             }
             exported = hokuto::format::ExportArchive(current);
         }

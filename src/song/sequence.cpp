@@ -18,17 +18,17 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/mp2k/performance.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/sequence_file.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/mp2k/performance.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
 #include "ntdlib/sequence_export/performer.h"
 #include "ntdlib/sequence_export/rsar_instruments.h"
@@ -447,8 +447,8 @@ Sequence ReadSequence(const ntdlib::rsar::SoundArchive& archive, uint32_t sound,
 Sequence ReadSequence(const GbaRom& rom, int song)
 {
     const std::string name = GbaSongName(rom, song);
-    ntdlib::mp2k::SongHeader header;
-    if (song < 0 || !ntdlib::mp2k::ReadSong(rom.rom, rom.info, song, header))
+    agblib::mp2k::SongHeader header;
+    if (song < 0 || !agblib::mp2k::ReadSong(rom.rom, rom.info, song, header))
     {
         throw std::runtime_error("The ROM has no song " + std::to_string(song) + ".");
     }
@@ -456,11 +456,12 @@ Sequence ReadSequence(const GbaRom& rom, int song)
     // The performer plays one pass of the loop. A song that its music player doesn't play makes a performance whose
     // tracks run no commands, with a warning. A song whose tracks run commands but play nothing that sounds reads
     // without notes. Every note plays the song's voice group, at the voice of its program.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     try
     {
-        const export_::mp2k::Performance performance = export_::mp2k::PerformSong(rom.rom, rom.info, song, settings);
+        const agblib::sequence_export::mp2k::Performance performance =
+            agblib::sequence_export::mp2k::PerformSong(rom.rom, rom.info, song, settings);
         if (!performance.warnings.empty() &&
             std::ranges::all_of(performance.stretches, [](const auto& stretches) { return stretches.empty(); }))
         {

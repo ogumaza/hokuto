@@ -13,9 +13,10 @@
 #include <stdexcept>
 #include <utility>
 
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/song.h"
+#include "xsflib/bytes.h"
 
 #include "song/gba_assembly.h"
 #include "song/gba_assembly_parts.h"
@@ -25,7 +26,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 
 using gba_assembly_parts::kCentre;
 using gba_assembly_parts::kCommandNames;
@@ -37,7 +38,6 @@ using gba_assembly_parts::kMemoryOperations;
 using gba_assembly_parts::kModTargets;
 using gba_assembly_parts::kReverbSet;
 using gba_assembly_parts::kVoiceBytes;
-using gba_assembly_parts::ReadWord;
 using gba_assembly_parts::ThreeDigits;
 using gba_assembly_parts::TwoDigits;
 
@@ -458,17 +458,6 @@ std::size_t PadOf(const Line& line, std::size_t size)
 
 } // namespace
 
-namespace gba_assembly_parts
-{
-
-uint32_t ReadWord(std::span<const uint8_t> bytes, std::size_t at)
-{
-    return uint32_t{bytes[at]} | uint32_t{bytes[at + 1]} << 8 | uint32_t{bytes[at + 2]} << 16 |
-           uint32_t{bytes[at + 3]} << 24;
-}
-
-} // namespace gba_assembly_parts
-
 namespace
 {
 
@@ -665,10 +654,10 @@ GbaSongSource ReadGbaAssembly(std::string_view text, uint32_t base)
     }
 
     const std::size_t tracks = bytes[header];
-    if (tracks > static_cast<std::size_t>(ntdlib::mp2k::kMaxTracks))
+    if (tracks > static_cast<std::size_t>(agblib::mp2k::kMaxTracks))
     {
         throw std::invalid_argument("The header " + header_label + " lists " + std::to_string(tracks) +
-                                    " tracks. A song plays at most " + std::to_string(ntdlib::mp2k::kMaxTracks) + ".");
+                                    " tracks. A song plays at most " + std::to_string(agblib::mp2k::kMaxTracks) + ".");
     }
     if (bytes.size() < header + 8 + 4 * tracks)
     {
@@ -681,13 +670,13 @@ GbaSongSource ReadGbaAssembly(std::string_view text, uint32_t base)
     source.reverb = bytes[header + 3];
     if (source.voices_symbol.empty())
     {
-        source.voices = ReadWord(bytes, header + 4);
+        source.voices = xsflib::LoadLe32(&bytes[header + 4]);
     }
 
     uint32_t lowest = base + static_cast<uint32_t>(header);
     for (std::size_t t = 0; t < tracks; t++)
     {
-        const uint32_t entry = ReadWord(bytes, header + 8 + 4 * t);
+        const uint32_t entry = xsflib::LoadLe32(&bytes[header + 8 + 4 * t]);
         if (entry < base || entry >= base + header)
         {
             throw std::invalid_argument("Track " + std::to_string(t + 1) + " of the header " + header_label +

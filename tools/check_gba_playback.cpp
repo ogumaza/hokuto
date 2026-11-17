@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Checks Hokuto's playback of the MP2K songs of GBA ROMs against ntdlib's ArchivePlayer, run directly. For each song
+// Checks Hokuto's playback of the MP2K songs of GBA ROMs against agblib's ArchivePlayer, run directly. For each song
 // that plays (song::GbaSongs), it checks:
 //
 // - From the start, the player's output matches the output of the reference, sample for sample, after the player's
@@ -49,11 +49,10 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/mp2k/archive_player.h"
+#include "agblib/mp2k/archive_player.h"
 #include "xsflib/binary.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
-#include "xsflib/rip/length.h"
 
 #include "check_part.h"
 #include "check_playback_steps.h"
@@ -73,11 +72,13 @@ using hokuto::tools::PartOf;
 using hokuto::tools::playback_steps::ArrangedAt;
 using hokuto::tools::playback_steps::CheckFrames;
 using hokuto::tools::playback_steps::EndLevels;
+using hokuto::tools::playback_steps::EndSpan;
 using hokuto::tools::playback_steps::FailedSeeksText;
 using hokuto::tools::playback_steps::kBlock;
-using hokuto::tools::playback_steps::LevelsAfterEnd;
+using hokuto::tools::playback_steps::LevelsBetween;
 using hokuto::tools::playback_steps::PrintDifferences;
 using hokuto::tools::playback_steps::SeekCheck;
+using hokuto::tools::playback_steps::SoundsOnText;
 using hokuto::tools::playback_steps::StartCheck;
 using hokuto::tools::playback_steps::StepTotals;
 using hokuto::tools::playback_steps::SwitchCheck;
@@ -122,10 +123,10 @@ struct Totals : StepTotals
 
 Reference RunReference(const song::GbaRom& rom, int number, bool enhanced, std::size_t samples)
 {
-    using ntdlib::mp2k::Action;
-    ntdlib::mp2k::ArchivePlayer player(rom.rom, rom.info);
+    using agblib::mp2k::Action;
+    agblib::mp2k::ArchivePlayer player(rom.rom, rom.info);
     Reference reference;
-    player.Start(number, ntdlib::mp2k::ArchivePlayerOptions{.enhanced = enhanced});
+    player.Start(number, agblib::mp2k::ArchivePlayerOptions{.enhanced = enhanced});
     std::map<int, std::size_t> playing; // the note that each channel plays, by the channel
     std::vector<int16_t> strict;
     while (reference.samples.size() < samples * 2)
@@ -279,20 +280,14 @@ void CheckSong(const char* path, const std::shared_ptr<const song::GbaRom>& rom,
     // console's steps, and each side stays within ±8 of a level (SequenceModel's end). A loop's output ends at the end
     // of the loop's pass, and the reference plays on round the loop.
     const std::size_t rest = std::min(heard * frame_floats, reference.samples.size());
-    const std::span<const float> after = std::span<const float>(reference.samples)
-                                             .subspan(rest, std::min(frames * frame_floats, reference.samples.size()) -
-                                                                std::min(rest, frames * frame_floats));
-    const float span = enhanced ? 2.0f * static_cast<float>(xsflib::rip::kSilenceLevel) / 32768.0f : 0.0f;
-    EndLevels levels;
-    if (ended && !sequence->loop && after.size() >= 2)
-    {
-        levels = LevelsAfterEnd(after, frame_floats, span);
-    }
-    const auto [sounds_on, level, widest, range, widest_at] = levels;
-    if (!sounds_on && level > 0.0f)
+    const std::size_t stop = std::min(frames * frame_floats, reference.samples.size());
+    const EndLevels levels = ended && !sequence->loop
+                                 ? LevelsBetween(reference.samples, rest, stop, frame_floats, EndSpan(enhanced))
+                                 : EndLevels();
+    if (!levels.sounds_on && levels.level > 0.0f)
     {
         totals.levels++;
-        totals.largest_level = std::max(totals.largest_level, level);
+        totals.largest_level = std::max(totals.largest_level, levels.level);
     }
 
     // A seek to the middle of the output, then one back to the second frame.
@@ -303,15 +298,12 @@ void CheckSong(const char* path, const std::shared_ptr<const song::GbaRom>& rom,
         SwitchCheck(rom, sequence, mixing, reference.samples, heard, frames, frame_floats, 0, totals);
 
     const std::string loop = LoopText(sequence->loop);
-    if (differences + seeks + failed_seeks > 0 || sounds_on || short_loop || heard == 0 || !switch_text.empty())
+    if (differences + seeks + failed_seeks > 0 || levels.sounds_on || short_loop || heard == 0 || !switch_text.empty())
     {
         std::string after_text = FailedSeeksText(failed_seeks);
-        if (sounds_on)
+        if (levels.sounds_on)
         {
-            after_text +=
-                ", and the reference sounds after the output's end: " + std::to_string(std::lround(range * 32768.0f)) +
-                " steps in all, and " + std::to_string(std::lround(widest * 32768.0f)) + " within frame " +
-                std::to_string(widest_at) + " after the end";
+            after_text += SoundsOnText(levels);
         }
         if (short_loop)
         {

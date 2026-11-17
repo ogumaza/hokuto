@@ -70,6 +70,9 @@ constexpr uint8_t kPrefetchFields = 2;
 // The options of a 3DS stream sound of 2.3.0.0: the values of the extension that its entry holds, a bit each.
 constexpr uint8_t kStreamOptions = (1 << 3) - 1;
 
+// The flag of the archive's player in the ITMS chunk: the Switch's player takes the advanced wave sounds.
+constexpr uint8_t kAdvancedWaveSounds = 1 << 0;
+
 // The group of a group file in the ITMS chunk where Hokuto couldn't find it.
 constexpr uint32_t kNoGroup = 0xFFFFFFFF;
 
@@ -432,11 +435,13 @@ std::vector<uint8_t> ItemsChunk(const Model& model)
     }
 
     const sar::ArchiveModel& archive = model.archive;
+    const sar::PlayerSettings& settings = archive.player_settings;
     Out out;
     out.U8(CodeOf(archive.flavor));
-    out.Zeros(3);
+    out.U8(settings.advanced_wave_sounds ? kAdvancedWaveSounds : 0);
+    out.U8(settings.sequence_sound_countdown);
+    out.U8(0);
     out.U32(archive.version);
-    const sar::PlayerSettings& settings = archive.player_settings;
     for (const uint16_t count :
          {settings.sequence_sounds, settings.sequence_tracks, settings.stream_sounds, settings.stream_tracks,
           settings.stream_channels, settings.wave_sounds, settings.wave_tracks})
@@ -734,9 +739,22 @@ Model ReadModel(std::span<const uint8_t> sounds, std::span<const uint8_t> items)
     }
 
     archive.flavor = *flavor;
-    in.Take(3);
-    archive.version = in.U32();
     sar::PlayerSettings& settings = archive.player_settings;
+    const uint8_t player_flags = in.U8();
+    if ((player_flags & ~kAdvancedWaveSounds) != 0)
+    {
+        Newer("a flag of the archive's player");
+    }
+
+    settings.advanced_wave_sounds = (player_flags & kAdvancedWaveSounds) != 0;
+    settings.sequence_sound_countdown = in.U8();
+    if (archive.flavor != sar::Flavor::kNx && (settings.advanced_wave_sounds || settings.sequence_sound_countdown != 0))
+    {
+        Damaged("the archive's player has settings of the Switch's player in an archive of another console");
+    }
+
+    in.Take(1);
+    archive.version = in.U32();
     for (uint16_t* count :
          {&settings.sequence_sounds, &settings.sequence_tracks, &settings.stream_sounds, &settings.stream_tracks,
           &settings.stream_channels, &settings.wave_sounds, &settings.wave_tracks})

@@ -24,10 +24,10 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/archive_player.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/archive_player.h"
+#include "agblib/mp2k/song.h"
 #include "seqlib/wav.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
@@ -45,7 +45,7 @@
 namespace hokuto::tools::gba_voices
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 using hokuto::edit::GbaPattern;
 using hokuto::format::File;
 

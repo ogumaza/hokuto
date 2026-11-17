@@ -14,7 +14,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/brownie/driver.h"
+#include "agblib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
 
 #include "edit/brownie_parts.h"
@@ -27,7 +27,7 @@ namespace hokuto::edit
 namespace
 {
 
-namespace brownie = ntdlib::brownie;
+namespace brownie = agblib::brownie;
 using brownie_parts::BlockAt;
 using brownie_parts::BlockOf;
 using brownie_parts::Code;

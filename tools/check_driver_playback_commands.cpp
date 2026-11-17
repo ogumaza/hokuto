@@ -17,7 +17,7 @@ uint32_t MutedTracks(const song::DriverRom& rom, uint32_t sound)
 {
     if (const song::Rd2Rom* rd2 = song::Rd2Of(&rom))
     {
-        return ntdlib::rd2::VersionSettings(rd2->info, rd2->SongOf(sound), rd2->VersionOf(sound)).muted_tracks;
+        return agblib::rd2::VersionSettings(rd2->info, rd2->SongOf(sound), rd2->VersionOf(sound)).muted_tracks;
     }
 
     return 0;
@@ -29,7 +29,7 @@ uint16_t SilencedChannels(const song::DriverRom& rom, uint32_t sound)
 {
     if (const song::RareRom* rare = song::RareOf(&rom))
     {
-        return ntdlib::rare::SilencedChannels(rare->info, rare->SongOf(sound), rare->VersionOf(sound) == 1);
+        return agblib::rare::SilencedChannels(rare->info, rare->SongOf(sound), rare->VersionOf(sound) == 1);
     }
 
     return 0;
@@ -41,7 +41,7 @@ constexpr int kKrawallPortaNote = 19;
 constexpr int kKrawallVolumeSlidePorta = 24;
 constexpr int kKrawallNoteDelay = 45;
 
-// What ntdlib's Player of Krawall does with the entry of a channel in a pass of a row.
+// What agblib's Player of Krawall does with the entry of a channel in a pass of a row.
 struct KrawallEntry
 {
     bool started = false; // whether a voice starts on the channel in the row
@@ -50,14 +50,14 @@ struct KrawallEntry
     int level = 0;        // the highest level on either side of the voice that the row starts, over the voice's life
 };
 
-// The entries of the rows of sound `sound` as ntdlib's Player of Krawall plays them, by the address of the row, its
+// The entries of the rows of sound `sound` as agblib's Player of Krawall plays them, by the address of the row, its
 // pass from 0 and the channel. A voice starts where the mixer channel of the channel starts to sound, gets another
 // handle or moves its position. The converter starts a note there. The player plays `rows` rows and a few more.
 using KrawallEntries = std::map<std::tuple<uint32_t, int, int>, KrawallEntry>;
 KrawallEntries PlayedEntries(const song::KrawallRom& krawall, uint32_t sound, std::size_t rows)
 {
     KrawallEntries entries;
-    ntdlib::krawall::Player player(krawall.ModulesRom(), krawall.info, krawall.info.songs[sound]);
+    agblib::krawall::Player player(krawall.ModulesRom(), krawall.info, krawall.info.songs[sound]);
     if (!player.Valid())
     {
         return entries;
@@ -84,7 +84,7 @@ KrawallEntries PlayedEntries(const song::KrawallRom& krawall, uint32_t sound, st
             }
             for (std::size_t c = 0; c < channels; c++)
             {
-                const ntdlib::krawall::Channel& channel = player.Channels()[c];
+                const agblib::krawall::Channel& channel = player.Channels()[c];
                 const bool now = player.Sounding(channel);
                 const uint32_t moved = now ? player.MixerOf(channel).moves : 0;
                 KrawallEntry& entry = entries[{row, pass, static_cast<int>(c)}];
@@ -104,7 +104,7 @@ KrawallEntries PlayedEntries(const song::KrawallRom& krawall, uint32_t sound, st
                 }
                 else if (voices[c] != nullptr)
                 {
-                    const ntdlib::krawall::MixChannel& mixer = player.MixerOf(channel);
+                    const agblib::krawall::MixChannel& mixer = player.MixerOf(channel);
                     voices[c]->level = std::max({voices[c]->level, int{mixer.left}, int{mixer.right}});
                 }
                 sounding[c] = now;
@@ -132,7 +132,7 @@ struct KrawallCounts
 };
 
 // Counts Krawall's note command `i` of `commands`, in stretch `s` of `track` on the row's pass `pass`, when the
-// arrangement shows no note of it: by what ntdlib's Player does with its entry, in `krawall`, `lost` and `totals`.
+// arrangement shows no note of it: by what agblib's Player does with its entry, in `krawall`, `lost` and `totals`.
 void CountKrawallCommand(const ntdlib::commands::Sequence& commands, std::span<const uint32_t> offsets, uint32_t i,
                          const song::Track& track, std::size_t s, int pass, KrawallCounts& krawall,
                          std::map<int, std::size_t>& lost, Totals& totals)
@@ -158,10 +158,10 @@ void CountKrawallCommand(const ntdlib::commands::Sequence& commands, std::span<c
         {
             continue;
         }
-        if (next.kind == Kind::kOther && next.encoding.opcode >= ntdlib::krawall::kEffectOpcode &&
-            next.encoding.opcode < ntdlib::krawall::kPatternOpcode)
+        if (next.kind == Kind::kOther && next.encoding.opcode >= agblib::krawall::kEffectOpcode &&
+            next.encoding.opcode < agblib::krawall::kPatternOpcode)
         {
-            effect = next.encoding.opcode - ntdlib::krawall::kEffectOpcode;
+            effect = next.encoding.opcode - agblib::krawall::kEffectOpcode;
             operand = next.bytes.empty() ? 0 : next.bytes[0];
         }
         break;
@@ -211,8 +211,8 @@ KrawallCounts KrawallCountsOf(const song::DriverRom& rom, const song::Sequence& 
             rows = std::max(rows, track.stretches.size());
         }
         krawall_counts.entries = PlayedEntries(*k, sequence.sound, rows);
-        krawall_counts.rows_start = ntdlib::krawall::SequenceAddress(
-            k->ModulesRom(), k->info, ntdlib::krawall::SequenceOfSong(k->info, static_cast<int>(sequence.sound)));
+        krawall_counts.rows_start = agblib::krawall::SequenceAddress(
+            k->ModulesRom(), k->info, agblib::krawall::SequenceOfSong(k->info, static_cast<int>(sequence.sound)));
         totals.krawall++;
     }
 
@@ -257,7 +257,7 @@ void CountLostCommands(const std::string& name, const song::DriverRom& rom, cons
     Peaks peaks;
     if (brownie)
     {
-        const double seconds = static_cast<double>(sequence.length + 2) / ntdlib::agb::kFrameRate;
+        const double seconds = static_cast<double>(sequence.length + 2) / agblib::agb::kFrameRate;
         const auto samples = static_cast<std::size_t>(std::ceil(seconds * sample_rate));
         peaks = ReferencePeaks(rom, sequence.sound, enhanced, samples, rom.MakePlayer()->Tracks());
     }
@@ -294,7 +294,7 @@ bool ShowsNote(const song::Sequence& sequence, const song::Track& track, uint64_
         {
             bpm = tempo.tick <= at ? tempo.bpm : bpm;
         }
-        const double frame = 96.0 * hokuto::format::kQuintetSongTicks * bpm / 60.0 / ntdlib::agb::kFrameRate;
+        const double frame = 96.0 * hokuto::format::kQuintetSongTicks * bpm / 60.0 / agblib::agb::kFrameRate;
         const bool near = std::ranges::any_of(
             track.notes, [at, frame](const song::Note& note)
             { return std::abs(static_cast<double>(note.start) - static_cast<double>(at)) <= frame + 1.0; });

@@ -22,8 +22,8 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/konami/seqformat.h"
 #include "ntdlib/sar/layout.h"
 
 #include "edit/bytecode.h"
@@ -150,20 +150,20 @@ bool KonamiTrackPlays(const Sequence& sequence, uint32_t entry)
 // 2 the wave channel, track 3 the noise, and the others the samples.
 bool KonamiChannelTakes(int from, int to)
 {
-    if (ntdlib::konami::IsPsgTrack(from) != ntdlib::konami::IsPsgTrack(to))
+    if (agblib::konami::IsPsgTrack(from) != agblib::konami::IsPsgTrack(to))
     {
         return false;
     }
 
-    return !ntdlib::konami::IsPsgTrack(from) || from == to || (from < 2 && to < 2);
+    return !agblib::konami::IsPsgTrack(from) || from == to || (from < 2 && to < 2);
 }
 
 // The name of track `track`'s channel as the zones show it.
 std::string KonamiChannelName(int track)
 {
-    constexpr std::array<const char*, ntdlib::konami::kPsgTracks> kPsgNames = {"Square 1", "Square 2", "Wave", "Noise"};
-    return ntdlib::konami::IsPsgTrack(track) ? kPsgNames[static_cast<std::size_t>(track)]
-                                             : "Voice " + std::to_string(track - ntdlib::konami::kPsgTracks);
+    constexpr std::array<const char*, agblib::konami::kPsgTracks> kPsgNames = {"Square 1", "Square 2", "Wave", "Noise"};
+    return agblib::konami::IsPsgTrack(track) ? kPsgNames[static_cast<std::size_t>(track)]
+                                             : "Voice " + std::to_string(track - agblib::konami::kPsgTracks);
 }
 
 // Whether track `track` of song `fields` runs no note, and the track before it plays no note on its channel. A note can
@@ -181,7 +181,7 @@ bool KonamiTrackFree(const format::File& file, const Sequence& sequence, std::sp
     }
 
     const bool off_centre =
-        ntdlib::konami::IsPsgTrack(track - 1) && ntdlib::konami::RecordHasPan(*KonamiOf(ConsoleOf(file)));
+        agblib::konami::IsPsgTrack(track - 1) && agblib::konami::RecordHasPan(*KonamiOf(ConsoleOf(file)));
     const auto reaches_track = [off_centre](const Command& command)
     {
         return (command.kind == Kind::kNote && command.sample && command.index == 1) ||
@@ -206,7 +206,7 @@ int FreeKonamiTrack(const format::File& file, const Sequence& sequence, std::spa
     }
 
     throw std::invalid_argument(
-        ntdlib::konami::IsPsgTrack(from)
+        agblib::konami::IsPsgTrack(from)
             ? "In Konami's driver, each track plays one channel. No other track of this song that can play this "
               "channel is free."
             : "In Konami's driver, each track plays one channel. Every sample track of this song already has notes. "

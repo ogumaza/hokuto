@@ -71,6 +71,34 @@ bool Sounding(const std::array<int32_t*, 4>& channels, std::size_t samples)
     return std::any_of(channels.begin(), channels.end(), sounding);
 }
 
+// Puts `effect` in the aux callback of bus A of `model`, on ntdlib's model of the library's effect, in the frames of
+// strict or `enhanced` mixing. `sent` becomes true once the bus takes sound.
+void SetCtrEffect(ntdlib::ctr::snd::ArchiveModel& model, const CtrEffect& effect, bool enhanced, bool& sent)
+{
+    const ntdlib::ctr_fx::FrameFormat format = CtrEffectFormat(enhanced);
+    bool* const sent_to = &sent;
+    if (effect.reverb)
+    {
+        model.snd.SetAuxCallback(0,
+                                 [reverb = ntdlib::ctr_fx::Reverb(effect.library, {}, format), sent_to](
+                                     const std::array<int32_t*, 4>& channels, std::size_t samples) mutable
+                                 {
+                                     *sent_to = *sent_to || Sounding(channels, samples);
+                                     reverb.Process(channels, samples);
+                                 });
+    }
+    else
+    {
+        model.snd.SetAuxCallback(0,
+                                 [delay = ntdlib::ctr_fx::Delay({}, format), sent_to](
+                                     const std::array<int32_t*, 4>& channels, std::size_t samples) mutable
+                                 {
+                                     *sent_to = *sent_to || Sounding(channels, samples);
+                                     delay.Process(channels, samples);
+                                 });
+    }
+}
+
 // Teakra runs `firmware` in strict mixing. With `enhanced`, the model of the firmware runs in its enhanced mode. With
 // `effect`, the effect runs in bus A's aux callback on ntdlib's model of the library's effect. That is how a game's
 // callback and the SDK's effect run it. The callback goes on after the DSP has started, before the sequence starts.
@@ -100,28 +128,7 @@ CtrRun RunCtrModel(std::span<const uint8_t> firmware, const sar::SoundArchive& a
     }
     if (effect != nullptr)
     {
-        const ntdlib::ctr_fx::FrameFormat format = CtrEffectFormat(enhanced);
-        bool* const sent = &run.sent;
-        if (effect->reverb)
-        {
-            model.snd.SetAuxCallback(0,
-                                     [reverb = ntdlib::ctr_fx::Reverb(effect->library, {}, format), sent](
-                                         const std::array<int32_t*, 4>& channels, std::size_t samples) mutable
-                                     {
-                                         *sent = *sent || Sounding(channels, samples);
-                                         reverb.Process(channels, samples);
-                                     });
-        }
-        else
-        {
-            model.snd.SetAuxCallback(0,
-                                     [delay = ntdlib::ctr_fx::Delay({}, format), sent](
-                                         const std::array<int32_t*, 4>& channels, std::size_t samples) mutable
-                                     {
-                                         *sent = *sent || Sounding(channels, samples);
-                                         delay.Process(channels, samples);
-                                     });
-        }
+        SetCtrEffect(model, *effect, enhanced, run.sent);
     }
     ntdlib::ctr::snd::SequenceSoundPlayer* player = model.engine->StartSequence(sound);
     if (player == nullptr)
@@ -153,36 +160,7 @@ CtrRun RunCtrModel(std::span<const uint8_t> firmware, const sar::SoundArchive& a
         }
         run.before.push_back(before);
         run.after.push_back(player->TickCount());
-
-        // Each channel's track, from the tracks' lists of channels.
-        const ntdlib::ctr::snd::ChannelManager& channels = model.engine->Channels();
-        std::map<int, int> track_of;
-        for (int t = 0; t < kTracks; t++)
-        {
-            const auto* track = player->Track(t);
-            for (int place = track != nullptr ? track->ChannelList() : ntdlib::nwsnd::kNoChannel;
-                 place != ntdlib::nwsnd::kNoChannel; place = channels.At(place).next_in_track)
-            {
-                track_of[place] = t;
-            }
-        }
-
-        std::map<int, std::pair<int, int>> current;
-        std::vector<NoteStart> started;
-        for (const int place : channels.InUse())
-        {
-            const auto& channel = channels.At(place);
-            const std::pair<int, int> keys = {channel.key, channel.original_key};
-            current[place] = keys;
-            const auto old = previous.find(place);
-            if (old == previous.end() || old->second != keys)
-            {
-                const auto track = track_of.find(place);
-                started.push_back({track != track_of.end() ? track->second : -1, channel.key, old != previous.end()});
-            }
-        }
-        run.notes.push_back(std::move(started));
-        previous = std::move(current);
+        run.notes.push_back(NotesStarted(*player, model.engine->Channels(), previous));
     }
 
     if (enhanced)
@@ -204,36 +182,6 @@ CtrRun RunCtrModel(std::span<const uint8_t> firmware, const sar::SoundArchive& a
     return run;
 }
 
-// The frames of `samples` from frame `from` on that differ from the frames of `expected` from frame `first` + `from`
-// on, up to the end of either. Each frame holds `frame_floats` samples. A frame matches when each of its samples is the
-// expected one times `scale`.
-template <class Sample, class Expected>
-std::size_t CtrDifferences(std::span<const Sample> samples, std::size_t from, std::span<const Expected> expected,
-                           std::size_t frame_floats, std::size_t first, float scale,
-                           std::size_t* first_difference = nullptr)
-{
-    std::size_t differences = 0;
-    for (std::size_t frame = from;
-         (frame + 1) * frame_floats <= samples.size() && (first + frame + 1) * frame_floats <= expected.size(); frame++)
-    {
-        const std::size_t at = (first + frame) * frame_floats;
-        for (std::size_t i = 0; i < frame_floats; i++)
-        {
-            if (static_cast<float>(samples[frame * frame_floats + i]) != static_cast<float>(expected[at + i]) * scale)
-            {
-                if (differences == 0 && first_difference != nullptr)
-                {
-                    *first_difference = frame;
-                }
-                differences++;
-                break;
-            }
-        }
-    }
-
-    return differences;
-}
-
 // The frames of the player's output in `samples` from frame `from` on that differ from the run's frames from frame
 // `first` + `from` on, in the player's floats: the enhanced mode's floats, or the DSP's samples at the player's scale.
 std::size_t CtrPlayerDifferences(std::span<const float> samples, std::size_t from, const CtrRun& expected,
@@ -241,12 +189,12 @@ std::size_t CtrPlayerDifferences(std::span<const float> samples, std::size_t fro
 {
     if (!expected.floats.empty())
     {
-        return CtrDifferences(samples, from, std::span<const float>(expected.floats), expected.frame_floats, first,
-                              1.0f, first_difference);
+        return FrameDifferences(samples, from, std::span<const float>(expected.floats), expected.frame_floats, first,
+                                1.0f, first_difference);
     }
 
-    return CtrDifferences(samples, from, std::span<const int16_t>(expected.samples), expected.frame_floats, first,
-                          1.0f / 32768.0f, first_difference);
+    return FrameDifferences(samples, from, std::span<const int16_t>(expected.samples), expected.frame_floats, first,
+                            1.0f / 32768.0f, first_difference);
 }
 
 // The player's output for `before` frames in mode `from`, then on a new model of the same sequence in mode `to` with
@@ -256,28 +204,10 @@ std::vector<float> RunCtrSwitch(const std::shared_ptr<const sar::SoundArchive>& 
                                 const std::shared_ptr<const song::Sequence>& sequence, std::size_t before,
                                 std::size_t frames, song::Mixing from, song::Mixing to, const song::AuxEffects& effects)
 {
-    const std::size_t frame_samples = CtrFrameSamples(from == song::Mixing::kEnhanced);
-    const auto clock = std::make_shared<song::PlaybackClock>(frame_samples);
-    song::SequencePlayer player(
-        std::make_shared<song::SequenceModel>(archive, sequence, song::ModelOptions{.mixing = from}), 0, clock);
-    std::vector<float> output;
-    if (!playback_steps::Render(player, before, frame_samples, output))
-    {
-        return output;
-    }
-
-    song::ModelCatchUp catch_up;
-    catch_up.Start(
+    return playback_steps::RunSwitch(
+        std::make_shared<song::SequenceModel>(archive, sequence, song::ModelOptions{.mixing = from}),
         std::make_shared<song::SequenceModel>(archive, sequence, song::ModelOptions{.effects = effects, .mixing = to}),
-        clock);
-    while (!catch_up.Finished())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    clock->Offer(catch_up.Take());
-    playback_steps::Render(player, frames - before, frame_samples, output);
-
-    return output;
+        before, frames);
 }
 
 // The frames of a switch's output from frame `before` + 1 on that differ from the reference of the new mode through a
@@ -332,8 +262,8 @@ std::size_t CheckCtrSeeks(song::SequenceModel& model, std::size_t first, std::si
         }
 
         seeks += enhanced ? CtrPlayerDifferences(model.FloatOutput(), 0, expected, frame)
-                          : CtrDifferences(model.Output(), 0, std::span<const int16_t>(expected.samples), frame_floats,
-                                           frame, 1.0f);
+                          : FrameDifferences(model.Output(), 0, std::span<const int16_t>(expected.samples),
+                                             frame_floats, frame, 1.0f);
     }
 
     return seeks;
@@ -378,8 +308,9 @@ std::string CheckCtrSwitch(const std::shared_ptr<const sar::SoundArchive>& archi
             {
                 rounded[i] = static_cast<int16_t>(std::lround(switched[i] * 32768.0f));
             }
-            switch_differences = CtrDifferences(std::span<const int16_t>(rounded), effect != nullptr ? before + 1 : 1,
-                                                std::span<const int16_t>(expected.samples), frame_floats, first, 1.0f);
+            switch_differences =
+                FrameDifferences(std::span<const int16_t>(rounded), effect != nullptr ? before + 1 : 1,
+                                 std::span<const int16_t>(expected.samples), frame_floats, first, 1.0f);
         }
         const bool ends_elsewhere = std::min(switched_frames, frames) != std::min(heard, frames);
         totals.switches++;
@@ -395,6 +326,93 @@ std::string CheckCtrSwitch(const std::shared_ptr<const sar::SoundArchive>& archi
     }
 
     return switch_text;
+}
+
+// The run of archive mode for CheckCtrSequence, or nothing when it fails. Counts a run that the changes alter in
+// `totals.affected`. A run that fails prints a line under `name` and counts in `totals.failed`.
+std::optional<CtrRun> RunCtrReference(std::span<const uint8_t> firmware, const sar::SoundArchive& strict,
+                                      uint32_t sound, std::size_t frames, const song::StartValues& values,
+                                      const song::Changes& changes, bool enhanced, const CtrEffect* effect,
+                                      const std::string& name, Totals& totals)
+{
+    CtrRun expected;
+    try
+    {
+        expected = RunCtrModel(firmware, strict, sound, frames, values, changes, enhanced, effect);
+        if (!changes.empty() &&
+            RunCtrModel(firmware, strict, sound, frames, values, {}, enhanced, effect).samples != expected.samples)
+        {
+            totals.affected++;
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: archive mode can't play it. %s\n", name.c_str(), error.what());
+        totals.failed++;
+        return std::nullopt;
+    }
+
+    // Archive mode runs every frame of the check. It stops short only when it can't start the sequence, or when the DSP
+    // stops answering. The comparisons below cover only the frames that both sides hold, and would pass a short run.
+    if (expected.after.size() < frames)
+    {
+        if (expected.after.empty())
+        {
+            std::fprintf(stderr, "%s: archive mode doesn't start it.\n", name.c_str());
+        }
+        else
+        {
+            std::fprintf(stderr, "%s: archive mode stops after %zu of %zu frames.\n", name.c_str(),
+                         expected.after.size(), frames);
+        }
+        totals.failed++;
+        return std::nullopt;
+    }
+
+    return expected;
+}
+
+// Checks the player's `output` of `heard` frames against `expected`, a run of archive mode that runs no tick. A
+// sequence can stop the clock with an unset tempo variable (song::SequenceModel::ClockStopped). No frame then starts
+// the player. The player's output after its first frame has to be archive mode's from frame 0. After the output's end,
+// archive mode has to stay silent, within ±8 with `effect`. Such a sequence counts apart, and fails where the two
+// differ.
+void CheckTickless(const std::string& name, std::span<const float> output, std::size_t heard, const CtrRun& expected,
+                   bool effect, Totals& totals)
+{
+    std::size_t player_first = 0;
+    const std::size_t differences = CtrPlayerDifferences(output, 1, expected, 0, &player_first);
+    const int limit = effect ? 8 : 0;
+    const bool sounds_after = std::any_of(
+        expected.samples.begin() +
+            static_cast<std::ptrdiff_t>(std::min(heard * expected.frame_floats, expected.samples.size())),
+        expected.samples.end(), [limit](int16_t sample) { return std::abs(static_cast<int>(sample)) > limit; });
+    std::fprintf(stderr, "%s: archive mode runs no tick. %zu of %zu frames differ from the player, first %zu%s.\n",
+                 name.c_str(), differences, heard, player_first,
+                 sounds_after ? ", and the reference sounds after the output's end" : "");
+    totals.tickless++;
+    totals.failed += differences > 0 || heard == 0 || sounds_after ? 1 : 0;
+}
+
+// Counts the notes that `expected` starts in its first `frames` frames, and those of them that the arrangement of
+// `sequence` lacks, in `totals`. Prints a line under `name` when notes are missing. A note that the model cuts in the
+// tick it starts is missing from the arrangement, and inaudible.
+void CheckCtrNotes(const std::string& name, const std::string& loop, const CtrRun& expected,
+                   const song::Sequence& sequence, std::size_t frames, Totals& totals)
+{
+    const NoteCheck notes = CheckNotes(expected, sequence, frames);
+    totals.notes += notes.checked;
+    totals.missed_notes += notes.missed;
+    totals.missed_later += notes.missed_later;
+    totals.missed_legatos += notes.missed_legatos;
+    if (notes.missed > 0)
+    {
+        std::fprintf(
+            stderr,
+            "%s (loop %s): %zu of %zu notes missing from the arrangement, %zu of them legatos and %zu after the "
+            "first pass.\n",
+            name.c_str(), loop.c_str(), notes.missed, notes.checked, notes.missed_legatos, notes.missed_later);
+    }
 }
 
 } // namespace
@@ -419,39 +437,13 @@ void CheckCtrSequence(std::span<const uint8_t> firmware, const sar::SoundArchive
 
     totals.sequences++;
     totals.looped += sequence->loop ? 1 : 0;
-    CtrRun expected;
-    try
+    const std::optional<CtrRun> reference =
+        RunCtrReference(firmware, strict, sound, frames, values, changes, enhanced, effect, name, totals);
+    if (!reference)
     {
-        expected = RunCtrModel(firmware, strict, sound, frames, values, changes, enhanced, effect);
-        if (!changes.empty() &&
-            RunCtrModel(firmware, strict, sound, frames, values, {}, enhanced, effect).samples != expected.samples)
-        {
-            totals.affected++;
-        }
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: archive mode can't play it. %s\n", name.c_str(), error.what());
-        totals.failed++;
         return;
     }
-
-    // Archive mode runs every frame of the check. It stops short only when it can't start the sequence, or when the DSP
-    // stops answering. The comparisons below cover only the frames that both sides hold, and would pass a short run.
-    if (expected.after.size() < frames)
-    {
-        if (expected.after.empty())
-        {
-            std::fprintf(stderr, "%s: archive mode doesn't start it.\n", name.c_str());
-        }
-        else
-        {
-            std::fprintf(stderr, "%s: archive mode stops after %zu of %zu frames.\n", name.c_str(),
-                         expected.after.size(), frames);
-        }
-        totals.failed++;
-        return;
-    }
+    const CtrRun& expected = *reference;
 
     // The player starts at the model's first frame that runs a tick. The worker renders in blocks.
     const std::size_t first = FirstTickFrame(expected.after);
@@ -465,28 +457,15 @@ void CheckCtrSequence(std::span<const uint8_t> firmware, const sar::SoundArchive
     const std::size_t heard = output.size() / frame_floats;
     const bool ended = heard < frames;
     output.resize(heard > 1 ? (heard - 1) * frame_floats : 0);
-    std::size_t player_first = 0;
 
-    // A sequence can stop the clock with an unset tempo variable (song::SequenceModel::ClockStopped). Archive mode then
-    // runs no tick, and no frame starts the player. The player's output after its first frame then has to be archive
-    // mode's from frame 0. After the output's end, archive mode has to stay silent, within ±8 with an effect. Such a
-    // sequence counts apart, and fails where the two differ.
+    // A sequence whose archive mode runs no tick counts apart (CheckTickless).
     if (first == expected.after.size())
     {
-        const std::size_t differences = CtrPlayerDifferences(output, 1, expected, 0, &player_first);
-        const int limit = effect != nullptr ? 8 : 0;
-        const bool sounds_after = std::any_of(
-            expected.samples.begin() +
-                static_cast<std::ptrdiff_t>(std::min(heard * frame_floats, expected.samples.size())),
-            expected.samples.end(), [limit](int16_t sample) { return std::abs(static_cast<int>(sample)) > limit; });
-        std::fprintf(stderr, "%s: archive mode runs no tick. %zu of %zu frames differ from the player, first %zu%s.\n",
-                     name.c_str(), differences, heard, player_first,
-                     sounds_after ? ", and the reference sounds after the output's end" : "");
-        totals.tickless++;
-        totals.failed += differences > 0 || heard == 0 || sounds_after ? 1 : 0;
+        CheckTickless(name, output, heard, expected, effect != nullptr, totals);
         return;
     }
     totals.sent += expected.sent ? 1 : 0;
+    std::size_t player_first = 0;
     std::size_t differences = CtrPlayerDifferences(output, 1, expected, first, &player_first);
 
     // The output of a sequence without a loop that ends before the check does ends where the reference has fallen
@@ -503,11 +482,10 @@ void CheckCtrSequence(std::span<const uint8_t> firmware, const sar::SoundArchive
     const bool sounds_on = tail && louder_than(effect != nullptr ? 8 : 0);
     totals.quiet_tails += tail && !sounds_on && louder_than(0) ? 1 : 0;
 
-    // A loop's output reaches the end of the loop's pass.
-    const uint64_t loop_end_ms =
-        sequence->loop ? static_cast<uint64_t>(song::MsOfTick(*sequence, sequence->loop->end)) : 0;
+    // A loop's output reaches the end of the loop's pass: the frame in which the reference's tick count reaches the
+    // loop's end.
     const bool early =
-        sequence->loop && EndsEarly(first, heard, frames, first + song::FramesIn(loop_end_ms, kCtrFrameMs));
+        sequence->loop && EndsEarly(first, heard, frames, LoopEndFrames(expected.after, sequence->loop->end));
 
     // A seek to the middle of the output, then one back to the second frame past the silence.
     const std::size_t seeks = CheckCtrSeeks(*model, first, heard, enhanced, expected);
@@ -531,21 +509,8 @@ void CheckCtrSequence(std::span<const uint8_t> firmware, const sar::SoundArchive
         totals.failed++;
     }
 
-    // The notes, up to the output's end. A note that the model cuts in the tick it starts is missing from the
-    // arrangement, and inaudible. Missing notes are listed apart from the differences.
-    const NoteCheck notes = CheckNotes(expected, *sequence, first + heard);
-    totals.notes += notes.checked;
-    totals.missed_notes += notes.missed;
-    totals.missed_later += notes.missed_later;
-    totals.missed_legatos += notes.missed_legatos;
-    if (notes.missed > 0)
-    {
-        std::fprintf(
-            stderr,
-            "%s (loop %s): %zu of %zu notes missing from the arrangement, %zu of them legatos and %zu after the "
-            "first pass.\n",
-            name.c_str(), loop.c_str(), notes.missed, notes.checked, notes.missed_legatos, notes.missed_later);
-    }
+    // The notes, up to the output's end. Missing notes are listed apart from the differences.
+    CheckCtrNotes(name, loop, expected, *sequence, first + heard, totals);
 }
 
 } // namespace hokuto::tools::playback

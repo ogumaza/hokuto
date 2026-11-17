@@ -51,41 +51,44 @@ struct ExpectedRow
     bool runs_cafe;               // of the Wii U's FxReverbHi
     bool runs_wii;                // of the Wii's reverb
     bool runs_ctr;                // of the 3DS's reverb
-    std::string_view title;       // app::EngineName
+    std::string_view title;       // format::EngineFacts::title, the engine in the other layers' messages
+    std::string_view shown;       // app::EngineName
     std::string_view the_engine;  // app::TheEngine
     ExportTarget song_target;     // app::SongTargetFor
     bool hosts_other_consoles;    // edit::EngineRefused lets a sound of another console play on the engine
 };
 
 constexpr std::array<ExpectedRow, hokuto::format::kEngineCount> kExpected = {{
-    {Engine::kSwitch, 1, "switch", Flavor::kNx, false, true, false, true, false, false, false, "Switch",
+    {Engine::kSwitch, 1, "switch", Flavor::kNx, false, true, false, true, false, false, false, "Switch", "Switch",
      "the Switch engine", ExportTarget::kSwitchSong, true},
-    {Engine::kWiiU, 2, "wii_u", Flavor::kCafe, false, true, false, false, true, false, false, "Wii U",
+    {Engine::kWiiU, 2, "wii_u", Flavor::kCafe, false, true, false, false, true, false, false, "Wii U", "Wii U",
      "the Wii U engine", ExportTarget::kWiiUSong, true},
-    {Engine::k3ds, 3, "3ds", Flavor::kCtr, false, true, false, false, false, false, true, "3DS", "the 3DS engine",
-     ExportTarget::kCtrSong, true},
-    {Engine::kWii, 4, "wii", std::nullopt, false, true, true, false, false, true, false, "Wii", "the Wii engine",
+    {Engine::k3ds, 3, "3ds", Flavor::kCtr, false, true, false, false, false, false, true, "3DS", "3DS",
+     "the 3DS engine", ExportTarget::kCtrSong, true},
+    {Engine::kWii, 4, "wii", std::nullopt, false, true, true, false, false, true, false, "Wii", "Wii", "the Wii engine",
      ExportTarget::kWiiSong, true},
-    {Engine::kGba, 5, "gba", std::nullopt, false, false, false, false, false, false, false, "GBA", "the GBA engine",
-     ExportTarget::kSwitchSong, false},
-    {Engine::kDs, 6, "ds", std::nullopt, false, true, false, false, false, false, false, "DS", "the DS engine",
+    {Engine::kGba, 5, "gba", std::nullopt, false, false, false, false, false, false, false, "GBA", "GBA",
+     "the GBA engine", ExportTarget::kSwitchSong, false},
+    {Engine::kDs, 6, "ds", std::nullopt, false, true, false, false, false, false, false, "DS", "DS", "the DS engine",
      ExportTarget::kDsSong, true},
-    {Engine::kDse, 7, "dse", std::nullopt, false, false, false, false, false, false, false, "DSE", "the DSE engine",
-     ExportTarget::kSwitchSong, false},
+    {Engine::kDse, 7, "dse", std::nullopt, false, false, false, false, false, false, false, "DSE", "DS (DSE)",
+     "the DS engine (DSE)", ExportTarget::kSwitchSong, false},
     {Engine::kKonami, 8, "konami", std::nullopt, true, false, false, false, false, false, false, "Konami's driver",
-     "Konami's driver", ExportTarget::kSwitchSong, false},
+     "GBA (Konami's driver)", "the GBA engine (Konami's driver)", ExportTarget::kSwitchSong, false},
     {Engine::kRd2, 9, "rd2", std::nullopt, true, false, false, false, false, false, false, "Nintendo R&D2's driver",
-     "Nintendo R&D2's driver", ExportTarget::kSwitchSong, false},
+     "GBA (Nintendo R&D2's driver)", "the GBA engine (Nintendo R&D2's driver)", ExportTarget::kSwitchSong, false},
     {Engine::kBrownie, 10, "brownie", std::nullopt, true, false, false, false, false, false, false,
-     "Brownie Brown's driver", "Brownie Brown's driver", ExportTarget::kSwitchSong, false},
+     "Brownie Brown's driver", "GBA (Brownie Brown's driver)", "the GBA engine (Brownie Brown's driver)",
+     ExportTarget::kSwitchSong, false},
     {Engine::kUbiMilan, 11, "ubimilan", std::nullopt, true, false, false, false, false, false, false,
-     "Ubisoft Milan's driver", "Ubisoft Milan's driver", ExportTarget::kSwitchSong, false},
+     "Ubisoft Milan's driver", "GBA (Ubisoft Milan's driver)", "the GBA engine (Ubisoft Milan's driver)",
+     ExportTarget::kSwitchSong, false},
     {Engine::kRare, 12, "rare", std::nullopt, true, false, false, false, false, false, false, "Rare's driver",
-     "Rare's driver", ExportTarget::kSwitchSong, false},
+     "GBA (Rare's driver)", "the GBA engine (Rare's driver)", ExportTarget::kSwitchSong, false},
     {Engine::kQuintet, 13, "quintet", std::nullopt, true, false, false, false, false, false, false, "Quintet's driver",
-     "Quintet's driver", ExportTarget::kSwitchSong, false},
+     "GBA (Quintet's driver)", "the GBA engine (Quintet's driver)", ExportTarget::kSwitchSong, false},
     {Engine::kKrawall, 14, "krawall", std::nullopt, true, false, false, false, false, false, false, "Krawall",
-     "the Krawall engine", ExportTarget::kSwitchSong, false},
+     "GBA (Krawall)", "the GBA engine (Krawall)", ExportTarget::kSwitchSong, false},
 }};
 
 // What the program's windows show of one engine.
@@ -98,7 +101,7 @@ struct ExpectedWindowRow
 };
 
 constexpr std::array<ExpectedWindowRow, hokuto::format::kEngineCount> kExpectedWindows = {{
-    {Engine::kSwitch, 3, 1, ArchiveFilters::kLaterArchive},
+    {Engine::kSwitch, 3, 4, ArchiveFilters::kLaterArchive},
     {Engine::kWiiU, 3, 4, ArchiveFilters::kLaterArchive},
     {Engine::k3ds, 2, 5, ArchiveFilters::k3dsArchive},
     {Engine::kWii, 3, 4, ArchiveFilters::kWiiArchive},
@@ -207,6 +210,12 @@ void TestSongAndEdit()
         CheckColumn(HasDriverRules(row.engine) == row.is_driver, row, "RulesOf and EditsOf");
         CheckColumn(hokuto::edit::RunsEffect(row.engine, EffectKind::kI3dl2Reverb) == row.runs_i3dl2, row,
                     "RunsEffect of the I3DL2 reverb");
+        for (const EffectKind atk :
+             {EffectKind::kSwitchDelay, EffectKind::kSwitchLightLimiter, EffectKind::kSwitchReverb})
+        {
+            CheckColumn(hokuto::edit::RunsEffect(row.engine, atk) == row.runs_i3dl2, row,
+                        "RunsEffect of nn::atk's effects");
+        }
         CheckColumn(hokuto::edit::RunsEffect(row.engine, EffectKind::kReverbHi) == row.runs_cafe, row,
                     "RunsEffect of the Wii U's reverb");
         CheckColumn(hokuto::edit::RunsEffect(row.engine, EffectKind::kWiiReverbHi) == row.runs_wii, row,
@@ -241,7 +250,7 @@ void TestApp()
 {
     for (const ExpectedRow& row : kExpected)
     {
-        CheckColumn(hokuto::app::EngineName(row.engine) == row.title, row, "EngineName");
+        CheckColumn(hokuto::app::EngineName(row.engine) == row.shown, row, "EngineName");
         CheckColumn(hokuto::app::TheEngine(row.engine) == row.the_engine, row, "TheEngine");
         CheckColumn(hokuto::app::SongTargetFor(row.engine) == row.song_target, row, "SongTargetFor");
     }

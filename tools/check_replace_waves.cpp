@@ -1,6 +1,29 @@
 // SPDX-License-Identifier: MIT
 
 // The checks of waves of hokuto_check_replace.
+//
+// Each wave of each wave archive then goes out as a WAV file and comes back in its place. The tool writes the WAV file
+// that the browser's Export… writes, and makes Replace…'s edit with it. The WAV file has to hold the wave's rate,
+// channels, loop and length. The new wave archive has to hold the new wave in the wave's place and the other waves'
+// bytes. The new wave has to decode to the old one's samples. Each wave goes in alone. Then the wave archive with every
+// wave from its WAV file goes in as Replace…'s edit of a file, and every wave of the exported archive has to decode to
+// its old samples. A WAV file holds a looped wave's first pass. The tool counts apart the looped DSP-ADPCM waves whose
+// later passes the console decodes otherwise: those passes start from the loop's context. Each wave also goes back in
+// from the wave file that the browser's Export… writes. The wave archive has to hold the same waves. The tool counts
+// the waves whose wave archive the writer gives back with other bytes. The wave's file for each other console goes back
+// in too, converted with the wave's version. The new wave has to decode to the old one's samples.
+//
+// Each wave also comes back from its WAV file as DSP-ADPCM, the Replace window's first choice. A loop's start moves
+// forward to a frame of 14 samples, and the samples from the old start repeat after the loop's end. The new wave has to
+// decode close to those samples, with the ratio of signal to noise that the Replace window shows. Each later pass of
+// its loop has to decode to the first pass's samples. The new wave archive has to keep the other waves' bytes. The tool
+// counts the waves by their ratio of signal to noise.
+//
+// Each wave above 8,000 Hz also comes back from its WAV file at half its rate. The Replace window's Sample rate menu
+// offers that rate. The new wave has to hold the samples that Hokuto's resampler gives each channel at the new rate, as
+// 16-bit PCM. Its loop has to start at the old start's place at the new rate. A looped wave's WAV file also goes in
+// without its loop and takes the present wave's loop. The Replace window offers that choice. The new wave has to hold
+// the bytes that the WAV file with the loop gives.
 
 #include "check_replace.h"
 #include "later_passes.h"
@@ -21,7 +44,7 @@ LoopDecoding ReplaceLoopDecoding(sar::Flavor flavor)
 
 // Counts how the later passes of a looped DSP-ADPCM wave, `wave`, differ from its first pass, `pcm`. A WAV file holds
 // the first pass, and a wave from it plays the first pass's samples in every pass.
-void CountLaterPasses(std::span<const uint8_t> wave, const sar::Pcm& pcm, sar::Flavor flavor, Totals& totals)
+void CountLaterPasses(std::span<const uint8_t> wave, const sar::Pcm& pcm, sar::Flavor flavor, WaveTotals& totals)
 {
     const sar::WaveFile parsed = sar::WaveFile::Read(wave);
     if (parsed.encoding != sar::WaveEncoding::kDspAdpcm || !pcm.loop)
@@ -54,14 +77,15 @@ void CountLaterPasses(std::span<const uint8_t> wave, const sar::Pcm& pcm, sar::F
 }
 
 // The lowest ratio of signal to noise that a wave may take when it comes back from its WAV file as DSP-ADPCM, in
-// decibels. The full runs of 2026-10-20 gave 21.1 dB at the lowest for --waves and 22.2 dB for --new-waves.
+// decibels. The value is a little below the lowest ratio that the encoder reached on the waves checked. A wave under it
+// shows a fault in the encoding.
 constexpr double kLeastAdpcmRatio = 20.0;
 
 } // namespace
 
 std::string DspAdpcmProblem(const sar::SoundArchive& built, const FileItem& item, const sar::WaveArchiveFile& present,
                             std::optional<uint32_t> wave, std::span<const uint8_t> wav, const sar::Pcm& pcm,
-                            Totals& totals)
+                            DspAdpcmTotals& totals)
 {
     const auto start = std::chrono::steady_clock::now();
     const edit::IncomingWave incoming =
@@ -176,7 +200,7 @@ namespace
 // with the loop gives.
 std::string ResampledProblem(const sar::SoundArchive& built, const FileItem& item, uint32_t wave,
                              const edit::IncomingWave& incoming, std::span<const uint8_t> wav, const sar::Pcm& pcm,
-                             Totals& totals)
+                             WaveTotals& totals)
 {
     if (pcm.loop)
     {
@@ -231,7 +255,7 @@ std::string ResampledProblem(const sar::SoundArchive& built, const FileItem& ite
 // back in its place, or nothing. `pcm` are the samples of the wave. Puts the wave from its WAV file as 16-bit PCM in
 // `all`, and counts the wave in `totals`.
 std::string WaveProblem(const sar::SoundArchive& built, const FileItem& item, const sar::WaveArchiveFile& present,
-                        uint32_t wave, const sar::Pcm& pcm, sar::WaveArchiveFile& all, Totals& totals)
+                        uint32_t wave, const sar::Pcm& pcm, sar::WaveArchiveFile& all, WaveTotals& totals)
 {
     // The Replace window reads the WAV file and the present wave.
     const std::string label = "wave " + std::to_string(wave);
@@ -323,7 +347,7 @@ std::string WaveProblem(const sar::SoundArchive& built, const FileItem& item, co
 // PCM and as DSP-ADPCM. The wave archive with every wave from its WAV file as 16-bit PCM then takes the old one's
 // place. `built` is the archive that `file` builds, with `groups`.
 std::string WaveArchiveProblem(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                               const FileItem& item, Totals& totals)
+                               const FileItem& item, WaveTotals& totals)
 {
     const sar::WaveArchiveFile present = sar::WaveArchiveFile::Read(built.FileData(item.file_id));
     sar::WaveArchiveFile all = present;
@@ -359,7 +383,7 @@ std::string WaveArchiveProblem(const format::File& file, const sar::SoundArchive
 } // namespace
 
 void CheckWaves(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                const std::string& name, Totals& totals)
+                const std::string& name, WaveTotals& totals)
 {
     for (const FileItem& item : FileItemsOf(built))
     {
@@ -394,7 +418,7 @@ void CheckWaves(const format::File& file, const sar::SoundArchive& built, std::s
     }
 }
 
-void PrintDspAdpcm(const std::string& name, const Totals& totals, bool half_rates)
+void PrintDspAdpcm(const std::string& name, const DspAdpcmTotals& totals, bool half_rates)
 {
     const std::vector<double>& ratios = totals.adpcm_ratios;
     const auto between = [&ratios](double low, double high)

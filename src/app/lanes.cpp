@@ -14,9 +14,9 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/sequencer.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/sequencer.h"
 
 #include "app/key_edits.h"
 #include "app/list_edits.h"
@@ -286,7 +286,7 @@ LaneSetting NextLane(const KeyTrack& track, std::span<const LaneSetting> lanes)
 
 std::optional<Fixed> StartingValue(LaneSetting setting, const song::Console& console)
 {
-    // MusicPlayer2000's driver clears a track's state as it starts it (ntdlib::mp2k::Sequencer::StartTrack).
+    // MusicPlayer2000's driver clears a track's state as it starts it (agblib::mp2k::Sequencer::StartTrack).
     if (console.engine == format::Engine::kGba)
     {
         switch (setting.kind)
@@ -295,7 +295,7 @@ std::optional<Fixed> StartingValue(LaneSetting setting, const song::Console& con
         case Kind::kPriority:
             return 0;
         case Kind::kTempo:
-            return ntdlib::mp2k::kDefaultTempo * kOne;
+            return agblib::mp2k::kDefaultTempo * kOne;
         case Kind::kLfoSpeed:
             return 22 * kOne;
         default:

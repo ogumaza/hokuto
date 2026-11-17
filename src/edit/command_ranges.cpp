@@ -7,11 +7,11 @@
 #include <cstdint>
 #include <optional>
 
+#include "agblib/konami/commands.h"
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/commands.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/mp2k/commands.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/units.h"
@@ -60,7 +60,7 @@ void ToNearest(Argument& argument, const Scale& scale)
 namespace range_detail
 {
 
-// The values that MusicPlayer2000's bytes hold in the value of `command` from `source` (ntdlib/mp2k/commands.h). A
+// The values that MusicPlayer2000's bytes hold in the value of `command` from `source` (agblib/mp2k/commands.h). A
 // command takes a byte, and a key shift a signed byte. A pan, a bend and a fine tune take a byte below 0x80: the driver
 // subtracts 0x40. A tempo starts at 1. A note lasts up to kLongestMp2kNote ticks, or up to kLongestMp2kCode where a
 // note reads 2 bytes (`note_arguments`). A wait splits into the codes' waits (Mp2kWritable). An address takes 4 bytes.
@@ -115,7 +115,7 @@ std::optional<ValueRange> Mp2kRange(const Command& command, Source source, bool 
         break;
     }
 
-    const Scale scale = ntdlib::mp2k::ScaleOf(command.kind);
+    const Scale scale = agblib::mp2k::ScaleOf(command.kind);
 
     return ValueRange{ntdlib::commands::ToUnit(lowest, scale), ntdlib::commands::ToUnit(highest, scale)};
 }
@@ -224,22 +224,22 @@ std::optional<ValueRange> DseRange(const Command& command, Source source, bool t
 
 } // namespace range_detail
 
-// The values that the bytes of Konami's driver hold in the value of `command` (ntdlib/konami/commands.h). A delay
+// The values that the bytes of Konami's driver hold in the value of `command` (agblib/konami/commands.h). A delay
 // accepts what the delays of the revision can store. A call plays from 1 to 255 commands. A volume runs from 0 to the
 // most that track `track` plays (song::KonamiMostVolume): 15, or 127 on a sampled track of the builds that store a
 // volume in a byte. A PSG channel of those builds starts at the low 4 bits of a higher volume. A pan runs across the
 // revision's scale, and a pitch bend over a byte, or over 12 bits in those builds. A rest, a release, a loop's two ends
 // and an end hold no value. The other commands take a byte. No command takes a time, a random value or a variable.
 std::optional<ValueRange> KonamiRange(const Command& command, Source source, bool time,
-                                      ntdlib::konami::Revision revision, int track)
+                                      agblib::konami::Revision revision, int track)
 {
     if (time || source != Source::kValue)
     {
         return std::nullopt;
     }
 
-    const bool ultimate = ntdlib::konami::UltimateMasters(revision);
-    const bool dungeon = revision == ntdlib::konami::Revision::kDungeonDiceMonsters;
+    const bool ultimate = agblib::konami::UltimateMasters(revision);
+    const bool dungeon = revision == agblib::konami::Revision::kDungeonDiceMonsters;
     int64_t lowest = 0;
     int64_t highest = 0xFF;
     switch (command.kind)
@@ -278,7 +278,7 @@ std::optional<ValueRange> KonamiRange(const Command& command, Source source, boo
         break;
     }
 
-    const Scale scale = ntdlib::konami::ScaleOf(command.kind, revision);
+    const Scale scale = agblib::konami::ScaleOf(command.kind, revision);
 
     return ValueRange{ntdlib::commands::ToUnit(lowest, scale), ntdlib::commands::ToUnit(highest, scale)};
 }
@@ -333,7 +333,7 @@ Command Nearest(const song::Console& console, Command command)
         console.engine == format::Engine::kDse || console.driver)
     {
         command.velocity = ntdlib::commands::ToUnit(ntdlib::commands::FromUnit(command.velocity, Scale{}), Scale{});
-        ToNearest(command.value, console.engine == format::Engine::kGba  ? ntdlib::mp2k::ScaleOf(command.kind)
+        ToNearest(command.value, console.engine == format::Engine::kGba  ? agblib::mp2k::ScaleOf(command.kind)
                                  : console.engine == format::Engine::kDs ? ntdlib::ntr::snd::ScaleOf(command.kind)
                                  : console.driver                        ? console.driver->ScaleOf(command.kind)
                                                                          : ntdlib::dse::ScaleOf(command.kind));

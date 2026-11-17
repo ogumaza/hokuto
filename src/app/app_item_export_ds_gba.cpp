@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <utility>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "seqlib/file_name.h"
 
@@ -167,10 +167,10 @@ void App::StartGbaItemExport(const BrowserPlace& place)
             job.program = programs[child];
             job.last_program = programs.back();
         }
-        ntdlib::mp2k::Voice voice;
+        agblib::mp2k::Voice voice;
         const bool sample =
             job.program &&
-            ntdlib::mp2k::ReadVoice(played_.Gba()->rom, voices + *job.program * edit::kGbaVoiceBytes, voice) &&
+            agblib::mp2k::ReadVoice(played_.Gba()->rom, voices + *job.program * edit::kGbaVoiceBytes, voice) &&
             song::GbaVoiceSample(*played_.Gba(), voice);
         job.view = VoiceGroupExportView(song::GbaVoiceGroupName(voices), job.program, sample);
         job.item = song::Item{.kind = song::ItemKind::kBank, .index = voices};
@@ -466,8 +466,8 @@ void App::StartGbaBankFileWork(Export& job)
         }
         else
         {
-            ntdlib::mp2k::Voice voice;
-            if (!ntdlib::mp2k::ReadVoice(rom->rom, group + *program * edit::kGbaVoiceBytes, voice) ||
+            agblib::mp2k::Voice voice;
+            if (!agblib::mp2k::ReadVoice(rom->rom, group + *program * edit::kGbaVoiceBytes, voice) ||
                 !song::GbaVoiceSample(*rom, voice))
             {
                 throw std::invalid_argument("The voice has no sample to export.");

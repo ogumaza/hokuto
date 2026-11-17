@@ -27,6 +27,7 @@
 #include "xsflib/bytes.h"
 
 #include "edit/files.h"
+#include "edit/files_internal.h"
 #include "edit/waves.h"
 #include "edit/waves_parts.h"
 #include "format/file.h"
@@ -46,13 +47,6 @@ using waves_parts::KeepOtherModels;
 using waves_parts::kFrameBytes;
 using waves_parts::RequireWaveModel;
 using waves_parts::SampleBytes;
-
-// The value of `encoding` in the Wii's enumeration. The two enumerations give the three encodings of the Wii the same
-// values.
-rsar::WaveEncoding RsarEncoding(sar::WaveEncoding encoding)
-{
-    return static_cast<rsar::WaveEncoding>(encoding);
-}
 
 // The file of the Wii's archive whose wave data holds a wave archive in ntdlib's model of it: a bank or a wave sound
 // file.
@@ -303,13 +297,8 @@ std::vector<std::vector<int16_t>> DecodedSamples(const rsar::WaveFile& wave, uin
             continue;
         }
 
-        decoded.resize(count);
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            decoded[i] = wave.encoding == rsar::WaveEncoding::kPcm8
-                             ? static_cast<int16_t>(static_cast<int8_t>(channel.samples[i]) * 256)
-                             : static_cast<int16_t>(xsflib::LoadBe16(&channel.samples[i * 2]));
-        }
+        decoded = wave.encoding == rsar::WaveEncoding::kPcm8 ? wave::DecodePcm8(channel.samples, count)
+                                                             : wave::DecodePcm16(channel.samples, count, true);
     }
 
     return channels;
@@ -420,7 +409,7 @@ format::File WithWaveModel(const format::File& file, const rsar::SoundArchive& a
             model.length = model.loop_end;
         }
 
-        made.encoding = RsarEncoding(model.encoding);
+        made.encoding = WiiEncoding(model.encoding);
         made.loop_start = model.loop_start;
         made.loop_end = model.loop_end;
         made.channels = Encoded(model.samples, model.encoding, model.loop_start, present.channels);

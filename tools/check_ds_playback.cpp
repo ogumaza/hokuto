@@ -82,6 +82,7 @@ using hokuto::tools::PartOf;
 using hokuto::tools::playback_steps::ArrangedAt;
 using hokuto::tools::playback_steps::CheckFrames;
 using hokuto::tools::playback_steps::FailedSeeksText;
+using hokuto::tools::playback_steps::PeakAfterEnd;
 using hokuto::tools::playback_steps::PrintDifferences;
 using hokuto::tools::playback_steps::SeekCheck;
 using hokuto::tools::playback_steps::StartCheck;
@@ -348,15 +349,7 @@ void CheckRun(const std::string& name, const std::shared_ptr<const song::DsArchi
     // After an end of the output, the reference has to stay within ±8 of 0. The reference plays on round a loop.
     const std::size_t rest = std::min(heard * frame_floats, reference.samples.size());
     const std::size_t stop = std::min(frames * frame_floats, reference.samples.size());
-    float level = 0.0f;
-    if (ended && !sequence->loop && rest < stop)
-    {
-        for (std::size_t i = rest; i < stop; i++)
-        {
-            level = std::max(level, std::abs(reference.samples[i]));
-        }
-    }
-    const int level_steps = static_cast<int>(std::lround(level * 32768.0f));
+    const int level_steps = ended && !sequence->loop ? PeakAfterEnd(reference.samples, rest, stop) : 0;
     const bool sounds_on = level_steps > xsflib::rip::kSilenceLevel;
     if (!sounds_on && level_steps > 0)
     {

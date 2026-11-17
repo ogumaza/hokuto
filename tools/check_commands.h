@@ -25,19 +25,19 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/konami/commands.h"
+#include "agblib/krawall/commands.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/sequencer.h"
+#include "agblib/quintet/song.h"
+#include "agblib/rare/driver.h"
+#include "agblib/rare/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/sequencer.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
 #include "ntdlib/nwsnd/units.h"
-#include "ntdlib/quintet/song.h"
-#include "ntdlib/rare/driver.h"
-#include "ntdlib/rare/song.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
@@ -218,7 +218,7 @@ struct Moved
 // without them, the function returns none.
 std::span<const hokuto::song::Stretch> RowsOfSound(const hokuto::song::Sequence& song);
 
-// Whether `item`, an item of a sequence of `file`, is an entry of a table of tracks (edit::DriverEdits::IsTableEntry).
+// Whether `item`, an item of a sequence of `file`, is an entry of a table of tracks (edit::EngineEdits::IsTableEntry).
 // No track runs such an entry.
 bool TableEntry(const File& file, const Command& item);
 
@@ -233,7 +233,7 @@ Command NoWait();
 // next frame. The ticks left in the frame run at the old tempo: up to `lag`, 3 at MusicPlayer2000's fastest tempo, 510
 // beats a minute. On the DS, the performer applies a new tempo from the tick of the command. On Quintet's driver,
 // ntdlib's performer measures a quarter note of `quarter_ticks` of its ticks in whole microseconds
-// (ntdlib::agb::QuarterMicros).
+// (agblib::agb::QuarterMicros).
 struct TempoRules
 {
     double ratio = 1.0;
@@ -283,7 +283,7 @@ inline bool rd2_song = false;
 inline bool brownie_song = false;
 
 // Whether `after` loops over a loop as long as that of `before`, from a start that is part of a pass away. After an
-// edit of a setting, ntdlib's performer can find a song of Nintendo R&D2's driver to repeat from a later or an earlier
+// edit of a setting, agblib's performer can find a song of Nintendo R&D2's driver to repeat from a later or an earlier
 // tick: the edit changes the state of a track that it compares. On Brownie Brown's driver, the performer starts a
 // channel's loop with its second pass when its first pass plays with other settings. A new setting or a moved one
 // before the place that the channel jumps back to applies in the first pass alone. That channel's loop then starts a

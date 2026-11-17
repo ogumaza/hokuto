@@ -19,7 +19,7 @@
 // - Pan. On the revisions that hold a pan of a track, the track's pan moves by a quarter of the scale. The track has to
 //   be in the read, and the performer has to show the new pan at the track's first note, within a step of the
 //   revision's scale. On the other revisions, the edit has to be refused. In the revisions whose records hold a pan, a
-//   PSG track off centre plays on the next track's channel (ntdlib/konami/archive_player.h). The notes of the PSG
+//   PSG track off centre plays on the next track's channel (agblib/konami/archive_player.h). The notes of the PSG
 //   tracks then count apart. An edited PSG track's shown pan counts apart there too.
 // - Sends. Each edit of a send has to be refused.
 // - Instrument. The notes of the track that play its first note's sample take the next sample that the ROM's songs
@@ -27,21 +27,29 @@
 //   have to keep their ticks, and every other track has to play as before. In the revisions whose records hold a pan,
 //   the notes of the other PSG tracks count apart. The noise channel selects nothing.
 //
+// The tool also checks what the mixer and the inspector list before an edit (src/edit/reach.h). After each round, each
+// sequence sound is read again. Every other track of an edited sound whose setting changed has to be among the tracks
+// that the edited track's reach lists: its volume or its pan, or the instruments of its notes. Every other sound that
+// changed, or whose loop moved to another pass, has to play an edited sequence and be among the sounds that the edit's
+// reach lists. The tool counts the listed tracks and sounds, and those that changed. It also gives the time of the
+// slowest reach.
+//
 // The performer finds a loop where the tracks' states repeat, and a new command can move it to another pass. The reads
 // then compare up to the earlier loop's end. The tool prints a line for each problem and a summary, and returns 1 when
 // it found a problem. With a song's name, only that song takes part. With --filler, a song that outgrows its place in a
 // ROM that fills the GBA's 32 MiB goes into the ROM's filler runs.
 //
 // The check expects these refusals and counts them apart: a pan on a revision without a pan, every send
-// (ExpectedPanRefusal, ExpectedSendRefusal), a volume edit of a track at -∞ dB at its first note
-// (kSilentVolumeRefusal), and a volume or instrument edit of a track whose notes other tracks' commands start
-// (kNoNotesVolumeRefusal, kNoNotesInstrumentRefusal). Any other refusal is a problem, and the summary lists it with its
-// count.
+// (ExpectedPanRefusal, edit::RefusedSend), a volume edit of a track at -∞ dB at its first note
+// (edit::RefusedSilentTrim), and a volume or instrument edit of a track whose notes other tracks' commands start
+// (edit::kKonamiVolumeWithoutNotes, edit::kNoNotesInstrumentRefusal). Any other refusal is a problem, and the summary
+// lists it with its count.
 //
 // usage: hokuto_check_konami_mix [--filler] <rom.gba> [song]
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -60,9 +68,9 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/konami/archive_player.h"
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/konami/archive_player.h"
-#include "ntdlib/konami/seqformat.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
@@ -73,6 +81,8 @@
 #include "edit/instruments.h"
 #include "edit/konami.h"
 #include "edit/mix.h"
+#include "edit/reach.h"
+#include "edit/replace.h"
 #include "format/archive.h"
 #include "notes_apart.h"
 #include "song/archive.h"
@@ -83,6 +93,8 @@ namespace
 {
 
 using hokuto::edit::MixEdit;
+using hokuto::edit::Reach;
+using hokuto::edit::SoundPlace;
 using hokuto::format::File;
 using hokuto::song::Mix;
 using hokuto::song::Sequence;
@@ -120,6 +132,12 @@ struct Totals
     std::size_t other_passes = 0;
     std::size_t outgrown = 0;
     std::size_t refused_on_purpose = 0;          // volume and instrument edits of a track that can't take them
+    std::size_t listed_tracks = 0;               // the tracks that the reaches of the edits list
+    std::size_t listed_sounds = 0;               // the sounds that the reaches of the edits list
+    std::size_t reached_tracks = 0;              // listed tracks that changed
+    std::size_t reached_sounds = 0;              // listed sounds that changed
+    std::size_t unlisted = 0;                    // tracks and sounds that changed outside the reach
+    double slowest_reach = 0.0;                  // seconds
     std::map<std::string, std::size_t> refusals; // the unexpected ones, by round and message
     std::size_t problems = 0;
 };
@@ -130,34 +148,6 @@ std::string ExpectedPanRefusal(const hokuto::song::Console& console)
     return console.driver != nullptr ? hokuto::edit::EditsOf(*console.driver).RefusedPan(*console.driver)
                                      : std::string();
 }
-
-// The message that the mixer gives for a send. src/edit/mix.cpp builds it in CheckMixable, and no function gives it
-// apart. This copy has to follow that one.
-std::string ExpectedSendRefusal(const hokuto::song::Console& console)
-{
-    return console.driver != nullptr ? "Tracks of " + std::string(console.driver->Title()) + " have no effect sends."
-                                     : std::string();
-}
-
-// The message that the mixer gives for a volume edit from -∞ dB on a track whose volume changes as it plays.
-// src/edit/mix.cpp builds it in EditMix from the setting's name, and no function gives it apart. This copy has to
-// follow that one.
-constexpr std::string_view kSilentVolumeRefusal =
-    "Volume is at -∞ dB at this point and changes as the track plays. Change it at a point where it's above -∞ dB.";
-
-// The message that the mixer gives for a volume edit of a track whose commands start no notes. Konami's
-// DriverEdits::CheckMixEdit (src/edit/konami.cpp) gives it, and no constant contains it. This copy has to follow that
-// one.
-constexpr std::string_view kNoNotesVolumeRefusal =
-    "This track starts no notes and has no volume to change. Another track can play notes on this channel through its "
-    "pan setting. Change the volume on that track.";
-
-// The message that the inspector gives for an instrument that the track's commands start no note with, where another
-// track plays notes on its channel. RefuseUnplayed (src/edit/instruments.cpp) gives it, and no constant contains it.
-// This copy has to follow that one.
-constexpr std::string_view kNoNotesInstrumentRefusal =
-    "This track starts no notes with that instrument. Another track can play notes on this channel through its pan "
-    "setting. Change the instrument on that track.";
 
 // Whether another track's commands start every note of `track` that plays program `program`, or every note of the
 // track when `program` is nothing. Such a track's commands start none of those notes.
@@ -196,23 +186,190 @@ std::vector<Played> NotesOf(const Sequence& song, int number, uint32_t end)
 
 // The tick up to which `before` and `after` compare: the earlier loop's end where the loops differ, and else every
 // tick.
-uint32_t EndOf(const Sequence& before, const Sequence& after, Totals& totals)
+uint32_t CompareEnd(const Sequence& before, const Sequence& after)
 {
     if (before.loop == after.loop)
     {
         return UINT32_MAX;
     }
 
-    ++totals.other_passes;
     const uint32_t first = before.loop ? before.loop->end : before.length;
     const uint32_t second = after.loop ? after.loop->end : after.length;
     return std::min(first, second);
 }
 
+// The same, and a read that compares up to an earlier loop counts in `totals`.
+uint32_t EndOf(const Sequence& before, const Sequence& after, Totals& totals)
+{
+    const uint32_t end = CompareEnd(before, after);
+    totals.other_passes += end != UINT32_MAX ? 1 : 0;
+    return end;
+}
+
+// The values of `settings` before tick `end`.
+std::vector<hokuto::song::Setting> SettingsBefore(const std::vector<hokuto::song::Setting>& settings, uint32_t end)
+{
+    std::vector<hokuto::song::Setting> kept;
+    std::ranges::copy_if(settings, std::back_inserter(kept),
+                         [end](const hokuto::song::Setting& setting) { return setting.tick < end; });
+    return kept;
+}
+
+// The programs of the notes of `track` that start before tick `end`, with their ticks.
+std::vector<std::pair<uint32_t, uint32_t>> ProgramsBefore(const Track& track, uint32_t end)
+{
+    std::vector<std::pair<uint32_t, uint32_t>> programs;
+    for (const hokuto::song::Note& note : track.notes)
+    {
+        if (note.start < end)
+        {
+            programs.emplace_back(note.start, note.program);
+        }
+    }
+
+    return programs;
+}
+
+// The tracks of `before` whose setting differs in `after` up to tick `end`: the volume or the pan where `setting` is
+// one, and else the instruments of the notes. With `notes`, a track whose notes differ counts too. A track that
+// `after` doesn't have counts.
+std::set<int> ChangedTracks(const Sequence& before, const Sequence& after, uint32_t end, std::optional<Mix> setting,
+                            bool notes)
+{
+    std::set<int> changed;
+    for (const Track& old : before.tracks)
+    {
+        const Track* now = TrackNumbered(after, old.number);
+        const bool differs = now == nullptr ||
+                             (setting ? SettingsBefore(hokuto::song::MixSettings(old, *setting), end) !=
+                                            SettingsBefore(hokuto::song::MixSettings(*now, *setting), end)
+                                      : ProgramsBefore(old, end) != ProgramsBefore(*now, end)) ||
+                             (notes && NotesOf(before, old.number, end) != NotesOf(after, old.number, end));
+        if (differs)
+        {
+            changed.insert(old.number);
+        }
+    }
+
+    return changed;
+}
+
+// What the mixer or the inspector lists before the edit of track `number` of sound `sound`, read as `read`: the reach
+// of `setting`, or of the instrument where `setting` is nothing (edit::ReachOfTracks). `places` gives where each sound
+// of `file` plays. Prints a line under the ROM's `name` and counts a problem where the reach can't be found.
+std::optional<Reach> ListedReach(const std::string& name, const CheckedArchive& archive, const File& file,
+                                 std::span<const std::optional<SoundPlace>> places, uint32_t sound,
+                                 const Sequence& read, int number, std::optional<Mix> setting, Totals& totals)
+{
+    const auto start = std::chrono::steady_clock::now();
+    std::optional<Reach> reach;
+    try
+    {
+        const std::vector<hokuto::edit::TrackReach> reaches = hokuto::edit::ReachOfTracks(file, places, sound, read);
+        const auto track = std::ranges::find(read.tracks, number, &Track::number);
+        const auto index = static_cast<std::size_t>(track - read.tracks.begin());
+        if (index >= reaches.size())
+        {
+            throw std::logic_error("the reach has no track " + std::to_string(number));
+        }
+
+        reach = setting ? reaches[index].mix[static_cast<std::size_t>(*setting)] : reaches[index].instrument;
+        totals.listed_tracks += reach->tracks.size();
+        totals.listed_sounds += reach->sounds.size();
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: %s: the reach can't be found: %s\n", name.c_str(), archive.NameOf(sound).c_str(),
+                    error.what());
+        ++totals.problems;
+    }
+    const std::chrono::duration<double> taken = std::chrono::steady_clock::now() - start;
+    totals.slowest_reach = std::max(totals.slowest_reach, taken.count());
+
+    return reach;
+}
+
+// The edit of a round in a sequence: the edited sound and track, and what the edit's reach lists.
+struct ReachedEdit
+{
+    uint32_t sound = 0;
+    int track = 0;
+    Reach reach;
+};
+
+// Checks what the edits of `round`, in `edits` by sequence, changed besides their tracks, against their reaches. Each
+// sound of `reads` is read again from `after`. `sequences` gives the sequence of each sound, and `setting` the
+// setting of the round: the volume, the pan, or the instrument where it's nothing.
+void CheckReaches(const std::string& name, const CheckedArchive& archive, const CheckedArchive& after,
+                  const std::vector<std::optional<uint32_t>>& sequences, const std::map<uint32_t, Sequence>& reads,
+                  const std::map<uint32_t, ReachedEdit>& edits, std::optional<Mix> setting, const char* round,
+                  Totals& totals)
+{
+    const auto listed = [](const auto& list, const auto& value)
+    {
+        return std::ranges::find(list, value) != list.end();
+    };
+    for (const auto& [sound, before] : reads)
+    {
+        Sequence read;
+        try
+        {
+            read = after.Read(sound);
+        }
+        catch (const std::exception& error)
+        {
+            std::printf("%s: %s can't be read after the %s edits: %s\n", name.c_str(), archive.NameOf(sound).c_str(),
+                        round, error.what());
+            ++totals.problems;
+            continue;
+        }
+
+        const auto edit = edits.find(*sequences[sound]);
+        const uint32_t end = CompareEnd(before, read);
+        if (edit != edits.end() && edit->second.sound == sound)
+        {
+            for (const int number : ChangedTracks(before, read, end, setting, false))
+            {
+                if (number == edit->second.track)
+                {
+                    continue;
+                }
+                if (listed(edit->second.reach.tracks, number))
+                {
+                    ++totals.reached_tracks;
+                    continue;
+                }
+
+                std::printf("%s: %s: track %d changed with the %s edit of track %d, but its reach leaves it out\n",
+                            name.c_str(), archive.NameOf(sound).c_str(), number, round, edit->second.track);
+                ++totals.unlisted;
+                ++totals.problems;
+            }
+            continue;
+        }
+
+        if (ChangedTracks(before, read, end, setting, true).empty() && before.loop == read.loop &&
+            before.length == read.length)
+        {
+            continue;
+        }
+        if (edit != edits.end() && listed(edit->second.reach.sounds, sound))
+        {
+            ++totals.reached_sounds;
+            continue;
+        }
+
+        std::printf("%s: %s changed with the %s edits, but no edit's reach lists it\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), round);
+        ++totals.unlisted;
+        ++totals.problems;
+    }
+}
+
 // The largest peak that track `number` shows in the first seconds of song `song` of `rom`.
 int32_t PeakOf(const hokuto::song::KonamiRom& rom, int song, int number)
 {
-    ntdlib::konami::ArchivePlayer player(rom.rom, rom.info);
+    agblib::konami::ArchivePlayer player(rom.rom, rom.info);
     player.Start(song, {});
     player.MeterTracks(true);
     std::vector<int16_t> samples;
@@ -325,9 +482,9 @@ std::set<uint32_t> NextVolumesOf(const ntdlib::commands::Sequence& commands, con
 // Whether the edit of track `edited`'s volume reaches `note`, a note on track `number`. A track off centre plays its
 // notes on the next channel too, and they hold the volume of its commands. A note of the revision without a mixer can
 // play on the next track, and that track's volume holds it.
-bool VolumeReaches(const hokuto::song::Note& note, int number, int edited, ntdlib::konami::Revision revision)
+bool VolumeReaches(const hokuto::song::Note& note, int number, int edited, agblib::konami::Revision revision)
 {
-    return revision == ntdlib::konami::Revision::kDungeonDiceMonsters
+    return revision == agblib::konami::Revision::kDungeonDiceMonsters
                ? number == edited
                : (note.command_track >= 0 ? note.command_track : number) == edited;
 }
@@ -348,7 +505,7 @@ struct VolumePlan
 std::optional<std::pair<hokuto::edit::Edited, VolumePlan>> PlanVolume(const std::string& name, const File& file,
                                                                       const File& edited, uint32_t sequence,
                                                                       const Sequence& song,
-                                                                      ntdlib::konami::Revision revision,
+                                                                      agblib::konami::Revision revision,
                                                                       hokuto::song::Console console, Totals& totals)
 {
     const Track* track = ChosenTrack(song, sequence, AnyTrack);
@@ -395,8 +552,8 @@ std::optional<std::pair<hokuto::edit::Edited, VolumePlan>> PlanVolume(const std:
     catch (const std::invalid_argument& error)
     {
         const std::string_view message = error.what();
-        if ((from <= 0 && message == kSilentVolumeRefusal) ||
-            (OthersStart(*track, std::nullopt) && message == kNoNotesVolumeRefusal))
+        if ((from <= 0 && message == hokuto::edit::RefusedSilentTrim(Mix::kVolume)) ||
+            (OthersStart(*track, std::nullopt) && message == hokuto::edit::kKonamiVolumeWithoutNotes))
         {
             ++totals.refused_on_purpose;
         }
@@ -437,7 +594,7 @@ std::optional<std::pair<hokuto::edit::Edited, VolumePlan>> PlanVolume(const std:
         ++totals.problems;
     }
 
-    const bool sample_note = !ntdlib::konami::IsPsgTrack(track->number);
+    const bool sample_note = !agblib::konami::IsPsgTrack(track->number);
     VolumePlan plan{.track = track->number, .lower = to < from, .velocities = {}};
     for (const Track& other : song.tracks)
     {
@@ -475,7 +632,7 @@ std::optional<uint32_t> KeyHeld(const Track& track, uint32_t before)
 // after the edit, or nothing when the read has no such track. `revision` is the revision of the driver.
 void CheckReachedTrack(const std::string& name, const CheckedArchive& archive, uint32_t sound, const Track& track,
                        const Track* after, const std::vector<Played>& now, uint32_t end, const VolumePlan& plan,
-                       ntdlib::konami::Revision revision, Totals& totals)
+                       agblib::konami::Revision revision, Totals& totals)
 {
     const auto reached = [&](const hokuto::song::Note& note)
     {
@@ -486,7 +643,7 @@ void CheckReachedTrack(const std::string& name, const CheckedArchive& archive, u
     // volume of the command that starts it. A volume command can start a note again. That note shows the velocity of
     // its note command, not the volume that it plays at (song::TakeKonamiCommands). The track's volume at the note's
     // tick is that volume, for a note that the track's commands start.
-    const bool psg = ntdlib::konami::IsPsgTrack(track.number);
+    const bool psg = agblib::konami::IsPsgTrack(track.number);
     const auto silent = [&](const hokuto::song::Note& note, uint32_t velocity)
     {
         if (psg && after != nullptr && note.command_track < 0)
@@ -541,7 +698,7 @@ void CheckReachedTrack(const std::string& name, const CheckedArchive& archive, u
         };
         if (!plays && psg &&
             (velocity <= static_cast<uint32_t>(hokuto::song::KonamiVelocityOf(1, revision, false)) ||
-             (ntdlib::konami::EternalDuelistLayout(revision) && std::ranges::any_of(now, covers))))
+             (agblib::konami::EternalDuelistLayout(revision) && std::ranges::any_of(now, covers))))
         {
             ++totals.joined;
             continue;
@@ -579,7 +736,7 @@ void CheckReachedTrack(const std::string& name, const CheckedArchive& archive, u
 // notes that it reaches play their new velocities, and the edited channel plays lower or louder. `before` is the sound
 // before the edits, `after` the archive after them, and `revision` the revision of the driver.
 void CheckVolumeSound(const std::string& name, const CheckedArchive& archive, const CheckedArchive& after,
-                      uint32_t sound, const VolumePlan& plan, const Sequence& before, ntdlib::konami::Revision revision,
+                      uint32_t sound, const VolumePlan& plan, const Sequence& before, agblib::konami::Revision revision,
                       Totals& totals)
 {
     const Sequence read = after.Read(sound);
@@ -630,15 +787,29 @@ void CheckVolumeSound(const std::string& name, const CheckedArchive& archive, co
     }
 }
 
-// The round of the track's volume.
-void VolumeRound(const std::string& name, const File& file, const CheckedArchive& archive,
-                 const std::map<uint32_t, uint32_t>& songs, const std::map<uint32_t, Sequence>& reads, Totals& totals)
+// What the rounds share: the ROM's name, its archive and its file, where each sound plays and the sequence of each
+// sound, the first sound of each sequence, and the read of each sound.
+struct Rounds
 {
-    const ntdlib::konami::Revision revision = archive.Konami()->info.revision;
+    std::string name;
+    const CheckedArchive& archive;
+    const File& file;
+    std::vector<std::optional<SoundPlace>> places;
+    std::vector<std::optional<uint32_t>> sequences;
+    std::map<uint32_t, uint32_t> songs;
+    std::map<uint32_t, Sequence> reads;
+};
+
+// The round of the track's volume.
+void VolumeRound(const Rounds& rounds, Totals& totals)
+{
+    const auto& [name, archive, file, places, sequences, songs, reads] = rounds;
+    const agblib::konami::Revision revision = archive.Konami()->info.revision;
     const hokuto::song::Console console = hokuto::edit::ConsoleOf(file);
     File edited = file;
     std::map<uint32_t, VolumePlan> plans;
     std::map<uint32_t, uint32_t> sounds;
+    std::map<uint32_t, ReachedEdit> reached;
     for (const auto& [sequence, sound] : songs)
     {
         const Sequence& song = reads.at(sound);
@@ -650,6 +821,11 @@ void VolumeRound(const std::string& name, const File& file, const CheckedArchive
         }
 
         auto& [result, plan] = *planned;
+        if (std::optional<Reach> reach =
+                ListedReach(name, archive, file, places, sound, song, plan.track, Mix::kVolume, totals))
+        {
+            reached.emplace(sequence, ReachedEdit{sound, plan.track, std::move(*reach)});
+        }
         edited = std::move(result.file);
         plans.emplace(sequence, std::move(plan));
         sounds.emplace(sequence, sound);
@@ -665,20 +841,22 @@ void VolumeRound(const std::string& name, const File& file, const CheckedArchive
     {
         CheckVolumeSound(name, archive, *after, sound, plans.at(sequence), reads.at(sound), revision, totals);
     }
+    CheckReaches(name, archive, *after, sequences, reads, reached, Mix::kVolume, "volume", totals);
 }
 
 // The round of the track's pan.
-void PanRound(const std::string& name, const File& file, const CheckedArchive& archive,
-              const std::map<uint32_t, uint32_t>& songs, const std::map<uint32_t, Sequence>& reads, Totals& totals)
+void PanRound(const Rounds& rounds, Totals& totals)
 {
-    const ntdlib::konami::Revision revision = archive.Konami()->info.revision;
+    const auto& [name, archive, file, places, sequences, songs, reads] = rounds;
+    const agblib::konami::Revision revision = archive.Konami()->info.revision;
     const hokuto::song::Console console = hokuto::edit::ConsoleOf(file);
     const bool holds = hokuto::song::Runs(console, Kind::kPan, 0);
     const std::string expected_refusal = ExpectedPanRefusal(console);
-    const int step = ntdlib::konami::UltimateMasters(revision) ? 1 : 5;
+    const int step = agblib::konami::UltimateMasters(revision) ? 1 : 5;
     File edited = file;
     std::map<uint32_t, std::pair<int, int>> plans; // each sequence's track and new pan
     std::map<uint32_t, uint32_t> sounds;
+    std::map<uint32_t, ReachedEdit> reached;
     for (const auto& [sequence, sound] : songs)
     {
         const Sequence& song = reads.at(sound);
@@ -704,6 +882,11 @@ void PanRound(const std::string& name, const File& file, const CheckedArchive& a
                 continue;
             }
             totals.new_pans += result.file.sequences[sequence]->items.size() != items ? 1 : 0;
+            if (std::optional<Reach> reach =
+                    ListedReach(name, archive, file, places, sound, song, track->number, Mix::kPan, totals))
+            {
+                reached.emplace(sequence, ReachedEdit{sound, track->number, std::move(*reach)});
+            }
             edited = std::move(result.file);
             plans.emplace(sequence, std::pair(track->number, to));
             sounds.emplace(sequence, sound);
@@ -745,9 +928,9 @@ void PanRound(const std::string& name, const File& file, const CheckedArchive& a
 
         // In the revisions whose records hold a pan, an edited PSG track's shown pan counts apart.
         const int shown = hokuto::song::MixAt(*track, Mix::kPan, old->notes.front().start);
-        const bool psg_decides = ntdlib::konami::RecordHasPan(revision);
+        const bool psg_decides = agblib::konami::RecordHasPan(revision);
         const bool off = std::abs(shown - to) > step;
-        if (off && psg_decides && ntdlib::konami::IsPsgTrack(number))
+        if (off && psg_decides && agblib::konami::IsPsgTrack(number))
         {
             ++totals.psg_pans;
         }
@@ -765,7 +948,7 @@ void PanRound(const std::string& name, const File& file, const CheckedArchive& a
             {
                 continue;
             }
-            if (psg_decides && ntdlib::konami::IsPsgTrack(other.number))
+            if (psg_decides && agblib::konami::IsPsgTrack(other.number))
             {
                 psg = true;
                 continue;
@@ -777,13 +960,14 @@ void PanRound(const std::string& name, const File& file, const CheckedArchive& a
         }
         totals.psg_apart += psg ? 1 : 0;
     }
+    CheckReaches(name, archive, *after, sequences, reads, reached, Mix::kPan, "pan", totals);
 }
 
 // The round of the sends: each has to be refused.
-void SendsRound(const std::string& name, const File& file, const CheckedArchive& archive,
-                const std::map<uint32_t, uint32_t>& songs, const std::map<uint32_t, Sequence>& reads, Totals& totals)
+void SendsRound(const Rounds& rounds, Totals& totals)
 {
-    const std::string expected_refusal = ExpectedSendRefusal(hokuto::edit::ConsoleOf(file));
+    const auto& [name, archive, file, places, sequences, songs, reads] = rounds;
+    const std::string expected_refusal = hokuto::edit::RefusedSend(hokuto::edit::ConsoleOf(file));
     for (const auto& [sequence, sound] : songs)
     {
         const Sequence& song = reads.at(sound);
@@ -817,14 +1001,14 @@ void SendsRound(const std::string& name, const File& file, const CheckedArchive&
 }
 
 // The round of the instruments.
-void InstrumentRound(const std::string& name, const File& file, const CheckedArchive& archive,
-                     const std::map<uint32_t, uint32_t>& songs, const std::map<uint32_t, Sequence>& reads,
-                     Totals& totals)
+void InstrumentRound(const Rounds& rounds, Totals& totals)
 {
+    const auto& [name, archive, file, places, sequences, songs, reads] = rounds;
     const std::vector<int> samples = hokuto::song::KonamiSamples(*archive.Konami());
     File edited = file;
     std::map<uint32_t, std::tuple<int, uint32_t, uint32_t>> plans; // each sequence's track, old and new program
     std::map<uint32_t, uint32_t> sounds;
+    std::map<uint32_t, ReachedEdit> reached;
     for (const auto& [sequence, sound] : songs)
     {
         const Sequence& song = reads.at(sound);
@@ -836,7 +1020,7 @@ void InstrumentRound(const std::string& name, const File& file, const CheckedArc
 
         const auto from = static_cast<int>(track->notes.front().program);
         std::vector<int> choices;
-        if (ntdlib::konami::IsPsgTrack(track->number))
+        if (agblib::konami::IsPsgTrack(track->number))
         {
             for (const uint32_t program : hokuto::song::KonamiTrackPrograms(*archive.Konami(), track->number))
             {
@@ -858,6 +1042,11 @@ void InstrumentRound(const std::string& name, const File& file, const CheckedArc
         {
             hokuto::edit::Edited result = hokuto::edit::EditInstrument(
                 edited, sequence, track->number, track->stretches, {0, from}, {0, to}, PreviousOf(song, track->number));
+            if (std::optional<Reach> reach =
+                    ListedReach(name, archive, file, places, sound, song, track->number, std::nullopt, totals))
+            {
+                reached.emplace(sequence, ReachedEdit{sound, track->number, std::move(*reach)});
+            }
             edited = std::move(result.file);
             plans.emplace(sequence, std::tuple(track->number, static_cast<uint32_t>(from), static_cast<uint32_t>(to)));
             sounds.emplace(sequence, sound);
@@ -866,7 +1055,7 @@ void InstrumentRound(const std::string& name, const File& file, const CheckedArc
         catch (const std::invalid_argument& error)
         {
             if (OthersStart(*track, static_cast<uint32_t>(from)) &&
-                std::string_view(error.what()) == kNoNotesInstrumentRefusal)
+                std::string_view(error.what()) == hokuto::edit::kNoNotesInstrumentRefusal)
             {
                 ++totals.refused_on_purpose;
             }
@@ -888,7 +1077,7 @@ void InstrumentRound(const std::string& name, const File& file, const CheckedArc
         const Sequence& before = reads.at(sound);
         const Sequence read = after->Read(sound);
         const uint32_t end = EndOf(before, read, totals);
-        const bool psg_decides = ntdlib::konami::RecordHasPan(archive.Konami()->info.revision);
+        const bool psg_decides = agblib::konami::RecordHasPan(archive.Konami()->info.revision);
         bool psg = false;
         for (const Track& track : before.tracks)
         {
@@ -897,7 +1086,7 @@ void InstrumentRound(const std::string& name, const File& file, const CheckedArc
                 continue;
             }
 
-            if (psg_decides && ntdlib::konami::IsPsgTrack(track.number))
+            if (psg_decides && agblib::konami::IsPsgTrack(track.number))
             {
                 psg = true;
                 continue;
@@ -945,6 +1134,7 @@ void InstrumentRound(const std::string& name, const File& file, const CheckedArc
             ++totals.problems;
         }
     }
+    CheckReaches(name, archive, *after, sequences, reads, reached, std::nullopt, "instrument", totals);
 }
 
 // Reads each sequence sound of `archive` with a sequence in `sequences` into `reads`, or only the sound `only` where
@@ -991,12 +1181,15 @@ void PrintTotals(const std::string& name, const Totals& totals)
         "differ after a pan, apart, and %zu edited PSG tracks show another pan, apart. %zu sends were refused. %zu "
         "instrument edits gave %zu notes new instruments. %zu songs' PSG notes differ after an instrument edit, apart. "
         "%zu volume and instrument edits were refused for a track that can't take them. %zu reads compared up to an "
-        "earlier loop. %zu rounds outgrew the ROM. %zu problems.\n",
+        "earlier loop. %zu rounds outgrew the ROM. The reaches list %zu tracks and %zu sounds. %zu of the tracks and "
+        "%zu of the sounds changed. %zu tracks and sounds changed outside the reach. The slowest reach took %.1f ms. "
+        "%zu problems.\n",
         name.c_str(), totals.songs, totals.unread, totals.volumes, totals.volume_notes, totals.silent_notes,
         totals.joined, totals.off_centre, totals.lower, totals.same_peak, totals.silent, totals.pans, totals.new_pans,
         totals.pan_refusals, totals.psg_apart, totals.psg_pans, totals.sends, totals.instruments,
         totals.instrument_notes, totals.psg_instruments, totals.refused_on_purpose, totals.other_passes,
-        totals.outgrown, totals.problems);
+        totals.outgrown, totals.listed_tracks, totals.listed_sounds, totals.reached_tracks, totals.reached_sounds,
+        totals.unlisted, totals.slowest_reach * 1000.0, totals.problems);
 }
 
 } // namespace
@@ -1027,17 +1220,21 @@ int main(int argc, char** argv)
         }
 
         const File file = hokuto::tools::ImportChecked(bytes, archive);
-        const std::vector<std::optional<uint32_t>> sequences = hokuto::tools::SequencesOfChecked(file, bytes, archive);
+        Rounds rounds{.name = name,
+                      .archive = archive,
+                      .file = file,
+                      .places = hokuto::tools::PlacesOfChecked(file, bytes, archive),
+                      .sequences = hokuto::tools::SequencesOfChecked(file, bytes, archive),
+                      .songs = {},
+                      .reads = {}};
 
         // Each sound has to read. The first sound of each sequence takes part in the rounds.
-        std::map<uint32_t, uint32_t> songs;
-        std::map<uint32_t, Sequence> reads;
-        ReadSongs(name, archive, sequences, only, songs, reads, totals);
+        ReadSongs(name, archive, rounds.sequences, only, rounds.songs, rounds.reads, totals);
 
-        VolumeRound(name, file, archive, songs, reads, totals);
-        PanRound(name, file, archive, songs, reads, totals);
-        SendsRound(name, file, archive, songs, reads, totals);
-        InstrumentRound(name, file, archive, songs, reads, totals);
+        VolumeRound(rounds, totals);
+        PanRound(rounds, totals);
+        SendsRound(rounds, totals);
+        InstrumentRound(rounds, totals);
     }
     catch (const std::exception& error)
     {

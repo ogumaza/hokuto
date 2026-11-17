@@ -2,10 +2,17 @@
 
 // Tests the player (src/song/player.cpp): its clock, its output, seeks, cycles, mutes, meters and buses.
 
+#include <string>
+
+#include "ntdlib/nx/atk/effect.h"
+
 #include "song_runs.h"
 
 namespace
 {
+
+using hokuto::song::AtkEffect;
+using hokuto::song::SwitchRingingFrames;
 
 // Between the starts of two frames, the position moves on in a straight line. Across the end of the loop, it stays at
 // the frame's mark. A sample not yet written has no position. The cycle starts off, and keeps the locators it's given.
@@ -668,6 +675,113 @@ void TestAuxEffects()
     SEQLIB_CHECK(shared->SnapshotCount() > 5);
 }
 
+// The ModelRun of sound `sound` of `archive` for `frames` frames, on ntdlib's model run directly with `effect` on aux
+// bus A.
+ModelRun RunModelWith(const sar::SoundArchive& archive, uint32_t sound, std::size_t frames,
+                      std::unique_ptr<atk::EffectBase> effect)
+{
+    ModelRun run;
+    atk::ArchiveModel model(archive, atk::EngineOptions{});
+    model.engine->AppendEffect(0, std::move(effect));
+    atk::SequenceSoundPlayer* player = model.engine->StartSequence(sound);
+    SEQLIB_CHECK(player != nullptr);
+    if (player == nullptr)
+    {
+        return run;
+    }
+
+    for (std::size_t i = 0; i < frames; i++)
+    {
+        run.busy.push_back(model.engine->IsBusy());
+        run.finished.push_back(player->IsFinished());
+        run.before.push_back(player->TickCount());
+        model.engine->RunFrame();
+        run.after.push_back(player->TickCount());
+        const std::span<const int16_t> output = model.renderer.DeviceOutput();
+        run.samples.insert(run.samples.end(), output.begin(), output.end());
+    }
+
+    return run;
+}
+
+// nn::atk's delay, light limiter and reverb on aux bus A play as ntdlib's model plays them, given the same class at the
+// same values. The starting values are the defaults of each class. The effect's tail sounds on after the note. The
+// output ends once it has had no sound (louder than ±8) for the effect's ring: a second and the effect's delay, its
+// look-ahead or its pre-delay. The model's output after that stays within ±8. A seek restores the effect's state. A
+// model with a reverb that has the 8 parameters of a delay doesn't start, and gives the reason.
+void TestAtkEffects()
+{
+    const std::shared_ptr<const sar::SoundArchive> archive = OpenSendArchive();
+    const auto sequence = std::make_shared<const Sequence>(ReadSequence(*archive, kSendSound));
+    const ModelRun dry = RunModel(*archive, kSendSound, 2000);
+    const std::size_t idle = EndFramesOf(dry).idle;
+    struct Case
+    {
+        AtkEffect::Type type;
+        std::vector<float> parameters;
+        std::unique_ptr<atk::EffectBase> (*make)();
+        int ring_frames;
+    };
+    const std::array<Case, 3> cases = {{
+        {AtkEffect::Type::kDelay,
+         {2'000'000.0f, 160'000.0f, 0.5f, 0.4f, 0.5f, 0.8f, 0.3f, 2.0f},
+         [] { return std::unique_ptr<atk::EffectBase>(std::make_unique<atk::EffectDelay>()); },
+         200 + 32},
+        {AtkEffect::Type::kLightLimiter,
+         {1000.0f, 20.0f, 300'000.0f, 500.0f, 0.2f, 1.0f, 1.0f, 3.0f},
+         [] { return std::unique_ptr<atk::EffectBase>(std::make_unique<atk::EffectLightLimiter>()); },
+         200 + 1},
+        {AtkEffect::Type::kReverb,
+         {0.0f, 0.7f, 15'000.0f, 0.0f, 0.7f, 1'500'000.0f, 0.8f, 0.7f, 0.2f, 1.0f, 0.7f, 2.0f},
+         [] { return std::unique_ptr<atk::EffectBase>(std::make_unique<atk::EffectReverb>()); },
+         200 + 3},
+    }};
+    for (const Case& c : cases)
+    {
+        const AuxEffects effects = {{{AtkEffect{c.type, c.parameters}}, {}, {}}};
+        SEQLIB_CHECK_EQ(SwitchRingingFrames(effects), c.ring_frames);
+        const ModelRun model = RunModelWith(*archive, kSendSound, 2000, c.make());
+        const std::size_t first = FirstFrameReaching(model, 1);
+        const auto play = [](std::shared_ptr<SequenceModel> shared, uint32_t start, std::size_t frames)
+        {
+            const auto clock = std::make_shared<PlaybackClock>(kFrameSamples);
+            SequencePlayer player(std::move(shared), start, clock);
+            return RunPlayer(player, *clock, frames);
+        };
+        const PlayerRun run = play(ModelOf(archive, sequence, 10, effects), 0, 1900);
+        SEQLIB_CHECK(Matches(run.samples, model, first, 0) && !Matches(run.samples, dry, first, 0));
+
+        // The output ends once the ring has passed after the last frame with sound, and the model's output stays within
+        // ±8 from there on.
+        const std::size_t end = first + run.samples.size() / (kFrameSamples * 2);
+        std::size_t last_sound = first;
+        for (std::size_t frame = first; frame < end; frame++)
+        {
+            const auto samples = std::span<const int16_t>(model.samples).subspan(frame * kFrameSamples * 2,
+                                                                                kFrameSamples * 2);
+            if (std::any_of(samples.begin(), samples.end(), [](int16_t sample) { return std::abs(sample) > 8; }))
+            {
+                last_sound = frame;
+            }
+        }
+        SEQLIB_CHECK(run.ended && end > idle && end >= last_sound + static_cast<std::size_t>(c.ring_frames));
+        SEQLIB_CHECK(std::all_of(model.samples.begin() + static_cast<std::ptrdiff_t>(end * kFrameSamples * 2),
+                                 model.samples.end(), [](int16_t sample) { return std::abs(sample) <= 8; }));
+
+        // A seek into the note restores a snapshot with the effect's state.
+        const auto shared = ModelOf(archive, sequence, 10, effects);
+        play(shared, 0, 200);
+        const PlayerRun after = play(shared, 30, 100);
+        const std::size_t from = FirstFrameReaching(model, 31);
+        SEQLIB_CHECK(Fades(after.samples, 0, model, from, true) &&
+                     Matches(after.samples, model, from, kFrameSamples * 2));
+    }
+
+    const AuxEffects short_reverb = {{{AtkEffect{AtkEffect::Type::kReverb, cases[0].parameters}}, {}, {}}};
+    const std::shared_ptr<SequenceModel> refused = ModelOf(archive, sequence, 10, short_reverb);
+    SEQLIB_CHECK(!refused->SeekFrame(0) && refused->Failure() == "An effect of nn::atk has 8 parameters, not 12.");
+}
+
 // The peaks of each channel of what frame `frame` of `run` adds to the same frame of `without`, as amplitudes.
 std::array<float, 2> DifferencePeaks(const ModelRun& run, const ModelRun& without, std::size_t frame)
 {
@@ -892,6 +1006,7 @@ int main()
                                         TestTrackMeters();
                                         TestPannedMeter();
                                         TestAuxEffects();
+                                        TestAtkEffects();
                                         TestBusVolumes();
                                         TestBusCVolume();
                                         TestWiiUBusVolumes();

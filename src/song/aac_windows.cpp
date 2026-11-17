@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // AAC on Windows: Media Foundation's AAC decoder takes the ADTS frames one at a time and gives 16-bit PCM. Its AAC
-// encoder takes 16-bit PCM and gives raw AAC-LC frames, and each frame takes an ADTS header.
+// encoder takes 16-bit PCM and gives raw AAC-LC frames, and each frame takes an ADTS header. Where Media Foundation
+// offers no decoder or no encoder, FFmpeg's program decodes or encodes (song/ffmpeg.h). Wine's Media Foundation has a
+// decoder and no encoder.
 
 // clang-format off
 // Windows' headers come first: Media Foundation's headers require its types.
@@ -25,6 +27,7 @@
 #include <vector>
 
 #include "song/adts.h"
+#include "song/ffmpeg.h"
 
 namespace hokuto::song
 {
@@ -160,25 +163,19 @@ HRESULT FindTransform(const GUID& category, const MFT_REGISTER_TYPE_INFO* input,
     return activated;
 }
 
-// The decoder that the system offers for AAC.
-ComPtr<IMFTransform> FindDecoder()
+// The decoder that the system offers for AAC, or the failure. MF_E_TOPO_CODEC_NOT_FOUND: the system offers none.
+HRESULT FindDecoder(ComPtr<IMFTransform>& decoder)
 {
     const MFT_REGISTER_TYPE_INFO input{MFMediaType_Audio, MFAudioFormat_AAC};
-    ComPtr<IMFTransform> decoder;
-    Check(FindTransform(MFT_CATEGORY_AUDIO_DECODER, &input, nullptr, decoder), "starting the decoder");
-
-    return decoder;
+    return FindTransform(MFT_CATEGORY_AUDIO_DECODER, &input, nullptr, decoder);
 }
 
-// The encoder that the system offers from PCM to AAC.
-ComPtr<IMFTransform> FindEncoder()
+// The encoder that the system offers from PCM to AAC, or the failure, as FindDecoder.
+HRESULT FindEncoder(ComPtr<IMFTransform>& encoder)
 {
     const MFT_REGISTER_TYPE_INFO input{MFMediaType_Audio, MFAudioFormat_PCM};
     const MFT_REGISTER_TYPE_INFO output{MFMediaType_Audio, MFAudioFormat_AAC};
-    ComPtr<IMFTransform> encoder;
-    CheckEncoding(FindTransform(MFT_CATEGORY_AUDIO_ENCODER, &input, &output, encoder), "starting the encoder");
-
-    return encoder;
+    return FindTransform(MFT_CATEGORY_AUDIO_ENCODER, &input, &output, encoder);
 }
 
 // The packets that the encoder has ready, appended to `bytes` as ADTS frames: one raw frame in each sample.
@@ -413,6 +410,14 @@ ComPtr<IMFMediaType> EncoderOutputType(const ntdlib::wave::Pcm& pcm, uint32_t ch
 
 } // namespace
 
+bool HasAacCodec()
+{
+    const Session session;
+    ComPtr<IMFTransform> decoder;
+    ComPtr<IMFTransform> encoder;
+    return (SUCCEEDED(FindDecoder(decoder)) && SUCCEEDED(FindEncoder(encoder))) || FindsFfmpeg();
+}
+
 ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
 {
     const uint32_t frames = AdtsFrames(bytes);
@@ -423,7 +428,14 @@ ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
 
     const Header header = HeaderOf(bytes);
     const Session session;
-    const ComPtr<IMFTransform> decoder = FindDecoder();
+    ComPtr<IMFTransform> decoder;
+    const HRESULT found = FindDecoder(decoder);
+    if (found == MF_E_TOPO_CODEC_NOT_FOUND)
+    {
+        return DecodeAdtsWithFfmpeg(bytes);
+    }
+
+    Check(found, "starting the decoder");
 
     // The input: AAC in ADTS. The user data holds the part of HEAACWAVEINFO after its WAVEFORMATEX, with the payload's
     // type, then the AudioSpecificConfig that the header gives.
@@ -468,7 +480,14 @@ std::vector<uint8_t> EncodeAdts(const ntdlib::wave::Pcm& pcm, uint32_t bit_rate)
     CheckEncodable(pcm, bit_rate);
     const auto channels = static_cast<uint32_t>(pcm.channels.size());
     const Session session;
-    const ComPtr<IMFTransform> encoder = FindEncoder();
+    ComPtr<IMFTransform> encoder;
+    const HRESULT found = FindEncoder(encoder);
+    if (found == MF_E_TOPO_CODEC_NOT_FOUND)
+    {
+        return EncodeAdtsWithFfmpeg(pcm, bit_rate);
+    }
+
+    CheckEncoding(found, "starting the encoder");
 
     // The input: 16-bit PCM. The output: raw AAC-LC at the rate of bytes that the bits give.
     const ComPtr<IMFMediaType> input = EncoderInputType(pcm, channels);

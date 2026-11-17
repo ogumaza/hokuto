@@ -52,6 +52,7 @@
 #include "edit/bytecode.h"
 #include "edit/converter.h"
 #include "edit/ds_new_items.h"
+#include "edit/midi_events.h"
 #include "edit/midi_imports.h"
 #include "edit/new_items.h"
 #include "edit/replace.h"
@@ -59,6 +60,7 @@
 #include "edit/timelines.h"
 #include "format/file.h"
 #include "format/model.h"
+#include "render_measures.h"
 #include "song/audibility.h"
 #include "song/dry_render.h"
 #include "song/midi_export.h"
@@ -76,11 +78,10 @@ namespace tools = hokuto::tools;
 // The bank slots of a sound of the later consoles.
 constexpr uint32_t kSlots = 4;
 
-// The refusals of an import that the check expects, for a sound that plays no notes. src/edit writes these messages
-// without a constant or a function to call. The table copies them, and each entry has to follow its source.
+// The refusals of an import that the check expects, for a sound that plays no notes.
 constexpr std::array<std::string_view, 2> kExpectedImportRefusals = {
-    "The MIDI file has no notes.",   // edit::SongOfMidi (src/edit/midi_import.cpp)
-    "The SoundFont has no presets.", // edit::ReadSoundFontImport, edit::AddSoundFont (src/edit/sound_font_imports.cpp)
+    edit::kMidiWithoutNotes,        // edit::SongOfMidi (src/edit/midi_import.cpp)
+    edit::kSoundFontWithoutPresets, // edit::ReadSoundFontImport, edit::AddSoundFont (src/edit/sound_font_imports.cpp)
 };
 
 struct Totals
@@ -151,18 +152,6 @@ struct Missing
     std::size_t in_first_tick = 0;
     std::string first;
 };
-
-// The level of `frames` frames of `samples`, interleaved stereo, from frame `from`, in dB below full scale.
-double Level(const std::vector<float>& samples, std::size_t from, std::size_t frames)
-{
-    double sum = 0.0;
-    for (std::size_t i = from * 2; i < (from + frames) * 2 && i < samples.size(); i++)
-    {
-        sum += static_cast<double>(samples[i]) * samples[i];
-    }
-
-    return sum > 0.0 ? 10.0 * std::log10(sum / static_cast<double>(frames * 2)) : -200.0;
-}
 
 // Removes from `played` a note of `key` that starts at `tick`, a tick later or a tick earlier, the first found in that
 // order. Returns whether there was one.
@@ -416,8 +405,9 @@ void CountLevelPlaces(const song::LevelComparison& comparison, const song::DryRe
         for (std::size_t from = 0; from < frames; from += half)
         {
             std::printf("  %6.1f s: the game's %6.1f dBFS, the import's %6.1f dBFS\n",
-                        static_cast<double>(from) / old_render.rate, Level(old_render.samples, from, half),
-                        Level(new_render.samples, from, half));
+                        static_cast<double>(from) / old_render.rate,
+                        tools::WindowDb(old_render.samples, static_cast<int64_t>(from), half),
+                        tools::WindowDb(new_render.samples, static_cast<int64_t>(from), half));
         }
     }
     totals.random_findings += draws ? 1 : 0;

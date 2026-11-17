@@ -16,10 +16,10 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/layout.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/layout.h"
 #include "xsflib/binary.h"
 
 #include "format/archive.h"
@@ -32,17 +32,17 @@ namespace hokuto::format
 
 File ImportGbaRom(std::span<const uint8_t> rom)
 {
-    ntdlib::agb::Rom read;
+    agblib::agb::Rom read;
     read.Assign(std::vector<uint8_t>(rom.begin(), rom.end()));
-    ntdlib::mp2k::DriverInfo info;
+    agblib::mp2k::DriverInfo info;
     std::string error;
-    if (!ntdlib::mp2k::DetectDriver(read, {}, info, error))
+    if (!agblib::mp2k::DetectDriver(read, {}, info, error))
     {
         throw xsflib::FormatError(error.empty() ? "the ROM doesn't use MusicPlayer2000"
                                                 : "the MusicPlayer2000 song table has no song that Hokuto can read");
     }
 
-    ntdlib::mp2k::Layout layout = ntdlib::mp2k::Cut(read, info);
+    agblib::mp2k::Layout layout = agblib::mp2k::Cut(read, info);
     File file;
     file.engine = Engine::kGba;
     file.sequences = ShareSequences(std::move(layout.sequences));
@@ -79,8 +79,8 @@ std::optional<uint32_t> GbaSongSequence(const File& file, uint32_t song_table, i
     const std::vector<uint64_t> starts = NativePieceStarts(file);
 
     // The song's entry of the song table names the start of the run that contains the song's header. That run follows
-    // the song's piece (ntdlib::mp2k::Cut).
-    const uint64_t entry = uint64_t{song_table} - ntdlib::agb::kRomBase + 8 * static_cast<uint64_t>(song);
+    // the song's piece (agblib::mp2k::Cut).
+    const uint64_t entry = uint64_t{song_table} - agblib::agb::kRomBase + 8 * static_cast<uint64_t>(song);
     for (const ntdlib::sar::Field& field : file.native->fields)
     {
         const ntdlib::sar::Place& at = field.at;
@@ -114,7 +114,7 @@ std::vector<std::vector<uint32_t>> GbaTrackFields(const File& file, uint32_t son
 
     // The run of each song's header, from the song's entry of the song table, and the fields of each run that name an
     // item of a sequence. The fields of a header follow the header's order.
-    const uint64_t table = uint64_t{song_table} - ntdlib::agb::kRomBase;
+    const uint64_t table = uint64_t{song_table} - agblib::agb::kRomBase;
     std::map<uint32_t, std::vector<uint32_t>> fields_in_runs;
     std::vector<std::optional<uint32_t>> runs(songs);
     for (uint32_t index = 0; index < file.native->fields.size(); index++)
@@ -187,7 +187,7 @@ std::vector<uint32_t> MovedSongs(const File& file)
     // A song's size doesn't depend on its address: MP2K's addresses take 4 bytes each. A song whose header gains tracks
     // moves too: the bytes after the header hold other data.
     const std::vector<ntdlib::sar::Piece>& pieces = *file.native->pieces;
-    const std::vector<uint32_t> tracks = ntdlib::mp2k::HeaderTracks(pieces, file.native->fields);
+    const std::vector<uint32_t> tracks = agblib::mp2k::HeaderTracks(pieces, file.native->fields);
     uint64_t start = 0;
     for (std::size_t p = 0; p < pieces.size(); p++)
     {
@@ -200,8 +200,8 @@ std::vector<uint32_t> MovedSongs(const File& file)
             const auto* header = p + 1 < pieces.size() ? std::get_if<std::vector<uint8_t>>(&pieces[p + 1]) : nullptr;
             const bool grows = header != nullptr && !header->empty() && tracks[p] > (*header)[0];
             if (song->sequence < file.sequences.size() &&
-                (grows || ntdlib::mp2k::EncodeSequence(*file.sequences[song->sequence],
-                                                       static_cast<uint32_t>(ntdlib::agb::kRomBase + start),
+                (grows || agblib::mp2k::EncodeSequence(*file.sequences[song->sequence],
+                                                       static_cast<uint32_t>(agblib::agb::kRomBase + start),
                                                        file.native->gba_note_arguments)
                                   .bytes.size() > song->room))
             {

@@ -39,6 +39,10 @@
 #include "song/archive.h"
 #include "song/driver.h"
 
+#if !defined(__APPLE__) && !defined(_WIN32)
+#include "app/zenity_box.h"
+#endif
+
 namespace hokuto::app
 {
 namespace
@@ -67,13 +71,30 @@ constexpr bool kGpuDebug = true;
 // The version of the default layout. A layout saved from an older one lacks zones, and the program rebuilds it.
 constexpr int kLayoutVersion = 4;
 
+// Shows `message` in a box of the system with the icon of `flags` and one button, OK. Return and Escape choose OK. It
+// is the box of SDL_ShowSimpleMessageBox, shown through ShowSystemBox. `window` is the window that the box belongs to,
+// or null.
+void ShowSimpleBox(SDL_MessageBoxFlags flags, const std::string& message, SDL_Window* window)
+{
+    const SDL_MessageBoxButtonData button{
+        SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT | SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, "OK"};
+    SDL_MessageBoxData box{};
+    box.flags = flags;
+    box.window = window;
+    box.title = "Hokuto";
+    box.message = message.c_str();
+    box.numbuttons = 1;
+    box.buttons = &button;
+    ShowSystemBox(box, nullptr);
+}
+
 // Logs what failed with SDL3's reason, and shows both in a message box. A program started from Finder or Explorer has
 // no console.
 void ShowError(const char* what)
 {
     const std::string message = std::string(what) + ": " + SDL_GetError();
     SDL_Log("%s", message.c_str());
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Hokuto", message.c_str(), nullptr);
+    ShowSimpleBox(SDL_MESSAGEBOX_ERROR, message, nullptr);
 }
 
 // Whether the user holds a key or a mouse button. Dear ImGui counts the mouse buttons among its keys. Dear ImGui times
@@ -134,6 +155,22 @@ void SetImeData(ImGuiContext* context, ImGuiViewport* viewport, ImGuiPlatformIme
     area.h = static_cast<int>(data->InputLineHeight);
     SDL_SetTextInputArea(window, &area, 0);
 }
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+// Sends the window under the pointer a motion event at the pointer's place. The window dropped the pointer's moves
+// while another program's window was open in front of it.
+void MovePointerToWindow()
+{
+    if (SDL_Window* const under = SDL_GetMouseFocus())
+    {
+        SDL_Event moved{};
+        moved.type = SDL_EVENT_MOUSE_MOTION;
+        moved.motion.windowID = SDL_GetWindowID(under);
+        moved.motion.state = SDL_GetMouseState(&moved.motion.x, &moved.motion.y);
+        SDL_PushEvent(&moved);
+    }
+}
+#endif
 
 } // namespace
 
@@ -315,6 +352,17 @@ bool App::Init()
         return false;
     }
 
+    // The saved layout keeps the zones' sizes in pixels. At another scale than the one it was built at, the zones would
+    // keep their old widths while their text grows or shrinks, and the default layout is built again for this scale.
+    // The zones that show stay as they were.
+    const int percent = static_cast<int>(std::lround(scale * 100.0f));
+    if (settings_.layout_scale != percent)
+    {
+        settings_.layout_scale = percent;
+        reset_layout_ = true;
+        ImGui::MarkIniSettingsDirty();
+    }
+
     LoadFonts();
 
     // The program runs without an audio device. Studio Setup says why there's none. The device rests after kOutputRest
@@ -429,6 +477,20 @@ void App::LoadFonts()
 
 SDL_AppResult App::HandleEvent(const SDL_Event& event)
 {
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // While a file dialog is open, the window drops the input that it drops during a message box (LeftOutDuringBox).
+    // Once the dialog closes, a motion event brings the pointer's place to the window under the pointer.
+    if (file_dialog_shown_ && !file_dialog_open_)
+    {
+        file_dialog_shown_ = false;
+        MovePointerToWindow();
+    }
+    if (file_dialog_shown_ && LeftOutDuringBox(event.type))
+    {
+        return quit_ ? SDL_APP_SUCCESS : SDL_APP_CONTINUE;
+    }
+#endif
+
     // Each event, a wake included, makes the window draw on for a moment (see Pace).
     last_event_ = SDL_GetTicksNS();
     ImGui_ImplSDL3_ProcessEvent(&event);
@@ -581,6 +643,10 @@ SDL_AppResult App::Iterate()
     // So does a dropped read of the songs of a ROM's samples. Until then, the lambda of the read keeps the ROM.
     std::erase_if(dropped_sample_songs_, Done<DriverSampleSongs>);
 
+    // An item's edit whose work is done becomes an action before the frame is drawn. The reader then builds its
+    // archive.
+    TakeItemEdit();
+
     // A sequence that the reader has read opens before the frame is drawn too. A read that built the archive of a
     // version brings the archive. A new read of the sequence that the zones show follows an edit.
     TakeReadSequence();
@@ -606,7 +672,7 @@ SDL_AppResult App::Iterate()
     // While the reader builds the archive of another version, the mixer's controls and the Key Editor's notes wait for
     // it.
     SongView* song = song_ ? &*song_ : nullptr;
-    const bool busy = reading_version_ != nullptr;
+    const bool busy = Settling();
     ShowTrackColours();
     ShowSoundIn(sound_section_, ShownSound());
     ShowWaveSoundIn(sound_section_);
@@ -655,7 +721,7 @@ SDL_AppResult App::Iterate()
     DrawWindows();
 
     // While a sequence is being read, the pointer shows that the program is busy. The window still takes clicks.
-    if (reader_.Reading())
+    if (reader_.Reading() || item_edit_.Waiting())
     {
         ImGui::SetMouseCursor(ImGuiMouseCursor_Progress);
     }
@@ -737,6 +803,7 @@ void App::DrawWindows()
     DrawProjectSetup();
     DrawNewProject();
     DrawExport();
+    DrawMixdown();
     DrawReplace();
     DrawOpening();
     DrawPreparing();
@@ -862,7 +929,8 @@ void App::Pace()
     // user holds a key or a button, and for a moment after each event. The end of such work counts as an event. A
     // window that fits its contents, such as the Export window after a measure, takes its new size a frame or two
     // later.
-    // The window draws on too while DrawPreparing waits to prepare an Import or Replace window.
+    // The window draws on too while DrawPreparing waits to prepare an Import or Replace window, and while the Export
+    // Audio Mixdown window reads its songs or runs its exports.
     const bool tracks_move = song_ && std::any_of(song_->tracks.begin(), song_->tracks.end(),
                                                   [](const TrackView& track) { return Shows(track.meter); });
     const bool fx_move = std::any_of(fx_.meters.begin(), fx_.meters.end(), Shows);
@@ -875,10 +943,11 @@ void App::Pace()
                                  measuring(sound_section_.wave_group_sizes) ||
                                  measuring(browser_sound_.wave_group_sizes);
     const bool moving = transport_.Playing() || Shows(master_.meter) || tracks_move || fx_move ||
-                        ImGui::GetIO().WantTextInput || reader_.Reading() || (export_ && !export_->done) ||
-                        (export_ && export_->measure.valid()) || (replace_.shown && replace_.shown->pending) ||
-                        replace_.preview_work.has_value() || opening_.has_value() || preparing_.has_value() ||
-                        browser_state_.playing.has_value() || replace_.previewing || groups_measured;
+                        ImGui::GetIO().WantTextInput || reader_.Reading() || item_edit_.Waiting() ||
+                        (export_ && !export_->done) || (export_ && export_->measure.valid()) ||
+                        (replace_.shown && replace_.shown->pending) || replace_.preview_work.has_value() ||
+                        opening_.has_value() || preparing_.has_value() || browser_state_.playing.has_value() ||
+                        replace_.previewing || groups_measured || MixdownMoving();
     if (std::exchange(moving_, moving) && !moving)
     {
         last_event_ = SDL_GetTicksNS();
@@ -918,8 +987,8 @@ void App::OpenMessageBoxes(bool button_down)
 {
     for (const Message& message : messages_.Ready(button_down))
     {
-        SDL_ShowSimpleMessageBox(message.kind == MessageKind::kNote ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR,
-                                 "Hokuto", message.text.c_str(), window_);
+        ShowSimpleBox(message.kind == MessageKind::kNote ? SDL_MESSAGEBOX_INFORMATION : SDL_MESSAGEBOX_ERROR,
+                      message.text, window_);
     }
 }
 

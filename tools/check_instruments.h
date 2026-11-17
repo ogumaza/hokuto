@@ -23,9 +23,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/song.h"
+#include "ntdlib/dse/driver.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
@@ -42,6 +43,7 @@
 #include "notes_apart.h"
 #include "song/archive.h"
 #include "song/driver.h"
+#include "song/dse.h"
 #include "song/gba.h"
 #include "song/sequence.h"
 
@@ -86,10 +88,12 @@ struct Totals
     std::size_t reached_tracks = 0;
     std::size_t reached_sounds = 0;
     std::size_t unlisted = 0;
-    double slowest_reach = 0.0;  // seconds
-    std::size_t outgrown = 0;    // edits whose GBA songs outgrow their places (tools::Outgrows)
-    std::size_t channels = 0;    // GBA tracks that gain or lose notes on the edited notes' channels
-    std::size_t ds_channels = 0; // DS tracks that gain or lose notes that the driver never started
+    double slowest_reach = 0.0;   // seconds
+    std::size_t outgrown = 0;     // edits whose GBA songs outgrow their places (tools::Outgrows)
+    std::size_t channels = 0;     // GBA tracks that gain or lose notes on the edited notes' channels
+    std::size_t ds_channels = 0;  // DS tracks that gain or lose notes that the driver never started
+    std::size_t dse_settings = 0; // DSE edits after which a note plays another bend range, LFO or envelope
+    std::size_t dse_lfos = 0;     // DSE notes of an instrument whose program gives other LFOs: theirs aren't compared
 };
 
 // The archive as the tool reads it: its sounds, where each plays in the file, each sequence sound as ntdlib's performer
@@ -198,9 +202,39 @@ std::set<uint32_t> ChangedItems(const ntdlib::commands::Sequence& before, const 
                                 const edit::Edited& edited);
 
 // The first change that `edited` made to `before` other than a new program or slot from `to` in a program change or a
-// bank select. A new command can be a program change, a bank select or a jump. A command that led to an item can lead
-// to the new commands just before it. Empty where there's none.
+// bank select. A new command can be a program change, a bank select or a jump, and with `dse` DSE's select of a whole
+// bank id (0xA8). A command that led to an item can lead to the new commands just before it. Empty where there's none.
 std::string OtherChange(const ntdlib::commands::Sequence& before, const ntdlib::commands::Sequence& after,
-                        const edit::Edited& edited, const edit::Program& to);
+                        const edit::Edited& edited, const edit::Program& to, bool dse);
+
+// What a selection of a DSE program resets on the note's channel (ntdlib's Driver::State::SelectProgram), and the
+// bank and the program that the note plays, as ntdlib's DSE driver holds them when a track plays a note.
+struct DseNoteSettings
+{
+    friend bool operator==(const DseNoteSettings&, const DseNoteSettings&) = default;
+
+    uint16_t bank = 0;
+    uint16_t program = 0;
+    bool has_program = false; // the bank holds the program: else the note plays nothing
+    uint8_t bend_range = 0;
+    std::array<ntdlib::dse::LfoValues, 4> lfos = {};
+    ntdlib::dse::EnvelopeValues envelope = {};
+};
+
+// What DseSettingsChange finds.
+struct DseSettingsChange
+{
+    std::string change;   // the first note whose settings change, and what changes; empty where none does
+    std::size_t lfos = 0; // the notes whose LFOs aren't compared
+};
+
+// The notes of track `track` of sound `sound` of `before` and `after`, two sets of the same sounds before and after an
+// edit of an instrument, played by ntdlib's DSE driver until each track has played `notes` notes or a time limit. A
+// note of the same bank and program has to play with the same bend range, LFOs and envelope. A note of another bank or
+// program has to play with the same bend range and envelope, and with the same LFOs where its two programs give the
+// same. A note whose bank lacks its program plays nothing, and its channel keeps the LFOs of an earlier program: its
+// LFOs aren't compared either.
+DseSettingsChange DseSettingsOf(const song::DseSet& before, const song::DseSet& after, uint32_t sound, int track,
+                                std::size_t notes);
 
 } // namespace hokuto::tools::instruments

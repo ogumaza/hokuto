@@ -438,8 +438,13 @@ void App::ShowWaveSoundIn(SoundSection& section)
 bool App::EditorsWait() const
 {
     const format::File* document = Document();
-    return document == nullptr || !ArchiveOpen() || !archive_version_ || reading_version_ != nullptr ||
+    return document == nullptr || !ArchiveOpen() || !archive_version_ || Settling() ||
            !SameArchive(*document, *archive_version_) || replace_.shown || export_.has_value();
+}
+
+bool App::Settling() const
+{
+    return reading_version_ != nullptr || item_edit_.Waiting();
 }
 
 void App::MeasureGroups(std::future<std::vector<std::string>>& sizes, uint32_t file_id)

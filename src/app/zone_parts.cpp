@@ -105,6 +105,13 @@ bool SectionOpen(const char* title, bool open_at_first)
     return open;
 }
 
+void SetSectionOpen(const char* title, bool open)
+{
+    ImGui::PushID(title);
+    ImGui::GetStateStorage()->SetBool(ImGui::GetID("open"), open);
+    ImGui::PopID();
+}
+
 float SectionHeadingHeight(const char* title)
 {
     return CapsSize(title).y + Px(9.0f);

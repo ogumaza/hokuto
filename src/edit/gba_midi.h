@@ -49,8 +49,8 @@
 #include <string_view>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/mp2k/song.h"
 
 #include "edit/replace.h"
 #include "format/file.h"
@@ -104,14 +104,14 @@ GbaMidiSong GbaSongOfAssembly(std::string_view text, int note_arguments = 3);
 // The voice that the import proposes for `instrument`, with the 128 voices of the song's voice group `voices`: the
 // voice of the program's number. The converters give an instrument the same voice. On the drum channel, a program whose
 // voice isn't a drum kit gets the first drum kit of the voice group, where the group has one.
-int ProposedGbaVoice(const GbaMidiInstrument& instrument, std::span<const ntdlib::mp2k::Voice> voices);
+int ProposedGbaVoice(const GbaMidiInstrument& instrument, std::span<const agblib::mp2k::Voice> voices);
 
 // The voices that the import proposes for `instruments` in a song of `file` that plays the voice group at address
 // `voice_group`, with its 128 voices `voices`: the voices that the file's instrument map of the voice group pairs with
 // them (format::File::instrument_maps), or else the voices of ProposedGbaVoice.
 GbaVoiceMap ProposedGbaVoices(const format::File& file, uint32_t voice_group,
                               std::span<const GbaMidiInstrument> instruments,
-                              std::span<const ntdlib::mp2k::Voice> voices);
+                              std::span<const agblib::mp2k::Voice> voices);
 
 // The address of the voice group that song `song` of `file`, a GBA file, plays: the address that its header states.
 // `places` contains where each song plays (GbaSoundPlaces). Nothing for a song whose commands the file keeps among the

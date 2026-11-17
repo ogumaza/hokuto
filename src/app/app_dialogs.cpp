@@ -13,6 +13,7 @@
 #include "app/app.h"
 #include "app/app_internal.h"
 #include "app/engine_rows.h"
+#include "app/file_dialogs.h"
 #include "app/system_ui.h"
 #include "format/file.h"
 
@@ -70,20 +71,21 @@ constexpr SDL_DialogFileFilter kHokutoFilters[] = {{"Hokuto files", "hok"}};
 
 // The MIDI files that File > Export writes, with their instruments beside them. A sound archive takes the filters of
 // File > Import.
-constexpr SDL_DialogFileFilter kMidiFilters[] = {{"MIDI files", "mid"}};
+constexpr SDL_DialogFileFilter kMidiFilters[] = {{"MIDI files", "mid;midi"}};
 
 // The files of the browser's Export…, one filter for each extension: an item's file of the Wii, the 3DS, the Switch,
 // the Wii U, the DS or DSE, a GBA sample, voice group or song, an AAC stream, a WAV file, a bank's SoundFont and a
-// sequence's MIDI file. The dialog shows the filter of the export's file.
+// sequence's MIDI file. The dialog shows the filter whose first extension is the export file's. An AIFF file can end in
+// .aiff too (WithExtension).
 constexpr SDL_DialogFileFilter kItemFilters[] = {
-    {"Sample files", "bin"},       {"AIFF files", "aif"},      {"Sequence files", "bfseq"},
+    {"Sample files", "bin"},       {"AIFF files", "aif;aiff"}, {"Sequence files", "bfseq"},
     {"Wave sound files", "bfwsd"}, {"Bank files", "bfbnk"},    {"Wave archive files", "bfwar"},
     {"Wave files", "bfwav"},       {"Stream files", "bfstm"},  {"Sequence files", "bcseq"},
     {"Wave sound files", "bcwsd"}, {"Bank files", "bcbnk"},    {"Wave archive files", "bcwar"},
     {"Wave files", "bcwav"},       {"Stream files", "bcstm"},  {"Sequence files", "brseq"},
     {"Wave sound files", "brwsd"}, {"Bank files", "brbnk"},    {"Wave archive files", "brwar"},
     {"Wave files", "brwav"},       {"Stream files", "brstm"},  {"AAC files", "aac"},
-    {"WAV files", "wav"},          {"SoundFont files", "sf2"}, {"MIDI files", "mid"},
+    {"WAV files", "wav"},          {"SoundFont files", "sf2"}, {"MIDI files", "mid;midi"},
     {"Assembly files", "s"},       {"Sequence files", "sseq"}, {"Wave archive files", "swar"},
     {"Bank files", "sbnk"},        {"Wave files", "swav"},     {"Stream files", "strm"},
     {"Bank files", "swd"},         {"Song files", "smd"}};
@@ -173,7 +175,8 @@ std::span<const SDL_DialogFileFilter> App::DialogFilters(Dialog dialog) const
         filters = {};
         for (const SDL_DialogFileFilter& filter : kItemFilters)
         {
-            if (extension == std::string(".") + filter.pattern)
+            const std::string_view pattern(filter.pattern);
+            if (extension == "." + std::string(pattern.substr(0, pattern.find(';'))))
             {
                 filters = std::span(&filter, 1);
             }
@@ -190,7 +193,7 @@ std::span<const SDL_DialogFileFilter> App::DialogFilters(Dialog dialog) const
     {
         filters = SongEngineOf(export_->Target()) ? std::span(kHokutoFilters) : std::span(kMidiFilters);
     }
-    else if (dialog == Dialog::kExportFolder)
+    else if (dialog == Dialog::kExportFolder || dialog == Dialog::kMixdownFolder)
     {
         // A panel of folders takes no filter. On the Mac, a filter of files leaves the panel no folder to choose.
         filters = {};
@@ -351,8 +354,17 @@ std::optional<std::filesystem::path> App::ExportLocation(bool folder) const
     return folder ? beside / "" : beside / xsflib::PathFromUtf8(export_->file_name);
 }
 
-void App::ShowDialog(Dialog dialog)
+bool App::ShowDialog(Dialog dialog)
 {
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // One file dialog opens at a time. The dialogs of macOS and Windows block input to the window, and only one can
+    // open there.
+    if (file_dialog_open_)
+    {
+        return false;
+    }
+#endif
+
     ShowMessagesBeforeBox();
 
     // The dialog reads the properties when it opens. The filters have to last until it closes. SDL3 only reads them.
@@ -477,10 +489,28 @@ void App::ShowDialog(Dialog dialog)
             }
             break;
         }
+
+    case Dialog::kMixdownFolder:
+        type = SDL_FILEDIALOG_OPENFOLDER;
+        callback = &App::Chosen<Dialog::kMixdownFolder>;
+        SDL_SetStringProperty(properties, SDL_PROP_FILE_DIALOG_TITLE_STRING, "Export Audio Mixdown");
+        SDL_SetStringProperty(properties, SDL_PROP_FILE_DIALOG_ACCEPT_STRING, "Choose");
+        break;
     }
+
+#if !defined(__APPLE__) && !defined(_WIN32)
+    // Without a desktop portal, SDL3 shows the dialog through zenity. zenity 4 refuses --ok-label in a file dialog and
+    // ends at once, and the dialog never shows. The portal names the button Open, Save or Select by itself.
+    SDL_ClearProperty(properties, SDL_PROP_FILE_DIALOG_ACCEPT_STRING);
+
+    // The window drops its input until the dialog's callback (Choose). SDL3 can call it before it returns.
+    file_dialog_open_ = true;
+    file_dialog_shown_ = true;
+#endif
 
     SDL_ShowFileDialogWithProperties(type, callback, this, properties);
     SDL_DestroyProperties(properties);
+    return true;
 }
 
 template <Dialog kDialog>
@@ -491,20 +521,20 @@ void SDLCALL App::Chosen(void* user_data, const char* const* files, int /*filter
 
 void App::Choose(Dialog dialog, const char* const* files)
 {
-    // No list means an error, and an empty list means the user cancelled. A Save As without a file still reaches the
-    // next frame. What waited for the save then goes (AfterChanges).
-    const bool chose = files != nullptr && files[0] != nullptr;
-    if (!chose && dialog != Dialog::kSaveAs)
+    // An error and a cancel give no file (NamesFile). A Save As without a file still reaches the next frame. What
+    // waited for the save then goes (AfterChanges).
+    const bool chose = NamesFile(files);
+    if (chose || dialog == Dialog::kSaveAs)
     {
-        return;
-    }
-
-    // The wake makes the program act on the file in its next frame. The path takes the one form that the program keeps:
-    // on Windows, the open dialog and the save dialog can name a long path in two forms.
-    {
+        // The path takes the one form that the program keeps: on Windows, the open dialog and the save dialog can name
+        // a long path in two forms.
         std::lock_guard lock(chosen_mutex_);
         chosen_.emplace(dialog, chose ? SystemPath(files[0]) : "");
     }
+
+    // The wake makes the program act on the file in its next frame. Where the window dropped its input during the
+    // dialog, it accepts input again (HandleEvent).
+    file_dialog_open_ = false;
     Wake();
 }
 

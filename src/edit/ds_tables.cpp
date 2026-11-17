@@ -14,6 +14,7 @@
 #include "ntdlib/sdat/formats.h"
 #include "xsflib/ascii.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "edit/ds_files.h"
 #include "edit/native_runs.h"
@@ -160,12 +161,9 @@ format::File WithDsSoundValues(const format::File& file, const song::DsArchive& 
                                     std::to_string(HighestOf(SoundValue::kPlayerPriority)) + ".");
     }
 
-    const std::array<uint8_t, 6> bytes = {static_cast<uint8_t>(values.bank),
-                                          static_cast<uint8_t>(values.bank >> 8),
-                                          values.volume,
-                                          values.channel_priority,
-                                          values.player_priority,
-                                          values.player};
+    std::array<uint8_t, 6> bytes = {
+        0, 0, values.volume, values.channel_priority, values.player_priority, values.player};
+    xsflib::StoreLe16(bytes.data(), values.bank);
 
     return WithArchiveBytes(file, format::NativePieceStarts(file), ValuesOffset(archive, sound), bytes, "The sound");
 }

@@ -32,13 +32,13 @@ std::set<int> PresetPrograms(const std::vector<uint8_t>& sf2)
 // the converter's `settings` and the name `program`. Prints a line for a song that differs, and counts it in `counts`.
 // Notes the programs at which the song's SoundFont contains a preset in bank 0 in `song_presets`.
 void CheckGbaSong(const hokuto::song::GbaRom& theirs_rom, const hokuto::song::GbaRom& ours_rom, int song,
-                  const std::string& song_name, const ntdlib::sequence_export::agb::ConvertSettings& settings,
+                  const std::string& song_name, const agblib::sequence_export::agb::ConvertSettings& settings,
                   const std::string& program, const std::string& name, Counts& counts,
                   std::map<int, std::set<int>>& song_presets)
 {
     counts.sounds++;
-    const ntdlib::sequence_export::mp2k::SongFiles theirs =
-        ntdlib::sequence_export::mp2k::ConvertSongFiles(theirs_rom.rom, theirs_rom.info, song, settings);
+    const agblib::sequence_export::mp2k::SongFiles theirs =
+        agblib::sequence_export::mp2k::ConvertSongFiles(theirs_rom.rom, theirs_rom.info, song, settings);
     if (theirs.report.ok && !theirs.sf2.empty())
     {
         song_presets[song] = PresetPrograms(theirs.sf2);
@@ -97,13 +97,13 @@ void CheckGbaSong(const hokuto::song::GbaRom& theirs_rom, const hokuto::song::Gb
 
 // The programs that the performer selects in each song of `theirs_rom`, with the converter's `settings`.
 std::map<int, std::set<int>> SelectedPrograms(const hokuto::song::GbaRom& theirs_rom,
-                                              const ntdlib::sequence_export::agb::ConvertSettings& settings)
+                                              const agblib::sequence_export::agb::ConvertSettings& settings)
 {
     std::map<int, std::set<int>> selected;
     for (const int song : hokuto::song::GbaSongs(theirs_rom))
     {
-        const ntdlib::sequence_export::mp2k::Performance performance =
-            ntdlib::sequence_export::mp2k::PerformSong(theirs_rom.rom, theirs_rom.info, song, settings);
+        const agblib::sequence_export::mp2k::Performance performance =
+            agblib::sequence_export::mp2k::PerformSong(theirs_rom.rom, theirs_rom.info, song, settings);
         for (const std::vector<seqlib::midi::TrackEvent>& events : performance.tracks)
         {
             for (const seqlib::midi::TrackEvent& event : events)
@@ -230,7 +230,7 @@ int CheckGbaRom(std::vector<uint8_t> bytes, const std::string& name, const std::
     }
 
     // The programs at which each song's SoundFont contains a preset in bank 0.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
     Counts counts;
     std::map<int, std::set<int>> song_presets;

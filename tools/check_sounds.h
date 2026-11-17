@@ -157,6 +157,33 @@ std::optional<SoundChange> ChangeOf(const NativeTables& tables, const NativeSoun
 // slot.
 NativeSound Changed(NativeSound sound, const SoundChange& change);
 
+// A sound's place in its table, and its change.
+using Change = std::pair<uint32_t, SoundChange>;
+
+// The changes of round `round` for the sounds of `tables` that have the value and another value to take (ChangeOf).
+std::vector<Change> CandidatesOf(const NativeTables& tables, const Round& round);
+
+// What a round's edits give: the file after them, the values that the tool works out, and the changes made.
+struct Edits
+{
+    File edited;
+    std::vector<NativeSound> expected;
+    std::vector<Change> made;
+};
+
+// Makes `changes` of the sounds of `tables` in `file`, an archive named `name`, one at a time. An edit that fails gets
+// a line and counts in `totals.failures`, and the others go on. `what` names the round's value.
+Edits MakeEdits(const std::string& name, const File& file, const NativeTables& tables,
+                const std::vector<Change>& changes, const std::string& what, Totals& totals);
+
+// Checks that the old values of the sounds of `tables`, put back in reverse order of `made`, give `bytes`, the archive
+// named `name`, back from `edited`.
+void CheckEditsBack(const std::string& name, const std::vector<uint8_t>& bytes, const NativeTables& tables,
+                    const File& edited, const std::vector<Change>& made, const std::string& what, Totals& totals);
+
+// The output of `model` from its first frame for kLevelSeconds.
+std::vector<int16_t> PlayModel(hokuto::song::SequenceModel& model);
+
 // Checks the levels of up to kLevelSounds sequence sounds of `changes` that played as `before` plays them and play as
 // `after` plays them, from an archive with their new volumes. `at_volume` plays a sound at another volume.
 void CheckLevels(const std::string& name, const File& file, const Player& before, const Player& after,

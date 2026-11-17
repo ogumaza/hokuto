@@ -14,7 +14,7 @@
 namespace hokuto::app
 {
 
-// Hokuto counts beats only (the maintainer, 2026-10-14). No sequence format stores a time signature, and a guess can't
+// Hokuto counts beats only. No sequence format stores a time signature, and a guess can't
 // be trusted. The code for bars stays behind this switch. The feature may come back.
 inline constexpr bool kShowBars = false;
 

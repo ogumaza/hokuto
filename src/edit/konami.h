@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a song of Konami's GBA driver, by the rules of its bytes (ntdlib/konami/commands.h). A track's bytes are
+// The edits of a song of Konami's GBA driver, by the rules of its bytes (agblib/konami/commands.h). A track's bytes are
 // a delay, then commands that each take a delay after them. A call's target is at a delay. The call plays a count of
 // commands from the target, and comes back to the delay after the call.
 //
@@ -15,10 +15,11 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/konami/seqformat.h"
 
 #include "edit/bytecode.h"
 #include "edit/commands.h"
@@ -34,8 +35,13 @@ namespace hokuto::edit
 // The edits of Konami's driver (edit/drivers.h).
 const DriverEdits& KonamiEdits();
 
+// The message with which the mixer refuses a volume edit of a track of Konami's driver whose commands start no notes.
+inline constexpr std::string_view kKonamiVolumeWithoutNotes =
+    "This track starts no notes and has no volume to change. Another track can play notes on this channel through its "
+    "pan setting. Change the volume on that track.";
+
 // The revision of Konami's driver whose bytes `console` follows, or nothing for another driver or console.
-inline std::optional<ntdlib::konami::Revision> KonamiOf(const song::Console& console)
+inline std::optional<agblib::konami::Revision> KonamiOf(const song::Console& console)
 {
     return song::KonamiRevisionOf(console.driver);
 }
@@ -64,13 +70,13 @@ bool KonamiPlaysOnNextTrack(const ntdlib::commands::Command& command);
 
 // Whether `command`, a command of `revision` of Konami's driver on a track whose notes are like `note`, starts the
 // track's note again. A volume does on a PSG track, and on every track of the Dungeon Dice Monsters revision
-// (ntdlib/konami/seqformat.h). The arrangement then shows a note that names the note command before it. After a PSG
+// (agblib/konami/seqformat.h). The arrangement then shows a note that names the note command before it. After a PSG
 // note command at volume 0, the note names the volume command (note_detail::KonamiSilentNote).
 bool KonamiStartsNoteAgain(const ntdlib::commands::Command& command, const ntdlib::commands::Command& note,
-                           ntdlib::konami::Revision revision);
+                           agblib::konami::Revision revision);
 
 // The longest delay that `revision`'s bytes hold, in ticks.
-uint32_t KonamiLongestWait(ntdlib::konami::Revision revision);
+uint32_t KonamiLongestWait(agblib::konami::Revision revision);
 
 // How many of the places that a song loop takes a track back to reach another song loop without a delay. Those places
 // are `entries`, the items where tracks start, and the item after each loop point. After such a song loop, the driver
@@ -129,7 +135,7 @@ NewNote NewKonamiNote(const format::File& file, uint32_t sequence, const song::T
 
 // ArgumentRange on track `track` of revision `revision` of Konami's driver (command_ranges.cpp).
 std::optional<ValueRange> KonamiRange(const ntdlib::commands::Command& command, ntdlib::commands::Source source,
-                                      bool time, ntdlib::konami::Revision revision, int track);
+                                      bool time, agblib::konami::Revision revision, int track);
 
 // The Project menu's edits of tracks on Konami's driver (konami_tracks.cpp).
 TrackEdit AddKonamiTrack(const format::File& file, std::span<const std::optional<SoundPlace>> places, uint32_t sound);

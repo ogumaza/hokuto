@@ -23,10 +23,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/length_model.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "xsflib/console.h"
@@ -148,8 +148,21 @@ inline bool g_rd2 = false;
 // each note plays at 127.
 inline bool g_brownie = false;
 
-// While true, no note's length counts in the comparisons, and every note can stand alone (VoicesDecide).
+// While true, no note's length counts in the comparisons, and a note can stand alone where the other read runs a note
+// command on its track at its tick (VoicesDecide).
 inline bool g_any_length = false;
+
+// The ticks at which the other read of a comparison runs a note command on each track, by the track numbers of `sound`
+// (NoteCommandTicks).
+struct VoiceTicks
+{
+    const song::Sequence* sound = nullptr;
+    std::set<std::pair<int, uint32_t>> ticks;
+};
+
+// While VoicesDecide compares, the ticks at which a note of each read can stand alone. A note of a read missing from
+// the list can't stand alone.
+inline std::vector<VoiceTicks> g_voice_ticks;
 
 // The notes that stood alone in the comparisons of VoicesDecide that held.
 inline std::size_t g_voice_alone = 0;
@@ -180,12 +193,13 @@ struct Pairing
 // The notes that stood alone in the pairings of lists that match (Pairing), for the summary.
 inline std::size_t g_alone = 0;
 
-// Whether `same` is true once no note length counts and every note can stand alone, on Nintendo R&D2's driver. A new
-// note, a copy, a paste or a removal changes how many voices the song's notes ask for, and the driver then assigns
-// other notes other voices, or none. Their lengths change, and a note can stay silent or sound. The tool counts such an
-// edit apart, and counts the notes that stand alone in it.
-template <class Same>
-bool VoicesDecide(Same same)
+// Whether `same` is true once no note length counts, on Nintendo R&D2's driver. A new note, a copy, a paste or a
+// removal changes how many voices the song's notes ask for, and the driver then assigns other notes other voices, or
+// none. Their lengths change, and a note can stay silent or sound. A note of one read then stands alone where the other
+// read runs a note command on its track at its tick. `ticks` gives those ticks for each read (g_voice_ticks). The tool
+// counts such an edit apart, and counts the notes that stand alone in it.
+template <class Same, class Ticks>
+bool VoicesDecide(Same same, Ticks ticks)
 {
     if (!g_rd2)
     {
@@ -193,9 +207,11 @@ bool VoicesDecide(Same same)
     }
 
     const std::size_t alone = g_alone;
+    g_voice_ticks = ticks();
     g_any_length = true;
     const bool held = same();
     g_any_length = false;
+    g_voice_ticks.clear();
     g_voice_alone += held ? g_alone - alone : 0;
     g_alone = alone;
 
@@ -298,6 +314,10 @@ std::optional<int> BusiestTrack(const song::Sequence& sound);
 // note belongs to the track of the command, not to the track that plays it. On any revision, key 255 of a PSG note
 // points past the driver's table of pitches, into bytes that another song can hold. Such a key doesn't count.
 song::Sequence ComparableRead(const Archive& archive, const File& file, uint32_t number, const song::Sequence& sound);
+
+// The tracks and the ticks at which `read`, a read of sound `number` of `file`, runs a note command (NoteCommandTicks).
+std::set<std::pair<int, uint32_t>> CommandTicks(const Archive& archive, const File& file, uint32_t number,
+                                                const song::Sequence& read);
 
 // Every sequence sound of `version` read by ntdlib's performer, by its index. A sound whose read fails is missing, and
 // counts as a problem.

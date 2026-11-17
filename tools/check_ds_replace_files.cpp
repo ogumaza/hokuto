@@ -87,7 +87,9 @@ std::vector<uint8_t> CopyBytes(std::span<const uint8_t> bytes)
 }
 
 // Replaces each bank of `items`, or each wave archive, with the file of the next in `edited`. `expected` receives the
-// new bytes of each file.
+// new bytes of each file. The program reads the archive that the last edit built. These edits read the game's archive:
+// edit::ReplaceDsBank and edit::ReplaceDsWaveArchive take only the item's file from it, and a replaced file keeps its
+// number in the archive's tables.
 void ReplaceFiles(const Game& game, const std::vector<std::pair<uint32_t, uint32_t>>& items, bool bank, File& edited,
                   std::map<uint32_t, std::vector<uint8_t>>& expected, Totals& totals)
 {

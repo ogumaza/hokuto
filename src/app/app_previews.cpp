@@ -9,7 +9,7 @@
 #include <optional>
 #include <utility>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 
 #include "app/app.h"
 #include "app/app_internal.h"
@@ -137,8 +137,8 @@ void App::PlayGbaPreview(const BrowserPlace& place)
     std::optional<int> first;
     for (const int song : song::GbaSongs(*played_.Gba()))
     {
-        ntdlib::mp2k::SongHeader header;
-        if (ntdlib::mp2k::ReadSong(played_.Gba()->rom, played_.Gba()->info, song, header) && header.voices == voices)
+        agblib::mp2k::SongHeader header;
+        if (agblib::mp2k::ReadSong(played_.Gba()->rom, played_.Gba()->info, song, header) && header.voices == voices)
         {
             first = song;
             break;

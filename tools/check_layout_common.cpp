@@ -7,32 +7,14 @@
 namespace hokuto::tools::layout
 {
 
-nwsnd::Grammar GrammarFor(sar::Flavor flavor)
-{
-    switch (flavor)
-    {
-    case sar::Flavor::kCtr:
-        return nwsnd::GrammarOf<nwsnd::CtrPolicy>();
-    case sar::Flavor::kCafe:
-        return nwsnd::GrammarOf<nwsnd::CafePolicy>();
-    case sar::Flavor::kNx:
-        break;
-    }
-
-    return nwsnd::GrammarOf<nwsnd::NxPolicy>();
-}
-
 std::vector<uint8_t> FileOf(const commands::Sequence& sequence, uint32_t version, sar::Flavor flavor)
 {
-    const nwsnd::Encoded encoded = nwsnd::EncodeSequence(sequence, GrammarFor(flavor));
+    const nwsnd::Encoded encoded = nwsnd::EncodeSequence(sequence, hokuto::song::GrammarOf(flavor));
     sar::SequenceFile file;
     file.flavor = flavor;
     file.version = version;
     file.data = encoded.bytes;
-    for (const commands::Label& label : sequence.labels)
-    {
-        file.labels.push_back({label.name, encoded.offsets[label.item]});
-    }
+    file.labels = LabelsOf<sar::SequenceFile>(sequence, encoded);
 
     return file.Write();
 }
@@ -151,48 +133,68 @@ std::map<std::size_t, std::size_t> PieceStarts(const sar::Layout& layout)
     return starts;
 }
 
+Readings::Readings(const std::vector<uint8_t>& archive, const sar::Options& options)
+    : archive_(archive), options_(options)
+{
+}
+
+const sar::SoundArchive& Readings::Default()
+{
+    if (!default_)
+    {
+        default_.emplace(sar::SoundArchive::Load(archive_, options_));
+    }
+
+    return *default_;
+}
+
+const std::optional<sar::SoundArchive>& Readings::Strict()
+{
+    if (!strict_)
+    {
+        sar::Options strict = options_;
+        strict.rules = sar::Rules::kStopAtFirstProblem;
+        try
+        {
+            strict_.emplace(sar::SoundArchive::Load(archive_, strict));
+        }
+        catch (const std::exception&)
+        {
+            strict_.emplace(std::nullopt);
+        }
+    }
+
+    return *strict_;
+}
+
 void Problem(const std::filesystem::path& path, const std::string& what, Totals& totals)
 {
     std::printf("%s: %s\n", xsflib::Utf8(path.filename()).c_str(), what.c_str());
     ++totals.problems;
 }
 
-std::optional<std::span<const uint8_t>> StringBlockOf(std::span<const uint8_t> archive, sar::Flavor flavor)
-{
-    const xsflib::Reader r(archive, flavor == sar::Flavor::kCafe);
-    for (uint16_t i = 0; i < r.U16(0x10); ++i)
-    {
-        const std::size_t entry = 0x14 + std::size_t{i} * 12;
-        if (r.U16(entry) == 0x2000 && r.U32(entry + 4) != 0xFFFFFFFF)
-        {
-            return archive.subspan(r.U32(entry + 4), r.U32(entry + 8));
-        }
-    }
-
-    return std::nullopt;
-}
-
-std::optional<std::string> ReaderNameOf(const sar::SoundArchive& archive, uint32_t item_id)
+ReaderName ReaderNameOf(const sar::SoundArchive& archive, uint32_t item_id, bool strict)
 {
     const uint32_t index = sar::ItemNumber(item_id);
-    auto name_in = [index](const auto& list) -> std::optional<std::string>
+    auto name_in = [index](const auto& list, bool every)
     {
-        return index < list.size() ? std::optional(list[index].name) : std::nullopt;
+        const bool listed = index < list.size();
+        return ReaderName{every || listed, listed ? std::optional(list[index].name) : std::nullopt};
     };
     switch (sar::ItemType(item_id))
     {
     case sar::kSoundItem:
-        return name_in(archive.Sounds());
+        return name_in(archive.Sounds(), true);
     case sar::kBankItem:
-        return name_in(archive.Banks());
+        return name_in(archive.Banks(), true);
     case sar::kWaveArchiveItem:
-        return name_in(archive.WaveArchives());
+        return name_in(archive.WaveArchives(), true);
     case sar::kPlayerItem:
-        return name_in(archive.Players());
+        return name_in(archive.Players(), strict);
     case sar::kGroupItem:
-        return name_in(archive.Groups());
+        return name_in(archive.Groups(), strict);
     default:
-        return std::nullopt;
+        return {};
     }
 }
 
@@ -360,23 +362,6 @@ bool NamesInOrder(std::span<const uint8_t> archive, sar::Flavor flavor)
     }
 
     return next == strings.names.size();
-}
-
-std::string FreeName(std::span<const uint8_t> archive, sar::Flavor flavor, const std::string& stem)
-{
-    const std::optional<std::span<const uint8_t>> block = StringBlockOf(archive, flavor);
-    if (!block)
-    {
-        return "";
-    }
-
-    std::string name = stem;
-    while (sar::FindItem(*block, flavor, name))
-    {
-        name += "_";
-    }
-
-    return name;
 }
 
 } // namespace hokuto::tools::layout

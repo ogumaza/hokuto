@@ -60,7 +60,8 @@ void TestWithoutRecentProject()
 
 // Two spellings of one file's path take one place in the list: with "." and ".." steps, and through a symbolic link to
 // its folder. The newest spelling stays. A removal by either spelling removes the file. A system that refuses the link,
-// such as Windows without the right to make one, checks the steps only.
+// such as Windows without the right to make one, checks the steps only. So does Wine, whose CreateSymbolicLinkW reports
+// success and makes no link.
 void TestSameFile()
 {
     namespace fs = std::filesystem;
@@ -82,7 +83,7 @@ void TestSameFile()
     fs::path link = folder;
     link += "_link";
     fs::create_directory_symlink(folder, link, refused);
-    if (!refused)
+    if (!refused && fs::is_symlink(link))
     {
         const std::string linked = xsflib::Utf8(link / "a.hok");
         SEQLIB_CHECK(SameProject(plain, linked));

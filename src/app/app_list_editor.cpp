@@ -320,7 +320,7 @@ void App::UpdateListEditor()
     }
 
     // While the reader builds the archive of another version, the edits wait for it.
-    const bool busy = reading_version_ != nullptr;
+    const bool busy = Settling();
     const std::optional<ListEdit> edit =
         DrawListEditor(list_track_, list_editor_, transport_, ItemShown(ShownSound()), busy, &list_editor_open_);
     if (!list_editor_open_)

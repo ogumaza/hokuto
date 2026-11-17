@@ -19,6 +19,7 @@
 #include "ntdlib/commands/units.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "seqlib/midi/controllers.h"
+#include "seqlib/midi/performance.h"
 #include "seqlib/midi/reader.h"
 
 #include "edit/converter.h"
@@ -131,6 +132,118 @@ bool PlaysNotes(const MidiTrack& track)
     return std::ranges::any_of(track.placed, [](const Placed& p) { return p.command.kind == Kind::kNote; });
 }
 
+// A setting of a channel in a track of the MIDI file (MidiImport::ShareChannelSettings).
+struct SharedSetting
+{
+    std::size_t midi_track = 0;
+    Placed placed;
+};
+
+// A command of a track, or a copy of a setting of another track of its channel.
+struct Merged
+{
+    Placed placed;
+    bool copy = false;
+};
+
+// The commands of `track` with `copies`, settings of other tracks of its channel in the order of their ticks. A copy
+// from an earlier track of the MIDI file goes before the commands of `track` at its tick, and one from a later track
+// after them.
+std::vector<Merged> WithCopies(const MidiTrack& track, const std::vector<SharedSetting>& copies)
+{
+    std::vector<Merged> merged;
+    std::size_t next = 0;
+    for (const Placed& own : track.placed)
+    {
+        for (; next < copies.size() &&
+               (copies[next].placed.tick < own.tick ||
+                (copies[next].placed.tick == own.tick && copies[next].midi_track < track.midi_track));
+             ++next)
+        {
+            merged.push_back({copies[next].placed, true});
+        }
+
+        merged.push_back({own, false});
+    }
+
+    for (; next < copies.size(); ++next)
+    {
+        merged.push_back({copies[next].placed, true});
+    }
+
+    return merged;
+}
+
+// The commands of `merged`, without a setting that repeats the value that the track has there where it or the setting
+// before it is a copy. From the second pass of a loop that starts at MIDI tick `loop_start`, the track arrives at the
+// loop's start with the values of the loop's end. The first setting of each kind at or after the loop's start therefore
+// stays. A portamento's starting key acts on the next note alone, and always stays.
+std::vector<Placed> WithoutRepeats(std::vector<Merged> merged, std::optional<uint64_t> loop_start)
+{
+    std::map<std::pair<Kind, uint8_t>, std::pair<int64_t, bool>> values;
+    std::vector<Placed> placed;
+    for (Merged& command : merged)
+    {
+        if (loop_start && command.placed.tick >= *loop_start)
+        {
+            values.clear();
+            loop_start.reset();
+        }
+
+        const Command& setting = command.placed.command;
+        if (setting.kind != Kind::kNote && setting.kind != Kind::kPortamentoFrom)
+        {
+            const auto [value, added] =
+                values.try_emplace(std::pair(setting.kind, setting.index), setting.value.value, command.copy);
+            if (!added && value->second.first == setting.value.value && (command.copy || value->second.second))
+            {
+                continue;
+            }
+
+            value->second = {setting.value.value, command.copy};
+        }
+
+        placed.push_back(std::move(command.placed));
+    }
+
+    return placed;
+}
+
+// `placed`, the commands of a track of MIDI's drum channel, with the notes that `pairs` names played by the program and
+// the key of their pairing. A program change before such a note selects its program, and one after it selects the
+// program of the file again for a note without a pairing. A program command of the file or of another track of the
+// channel sets the file's program.
+std::vector<Placed> WithDrumPairs(const std::vector<Placed>& placed, const format::MidiDrumNotes& pairs)
+{
+    std::vector<Placed> paired;
+    int64_t file_program = 0;
+    int64_t played_program = 0;
+    for (Placed command : placed)
+    {
+        if (command.command.kind == Kind::kProgram)
+        {
+            file_program = command.command.value.value / kOne;
+            played_program = file_program;
+        }
+        else if (command.command.kind == Kind::kNote)
+        {
+            const auto pair = pairs.find(command.command.key);
+            const int64_t program = pair != pairs.end() ? pair->second.program : file_program;
+            if (program != played_program)
+            {
+                paired.push_back({command.tick, Setting(Kind::kProgram, program * kOne), std::nullopt});
+                played_program = program;
+            }
+
+            command.command.key = pair != pairs.end() ? static_cast<uint8_t>(pair->second.key) : command.command.key;
+        }
+
+        paired.push_back(std::move(command));
+    }
+
+    return paired;
+}
+
 // Writes the waits and the loop of one track's code (SongOfMidi). `loop` contains the start and the end of the loop in
 // ticks of the song, and `label` the label of the track.
 class TrackCode
@@ -206,16 +319,22 @@ private:
     // Places `event` of track `t` of the MIDI file in the track of its channel.
     void PlaceEvent(std::size_t t, const seqlib::midi::Event& event);
 
-    // Places the channel message `event` in `track` by its status: a note, a control change, a program change or a
-    // pitch bend. `data` and `value` are the message's data bytes, and `channel` its channel.
-    void PlaceChannelMessage(MidiTrack& track, const seqlib::midi::Event& event, uint8_t status, uint8_t channel,
-                             uint8_t data, uint8_t value);
+    // Gives each track of a channel that two or more MIDI tracks play the settings of the channel's other tracks.
+    void ShareChannelSettings();
 
-    // Keeps the tempo, the time signature or the marker of `event`, a meta event.
+    // Gives the notes of MIDI's drum channel the programs and keys of their pairings (MidiOptions::drum_notes).
+    void PairDrumNotes();
+
+    // Places the channel message `event` in `track` by its status: a note, a control change, a program change or a
+    // pitch bend. `data` and `value` are the message's data bytes.
+    void PlaceChannelMessage(MidiTrack& track, const seqlib::midi::Event& event, uint8_t status, uint8_t data,
+                             uint8_t value);
+
+    // Keeps the time signature or the marker of `event`, a meta event.
     void PlaceMeta(const seqlib::midi::Event& event);
 
-    // Whether `event` comes at or after the loop's end, with `ends_at_loop`.
-    bool PastLoop(const seqlib::midi::Event& event) const;
+    // Whether `tick` comes at or after the loop's end, with `ends_at_loop`.
+    bool PastLoop(uint64_t tick) const;
 
     // Joins layers or leaves out channels where the file has more than 16.
     void LimitTracks();
@@ -267,10 +386,16 @@ private:
     // The tracks, the tempo, the time signatures and the markers, in the order of the file.
     std::vector<MidiTrack> tracks_;
     std::map<std::pair<std::size_t, uint8_t>, std::size_t> track_of_;
+
+    // The places in each track's commands of the settings of its channel: the commands of program changes, control
+    // changes and pitch bends.
+    std::vector<std::vector<std::size_t>> channel_settings_;
+
     std::vector<std::pair<uint64_t, uint32_t>> tempos_;
     std::vector<std::pair<uint64_t, std::pair<uint8_t, uint8_t>>> signatures_;
     std::vector<uint64_t> markers_;
     std::vector<std::string> names_;
+    std::vector<uint8_t> ports_; // the MIDI port of each track of the MIDI file, from its first port meta event
     std::optional<uint64_t> loop_start_;
     std::optional<uint64_t> loop_end_;
     uint64_t file_end_ = 0;
@@ -291,6 +416,8 @@ MidiSong MidiImport::Import(const std::string& name)
 {
     ScanFile();
     PlaceEvents();
+    ShareChannelSettings();
+    PairDrumNotes();
     LimitTracks();
     MarkHeldNotes();
     DropEndlessNotes();
@@ -325,10 +452,12 @@ void MidiImport::ScanFile()
     // names.
     std::optional<uint64_t> loop_controller;
     names_.assign(file_.tracks.size(), std::string());
+    ports_.assign(file_.tracks.size(), 0);
     for (std::size_t t = 0; t < file_.tracks.size(); ++t)
     {
         const seqlib::midi::Track& track = file_.tracks[t];
         file_end_ = std::max(file_end_, track.end_tick);
+        bool port_set = false;
         for (const seqlib::midi::Event& event : track.events)
         {
             if (event.bytes.size() >= 3 && event.bytes[0] == 0xFF)
@@ -345,6 +474,11 @@ void MidiImport::ScanFile()
                 else if (type == 0x03 && names_[t].empty())
                 {
                     names_[t].assign(data.begin(), data.end());
+                }
+                else if (type == 0x21 && !data.empty() && !port_set)
+                {
+                    ports_[t] = data[0];
+                    port_set = true;
                 }
             }
             else if (event.bytes.size() >= 3 && (event.bytes[0] & 0xF0) == 0xB0 && event.bytes[1] == kLoopStart &&
@@ -377,16 +511,20 @@ void MidiImport::PlaceEvents()
             PlaceEvent(t, event);
         }
     }
+
+    for (const seqlib::midi::Tempo& tempo : seqlib::midi::Tempos(file_))
+    {
+        if (!PastLoop(tempo.tick))
+        {
+            tempos_.emplace_back(tempo.tick, tempo.micros_per_quarter);
+        }
+    }
 }
 
 void MidiImport::PlaceMeta(const seqlib::midi::Event& event)
 {
     const auto [type, data] = MetaOf(event);
-    if (type == 0x51 && data.size() == 3)
-    {
-        tempos_.emplace_back(event.tick, (uint32_t{data[0]} << 16) | (uint32_t{data[1]} << 8) | data[2]);
-    }
-    else if (type == 0x58 && data.size() >= 2)
+    if (type == 0x58 && data.size() >= 2)
     {
         signatures_.emplace_back(event.tick, std::pair(data[0], data[1]));
     }
@@ -396,9 +534,9 @@ void MidiImport::PlaceMeta(const seqlib::midi::Event& event)
     }
 }
 
-bool MidiImport::PastLoop(const seqlib::midi::Event& event) const
+bool MidiImport::PastLoop(uint64_t tick) const
 {
-    return options_.ends_at_loop && loop_end_ && event.tick >= *loop_end_;
+    return options_.ends_at_loop && loop_end_ && tick >= *loop_end_;
 }
 
 void MidiImport::PlaceEvent(std::size_t t, const seqlib::midi::Event& event)
@@ -406,7 +544,7 @@ void MidiImport::PlaceEvent(std::size_t t, const seqlib::midi::Event& event)
     const uint8_t status = event.bytes.empty() ? 0 : event.bytes[0];
     const bool note_off =
         event.bytes.size() > 2 && ((status & 0xF0) == 0x80 || ((status & 0xF0) == 0x90 && event.bytes[2] == 0));
-    if (PastLoop(event) && !(note_off && track_of_.contains(std::pair(t, static_cast<uint8_t>(status & 0x0F)))))
+    if (PastLoop(event.tick) && !(note_off && track_of_.contains(std::pair(t, static_cast<uint8_t>(status & 0x0F)))))
     {
         return;
     }
@@ -454,22 +592,101 @@ void MidiImport::PlaceEvent(std::size_t t, const seqlib::midi::Event& event)
     {
         found = track_of_.emplace(std::pair(t, channel), tracks_.size()).first;
         tracks_.emplace_back().midi_track = t;
+        channel_settings_.emplace_back();
     }
 
     MidiTrack& track = tracks_[found->second];
     track.end = std::max(track.end, event.tick);
-    PlaceChannelMessage(track, event, status, channel, data, value);
+    const std::size_t placed = track.placed.size();
+    PlaceChannelMessage(track, event, status, data, value);
+    if ((status & 0xF0) != 0x90 && (status & 0xF0) != 0x80)
+    {
+        for (std::size_t added = placed; added < track.placed.size(); ++added)
+        {
+            channel_settings_[found->second].push_back(added);
+        }
+    }
 }
 
-void MidiImport::PlaceChannelMessage(MidiTrack& track, const seqlib::midi::Event& event, uint8_t status,
-                                     uint8_t channel, uint8_t data, uint8_t value)
+void MidiImport::ShareChannelSettings()
+{
+    // In a MIDI file, a setting holds for the channel of its port, whichever track contains it. A converter's MIDI file
+    // of a driver whose tracks share a channel sets the channel in one of them.
+    std::map<std::pair<uint8_t, uint8_t>, std::vector<std::size_t>> tracks_of_channel;
+    for (const auto& [pair, track] : track_of_)
+    {
+        tracks_of_channel[std::pair(ports_[pair.first], pair.second)].push_back(track);
+    }
+
+    std::vector<std::vector<Placed>> shared(tracks_.size());
+    for (const auto& [channel, tracks] : tracks_of_channel)
+    {
+        if (tracks.size() < 2)
+        {
+            continue;
+        }
+
+        for (const std::size_t into : tracks)
+        {
+            // The settings of the channel's other tracks, in the order of their ticks, then of the MIDI file's tracks.
+            std::vector<SharedSetting> copies;
+            for (const std::size_t from : tracks)
+            {
+                if (from == into)
+                {
+                    continue;
+                }
+
+                for (const std::size_t place : channel_settings_[from])
+                {
+                    copies.push_back({tracks_[from].midi_track, tracks_[from].placed[place]});
+                }
+            }
+
+            const auto earlier = [](const SharedSetting& a, const SharedSetting& b)
+            {
+                return a.placed.tick < b.placed.tick;
+            };
+            std::ranges::stable_sort(copies, earlier);
+            shared[into] = WithoutRepeats(WithCopies(tracks_[into], copies), loop_start_);
+        }
+    }
+
+    for (std::size_t t = 0; t < tracks_.size(); ++t)
+    {
+        if (!shared[t].empty())
+        {
+            tracks_[t].end = std::max(tracks_[t].end, std::ranges::max(shared[t], {}, &Placed::tick).tick);
+            tracks_[t].placed = std::move(shared[t]);
+        }
+    }
+}
+
+void MidiImport::PairDrumNotes()
+{
+    if (options_.drum_notes == nullptr || options_.drum_notes->empty())
+    {
+        return;
+    }
+
+    for (const auto& [pair, track] : track_of_)
+    {
+        if (pair.second == seqlib::midi::kDrumChannel)
+        {
+            tracks_[track].placed = WithDrumPairs(tracks_[track].placed, *options_.drum_notes);
+        }
+    }
+}
+
+void MidiImport::PlaceChannelMessage(MidiTrack& track, const seqlib::midi::Event& event, uint8_t status, uint8_t data,
+                                     uint8_t value)
 {
     switch (status & 0xF0)
     {
     case 0x90:
         if (value > 0)
         {
-            PlaceNoteOn(track, event.tick, channel, data, value, options_);
+            PlaceNoteOn(track, event.tick, data, value);
             break;
         }
         [[fallthrough]];
@@ -582,7 +799,7 @@ void MidiImport::DropEndlessNotes()
 
     if (std::ranges::none_of(tracks_, PlaysNotes))
     {
-        throw std::invalid_argument("The MIDI file has no notes.");
+        throw std::invalid_argument(std::string(kMidiWithoutNotes));
     }
 }
 
@@ -731,8 +948,7 @@ void MidiImport::FindLoop()
 
 void MidiImport::AddTempos()
 {
-    // The tempo goes into the first track.
-    std::stable_sort(tempos_.begin(), tempos_.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    // The tempo goes into the first track. seqlib gives the tempos in order of tick.
     if (tempos_.empty() || tempos_.front().first > 0)
     {
         tempos_.insert(tempos_.begin(), {0, kDefaultTempo});

@@ -78,6 +78,9 @@ struct SectionHeading
 // section starts open while `open_at_first` is set.
 bool SectionOpen(const char* title, bool open_at_first);
 
+// Opens or closes the section titled `title` of the current zone, as a click on its heading does.
+void SetSectionOpen(const char* title, bool open);
+
 // The height of the heading of a section titled `title`: from its top to the bottom that DrawSectionHeading returns.
 float SectionHeadingHeight(const char* title);
 

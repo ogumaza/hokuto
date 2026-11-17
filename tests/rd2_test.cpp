@@ -10,7 +10,7 @@
 // 60 to BF contains its length and its velocity, and one of 00 to 5F repeats those of the track's last note. A wait of
 // C1 contains its length, and one of C0 repeats it. The Key Editor shows the driver's velocity of 0 to 255 as 1 to 127.
 //
-// ntdlib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
 // sample, from the start and after a seek, in both mixing modes. So does the output with a muted track. The MIDI file
 // and the SoundFont have to equal those of ntdlib's converter, run directly.
 
@@ -29,15 +29,15 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/rd2/archive_player.h"
+#include "agblib/rd2/commands.h"
+#include "agblib/rd2/sequencer.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/rd2/convert.h"
+#include "agblib/testing/rd2_cart.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/rd2/archive_player.h"
-#include "ntdlib/rd2/commands.h"
-#include "ntdlib/rd2/sequencer.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/rd2/convert.h"
-#include "ntdlib/testing/rd2_cart.h"
 #include "xsflib/testing/check.h"
 
 #include "driver_test_support.h"
@@ -60,8 +60,8 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
-namespace rd2 = ntdlib::rd2;
-namespace cart = ntdlib::testing::rd2_cart;
+namespace rd2 = agblib::rd2;
+namespace cart = agblib::testing::rd2_cart;
 using format::File;
 using hokuto::testing::ClockDrift;
 using hokuto::testing::ClockRun;
@@ -81,7 +81,7 @@ using song::Sequence;
 using song::SequenceModel;
 using xsflib::testing::ErrorOf;
 
-constexpr uint32_t kRomBase = ntdlib::agb::kRomBase;
+constexpr uint32_t kRomBase = agblib::agb::kRomBase;
 
 // Where the cartridge puts the first song's bytes, from the ROM's start: at the sequences' data.
 constexpr uint32_t kSong0 = cart::kSequenceData - kRomBase;
@@ -191,7 +191,7 @@ void TestImport()
     SEQLIB_REQUIRE(driver != nullptr);
     XSFLIB_CHECK(driver->Facts().engine == format::Engine::kRd2);
     cart::Cart without(false);
-    const ntdlib::agb::Rom empty = without.ToRom();
+    const agblib::agb::Rom empty = without.ToRom();
     XSFLIB_CHECK(format::DriverOfRom(RomBytes(empty)) == nullptr);
 
     const File file = driver->Import(bytes);
@@ -400,10 +400,10 @@ void TestCommandKeys()
     XSFLIB_CHECK(edit::Rd2CommandKey(file, sequence, 0, cart::kSquare, 3, 72) == 57);
     XSFLIB_CHECK(edit::Rd2CommandKey(file, sequence, 0, cart::kPlain, 0, 72) == 72);
     XSFLIB_CHECK(edit::Rd2CommandKey(file, sequence, 0, cart::kNoise, 0, 50) == 50);
-    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kSquare, 72) == ntdlib::rd2::kSquare2Type);
-    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kPlain, 72) == ntdlib::rd2::kSampleType);
-    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kNoise, 50) == ntdlib::rd2::kNoiseType);
-    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kWave, 50) == ntdlib::rd2::kWaveType);
+    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kSquare, 72) == agblib::rd2::kSquare2Type);
+    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kPlain, 72) == agblib::rd2::kSampleType);
+    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kNoise, 50) == agblib::rd2::kNoiseType);
+    XSFLIB_CHECK(edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kWave, 50) == agblib::rd2::kWaveType);
     XSFLIB_CHECK(!edit::Rd2VoiceTypeOf(file, sequence, 0, cart::kSquare, 200));
 }
 
@@ -531,7 +531,7 @@ void TestTracks()
 }
 
 // A song whose track 1 nests calls 4 deep (F4 calls, at 14, 18, 22 and 26). The driver keeps 3 places
-// (ntdlib::rd2::kMaxDepth) and frees a track that nests deeper. The fourth subroutine and the ends after the calls are
+// (agblib::rd2::kMaxDepth) and frees a track that nests deeper. The fourth subroutine and the ends after the calls are
 // then bytes that no track reads. Hokuto can't tell what such a track does, and the refusal of its removal says so.
 void TestRemoveUnreadTrack()
 {
@@ -552,10 +552,10 @@ void TestExports()
     const std::shared_ptr<const Rd2Rom> rom = song::LoadRd2Rom(Cart());
     for (const uint32_t sound : {0u, 1u})
     {
-        ntdlib::sequence_export::agb::ConvertSettings settings;
+        agblib::sequence_export::agb::ConvertSettings settings;
         settings.program = "Hokuto";
-        const ntdlib::sequence_export::rd2::SongFiles expected =
-            ntdlib::sequence_export::rd2::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
+        const agblib::sequence_export::rd2::SongFiles expected =
+            agblib::sequence_export::rd2::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
         const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
         XSFLIB_CHECK(expected.report.ok);
         XSFLIB_CHECK(conversion.midi == expected.midi);
@@ -577,7 +577,7 @@ std::vector<uint8_t> DrumCart()
     std::vector<uint8_t> bytes = RomBytes(image.ToRom());
     const auto at = [](uint32_t address)
     {
-        return static_cast<std::size_t>(address - ntdlib::agb::kRomBase);
+        return static_cast<std::size_t>(address - agblib::agb::kRomBase);
     };
     const std::size_t looped = at(cart::kBank + 2 * cart::kLooped);
     for (const uint8_t instrument : {cart::kPlain, cart::kSplit})

@@ -17,8 +17,8 @@
 #include <variant>
 #include <vector>
 
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/mp2k/commands.h"
 #include "xsflib/bytes.h"
 
 #include "edit/gba_tables.h"
@@ -37,11 +37,11 @@ using ntdlib::commands::Kind;
 
 } // namespace
 
-int ProposedGbaVoice(const GbaMidiInstrument& instrument, std::span<const ntdlib::mp2k::Voice> voices)
+int ProposedGbaVoice(const GbaMidiInstrument& instrument, std::span<const agblib::mp2k::Voice> voices)
 {
-    const auto drum_kit = [](const ntdlib::mp2k::Voice& voice)
+    const auto drum_kit = [](const agblib::mp2k::Voice& voice)
     {
-        return (voice.type & ntdlib::mp2k::kVoiceDrumKit) != 0;
+        return (voice.type & agblib::mp2k::kVoiceDrumKit) != 0;
     };
     if (!instrument.drums || (static_cast<std::size_t>(instrument.program) < voices.size() &&
                               drum_kit(voices[static_cast<std::size_t>(instrument.program)])))
@@ -55,7 +55,7 @@ int ProposedGbaVoice(const GbaMidiInstrument& instrument, std::span<const ntdlib
 
 GbaVoiceMap ProposedGbaVoices(const format::File& file, uint32_t voice_group,
                               std::span<const GbaMidiInstrument> instruments,
-                              std::span<const ntdlib::mp2k::Voice> voices)
+                              std::span<const agblib::mp2k::Voice> voices)
 {
     const auto map = file.instrument_maps.find(voice_group);
     const GbaVoiceMap empty;
@@ -112,8 +112,8 @@ GbaMidiSong GbaSongOfAssembly(std::string_view text, int note_arguments)
         throw std::invalid_argument("The song in the file has no tracks.");
     }
 
-    ntdlib::mp2k::Decoded decoded =
-        ntdlib::mp2k::DecodeSequence(source.bytes, source.base, source.entries, note_arguments);
+    agblib::mp2k::Decoded decoded =
+        agblib::mp2k::DecodeSequence(source.bytes, source.base, source.entries, note_arguments);
     if (decoded.opaque)
     {
         throw std::invalid_argument("The commands in the file overlap, or two tracks read them differently.");

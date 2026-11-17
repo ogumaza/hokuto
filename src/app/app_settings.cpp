@@ -97,9 +97,17 @@ void App::ReadSetting(std::string_view line)
     {
         settings_.layout_version = number;
     }
+    else if (key == "LayoutScale" && is_number)
+    {
+        settings_.layout_scale = number;
+    }
     else if (key == "TrackListWidth" && is_number)
     {
         arrangement_.track_list_width = std::clamp(static_cast<float>(number), kMinTrackListWidth, kMaxTrackListWidth);
+    }
+    else if (key == "BrowserSound" && is_number)
+    {
+        browser_state_.sound_open = number != 0;
     }
     else if (key == "TempoTrack" && is_number)
     {
@@ -134,8 +142,10 @@ void App::WriteSettings(ImGuiTextBuffer& out) const
     out.appendf("WindowWidth=%d\n", settings_.window_width);
     out.appendf("WindowHeight=%d\n", settings_.window_height);
     out.appendf("LayoutVersion=%d\n", settings_.layout_version);
+    out.appendf("LayoutScale=%d\n", settings_.layout_scale);
     out.appendf("TrackListWidth=%d\n", static_cast<int>(std::lround(arrangement_.track_list_width)));
     out.appendf("TempoTrack=%d\n", arrangement_.tempo_row ? 1 : 0);
+    out.appendf("BrowserSound=%d\n", browser_state_.sound_open ? 1 : 0);
     for (const ZoneSetting& zone : kZoneSettings)
     {
         out.appendf("%.*s=%d\n", static_cast<int>(zone.key.size()), zone.key.data(), views_.*zone.shown ? 1 : 0);

@@ -4,9 +4,9 @@
 
 #pragma once
 
+#include "agblib/krawall/commands.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/krawall/commands.h"
 
 namespace hokuto::format
 {
@@ -16,14 +16,14 @@ namespace hokuto::format
 inline ntdlib::commands::Sequence KrawallAlone(const ntdlib::commands::Command& item)
 {
     using ntdlib::commands::Kind;
-    if (item.kind == Kind::kOther && item.encoding.opcode == ntdlib::krawall::kPatternOpcode)
+    if (item.kind == Kind::kOther && item.encoding.opcode == agblib::krawall::kPatternOpcode)
     {
         return ntdlib::commands::Sequence{{item}, {}};
     }
 
     ntdlib::commands::Command start;
     start.kind = Kind::kOther;
-    start.encoding.opcode = ntdlib::krawall::kPatternOpcode;
+    start.encoding.opcode = agblib::krawall::kPatternOpcode;
     ntdlib::commands::Sequence alone{{start, item}, {}};
     if (item.kind != Kind::kWait)
     {

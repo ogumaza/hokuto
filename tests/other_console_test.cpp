@@ -15,6 +15,7 @@
 // plays gets a warning. A song whose stereo waves take more channels at once than the 3DS plays takes them as mono. The
 // biquad filters of a song take the types and values that come nearest on the other console.
 
+#include "format/codes.h"
 #include "other_console_fixtures.h"
 
 namespace
@@ -1077,20 +1078,63 @@ void TestEngines(sar::Flavor flavor)
 
 // Each kind of effect has a name that no other kind has: the name of its library and its class. The mixer and the
 // warnings name an effect by it, and a file can hold the kinds of several consoles. The 3DS's and the Wii U's nw::snd
-// both have a delay. Each delay's name gives its console.
+// both have a delay. Each delay's name gives its console. The kinds are those of the format's table.
 void TestEffectNames()
 {
     std::set<std::string> names;
-    for (int kind = 0; kind <= static_cast<int>(EffectKind::kCtrNnReverb2011); kind++)
+    std::size_t kinds = 0;
+    for (int code = 0; code <= 0xFF; code++)
     {
-        names.insert(hokuto::edit::EffectName(static_cast<EffectKind>(kind)));
+        if (const std::optional<EffectKind> kind = hokuto::format::EffectKindOfCode(static_cast<uint8_t>(code)))
+        {
+            names.insert(hokuto::edit::EffectName(*kind));
+            kinds++;
+        }
     }
 
-    SEQLIB_CHECK_EQ(names.size(), static_cast<std::size_t>(EffectKind::kCtrNnReverb2011) + 1);
+    SEQLIB_CHECK_EQ(kinds, std::size_t{19});
+    SEQLIB_CHECK_EQ(names.size(), kinds);
     XSFLIB_CHECK(!names.contains("Effect"));
     XSFLIB_CHECK(std::string(hokuto::edit::EffectName(EffectKind::kDelay)) == "nw::snd Delay (Wii U)" &&
                  std::string(hokuto::edit::EffectName(EffectKind::kCtrDelay)) == "nw::snd Delay (3DS)" &&
                  std::string(hokuto::edit::EffectName(EffectKind::kWiiDelay)) == "AXFX Delay");
+    XSFLIB_CHECK(std::string(hokuto::edit::EffectName(EffectKind::kSwitchDelay)) == "nn::atk Delay" &&
+                 std::string(hokuto::edit::EffectName(EffectKind::kSwitchLightLimiter)) == "nn::atk Light Limiter" &&
+                 std::string(hokuto::edit::EffectName(EffectKind::kSwitchReverb)) == "nn::atk Reverb");
+}
+
+// nn::atk's effects stay with a sound sent to the Switch, and stay behind with one sent to the Wii U or the 3DS. The
+// warning names them by their names in the mixer.
+void TestAtkEffectsOnOtherConsoles()
+{
+    for (const sar::Flavor from : {sar::Flavor::kNx, sar::Flavor::kCafe})
+    {
+        for (const sar::Flavor to : {sar::Flavor::kNx, sar::Flavor::kCafe, sar::Flavor::kCtr})
+        {
+            if (from == to)
+            {
+                continue;
+            }
+
+            File source = TestFile(from);
+            source.aux_effects[2] = {
+                {EffectKind::kSwitchDelay, hokuto::edit::AtkStartingParameters(EffectKind::kSwitchDelay)},
+                {EffectKind::kSwitchLightLimiter,
+                 hokuto::edit::AtkStartingParameters(EffectKind::kSwitchLightLimiter)}};
+            const hokuto::edit::OtherConsoleSong result = hokuto::edit::ForOtherConsole(source, kSong, to);
+            const std::string warning = "The nn::atk Delay and nn::atk Light Limiter on bus C are left out. The " +
+                                        std::string(song::ConsoleName(to)) + " doesn't support them.";
+            const bool warned = std::ranges::find(result.warnings, warning) != result.warnings.end();
+            if (to == sar::Flavor::kNx)
+            {
+                XSFLIB_CHECK(result.file.aux_effects[2] == source.aux_effects[2] && !warned);
+            }
+            else
+            {
+                XSFLIB_CHECK(result.file.aux_effects[2].empty() && warned);
+            }
+        }
+    }
 }
 
 } // namespace
@@ -1138,5 +1182,6 @@ int main()
                                         TestBiquads();
                                         TestItemFiles();
                                         TestEffectNames();
+                                        TestAtkEffectsOnOtherConsoles();
                                     });
 }

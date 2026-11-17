@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Brownie Brown's driver for the GBA (ntdlib/brownie/layout.h) as one of the drivers of format/drivers.h.
+// Brownie Brown's driver for the GBA (agblib/brownie/layout.h) as one of the drivers of format/drivers.h.
 
 #include <algorithm>
 #include <cstddef>
@@ -11,11 +11,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/brownie/commands.h"
-#include "ntdlib/brownie/driver.h"
-#include "ntdlib/brownie/layout.h"
-#include "ntdlib/brownie/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/brownie/commands.h"
+#include "agblib/brownie/driver.h"
+#include "agblib/brownie/layout.h"
+#include "agblib/brownie/song.h"
 #include "xsflib/binary.h"
 
 #include "format/archive.h"
@@ -29,9 +29,9 @@ namespace hokuto::format
 namespace
 {
 
-ntdlib::brownie::Revision RevisionOf(uint8_t revision)
+agblib::brownie::Revision RevisionOf(uint8_t revision)
 {
-    return static_cast<ntdlib::brownie::Revision>(revision);
+    return static_cast<agblib::brownie::Revision>(revision);
 }
 
 // Sets the label of the list of each sound in `sequence` to the number of the sound with as many digits as its name
@@ -68,7 +68,7 @@ public:
             .engine = Engine::kBrownie,
             .title = FactsOf(Engine::kBrownie).title,
             .engine_name = "Brownie Brown's",
-            .most_revision = static_cast<uint8_t>(ntdlib::brownie::Revision::kMagicalVacation),
+            .most_revision = static_cast<uint8_t>(agblib::brownie::Revision::kMagicalVacation),
             .two_byte_fields = false,
             .key_holds_byte = false,
             .filler_runs = false,
@@ -80,29 +80,29 @@ public:
 
     bool Holds(std::span<const uint8_t> rom) const override
     {
-        ntdlib::brownie::DriverInfo info;
+        agblib::brownie::DriverInfo info;
         std::string error;
-        return ntdlib::brownie::DetectDriver(RomOf(rom), {}, info, error);
+        return agblib::brownie::DetectDriver(RomOf(rom), {}, info, error);
     }
 
     File Import(std::span<const uint8_t> rom) const override
     {
-        const ntdlib::agb::Rom read = RomOf(rom);
-        ntdlib::brownie::DriverInfo info;
+        const agblib::agb::Rom read = RomOf(rom);
+        agblib::brownie::DriverInfo info;
         std::string error;
-        if (!ntdlib::brownie::DetectDriver(read, {}, info, error))
+        if (!agblib::brownie::DetectDriver(read, {}, info, error))
         {
             throw xsflib::FormatError(error.empty()
                                           ? "the ROM shows no sign of Brownie Brown's driver"
                                           : "Hokuto can't read the tables of Brownie Brown's driver: " + error);
         }
 
-        ntdlib::brownie::Layout layout = ntdlib::brownie::Cut(read, info);
+        agblib::brownie::Layout layout = agblib::brownie::Cut(read, info);
 
         // Each command that waits gets the frames that its channels wait there (FillBrownieWaits).
         const BrownieLength length = [&read, &info](uint8_t byte, int set)
         {
-            const uint8_t frames = ntdlib::brownie::NoteLength(read, info, byte, set);
+            const uint8_t frames = agblib::brownie::NoteLength(read, info, byte, set);
             return frames != 0 ? uint32_t{frames} : 256u;
         };
         for (ntdlib::commands::Sequence& sequence : layout.sequences)
@@ -132,7 +132,7 @@ public:
                               std::span<const ntdlib::sar::Field> fields) const override
     {
         const NativeDriver& driver = *native.driver;
-        return ntdlib::brownie::Join(RevisionOf(driver.revision), sequences, pieces, fields,
+        return agblib::brownie::Join(RevisionOf(driver.revision), sequences, pieces, fields,
                                      {.start = driver.free_start, .padding = driver.padding});
     }
 
@@ -143,7 +143,7 @@ public:
 
     ntdlib::commands::Scale ScaleOf(ntdlib::commands::Kind kind, uint8_t revision) const override
     {
-        return ntdlib::brownie::ScaleOf(kind, RevisionOf(revision));
+        return agblib::brownie::ScaleOf(kind, RevisionOf(revision));
     }
 
     // The list of a sound names the starts of its channels, in the sequence. No field of the ROM's tables does.
@@ -168,7 +168,7 @@ public:
             }
         }
 
-        ntdlib::brownie::EncodeSequence(sequence, RevisionOf(revision), ntdlib::agb::kRomBase + remainder);
+        agblib::brownie::EncodeSequence(sequence, RevisionOf(revision), agblib::agb::kRomBase + remainder);
     }
 };
 

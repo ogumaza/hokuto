@@ -23,8 +23,8 @@ struct Paste
 // The voice group that GBA song `sound` uses, from its header, or nothing.
 std::optional<uint32_t> VoicesOf(const Archive& archive, uint32_t sound)
 {
-    ntdlib::mp2k::SongHeader header;
-    if (!ntdlib::mp2k::ReadSong(archive.archive.gba->rom, archive.archive.gba->info, static_cast<int>(sound), header))
+    agblib::mp2k::SongHeader header;
+    if (!agblib::mp2k::ReadSong(archive.archive.gba->rom, archive.archive.gba->info, static_cast<int>(sound), header))
     {
         return std::nullopt;
     }
@@ -261,6 +261,36 @@ bool PairLoudNotes(const Paste& paste, uint32_t shared, bool lengths, uint32_t f
     return true;
 }
 
+// The ticks for VoicesDecide of the reads of a paste. `before` and `now` are sound `sound` before the paste and in
+// `version`, the file with the pastes. `source` is the other sound, and `counted` is `source` in the ticks of `before`
+// (InTicksOf). The pasted track runs the commands of the other sound's track.
+std::vector<VoiceTicks> PasteVoiceTicks(const Archive& archive, const File& version, uint32_t sound, const Paste& paste,
+                                        const song::Sequence& before, const song::Sequence& source,
+                                        const song::Sequence& counted, const song::Sequence& now)
+{
+    const std::set<std::pair<int, uint32_t>> commanded_now = CommandTicks(archive, version, sound, now);
+    std::set<std::pair<int, uint32_t>> for_now = CommandTicks(archive, archive.file, sound, before);
+    const uint64_t from = source.timebase > 0 ? static_cast<uint64_t>(source.timebase) : 1;
+    const uint64_t to = source.timebase > 0 ? static_cast<uint64_t>(counted.timebase) : 1;
+    for (const auto& [number, tick] : CommandTicks(archive, archive.file, paste.from, source))
+    {
+        if (number == paste.original)
+        {
+            for_now.emplace(paste.track, static_cast<uint32_t>(uint64_t{tick} * to / from));
+        }
+    }
+    std::set<std::pair<int, uint32_t>> for_counted;
+    for (const auto& [number, tick] : commanded_now)
+    {
+        if (number == paste.track)
+        {
+            for_counted.emplace(paste.original, tick);
+        }
+    }
+
+    return {{&before, commanded_now}, {&now, for_now}, {&counted, for_counted}};
+}
+
 // Checks that sound `sound` plays its tracks as before with the pasted track of `paste`. `read` is the sound in the
 // reads of `version`, the file with the pastes.
 void CheckPaste(const Archive& archive, const File& version, uint32_t sound, const Paste& paste,
@@ -298,8 +328,8 @@ void CheckPaste(const Archive& archive, const File& version, uint32_t sound, con
     uint32_t shared = archive.archive.Konami() ? std::min({EndOf(counted), EndOf(now), EndOf(before)})
                                                : std::min(EndOf(counted), EndOf(now));
     const bool levels = !archive.archive.Konami() ||
-                        !ntdlib::konami::EternalDuelistLayout(archive.archive.Konami()->info.revision) ||
-                        !ntdlib::konami::IsPsgTrack(paste.track);
+                        !agblib::konami::EternalDuelistLayout(archive.archive.Konami()->info.revision) ||
+                        !agblib::konami::IsPsgTrack(paste.track);
     const auto notes_of = [levels, &paste, &counted, &now](uint32_t end, bool pasted)
     {
         std::vector<TrackNote> notes = pasted ? NotesOf(now, paste.track, end) : NotesOf(counted, paste.original, end);
@@ -380,7 +410,8 @@ void CheckPaste(const Archive& archive, const File& version, uint32_t sound, con
                      return !OtherNotes(archive, before, now, paste, earlier_end) && !pasted.failed &&
                             SameInstruments(pasted, InstrumentsOf(counted, paste.original, shared, source_banks),
                                             InstrumentsOf(now, paste.track, shared, banks));
-                 }))
+                 },
+                 [&] { return PasteVoiceTicks(archive, version, sound, paste, before, source, counted, now); }))
     {
         ++totals.voice_notes;
     }

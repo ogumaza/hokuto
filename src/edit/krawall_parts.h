@@ -27,7 +27,7 @@ std::optional<uint8_t> EffectOf(const Command& command);
 uint8_t OperandOf(const Command& command);
 
 // What the edits read of a module's header. The header is in a run of the file, and its table of patterns contains the
-// fields that name the patterns' starts (ntdlib/krawall/layout.h).
+// fields that name the patterns' starts (agblib/krawall/layout.h).
 struct ModuleHeader
 {
     bool instruments = false; // the module uses XM's instruments: its first flag (kModuleFlags)

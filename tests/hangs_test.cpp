@@ -13,12 +13,12 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/testing/dse_song_files.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "xsflib/testing/check.h"
@@ -38,8 +38,8 @@ namespace
 {
 
 namespace files = ntdlib::testing::sdat_files;
-namespace mp2k = ntdlib::mp2k;
-namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+namespace mp2k = agblib::mp2k;
+namespace mp2k_cart = agblib::testing::mp2k_cart;
 namespace sdat = ntdlib::sdat;
 using hokuto::edit::CommandPlace;
 using hokuto::edit::CommandsWithoutWayOut;
@@ -267,7 +267,7 @@ std::vector<uint8_t> CartOf(bool waits)
     track.Goto(loop);
     cart.Song({track}, voices);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 

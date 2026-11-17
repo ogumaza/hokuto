@@ -3,7 +3,8 @@
 // Tests the new items of a DS sound archive (edit/ds_new_items.h). ntdlib's builders make a small archive that the
 // SDK's tools could have laid out: two sequences, a sequence archive, a bank and a wave archive. The record of a new
 // item is added at the end of its table, and its file at the end of the FAT. Every other file keeps its bytes, and
-// every other item its number. The names follow the tools' layout, where the archive has them.
+// every other item its number. A file that keeps its sequence archive among the bytes, as version 1.1 did, takes new
+// items too. The names follow the tools' layout, where the archive has them.
 
 #include "edit/ds_new_items.h"
 
@@ -18,8 +19,10 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
+#include "ntdlib/sar/layout.h"
 #include "ntdlib/sdat/decode.h"
 #include "ntdlib/sdat/files.h"
 #include "ntdlib/sdat/formats.h"
@@ -181,6 +184,51 @@ void TestNewSound(bool names)
     XSFLIB_CHECK(std::ranges::equal(after->archive.File(5), other));
 }
 
+// A file of version 1.1 keeps its sequence archive among the archive's bytes: its pieces hold the archive's bytecode as
+// bytes, and no field names its records' starts. A new sound cuts the archive again first. The sequence archive's
+// sequence then takes its place among the file's sequences, the new sequence follows, and both sound.
+void TestNewSoundInOldLayout()
+{
+    const std::vector<uint8_t> bytes = MakeArchive(true);
+    const File file = hokuto::format::ImportDsArchive(bytes);
+    SEQLIB_REQUIRE(file.sequences.size() == 3);
+
+    // The sequence archive's sequence is the third: its piece becomes the bytes of its commands.
+    File old = file;
+    old.sequences.pop_back();
+    const auto keep_in_bytes = [](hokuto::format::NativeArchive& native)
+    {
+        std::vector<ntdlib::sar::Piece> pieces = *native.pieces;
+        for (ntdlib::sar::Piece& piece : pieces)
+        {
+            const auto* sequence = std::get_if<ntdlib::sar::SequencePiece>(&piece);
+            if (sequence != nullptr && sequence->sequence == 2)
+            {
+                piece = std::vector<uint8_t>{60, 0x7F, 0x18, 0xFF, 62, 0x7F, 0x18, 0xFF};
+            }
+        }
+        native.pieces = std::move(pieces);
+        std::erase_if(native.fields, [](const ntdlib::sar::Field& field) { return field.to.item; });
+    };
+    old.native.Edit(keep_in_bytes);
+    SEQLIB_REQUIRE(hokuto::format::ExportArchive(old) == bytes);
+
+    const File added = edit::AddDsSequenceSound(old, "SEQ_NEW", NoteOf(64), {0, 111, 22, 33, 0});
+    XSFLIB_CHECK(added.sequences.size() == 4);
+    for (std::size_t i = 0; i < 2; i++)
+    {
+        XSFLIB_CHECK(added.sequences[i].SharesWith(old.sequences[i]));
+    }
+    const std::shared_ptr<const song::DsArchive> archive = Load(added);
+    CheckFilesKept(bytes, archive->archive);
+    const song::Sequence read = song::ReadSequence(*archive, 2);
+    XSFLIB_CHECK(read.tracks.size() == 1 && read.tracks[0].notes.size() == 1 && read.tracks[0].notes[0].key == 64);
+    const song::Sequence archived = song::ReadSequence(*archive, song::kFirstDsArchivedSound + 1);
+    XSFLIB_CHECK(archived.tracks.size() == 1 && archived.tracks[0].notes.size() == 1 &&
+                 archived.tracks[0].notes[0].key == 62);
+    CheckForms(added);
+}
+
 // A new DS bank plays in a new sound. Its warnings name the slots that its regions name and the waves that they
 // require.
 void TestNewBank()
@@ -239,9 +287,13 @@ void TestEmptySong()
     SEQLIB_REQUIRE(read.tracks.size() == 1 && read.tracks[0].notes.empty());
     CheckForms(added);
 
-    // The editors write a note there, and it plays from the saved file.
+    // The editors write a note there, and it plays from the saved file. The sequence archive's sequence comes before
+    // the new sequence among the file's sequences.
+    const uint32_t sequence =
+        hokuto::format::DsSoundSequences(added, hokuto::format::ExportArchive(added)).at(2).value();
+    XSFLIB_CHECK(sequence == 3);
     const edit::NewNote note{.stretch = read.tracks.at(0).stretches.at(0), .tick = 96, .length = 48};
-    const File written = edit::EditNotes(added, 2, {}, std::vector{note}).file;
+    const File written = edit::EditNotes(added, sequence, {}, std::vector{note}).file;
     const File saved = hokuto::format::Read(hokuto::format::Write(written));
     const song::Sequence played = song::ReadSequence(*Load(saved), 2);
     SEQLIB_REQUIRE(played.tracks.size() == 1 && played.tracks[0].notes.size() == 1);
@@ -622,6 +674,7 @@ int main()
                                         TestSoundNumbers();
                                         TestNewSound(true);
                                         TestNewSound(false);
+                                        TestNewSoundInOldLayout();
                                         TestNewBank();
                                         TestNewWaveArchive();
                                         TestEmptySong();

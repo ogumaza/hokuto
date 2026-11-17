@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a piece of Ubisoft Milan's GBA driver, by the rules of the driver's bytes (ntdlib/ubimilan/commands.h).
+// The edits of a piece of Ubisoft Milan's GBA driver, by the rules of the driver's bytes (agblib/ubimilan/commands.h).
 // A sequence has one track of commands for 16 channels, and each command names a channel. A file stores each wait as a
 // length in ticks (format/ubimilan.h). Every command has a wait after it, and no command runs one tick after another.
 //

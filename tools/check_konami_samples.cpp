@@ -10,7 +10,7 @@
 //   rate, and the period from the CPU's clock.
 // - The reach of each value edit: the Bank Editor lists the songs that play the sample (KonamiRom::SamplesOfSound), and
 //   the other songs whose notes of other samples take its rate (song::KonamiBorrowedRates). Like KonamiBorrowedRates,
-//   the round then runs each sound on ntdlib's model of the output stage (konami::Output, without the mixer) for two
+//   the round then runs each sound on agblib's model of the output stage (konami::Output, without the mixer) for two
 //   passes of its loop, from the ROM and from the edited ROM. A sound whose playing voices differ in a frame has to be
 //   listed. A voice that doesn't play uses the values of the start of its next note. A listed sound whose voices don't
 //   differ counts apart: a note command that two passes don't reach plays nothing there. The round leaves out the
@@ -43,19 +43,19 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/konami/archive_player.h"
-#include "ntdlib/konami/driver.h"
-#include "ntdlib/konami/output.h"
-#include "ntdlib/konami/sequencer.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/konami/archive_player.h"
+#include "agblib/konami/driver.h"
+#include "agblib/konami/output.h"
+#include "agblib/konami/sequencer.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "checked_saves.h"
 #include "edit/konami_samples.h"
 #include "format/archive.h"
 #include "format/file.h"
-#include "format/text.h"
 #include "song/konami.h"
 
 namespace
@@ -63,7 +63,7 @@ namespace
 
 namespace edit = hokuto::edit;
 namespace format = hokuto::format;
-namespace konami = ntdlib::konami;
+namespace konami = agblib::konami;
 namespace song = hokuto::song;
 
 bool Dungeon(const song::KonamiRom& rom)
@@ -76,7 +76,7 @@ uint32_t StepOf(const song::KonamiRom& rom, uint32_t rate)
 {
     if (Dungeon(rom))
     {
-        return static_cast<uint32_t>(std::lround(static_cast<double>(ntdlib::agb::kSecondCycles) / rate));
+        return static_cast<uint32_t>(std::lround(static_cast<double>(agblib::agb::kSecondCycles) / rate));
     }
 
     return static_cast<uint32_t>(std::lround(rate * 4096.0 / rom.info.mix_rate));
@@ -280,10 +280,10 @@ void CheckValues(const std::string& name, const format::File& file, const song::
         const uint32_t header = Dungeon(rom) ? entry + 4 : rom.rom.U32(entry);
         for (uint32_t i = 0; i < 4; i++)
         {
-            allowed.insert(header - ntdlib::agb::kRomBase + i);
+            allowed.insert(header - agblib::agb::kRomBase + i);
             if (!Dungeon(rom))
             {
-                allowed.insert(header + 8 - ntdlib::agb::kRomBase + i);
+                allowed.insert(header + 8 - agblib::agb::kRomBase + i);
             }
         }
         std::string problem;
@@ -296,7 +296,7 @@ void CheckValues(const std::string& name, const format::File& file, const song::
             }
         }
 
-        ntdlib::agb::Rom read;
+        agblib::agb::Rom read;
         read.Assign(built);
         const konami::SampleInfo after = rom.info.Sample(read, sample);
         const uint32_t step = StepOf(rom, values.rate);
@@ -431,7 +431,7 @@ void CheckReplacements(const std::string& name, const format::File& file, const 
     counts.moved_steps += stepped.size();
     const std::vector<uint8_t> built = format::ExportArchive(replaced);
     const std::shared_ptr<const song::KonamiRom> new_rom = song::LoadKonamiRom(built);
-    const uint32_t free_start = file.native->driver->free_start + ntdlib::agb::kRomBase;
+    const uint32_t free_start = file.native->driver->free_start + agblib::agb::kRomBase;
     for (const int sample : done)
     {
         const konami::SampleInfo before = rom.info.Sample(rom.rom, sample);
@@ -465,14 +465,13 @@ void CheckReplacements(const std::string& name, const format::File& file, const 
         }
     }
 
-    if (format::ExportArchive(format::Read(format::Write(replaced))) != built ||
-        format::ExportArchive(format::ReadText(format::WriteText(replaced))) != built)
+    if (!hokuto::tools::RoundTrips(replaced))
     {
         counts.failed++;
         std::printf("%s: the replaced file FAILED to come back from the binary or the text form\n", name.c_str());
     }
 
-    const int frames = static_cast<int>(std::lround(seconds * ntdlib::agb::kFrameRate));
+    const int frames = static_cast<int>(std::lround(seconds * agblib::agb::kFrameRate));
     for (const uint32_t sound : song::KonamiSounds(rom))
     {
         counts.sounds++;

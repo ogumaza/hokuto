@@ -4,22 +4,22 @@
 // GBA ROM contains a sample voice, PSG voices, a drum kit and a key split. The Bank Editor shows it, and its edits
 // change the voices' bytes and a wave's pattern in place (src/edit/gba_voices.h).
 
-#include "item_views_fixtures.h"
+#include "agblib/testing/rd2_cart.h"
 
 #include "cart_bytes.h"
-#include "ntdlib/testing/rd2_cart.h"
+#include "item_views_fixtures.h"
 #include "song/rd2.h"
 
 namespace
 {
 
 // The voice at `address` of the ROM that `file` builds.
-ntdlib::mp2k::Voice GbaVoiceAt(const File& file, uint32_t address)
+agblib::mp2k::Voice GbaVoiceAt(const File& file, uint32_t address)
 {
     const std::shared_ptr<const hokuto::song::GbaRom> rom =
         hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(file));
-    ntdlib::mp2k::Voice voice;
-    XSFLIB_CHECK(ntdlib::mp2k::ReadVoice(rom->rom, address, voice));
+    agblib::mp2k::Voice voice;
+    XSFLIB_CHECK(agblib::mp2k::ReadVoice(rom->rom, address, voice));
     return voice;
 }
 
@@ -38,7 +38,7 @@ void TestGbaVoiceTypes()
 
     for (const auto& [type, expected, name] : kKinds)
     {
-        ntdlib::mp2k::Voice voice;
+        agblib::mp2k::Voice voice;
         voice.type = type;
         XSFLIB_CHECK(hokuto::app::GbaVoiceTypeOf(voice) == expected);
         XSFLIB_CHECK(hokuto::song::GbaVoiceKind(voice) == name);
@@ -75,10 +75,10 @@ void TestGbaBankView()
     };
     XSFLIB_CHECK((rows(view.programs[3]) == std::vector<std::string>{"36-36 Noise", "38-38 Fixed sample"}));
     XSFLIB_CHECK((rows(view.programs[4]) == std::vector<std::string>{"0-59 Square 2", "60-127 Sample"}));
-    ntdlib::mp2k::Voice stray;
-    XSFLIB_CHECK(ntdlib::mp2k::ReadVoice(rom->rom, cart.key_table + 60, stray) && stray.PsgChannel() == 1);
+    agblib::mp2k::Voice stray;
+    XSFLIB_CHECK(agblib::mp2k::ReadVoice(rom->rom, cart.key_table + 60, stray) && stray.PsgChannel() == 1);
     XSFLIB_CHECK(view.programs[6].rows.empty());
-    XSFLIB_CHECK(ntdlib::mp2k::ReadVoice(rom->rom, cart.pattern, stray) && stray.PsgChannel() == 1);
+    XSFLIB_CHECK(agblib::mp2k::ReadVoice(rom->rom, cart.pattern, stray) && stray.PsgChannel() == 1);
     XSFLIB_CHECK(view.programs[7].rows.empty() || view.programs[7].rows[0].first_key > 0);
 
     // The pattern's steps, high nibble first, and the two programs that play it.
@@ -105,14 +105,14 @@ struct GbaVoiceFixture
     GbaCart cart;
     File file;
     uint32_t square;
-    ntdlib::mp2k::Voice before;
+    agblib::mp2k::Voice before;
     std::shared_ptr<const hokuto::song::GbaRom> game;
 };
 
 // The fixture of the tests of voice edits.
 GbaVoiceFixture MakeGbaVoiceFixture()
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
 
     const GbaCart cart = MakeGbaCart();
     const File file = hokuto::format::ImportGbaRom(cart.bytes);
@@ -124,7 +124,7 @@ GbaVoiceFixture MakeGbaVoiceFixture()
 }
 
 // The message of the std::invalid_argument that an edit of `file` to `changed_voice` throws.
-std::string EditError(const File& file, const ntdlib::mp2k::Voice& changed_voice)
+std::string EditError(const File& file, const agblib::mp2k::Voice& changed_voice)
 {
     return ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithGbaVoice(file, changed_voice); });
 }
@@ -133,7 +133,7 @@ std::string EditError(const File& file, const ntdlib::mp2k::Voice& changed_voice
 // ROM stores it isn't checked: square 1's length stays at 100.
 void TestGbaVoiceEdit()
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     using hokuto::edit::WithGbaVoice;
 
     const GbaVoiceFixture fixture = MakeGbaVoiceFixture();
@@ -163,7 +163,7 @@ void TestGbaVoiceEdit()
             changed.push_back(i);
         }
     }
-    const std::size_t at = square - ntdlib::agb::kRomBase;
+    const std::size_t at = square - agblib::agb::kRomBase;
     XSFLIB_CHECK((changed == std::vector<std::size_t>{at + 3, at + 4, at + 8, at + 10}));
     XSFLIB_CHECK(hokuto::edit::GbaVoiceBytes(after) == hokuto::edit::GbaVoiceBytes(voice));
 
@@ -185,7 +185,7 @@ void TestGbaVoiceEdit()
 // A PSG voice accepts only the values that fit in the PSG registers and the MP2K envelope.
 void TestGbaPsgLimits()
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     using hokuto::edit::WithGbaVoice;
 
     const GbaVoiceFixture fixture = MakeGbaVoiceFixture();
@@ -214,7 +214,7 @@ void TestGbaPsgLimits()
 // A voice can take another kind, and a drum kit and a key split keep their tables.
 void TestGbaDrumKitVoice()
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     using hokuto::edit::WithGbaVoice;
 
     const GbaVoiceFixture fixture = MakeGbaVoiceFixture();
@@ -251,7 +251,7 @@ void TestGbaDrumKitVoice()
 // A sample's voice changes to a fixed pitch.
 void TestGbaSampleVoice()
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     using hokuto::edit::WithGbaVoice;
 
     const GbaVoiceFixture fixture = MakeGbaVoiceFixture();
@@ -277,7 +277,7 @@ void TestGbaSongBytes()
 
     // The header of the song contains the address of its track, and the track is within the song.
     std::vector<uint8_t> header(12);
-    std::copy_n(cart.bytes.begin() + (cart.header - ntdlib::agb::kRomBase), 12, header.begin());
+    std::copy_n(cart.bytes.begin() + (cart.header - agblib::agb::kRomBase), 12, header.begin());
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithGbaBytes(file, cart.header, header); }) ==
                  "These bytes contain the address of a song or a track. Can't change them here.");
     const uint32_t track = xsflib::LoadLe32(header.data() + 8);
@@ -308,7 +308,7 @@ void TestGbaPatternEdit()
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { hokuto::edit::WithGbaPattern(file, cart.pattern, steps); }) ==
                  "Wave pattern steps must be from 0 to 15.");
     XSFLIB_CHECK(
-        ErrorOf<std::invalid_argument>([&] { hokuto::edit::GbaPatternOf(rom->rom, ntdlib::agb::kRomBase - 16); }) ==
+        ErrorOf<std::invalid_argument>([&] { hokuto::edit::GbaPatternOf(rom->rom, agblib::agb::kRomBase - 16); }) ==
         "The wave pattern is outside the ROM.");
 }
 
@@ -355,7 +355,7 @@ void TestGbaGroupMoves()
 // read that failed fills in none.
 void TestDriverSampleSongs()
 {
-    namespace cart = ntdlib::testing::rd2_cart;
+    namespace cart = agblib::testing::rd2_cart;
     cart::Cart image;
     image.Sequences({{cart::TrackData().Bytes({0xC2, cart::kLooped}).Note(60, 24, 100).Wait(24).End()}});
     const std::shared_ptr<const hokuto::song::Rd2Rom> rom =

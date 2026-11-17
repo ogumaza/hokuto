@@ -11,12 +11,12 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/sequencer.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/sequencer.h"
 #include "seqlib/midi/builder.h"
 
 #include "check_gba_midi.h"
@@ -70,7 +70,7 @@ std::map<uint32_t, const ntdlib::commands::Command*> CommandsByOffset(const ntdl
 // The value of `command` in MusicPlayer2000's units.
 int64_t ValueOf(const ntdlib::commands::Command& command)
 {
-    return ntdlib::commands::FromUnit(command.value.value, ntdlib::mp2k::ScaleOf(command.kind));
+    return ntdlib::commands::FromUnit(command.value.value, agblib::mp2k::ScaleOf(command.kind));
 }
 
 // Whether `row` runs before `loop_end`, the end of the loop's first pass, if any.
@@ -313,6 +313,58 @@ std::vector<std::vector<hokuto::edit::CommandRow>> WriteConductor(
     return rows_of;
 }
 
+// The step of `note` in `steps`, each note command's step at its tick, or 0.
+int StepOf(const std::map<std::pair<uint32_t, uint32_t>, int>& steps, const Note& note)
+{
+    const auto step = steps.find({note.command, note.start});
+    return step != steps.end() ? step->second : 0;
+}
+
+// The key at which each note of `notes` sounds: the key of its command and the transposition of its track in `shifts`,
+// each note command's transposition at its tick.
+std::vector<int> TransposedKeys(const std::vector<std::pair<Note, bool>>& notes,
+                                const std::map<std::pair<uint32_t, uint32_t>, int>& shifts)
+{
+    std::vector<int> transposed_keys;
+    for (const auto& [note, started] : notes)
+    {
+        const auto shift = shifts.find({note.command, note.start});
+        transposed_keys.push_back(note.key + (shift != shifts.end() ? shift->second : 0));
+    }
+
+    return transposed_keys;
+}
+
+// The length of a note in the MIDI file before a later note of its key cuts it.
+struct NoteLength
+{
+    uint32_t command_ticks = 0; // the ticks of its command, or 0 without one
+    bool cut = false;           // the loop's end or the track's end cuts it short of its command
+    uint32_t ticks = 0;
+};
+
+// The length of `note` in the MIDI file. `by_offset` contains each command by its offset, `loop_end` is the end of the
+// loop's first pass, and `track_end` the end of the track. A note lasts as long as its command says, and a tie as long
+// as the arrangement shows it. A note whose command lasts past the loop's end or the track's end ends there, and so
+// does a tie that sounds there.
+NoteLength LengthOf(const Note& note, const std::map<uint32_t, const ntdlib::commands::Command*>& by_offset,
+                    const std::optional<uint32_t>& loop_end, const std::optional<uint32_t>& track_end)
+{
+    const auto command = by_offset.find(note.command);
+    const uint32_t command_ticks =
+        command != by_offset.end() ? static_cast<uint32_t>(command->second->value.value / kOne) : 0;
+    uint32_t ticks = command_ticks == 0 ? note.length : command_ticks;
+    for (const std::optional<uint32_t> end : {loop_end, track_end})
+    {
+        if (end && command_ticks > 0)
+        {
+            ticks = std::min(ticks, *end - std::min(note.start, *end));
+        }
+    }
+
+    return {command_ticks, ticks < command_ticks, ticks};
+}
+
 // Writes the notes of `track`, a track of `song`, to `out` on MIDI channel `channel`, at the steps and the
 // transpositions of `settings`. `rows` contains the command rows of the track up to `loop_end`, the end of the loop's
 // first pass, and `by_offset` each command by its offset. `index` is the track's place among those that the comparison
@@ -331,25 +383,15 @@ void WriteTrackNotes(const Sequence& song, const Track& track, const std::vector
     // it: its notes play program 0 there.
     std::vector<std::pair<Note, bool>> notes = TrackNotes(track, note_rows, by_offset, totals);
 
-    const auto step_of = [&steps](const Note& note)
+    const auto earlier = [&steps](const auto& a, const auto& b)
     {
-        const auto step = steps.find({note.command, note.start});
-        return step != steps.end() ? step->second : 0;
-    };
-    const auto earlier = [&step_of](const auto& a, const auto& b)
-    {
-        return std::pair(a.first.start, step_of(a.first)) < std::pair(b.first.start, step_of(b.first));
+        return std::pair(a.first.start, StepOf(steps, a.first)) < std::pair(b.first.start, StepOf(steps, b.first));
     };
     std::stable_sort(notes.begin(), notes.end(), earlier);
 
     // Each note is written at the key that sounds: the key of its command and the transposition of its track. A note
     // outside the MIDI keys is written at the nearest key, and the comparison leaves it out.
-    std::vector<int> transposed_keys;
-    for (const auto& [note, started] : notes)
-    {
-        const auto shift = shifts.find({note.command, note.start});
-        transposed_keys.push_back(note.key + (shift != shifts.end() ? shift->second : 0));
-    }
+    const std::vector<int> transposed_keys = TransposedKeys(notes, shifts);
     for (std::size_t n = 0; n < notes.size(); n++)
     {
         const auto& [note, started] = notes[n];
@@ -361,22 +403,10 @@ void WriteTrackNotes(const Sequence& song, const Track& track, const std::vector
             written.shifts[index][{note.start, note.key}] = key - note.key;
         }
 
-        // A note lasts as long as its command says, and a tie as long as the arrangement shows it. A note whose
-        // command lasts past the loop's end or the track's end ends there, and so does a tie that sounds there. A
-        // note ends where the next note of its key starts: MIDI's note-offs end the earliest note of
-        // their key first.
-        const auto command = by_offset.find(note.command);
-        const uint32_t command_ticks =
-            command != by_offset.end() ? static_cast<uint32_t>(command->second->value.value / kOne) : 0;
-        uint32_t ticks = command_ticks == 0 ? note.length : command_ticks;
-        for (const std::optional<uint32_t> end : {loop_end, track_end})
-        {
-            if (end && command_ticks > 0)
-            {
-                ticks = std::min(ticks, *end - std::min(note.start, *end));
-            }
-        }
-        const bool cut = ticks < command_ticks;
+        const auto [command_ticks, cut, cut_ticks] = LengthOf(note, by_offset, loop_end, track_end);
+        uint32_t ticks = cut_ticks;
+
+        // A note ends where the next note of its key starts: MIDI's note-offs end the earliest note of their key first.
         const std::optional<std::size_t> later = NextOfKey(notes, transposed_keys, n);
         if (later && note.start + ticks > notes[*later].first.start)
         {
@@ -410,7 +440,7 @@ void WriteTrackNotes(const Sequence& song, const Track& track, const std::vector
         // command to that length. A bend range that MIDI can't store plays the track's notes at other pitches. The end
         // of a sample that plays once can then come at another time.
         const double frame_ticks =
-            hokuto::song::TempoAt(song, note.start) * 60.0 / ntdlib::agb::kFrameRate / ntdlib::mp2k::kTickCounter;
+            hokuto::song::TempoAt(song, note.start) * 60.0 / agblib::agb::kFrameRate / agblib::mp2k::kTickCounter;
         if (started && cut && loop_end && note.start + command_ticks > *loop_end &&
             ticks < std::ceil(frame_ticks - 1e-6))
         {
@@ -434,7 +464,7 @@ void WriteTrackNotes(const Sequence& song, const Track& track, const std::vector
         totals.notes++;
         totals.ties += ticks > 223;
 
-        out.NoteOn(note.start, channel, key, std::max<int>(note.velocity, 1), false, step_of(note));
+        out.NoteOn(note.start, channel, key, std::max<int>(note.velocity, 1), false, StepOf(steps, note));
         out.NoteOff(note.start + ticks, channel, key);
     }
 }

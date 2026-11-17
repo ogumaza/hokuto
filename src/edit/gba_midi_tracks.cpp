@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
 
 #include "edit/gba_midi.h"
 #include "edit/gba_midi_reader_parts.h"
@@ -32,8 +32,8 @@ using ntdlib::commands::kOne;
 // Whether a note code of MusicPlayer2000 stands for a length of `ticks`.
 bool IsCodeLength(uint64_t ticks)
 {
-    return ticks > 0 && static_cast<uint64_t>(ntdlib::mp2k::ClockLength(
-                            ntdlib::mp2k::UsualLengthCode(static_cast<int64_t>(ticks)))) == ticks;
+    return ticks > 0 && static_cast<uint64_t>(agblib::mp2k::ClockLength(
+                            agblib::mp2k::UsualLengthCode(static_cast<int64_t>(ticks)))) == ticks;
 }
 
 // Writes waits from tick `now` up to `tick` into `items`, each in a length that MusicPlayer2000's codes give, the
@@ -44,7 +44,7 @@ void WaitTo(std::vector<Command>& items, uint64_t& now, uint64_t tick)
     while (ticks > 0)
     {
         const auto length = static_cast<uint64_t>(
-            ntdlib::mp2k::ClockLength(ntdlib::mp2k::UsualLengthCode(static_cast<int64_t>(ticks))));
+            agblib::mp2k::ClockLength(agblib::mp2k::UsualLengthCode(static_cast<int64_t>(ticks))));
         Command wait;
         wait.kind = Kind::kWait;
         wait.value.value = static_cast<int64_t>(length) * kOne;

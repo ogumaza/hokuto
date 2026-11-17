@@ -3,6 +3,8 @@
 // Tests the note edits of DSE's songs (src/edit/notes.cpp). A song of DSE's files accepts the edits by the rules of
 // DSE's bytes.
 
+#include "ntdlib/dse/player.h"
+
 #include "notes_fixtures.h"
 
 namespace
@@ -305,7 +307,7 @@ void TestDseOpeningInstrument()
 
         XSFLIB_CHECK(
             ErrorOf<std::invalid_argument>([&] { EditOpeningInstrument(file, song.sequence, track, {1, 0}); }) ==
-            "Can't change the bank that a DSE track selects.");
+            "This sound has no bank in slot 1.");
     }
 }
 
@@ -362,6 +364,339 @@ void TestDseProgramWithoutBank()
         }
         XSFLIB_CHECK(programs == 1);
     }
+}
+
+// A DS image whose sound effect loads two banks: the song's, 0x7F00, in slot 0, and a copy of it with the id 0x7E00 in
+// slot 1. The effect's track `track` follows its 4 bytes of preamble.
+File TwoBankImage(const ntdlib::testing::dse_song_files::Bytes& track)
+{
+    namespace dse_files = ntdlib::testing::dse_song_files;
+    namespace nds_files = ntdlib::testing::nds_files;
+    dse_files::Bytes other = dse_files::BankFile();
+    other[0x0E] = 0x00;
+    other[0x0F] = 0x7E;
+    nds_files::Image image;
+    image.files = {{"SOUND/BGM/bgm.swd", dse_files::MainBankFile()},
+                   {"SOUND/BGM/bgm0001.smd", dse_files::SongFile({{0, 0, 0, 0, 0xA4, 0x78, 0x98}})},
+                   {"SOUND/BGM/bgm0001.swd", dse_files::BankFile()},
+                   {"SOUND/SE/se.swd", other},
+                   {"SOUND/SE/se.sed",
+                    dse_files::EffectsFile({dse_files::Effect{.tracks = {dse_files::Join({{0, 0, 0, 0}, track})},
+                                                              .banks = {0x7F00, 0x7E00}}},
+                                           0x0101)}};
+
+    return hokuto::format::ImportDseImage(nds_files::BuildImage(image).first);
+}
+
+// The bank slot and the program of each note of the first track of sound 1 of `file`.
+std::vector<std::pair<int, uint32_t>> NoteInstruments(const File& file)
+{
+    const DseSong song = DseSongOf(file, 1);
+    std::vector<std::pair<int, uint32_t>> instruments;
+    XSFLIB_CHECK(!song.played.tracks.empty());
+    if (song.played.tracks.empty())
+    {
+        return instruments;
+    }
+
+    for (const Note& note : song.played.tracks[0].notes)
+    {
+        instruments.emplace_back(note.bank_slot, note.program);
+    }
+
+    return instruments;
+}
+
+// The DSE commands of sequence `sequence` of `file` that select a whole bank id (0xA8), by their ids.
+std::vector<uint16_t> WholeBankSelects(const File& file, uint32_t sequence)
+{
+    std::vector<uint16_t> ids;
+    for (const ntdlib::commands::Command& command : file.sequences.at(sequence)->items)
+    {
+        if (command.kind == Kind::kOther && command.encoding.opcode == ntdlib::dse::kBank && command.bytes.size() == 2)
+        {
+            ids.push_back(static_cast<uint16_t>(command.bytes[0] << 8 | command.bytes[1]));
+        }
+    }
+
+    return ids;
+}
+
+// A DSE track selects another bank that its sound loads. The notes of program 0 take bank 0x7E00 of slot 1. A bank
+// select before the program change of each run of them selects it. One before the next program change selects bank
+// 0x7F00 again, and the track's end requires none. The note of program 1 between them keeps its bank. Every note keeps
+// its tick, key, length and velocity. A new program goes in with the new bank, and a second edit takes the notes back.
+// A slot without a bank is refused.
+void TestDseOtherBank()
+{
+    namespace dse_files = ntdlib::testing::dse_song_files;
+    using Instruments = std::vector<std::pair<int, uint32_t>>;
+    const File file = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00},
+                                                    dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0xAC, 0x01},
+                                                    dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0xAC, 0x00},
+                                                    dse_files::Note(0x60, 4, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0x98}}));
+    const DseSong song = DseSongOf(file, 1);
+    SEQLIB_REQUIRE(song.played.tracks.size() == 1);
+    const hokuto::song::Track& track = song.played.tracks[0];
+    XSFLIB_CHECK((NoteInstruments(file) == Instruments{{0, 0}, {0, 1}, {0, 0}}));
+
+    const Edited edited =
+        hokuto::edit::EditInstrument(file, song.sequence, track.number, track.stretches, {0, 0}, {1, 0});
+    XSFLIB_CHECK((NoteInstruments(edited.file) == Instruments{{1, 0}, {0, 1}, {1, 0}}));
+    XSFLIB_CHECK(GbaNotes(DseSongOf(edited.file, 1).played, 0) == GbaNotes(song.played, 0));
+    XSFLIB_CHECK((WholeBankSelects(edited.file, song.sequence) == std::vector<uint16_t>{0x7E00, 0x7F00, 0x7E00}));
+
+    const Edited both =
+        hokuto::edit::EditInstrument(file, song.sequence, track.number, track.stretches, {0, 0}, {1, 3});
+    XSFLIB_CHECK((NoteInstruments(both.file) == Instruments{{1, 3}, {0, 1}, {1, 3}}));
+    // Program 3 plays a wave that the main bank lacks, and its notes end elsewhere. They keep their ticks and keys.
+    const auto starts = [](const Sequence& played)
+    {
+        std::vector<std::pair<uint32_t, uint32_t>> notes;
+        for (const Note& note : played.tracks.at(0).notes)
+        {
+            notes.emplace_back(note.start, note.key);
+        }
+        return notes;
+    };
+    XSFLIB_CHECK(starts(DseSongOf(both.file, 1).played) == starts(song.played));
+
+    const DseSong moved = DseSongOf(edited.file, 1);
+    const hokuto::song::Track& again = moved.played.tracks.at(0);
+    const Edited back =
+        hokuto::edit::EditInstrument(edited.file, moved.sequence, again.number, again.stretches, {1, 0}, {0, 0});
+    XSFLIB_CHECK((NoteInstruments(back.file) == Instruments{{0, 0}, {0, 1}, {0, 0}}));
+
+    XSFLIB_CHECK(
+        ErrorOf<std::invalid_argument>(
+            [&]
+            { hokuto::edit::EditInstrument(file, song.sequence, track.number, track.stretches, {0, 0}, {2, 0}); }) ==
+        "This sound has no bank in slot 2.");
+}
+
+// The channel at each note of the first track of sound 1 of `file`, as ntdlib's DSE driver plays them in the first 20
+// seconds. A looped track plays several passes.
+std::vector<ntdlib::dse::ChannelView> NoteChannels(const File& file)
+{
+    const std::shared_ptr<const hokuto::song::DseSet> set =
+        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater);
+    ntdlib::dse::Player player({.build = set->build});
+    std::vector<ntdlib::dse::ChannelView> channels;
+    ntdlib::dse::SequenceHooks hooks;
+    hooks.on_note = [&player, &channels](const ntdlib::dse::NoteEvent& note)
+    {
+        if (note.track == 0)
+        {
+            channels.push_back(player.Driver().GetChannel(note.channel));
+        }
+    };
+    player.Driver().SetHooks(std::move(hooks));
+    const ntdlib::dse::SequenceFiles files = set->sounds.at(1).Files();
+    player.LoadBanks(files);
+    XSFLIB_CHECK(player.Start(files));
+    for (int tick = 0; tick < 2000; tick++)
+    {
+        player.RunTick();
+    }
+
+    return channels;
+}
+
+// The bend range and the volume LFO (LFO 1) of the channel at each note (NoteChannels).
+std::vector<std::pair<uint8_t, ntdlib::dse::LfoValues>> ChannelSettings(const File& file)
+{
+    std::vector<std::pair<uint8_t, ntdlib::dse::LfoValues>> settings;
+    for (const ntdlib::dse::ChannelView& channel : NoteChannels(file))
+    {
+        settings.emplace_back(channel.bend_range, channel.lfos[1]);
+    }
+
+    return settings;
+}
+
+// The bank of the channel at each note (NoteChannels).
+std::vector<uint16_t> NoteBanks(const File& file)
+{
+    std::vector<uint16_t> banks;
+    for (const ntdlib::dse::ChannelView& channel : NoteChannels(file))
+    {
+        banks.push_back(channel.bank);
+    }
+
+    return banks;
+}
+
+// A bank select selects the channel's program again, and that resets the channel's bend range and LFOs. The new select
+// goes before the program change that the notes follow. The bend range (0xDB) and the volume LFO (0xE4) after the
+// program change then still reach the notes of the new bank. A run whose notes follow a repeat's start has no such
+// command before it. Its new select would reset the track's bend range, and the edit refuses it.
+void TestDseOtherBankSettings()
+{
+    namespace dse_files = ntdlib::testing::dse_song_files;
+    using Instruments = std::vector<std::pair<int, uint32_t>>;
+    const File file = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xDB, 0x0C},
+                                                    {0xE4, 0x10, 0x00, 0x64, 0x00, 0x01},
+                                                    dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0xAC, 0x01},
+                                                    dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0x98}}));
+    const DseSong song = DseSongOf(file, 1);
+    SEQLIB_REQUIRE(song.played.tracks.size() == 1);
+    const hokuto::song::Track& track = song.played.tracks[0];
+    const auto before = ChannelSettings(file);
+    SEQLIB_REQUIRE(before.size() >= 2);
+    XSFLIB_CHECK(before[0].first == 12 && before[0].second.type == 1 && before[0].second.amplitude == 0x10);
+
+    const Edited edited =
+        hokuto::edit::EditInstrument(file, song.sequence, track.number, track.stretches, {0, 0}, {1, 0});
+    XSFLIB_CHECK((NoteInstruments(edited.file) == Instruments{{1, 0}, {0, 1}}));
+    XSFLIB_CHECK(ChannelSettings(edited.file) == before);
+
+    const File repeated = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xDB, 0x0C, 0x9C, 0x02},
+                                                        dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                        {0x92, 0x18, 0x9D, 0x98}}));
+    const DseSong looped = DseSongOf(repeated, 1);
+    SEQLIB_REQUIRE(looped.played.tracks.size() == 1);
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
+                     [&]
+                     {
+                         hokuto::edit::EditInstrument(repeated, looped.sequence, looped.played.tracks[0].number,
+                                                      looped.played.tracks[0].stretches, {0, 0}, {1, 0});
+                     }) ==
+                 "Can't change the bank. A new bank select would reset this track's bend range, LFOs and "
+                 "envelope. Remove these commands in the List Editor first: Bend Range.");
+}
+
+// The edit of `file`'s first track of sound 1 from slot 0 to slot 1, for program 0.
+Edited OtherBankOf(const File& file)
+{
+    const DseSong song = DseSongOf(file, 1);
+    const hokuto::song::Track& track = song.played.tracks.at(0);
+    return hokuto::edit::EditInstrument(file, song.sequence, track.number, track.stretches, {0, 0}, {1, 0});
+}
+
+// A looped track starts each later pass with the bank that it ends with. A run of program 0 at the end of the loop
+// takes a select back to bank 0x7F00 at the track's end, and every pass plays program 1 in that bank. With a bend range
+// in the track, that select would reset it, and the edit refuses it. A loop of program 0 alone takes the new bank
+// before its point, and needs no select back. Its bend range then stays. An envelope command blocks the edit too. A
+// track whose loop starts with another program than it ends with refuses a select after the loop's point.
+void TestDseOtherBankLoop()
+{
+    namespace dse_files = ntdlib::testing::dse_song_files;
+    const auto track = [](std::initializer_list<uint8_t> opening)
+    {
+        return dse_files::Join({dse_files::Bytes(opening),
+                                {0x99, 0xAC, 0x01},
+                                dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                {0x92, 0x18, 0xAC, 0x00},
+                                dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                {0x92, 0x18, 0x98}});
+    };
+    const File looped = TwoBankImage(track({0xA9, 0x7F, 0xAA, 0x00}));
+    const std::vector<uint16_t> before = NoteBanks(looped);
+    SEQLIB_REQUIRE(before.size() >= 4);
+    const std::vector<uint16_t> after = NoteBanks(OtherBankOf(looped).file);
+    SEQLIB_REQUIRE(after.size() == before.size());
+    for (std::size_t i = 0; i < after.size(); i++)
+    {
+        XSFLIB_CHECK(after[i] == (i % 2 == 0 ? 0x7F00 : 0x7E00));
+    }
+
+    const File bent = TwoBankImage(track({0xA9, 0x7F, 0xAA, 0x00, 0xDB, 0x0C}));
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { OtherBankOf(bent); }) ==
+                 "Can't change the bank. A new bank select would reset this track's bend range, LFOs and envelope. "
+                 "Remove these commands in the List Editor first: Bend Range.");
+
+    // The List Editor can't add an envelope command again. The message names the command, and gives no remedy.
+    const File enveloped = TwoBankImage(track({0xA9, 0x7F, 0xAA, 0x00, 0xB2, 0x10, 0xDB, 0x0C}));
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { OtherBankOf(enveloped); }) ==
+                 "Can't change the bank. A new bank select would reset this track's bend range, LFOs and envelope. "
+                 "These commands set them: Opcode 0xB2, Bend Range.");
+
+    // The loop starts with program 0, and the track ends with program 1. A later pass would run a select after the
+    // loop's point with program 1, and the edit refuses it.
+    const File changing = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00},
+                                                        dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                        {0x92, 0x18, 0x99},
+                                                        dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                                        {0x92, 0x18, 0xAC, 0x01},
+                                                        dse_files::Note(0x60, 4, 0, 0x18, 1),
+                                                        {0x92, 0x18, 0x98}}));
+    XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { OtherBankOf(changing); }) ==
+                 "Can't change the bank. This track's loop starts with another instrument than the track ends with.");
+
+    const File alone = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xDB, 0x0C, 0x99},
+                                                     dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                     {0x92, 0x18},
+                                                     dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                                     {0x92, 0x18, 0x98}}));
+    const Edited edited = OtherBankOf(alone);
+    XSFLIB_CHECK((WholeBankSelects(edited.file, DseSongOf(alone, 1).sequence) == std::vector<uint16_t>{0x7E00}));
+    const std::vector<ntdlib::dse::ChannelView> played = NoteChannels(edited.file);
+    SEQLIB_REQUIRE(played.size() >= 4);
+    for (const ntdlib::dse::ChannelView& channel : played)
+    {
+        XSFLIB_CHECK(channel.bank == 0x7E00 && channel.bend_range == 12);
+    }
+}
+
+// Two runs of program 0 with a program change between them that selects program 0 again. The select back after the
+// first run and the select of the new bank before the second would meet at that program change. They cancel out, and
+// the edit puts in one select. The track's end needs no select back.
+void TestDseOtherBankCancel()
+{
+    namespace dse_files = ntdlib::testing::dse_song_files;
+    const File file = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00},
+                                                    dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0xAC, 0x00},
+                                                    dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0x98}}));
+    const Edited edited = OtherBankOf(file);
+    XSFLIB_CHECK((WholeBankSelects(edited.file, DseSongOf(file, 1).sequence) == std::vector<uint16_t>{0x7E00}));
+    XSFLIB_CHECK((NoteBanks(edited.file) == std::vector<uint16_t>{0x7E00, 0x7E00}));
+}
+
+// A repeat plays its notes again from the command after its start. The new bank select goes in after that start, and
+// every pass plays the new bank. A track without notes takes the new bank in its opening.
+void TestDseOtherBankRepeat()
+{
+    namespace dse_files = ntdlib::testing::dse_song_files;
+    using Instruments = std::vector<std::pair<int, uint32_t>>;
+    const File file = TwoBankImage(dse_files::Join({{0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0x9C, 0x02},
+                                                    dse_files::Note(0x60, 0, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0x9D, 0xAC, 0x01},
+                                                    dse_files::Note(0x60, 2, 0, 0x18, 1),
+                                                    {0x92, 0x18, 0x98}}));
+    const DseSong song = DseSongOf(file, 1);
+    SEQLIB_REQUIRE(song.played.tracks.size() == 1);
+    const hokuto::song::Track& track = song.played.tracks[0];
+    const Instruments before = NoteInstruments(file);
+    SEQLIB_REQUIRE(before.size() >= 3 && before.back() == std::make_pair(0, 1u));
+
+    const Edited edited =
+        hokuto::edit::EditInstrument(file, song.sequence, track.number, track.stretches, {0, 0}, {1, 0});
+    Instruments expected(before.size() - 1, {1, 0});
+    expected.emplace_back(0, 1);
+    XSFLIB_CHECK(NoteInstruments(edited.file) == expected);
+    XSFLIB_CHECK(GbaNotes(DseSongOf(edited.file, 1).played, 0) == GbaNotes(song.played, 0));
+
+    const File empty = TwoBankImage({0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0x92, 0x18, 0x98});
+    const DseSong quiet = DseSongOf(empty, 1);
+    SEQLIB_REQUIRE(quiet.played.tracks.size() == 1);
+    const File chosen = hokuto::edit::EditOpeningInstrument(empty, quiet.sequence, quiet.played.tracks[0], {1, 2}).file;
+    const DseSong opened = DseSongOf(chosen, 1);
+    const std::optional<hokuto::edit::Program> opening =
+        hokuto::edit::OpeningInstrument(chosen, opened.sequence, opened.played.tracks.at(0));
+    XSFLIB_CHECK(opening && opening->slot == 1 && opening->number == 2);
+
+    const NewNote note{.stretch = quiet.played.tracks[0].stretches.at(0), .tick = 0, .key = 60, .length = 12};
+    const File taken =
+        hokuto::edit::EditNotesWithInstrument(empty, quiet.sequence, quiet.played.tracks[0], std::vector{note}, {1, 2})
+            .file;
+    XSFLIB_CHECK((NoteInstruments(taken) == Instruments{{1, 2}}));
 }
 
 // A DSE channel starts at volume 100. A track without a volume command gets a new command for an edit of it. A slide's
@@ -482,6 +817,11 @@ int main()
                                         TestDseOpeningBank();
                                         TestDseOpeningInstrument();
                                         TestDseProgramWithoutBank();
+                                        TestDseOtherBank();
+                                        TestDseOtherBankRepeat();
+                                        TestDseOtherBankSettings();
+                                        TestDseOtherBankLoop();
+                                        TestDseOtherBankCancel();
                                         TestDseMixMoves();
                                         TestDseValues();
                                     });

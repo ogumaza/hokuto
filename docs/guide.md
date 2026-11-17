@@ -22,7 +22,7 @@ the open `.hok` format. To build Hokuto from source, see [development.md](develo
    [tracks](#tracks) · [mixer](#the-mixer) · [effects](#effects) · [inspector](#the-inspector) · [Bank
    Editor](#the-bank-editor) · [waves and streams](#waves-and-streams) · [variables and scenes](#variables-and-scenes)
 6. [Replacing and importing items](#replacing-and-importing-items)
-7. [Exporting](#exporting)
+7. [Exporting](#exporting): [audio mixdown](#audio-mixdown)
 8. [Saving](#saving)
 9. [The MIDI files](#the-midi-files)
 10. [The hok tool](#the-hok-tool)
@@ -84,8 +84,9 @@ a `userManagementFiles` folder. Hokuto reads them, and the streams, from the fol
 
 **AAC streams.** Some 3DS games keep their music in AAC files beside the archive. Hokuto plays them with the loop that
 the sound sets, and exports them as `.aac`, as WAV, or as a stream file of the Wii U or the Switch. It uses the AAC
-codec of macOS or Windows. A Linux build can't play, export or replace AAC streams. Replace… accepts an AAC file, a WAV
-file or a stream file of any console:
+codec of macOS or Windows. On Linux, and under Wine, Hokuto uses FFmpeg's `ffmpeg` program instead: install FFmpeg
+from your distribution's packages to play, export or replace AAC streams there. Replace… accepts an AAC file, a WAV file
+or a stream file of any console:
 
 - An AAC file at the sample rate and channel count of the stream goes in unchanged. It keeps the current loop if the
   loop ends within its samples.
@@ -386,7 +387,8 @@ opens them the same way. The browser lists the songs, sound effects and wave ban
 
 - Sequences open as programs, never as timelines.
 - Tracks on the same driver channel share volume and pan. A mixer edit changes the channel.
-- A program edit changes the bank that the track selects, and you can't change which bank that is. There are no sends.
+- The Bank menu lists the banks that the sound loads. A change of bank adds bank selects around the track's notes, and
+  is refused where they would reset the track's bend range, LFOs or envelope. There are no sends.
 - Add Track requires a free channel. A sound effect has 4 tracks at most. Paste Track requires the same timebase and
   banks.
 - Replace… puts a song file or a MIDI file in place of a sound, a bank file in place of a bank, and a WAV file in place
@@ -476,8 +478,10 @@ MIDI export converts what you hear. The archive export keeps the original. On th
 mixing.
 
 GBA songs, DS sequences and DSE sounds play on these engines without effects. Their tracks pass through a MIDI file and
-get new numbers. Mutes and meters follow the notes. A DS sequence ignores the Variables zone there. No sound plays on
-the GBA, DSE, Konami, R&D2, Brownie Brown, Ubisoft Milan, Rare, Quintet or Krawall engines.
+get new numbers. Mutes and meters follow the notes. A DS sequence ignores the Variables zone there. No sound of another
+console plays on DSE or on the GBA's drivers. The switch shows a driver under its console: for a DSE file, the DS opens
+a menu of DSE and NITRO-Composer. Choose DSE there to go back. Project Setup gives the console and its sound library or
+driver.
 
 ## Editing
 
@@ -593,7 +597,7 @@ FX A to FX C are the aux buses of the console. Click + in the inserts of an FX c
 
 | File | Effects |
 |---|---|
-| Switch | I3DL2 Reverb |
+| Switch | I3DL2 Reverb, nn::atk Delay, nn::atk Light Limiter, nn::atk Reverb |
 | Wii U | nw::snd Reverb Hi, nw::snd Reverb Std, nw::snd Chorus, nw::snd Delay (Wii U) |
 | 3DS (FX A and B) | nw::snd Reverb (3DS), nw::snd Delay (3DS), nn::snd Reverb, nn::snd Delay, nn::snd Reverb (2011) |
 | Wii | AXFX Reverb Hi, AXFX Reverb Std, AXFX Chorus, AXFX Delay |
@@ -604,8 +608,9 @@ menu offers the effects of that console. On the Wii U and the 3DS, a send to an 
 the console.
 
 Click an effect to open its window. Double-click a slider to type a value, and press Tab for the next. Ctrl-click resets
-a parameter to the first preset on the Switch, a value from Hokuto on the Wii U, or the library default on the 3DS. The
-I3DL2 Reverb offers five presets. Raising a delay past its maximum raises the maximum. Remove deletes the effect. During
+a parameter to the first preset of the I3DL2 Reverb, a value from Hokuto on the Wii U, or the library default on the 3DS
+and for nn::atk's effects. The I3DL2 Reverb offers five presets. Raising a delay or a look-ahead past its maximum raises
+the maximum. Remove deletes the effect. During
 playback, a change takes up to a second for each minute played to reach the output.
 
 The fader of an FX channel sets the bus level, from silence to +6 dB. The meters show what the bus adds. Click the peak
@@ -1095,6 +1100,38 @@ Right-click an item and choose Export…. Unedited items come out byte for byte.
 - **DSE.** Sounds export as MIDI with SoundFont 2 or SFZ, and songs also as their file (`.smd`). Banks export as their
   file, SoundFont 2 or SFZ, and waves as WAV.
 
+### Audio mixdown
+
+File > Export > Audio Mixdown… (Ctrl+B) renders songs to WAV files, or exports them as MIDI files with their
+instruments. Each song renders offline through the same engine that plays it, much faster than real time, and every
+sample before the fade is the sample that playback makes.
+
+1. Tick the songs to export in the list on the left. The window opens with the shown song ticked. Search narrows the
+   list to the songs whose names contain the text, and All and None tick or untick every song that the list shows.
+   Each song shows the length of its file, and Loop marks the songs that loop.
+2. Under **Channels**, choose **Mix** for the whole song, **Stems** for a file for each track that plays notes, or
+   both. A stem is **Dry** (without the FX channels), **With Effects** (with the track's sends to the FX channels), or
+   **Through Stereo Out** (with the Stereo Out fader as well).
+3. Under **Range**, set how many times a song that loops plays its loop before it fades, and the length of the fade:
+   2 loops and 10 s by default, as game-music rips do. A song that ends plays once, until it's silent, for up to **Tail
+   Limit** seconds after its end. **Seamless Loop** renders the loop twice without a fade and marks the second pass as a
+   loop in the WAV file, for samplers and game engines. **Mixing** plays every song in strict or enhanced mixing, or as
+   each song sets it. A song that plays on past 10 minutes fades there.
+4. Under **File Location**, build the names from Project, Song, Number, Track and Text, with a separator between them.
+   The example shows the first file's name, and a stem's name too when stems are ticked. A stem's name ends with its
+   track when the name has no Track. The files go to a folder named Mixdown beside the project or the archive, or to
+   another folder that you choose with Choose…. When a file is there already, Hokuto makes a unique name, or
+   overwrites it with Always Overwrite.
+5. Under **File Format**, choose Wave, MIDI and SoundFont 2, or MIDI and SFZ. A WAV file takes the console's rate or
+   44.1 to 96 kHz, and 16-bit, 24-bit or 32-bit float. Normalise brings each file's peak to 0 dBFS. Dither adds TPDF
+   dither to 16-bit files.
+6. Click **Export Audio**. To run several exports with different settings, click **Add to Queue** after each, then
+   **Start Queue Export**. The queue shows each export's progress, and Stop ends it. A song that stopped part way keeps
+   the files that it wrote. The window closes when the exports are done, unless **Keep Dialog Open** is ticked or an
+   export failed. It opens again at its size and place, and keeps its settings until another file opens.
+
+The shown song keeps its muted and soloed tracks. The other songs play every track.
+
 ## Saving
 
 File > Save As… saves a `.hok` file, and [format.md](format.md) specifies the format. File > Open…, a drop, the command
@@ -1157,6 +1194,8 @@ hok wav <input> <folder>
 hok sf2 <input> <folder>
 hok sfz <input> <folder>
 hok other <file.hok> <sound> <output> [console] [mono | stereo]
+hok mixdown [options] <input> <folder>
+hok midi [--sfz] [--sound <name or number>]... <input> <folder>
 hok --version
 hok --help
 ```
@@ -1187,6 +1226,15 @@ hok --help
   0, or a GBA song as `Song 012`. The console is `3ds`, `ds`, `wii`, `wii_u` or `switch`. By default, sounds go to the
   Wii U, and Wii U sounds to the Switch. `mono` and `stereo` choose the wave format for the 3DS. `other` prints what
   changes.
+- **mixdown** renders sequence sounds to WAV files, as the [Audio Mixdown](#audio-mixdown) window does, one file for
+  each sound, named after it. A `.hok` file plays with its effects, FX channel volumes and each sound's mixing mode.
+  `--sound` picks a sound by name or number, and can repeat. `--loops` and `--fade` set the passes of the loop (2) and
+  the fade (10 s). `--tail` sets the longest tail of a sound that ends (10 s). `--seamless` renders a seamless loop.
+  `--mixing strict` or `enhanced` sets the mode. `--rate` and `--format 16`, `24` or `32f` set the files' rate and
+  samples. `--normalise` and `--dither` work as in the window. `--stems` adds a file for each track, and
+  `--stem-effects dry` leaves the FX channels out of them. `--threads` renders several sounds at once.
+- **midi** exports sequence sounds as MIDI files, each with a SoundFont 2 file beside it, or with `--sfz`, SFZ files.
+  `--sound` picks sounds as for `mixdown`. A `.hok` file's sounds take their title and copyright tags.
 
 ## Keyboard shortcuts
 
@@ -1196,6 +1244,7 @@ On the Mac, use Command for Ctrl and Option for Alt.
 |---|---|
 | New Project, Open | Ctrl+N, Ctrl+O |
 | Save, Save As | Ctrl+S, Ctrl+Shift+S |
+| Export Audio Mixdown | Ctrl+B |
 | Preferences, Quit | Ctrl+Comma, Ctrl+Q |
 | Undo, Redo | Ctrl+Z, Ctrl+Shift+Z |
 | Start and stop | Space |

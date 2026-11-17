@@ -8,7 +8,7 @@
 // the same way. The Wii's stream sounds play on ntdlib's model of NW4R SND's stream player. A sequence plays its notes
 // on the same model. The Key Editor plays a note of a sequence sound's instrument the same way. The model mixes in the
 // mixing mode of the sound that the item belongs to. The Wii mixes only strictly. A note of a voice of a GBA ROM plays
-// on ntdlib's models of the MP2K driver and the GBA sound hardware. A note of an instrument of a DS bank plays on
+// on agblib's models of the MP2K driver and the GBA sound hardware. A note of an instrument of a DS bank plays on
 // ntdlib's models of NITRO-Composer and the DS sound unit.
 
 #pragma once
@@ -21,8 +21,8 @@
 #include <variant>
 #include <vector>
 
+#include "agblib/mp2k/archive_player.h"
 #include "ntdlib/cafe/snd/engine.h"
-#include "ntdlib/mp2k/archive_player.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/engine.h"
@@ -223,8 +223,8 @@ private:
     bool released_ = false;
 };
 
-// A note of a voice of a GBA ROM, on ntdlib's models of the MP2K driver and the GBA sound hardware
-// (ntdlib::mp2k::ArchivePlayer). A copy of the ROM contains a song that plays the note (GbaAuditionRom). The note plays
+// A note of a voice of a GBA ROM, on agblib's models of the MP2K driver and the GBA sound hardware
+// (agblib::mp2k::ArchivePlayer). A copy of the ROM contains a song that plays the note (GbaAuditionRom). The note plays
 // with the song's voice group, music player, priority and reverb, at full volume and in the centre. The preview ends
 // once nothing sounds, or after 10 s. The last frame then fades out.
 class GbaNotePreview final : public audio::Renderer
@@ -258,7 +258,7 @@ private:
     bool NextFrame();
 
     std::shared_ptr<const GbaRom> rom_; // the copy with the note's song
-    std::unique_ptr<ntdlib::mp2k::ArchivePlayer> player_;
+    std::unique_ptr<agblib::mp2k::ArchivePlayer> player_;
     std::shared_ptr<const std::atomic<bool>> release_;
     bool released_ = false;
     bool ended_ = false;
@@ -268,7 +268,7 @@ private:
     std::size_t frame_read_ = 0;
 };
 
-// A note of one of the GBA's other drivers (song/driver.h), on ntdlib's models of the driver and the GBA's sound
+// A note of one of the GBA's other drivers (song/driver.h), on agblib's models of the driver and the GBA's sound
 // hardware. A copy of the ROM contains a song that plays the note (DriverRom::AuditionRom). The preview ends once
 // nothing sounds, or after 10 s. The commands of the driver can't wait for the program. A note that the user lets go
 // therefore ends with a fade over a frame of the console in place of the driver's rest.

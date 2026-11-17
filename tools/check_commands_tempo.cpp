@@ -32,7 +32,7 @@ TempoRules TempoRulesOf(const CheckedArchive& archive)
     if (archive.gba || archive.driver)
     {
         // MusicPlayer2000 and Nintendo R&D2's driver count a tempo of 150 as a tick a frame, at 24 ticks a beat.
-        return {ntdlib::agb::kFrameRate / 60.0, 3};
+        return {agblib::agb::kFrameRate / 60.0, 3};
     }
     if (archive.dse)
     {
@@ -60,8 +60,8 @@ bool PlaysTempo(double played, double bpm, const TempoRules& rules)
     {
         // `bpm` counts frames at kFrameRate: a tempo T sets T * 60 * kFrameRate / quarter_ticks beats a minute.
         const auto tempo = static_cast<uint64_t>(
-            std::llround(bpm * static_cast<double>(rules.quarter_ticks) / (60.0 * ntdlib::agb::kFrameRate)));
-        return tempo > 0 && played == 60'000'000.0 / ntdlib::agb::QuarterMicros(rules.quarter_ticks, tempo);
+            std::llround(bpm * static_cast<double>(rules.quarter_ticks) / (60.0 * agblib::agb::kFrameRate)));
+        return tempo > 0 && played == 60'000'000.0 / agblib::agb::QuarterMicros(rules.quarter_ticks, tempo);
     }
     if (rules.ratio == 1.0)
     {
@@ -482,13 +482,13 @@ void CheckRowPoints(const std::string& name, const CheckedArchive& archive, cons
         // Brownie Brown's driver has no tempo, and a song starts at the tempo of the beat that the MIDI export sets for
         // it. Ubisoft Milan's driver has no tempo command, and the performer records the piece's speed at tick 0. A
         // point can come up to TempoRules::lag ticks before its change on the GBA.
-        double last = gba              ? ntdlib::mp2k::kDefaultTempo
+        double last = gba              ? agblib::mp2k::kDefaultTempo
                       : archive.driver ? archive.driver->Rules().StartTempoBpm().value_or(120.0)
                                        : 120.0;
         if (rules.quarter_ticks > 0)
         {
             // Quintet's start tempo counts frames of 60 Hz, and `last` counts the frames at kFrameRate.
-            last *= ntdlib::agb::kFrameRate / 60.0;
+            last *= agblib::agb::kFrameRate / 60.0;
         }
         if (archive.Brownie() && !view.song.tempo.empty())
         {

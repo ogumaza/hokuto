@@ -15,18 +15,18 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/apu.h"
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/apu.h"
+#include "agblib/agb/gba.h"
+#include "agblib/quintet/archive_player.h"
+#include "agblib/quintet/commands.h"
+#include "agblib/quintet/instruments.h"
+#include "agblib/quintet/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/quintet/convert.h"
+#include "agblib/sequence_export/quintet/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/quintet/archive_player.h"
-#include "ntdlib/quintet/commands.h"
-#include "ntdlib/quintet/instruments.h"
-#include "ntdlib/quintet/song.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/quintet/convert.h"
-#include "ntdlib/sequence_export/quintet/soundfont.h"
 #include "xsflib/binary.h"
 
 #include "format/quintet.h"
@@ -40,7 +40,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace quintet = ntdlib::quintet;
+namespace quintet = agblib::quintet;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
@@ -158,7 +158,7 @@ private:
     std::optional<quintet::Revision> start_;
 };
 
-// The model of the driver and the GBA's sound hardware, for one ROM (ntdlib::quintet::ArchivePlayer).
+// The model of the driver and the GBA's sound hardware, for one ROM (agblib::quintet::ArchivePlayer).
 //
 // The driver's clock counts its ticks, 96 to a quarter note, and a note adds its whole length when it starts. The
 // arrangement counts the performer's ticks, 37 to each of the driver's. ntdlib's converter sets the tempo of each frame
@@ -452,7 +452,7 @@ const DriverRules& QuintetRom::Rules() const
 
 std::span<const uint8_t> QuintetRom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 std::vector<uint32_t> QuintetRom::Sounds() const
@@ -476,12 +476,12 @@ uint32_t QuintetRom::SoundCount() const
 
 std::string QuintetRom::SoundName(uint32_t sound) const
 {
-    return "Song " + ntdlib::sequence_export::agb::SongNumber(static_cast<int>(sound), static_cast<int>(SoundCount()));
+    return "Song " + agblib::sequence_export::agb::SongNumber(static_cast<int>(sound), static_cast<int>(SoundCount()));
 }
 
 SoundFields QuintetRom::FieldsOf(uint32_t sound) const
 {
-    // The header of a song contains its length, then the start of each channel (ntdlib::quintet::Cut). The first
+    // The header of a song contains its length, then the start of each channel (agblib::quintet::Cut). The first
     // channel's field names the sequence.
     SoundFields fields;
     const auto file = FileOf(static_cast<int>(sound));
@@ -490,7 +490,7 @@ SoundFields QuintetRom::FieldsOf(uint32_t sound) const
         return fields;
     }
 
-    const uint64_t header = uint64_t{quintet::SongAddress(*file->first, file->second)} - ntdlib::agb::kRomBase;
+    const uint64_t header = uint64_t{quintet::SongAddress(*file->first, file->second)} - agblib::agb::kRomBase;
     for (int channel = 0; channel < quintet::kChannels; channel++)
     {
         fields.tracks.push_back(header + 2 + 2 * static_cast<uint64_t>(channel));
@@ -502,13 +502,13 @@ SoundFields QuintetRom::FieldsOf(uint32_t sound) const
 }
 
 // The rate of the PSG after the play routine's reset of SOUNDBIAS. The model of the GBA's sound in ntdlib mixes at
-// agb::kMaxOutputRate at most: the 262,144 Hz of the S revision plays at 65,536 Hz. ntdlib's ArchivePlayer uses the
+// agb::kMaxOutputRate at most: the 262,144 Hz of the S revision plays at 65,536 Hz. agblib's ArchivePlayer uses the
 // same rate.
 int QuintetRom::Rate() const
 {
     const int psg =
-        files.empty() ? ntdlib::agb::kMaxOutputRate : static_cast<int>(quintet::PsgRate(files.front().revision));
-    return std::min(psg, ntdlib::agb::kMaxOutputRate);
+        files.empty() ? agblib::agb::kMaxOutputRate : static_cast<int>(quintet::PsgRate(files.front().revision));
+    return std::min(psg, agblib::agb::kMaxOutputRate);
 }
 
 std::vector<int> QuintetRom::Samples() const
@@ -619,10 +619,10 @@ ntdlib::sequence_export::Conversion QuintetRom::ConvertToMidi(uint32_t sound, co
         throw std::runtime_error("The ROM has no song " + std::to_string(sound) + ".");
     }
 
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
-    ntdlib::sequence_export::quintet::SongFiles converted =
-        ntdlib::sequence_export::quintet::ConvertSongFiles(rom, *file->first, file->second, settings);
+    agblib::sequence_export::quintet::SongFiles converted =
+        agblib::sequence_export::quintet::ConvertSongFiles(rom, *file->first, file->second, settings);
 
     return AgbConversion(SoundName(sound), std::move(converted));
 }
@@ -630,8 +630,8 @@ ntdlib::sequence_export::Conversion QuintetRom::ConvertToMidi(uint32_t sound, co
 ntdlib::sequence_export::BankConversion QuintetRom::ConvertSamples(std::span<const int> numbers,
                                                                    const std::string& program) const
 {
-    namespace agb = ntdlib::sequence_export::agb;
-    ntdlib::sequence_export::quintet::SoundfontBuilder builder(rom);
+    namespace agb = agblib::sequence_export::agb;
+    agblib::sequence_export::quintet::SoundfontBuilder builder(rom);
     ntdlib::sequence_export::BankConversion conversion;
     for (const int sample : numbers)
     {
@@ -639,7 +639,7 @@ ntdlib::sequence_export::BankConversion QuintetRom::ConvertSamples(std::span<con
         try
         {
             const quintet::Sample read = SampleOf(*this, sample);
-            ntdlib::sequence_export::quintet::PcmSound sound;
+            agblib::sequence_export::quintet::PcmSound sound;
             sound.start = read.data;
             sound.first = read.played;
             sound.rate = read.rate;

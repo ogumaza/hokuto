@@ -16,7 +16,8 @@
 // - Cut and Join give the archive back byte for byte.
 // - ntdlib's StringBlock writes the archive's STRG block again from its names and their items, byte for byte
 //   (ntdlib/sar/string_block.h). FindItem finds each name's item. The reader gives each sound, bank, wave archive,
-//   player and group the same name.
+//   player and group the same name, and has an item for each such name. The tool reads the names by the default
+//   rules, and by the strict rules where they read the archive. The default rules read only some players and groups.
 // - ntdlib's InfoBlock writes the archive's INFO block again from its entries, byte for byte
 //   (ntdlib/sar/info_block.h). WithTables gives the archive back with its STRG and INFO blocks (ntdlib/sar/tables.h).
 //   Then each entry of the INFO block grows by 4 bytes, and WithTables puts the block in the archive. The reader reads
@@ -120,7 +121,7 @@ void Check(const std::filesystem::path& path, bool instruments_only, Totals& tot
     }
 
     // The kind from the magic and the byte order mark. The Wii's archives take other checks.
-    if (std::memcmp(original.data(), "RSAR", 4) == 0)
+    if (IsWiiArchive(original))
     {
         ++totals.wii_archives;
         try
@@ -140,11 +141,12 @@ void Check(const std::filesystem::path& path, bool instruments_only, Totals& tot
                                            : sar::Flavor::kNx;
     ++totals.archives;
 
+    Readings readings(original, options);
     try
     {
         if (instruments_only)
         {
-            CheckInstruments(path, original, options, totals);
+            CheckInstruments(path, options, readings, totals);
             return;
         }
 
@@ -155,26 +157,26 @@ void Check(const std::filesystem::path& path, bool instruments_only, Totals& tot
             return;
         }
 
-        CheckNames(path, original, options, totals);
-        CheckInfo(path, original, layout, options, totals);
-        CheckNewItems(path, original, layout, options, totals);
-        CheckNewWaveSounds(path, original, layout, options, totals);
-        CheckNewStreams(path, original, options, totals);
-        CheckNewBank(path, original, layout, options, totals);
-        CheckBankLists(path, original, layout, options, totals);
-        CheckValues(path, original, options, totals);
-        CheckPlaces(path, original, layout, options, totals);
-        CheckValuePlaces(path, original, layout, options, totals);
-        CheckRuns(path, original, layout, options, totals);
-        CheckGroupFiles(path, original, layout, options, totals);
-        CheckInstruments(path, original, options, totals);
+        CheckNames(path, original, options, readings, totals);
+        CheckInfo(path, original, layout, options, readings, totals);
+        CheckNewItems(path, original, layout, options, readings, totals);
+        CheckNewWaveSounds(path, original, layout, options, readings, totals);
+        CheckNewStreams(path, original, options, readings, totals);
+        CheckNewBank(path, original, layout, options, readings, totals);
+        CheckBankLists(path, original, layout, options, readings, totals);
+        CheckValues(path, original, options, readings, totals);
+        CheckPlaces(path, original, layout, options, readings, totals);
+        CheckValuePlaces(path, original, layout, options, readings, totals);
+        CheckRuns(path, layout, options, readings, totals);
+        CheckGroupFiles(path, original, layout, options, readings, totals);
+        CheckInstruments(path, options, readings, totals);
         totals.sequences += static_cast<int>(layout.sequences.size());
         totals.pieces += static_cast<int>(SequencesOfPieces(layout).size());
         totals.fields += static_cast<int>(layout.fields.size());
         std::vector<uint32_t> added;
         const sar::Layout grown = Grow(layout, added);
         const std::vector<uint8_t> joined = sar::Join(grown.flavor, grown.sequences, grown.pieces, grown.fields);
-        CheckTables(path, original, joined, layout, grown, added, options, totals);
+        CheckTables(path, joined, layout, grown, added, options, readings, totals);
 
         // The cut of the grown archive.
         const sar::Layout cut = sar::Cut(joined, options);

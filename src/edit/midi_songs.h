@@ -7,6 +7,10 @@
 // Each MIDI track's channel events go into a track of the song, in the order of the file's tracks. A track with events
 // on several channels makes a track for each channel, in the order of their first events. A channel gets a track at the
 // first of its events that the song keeps. A channel whose events all stay out gets none. A song has 16 tracks at most.
+// A program change, a control change and a pitch bend set the channel of their port (meta event 0x21), whichever track
+// contains them. Each track of a channel that several MIDI tracks play takes the settings of the others at their ticks.
+// At a tick, those of an earlier MIDI track come before the track's commands, and those of a later one after them. A
+// copy that repeats the track's value there stays out, but for the first setting of each kind in the loop.
 // With `joins_layers`, a file of more channels joins its layers: a MIDI track named after an earlier one and
 // " (layer n)" goes into the track of the earlier one. The MIDI file of a converter gives the further channels of a
 // track such names (seqlib's MIDI writer). A setting of a layer that only repeats the value that its track has there is

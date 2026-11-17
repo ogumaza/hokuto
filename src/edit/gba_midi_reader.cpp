@@ -20,8 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
 #include "seqlib/midi/controllers.h"
 #include "seqlib/midi/performance.h"
 #include "seqlib/midi/reader.h"
@@ -195,27 +195,6 @@ std::map<uint8_t, std::vector<ChannelEvent>> ChannelEventsOf(const seqlib::midi:
     return channels;
 }
 
-// The tempo events, in the order of the file.
-std::vector<ChannelEvent> TempoEventsOf(const seqlib::midi::File& file)
-{
-    std::vector<ChannelEvent> tempos;
-    for (std::size_t t = 0; t < file.tracks.size(); ++t)
-    {
-        for (std::size_t i = 0; i < file.tracks[t].events.size(); ++i)
-        {
-            const seqlib::midi::Event& event = file.tracks[t].events[i];
-            if (event.bytes.size() >= 3 && event.bytes[0] == 0xFF && event.bytes[1] == 0x51)
-            {
-                tempos.push_back({event.tick, t, i, &event});
-            }
-        }
-    }
-
-    std::stable_sort(tempos.begin(), tempos.end(), InFileOrder);
-
-    return tempos;
-}
-
 } // namespace
 
 namespace gba_midi_reader_parts
@@ -232,7 +211,7 @@ Command Setting(Kind kind, int64_t value, uint8_t index)
     Command command;
     command.kind = kind;
     command.index = index;
-    command.value.value = ntdlib::commands::ToUnit(value, ntdlib::mp2k::ScaleOf(kind));
+    command.value.value = ntdlib::commands::ToUnit(value, agblib::mp2k::ScaleOf(kind));
     return command;
 }
 
@@ -243,7 +222,7 @@ GbaMidiSong GbaMidiReader::Read()
 
     const std::map<uint8_t, std::vector<ChannelEvent>> channels =
         ChannelEventsOf(file_, note_channels_, chunk_channels_, left_out_);
-    const std::vector<ChannelEvent> tempos = TempoEventsOf(file_);
+    const std::vector<seqlib::midi::Tempo> tempos = seqlib::midi::Tempos(file_);
     for (const auto& [channel, events] : channels)
     {
         ChannelCommands(channel, events, tempos);
@@ -314,7 +293,7 @@ void GbaMidiReader::ScanTracks()
     }
     if (note_channels_.empty())
     {
-        throw std::invalid_argument("The MIDI file has no notes.");
+        throw std::invalid_argument(std::string(kMidiWithoutNotes));
     }
 
     song_.priority = global_.priority;
@@ -419,7 +398,7 @@ int GbaMidiReader::VelocityOf(int velocity) const
 }
 
 void GbaMidiReader::ChannelCommands(uint8_t channel, const std::vector<ChannelEvent>& events,
-                                    const std::vector<ChannelEvent>& tempos)
+                                    const std::vector<seqlib::midi::Tempo>& tempos)
 {
     const bool drums = channel == kDrumChannel;
     drum_tracks_.push_back(drums);
@@ -460,7 +439,7 @@ void GbaMidiReader::Add(ChannelState& channel, uint64_t midi_tick, Order order, 
     channel.placed.push_back(Place(TickOf(midi_tick), order, serial_++, std::move(command)));
 }
 
-void GbaMidiReader::AddTempos(ChannelState& channel, const std::vector<ChannelEvent>& tempos)
+void GbaMidiReader::AddTempos(ChannelState& channel, const std::vector<seqlib::midi::Tempo>& tempos)
 {
     // The tempos go into the first track. A file without a tempo at tick 0 starts at MIDI's tempo.
     if (tempos.empty() || tempos.front().tick != 0)
@@ -468,15 +447,9 @@ void GbaMidiReader::AddTempos(ChannelState& channel, const std::vector<ChannelEv
         channel.placed.push_back(Place(0, kSetting, serial_++, Setting(Kind::kTempo, 60000000 / kMidiTempo / 2)));
     }
 
-    for (const ChannelEvent& tempo : tempos)
+    for (const seqlib::midi::Tempo& tempo : tempos)
     {
-        const auto [type, data] = MetaOf(*tempo.event);
-        if (data.size() < 3)
-        {
-            continue;
-        }
-
-        const uint32_t micros = (uint32_t{data[0]} << 16) | (uint32_t{data[1]} << 8) | data[2];
+        const uint32_t micros = tempo.micros_per_quarter;
         const double bpm = micros == 0 ? 510.0 : 60000000.0 / micros;
         const auto half = std::clamp<long>(std::lround(bpm / 2.0), 1, 255);
         if (std::abs(bpm - 2.0 * static_cast<double>(half)) > 0.005)

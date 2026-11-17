@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/mp2k/soundfont.h"
+#include "agblib/sequence_export/mp2k/soundfont.h"
 
 #include "song/preview.h"
 #include "song/preview_parts.h"
@@ -30,26 +30,26 @@ namespace
 // it has one.
 bool GbaVoicePlays(const GbaRom& rom, uint32_t address, int key)
 {
-    ntdlib::mp2k::Voice voice;
-    if (!ntdlib::mp2k::ReadVoice(rom.rom, address, voice))
+    agblib::mp2k::Voice voice;
+    if (!agblib::mp2k::ReadVoice(rom.rom, address, voice))
     {
         return false;
     }
 
     if (voice.IsSplit())
     {
-        const uint32_t played = ntdlib::mp2k::SplitVoice(rom.rom, voice, key);
-        if (played == 0 || !ntdlib::mp2k::ReadVoice(rom.rom, played, voice) || voice.IsSplit())
+        const uint32_t played = agblib::mp2k::SplitVoice(rom.rom, voice, key);
+        if (played == 0 || !agblib::mp2k::ReadVoice(rom.rom, played, voice) || voice.IsSplit())
         {
             return false;
         }
     }
 
-    ntdlib::mp2k::Wave wave;
+    agblib::mp2k::Wave wave;
     return voice.PsgChannel() != 0 ||
-           ntdlib::sequence_export::mp2k::SynthOf(rom.rom, rom.info, voice) !=
-               ntdlib::sequence_export::mp2k::Synth::kNone ||
-           GbaVoicePlaysSteps(rom, voice) || (ntdlib::mp2k::ReadWave(rom.rom, voice.wave, wave) && wave.size > 0);
+           agblib::sequence_export::mp2k::SynthOf(rom.rom, rom.info, voice) !=
+               agblib::sequence_export::mp2k::Synth::kNone ||
+           GbaVoicePlaysSteps(rom, voice) || (agblib::mp2k::ReadWave(rom.rom, voice.wave, wave) && wave.size > 0);
 }
 
 } // namespace
@@ -64,8 +64,8 @@ GbaNotePreview::GbaNotePreview(const std::shared_ptr<const GbaRom>& rom, int son
     : release_(std::move(release))
 {
     // A key of -1 asks for the browser's key. A voice that plays at no key plays nothing.
-    ntdlib::mp2k::SongHeader header;
-    if (key < 0 && ntdlib::mp2k::ReadSong(rom->rom, rom->info, song, header))
+    agblib::mp2k::SongHeader header;
+    if (key < 0 && agblib::mp2k::ReadSong(rom->rom, rom->info, song, header))
     {
         key = KeyOf(*rom, header.voices, program);
     }
@@ -76,8 +76,8 @@ GbaNotePreview::GbaNotePreview(const std::shared_ptr<const GbaRom>& rom, int son
     }
 
     rom_ = GbaAuditionRom(*rom, song, program, key, velocity);
-    player_ = std::make_unique<ntdlib::mp2k::ArchivePlayer>(rom_->rom, rom_->info);
-    ntdlib::mp2k::ArchivePlayerOptions options;
+    player_ = std::make_unique<agblib::mp2k::ArchivePlayer>(rom_->rom, rom_->info);
+    agblib::mp2k::ArchivePlayerOptions options;
     options.enhanced = mixing == Mixing::kEnhanced;
     try
     {
@@ -91,7 +91,7 @@ GbaNotePreview::GbaNotePreview(const std::shared_ptr<const GbaRom>& rom, int son
 
 int GbaNotePreview::KeyOf(const GbaRom& rom, uint32_t voices, int program)
 {
-    const uint32_t address = voices + ntdlib::mp2k::kVoiceSize * static_cast<uint32_t>(program);
+    const uint32_t address = voices + agblib::mp2k::kVoiceSize * static_cast<uint32_t>(program);
     const auto plays = [&](int key)
     {
         return GbaVoicePlays(rom, address, key);
@@ -111,7 +111,7 @@ uint64_t GbaNotePreview::LongestFrames()
 
 int GbaNotePreview::SampleRate() const
 {
-    return player_ ? player_->Rate() : ntdlib::agb::kBaseOutputRate;
+    return player_ ? player_->Rate() : agblib::agb::kBaseOutputRate;
 }
 
 std::size_t GbaNotePreview::Render(float* out, std::size_t frames)
@@ -187,7 +187,7 @@ DriverNotePreview::DriverNotePreview(const std::shared_ptr<const DriverRom>& rom
 
 int DriverNotePreview::SampleRate() const
 {
-    return player_ ? player_->Rate() : ntdlib::agb::kBaseOutputRate;
+    return player_ ? player_->Rate() : agblib::agb::kBaseOutputRate;
 }
 
 std::size_t DriverNotePreview::Render(float* out, std::size_t frames)

@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "xsflib/ascii.h"
 #include "xsflib/files.h"
 
 namespace hokuto::edit::sfz_parser
@@ -345,11 +346,7 @@ private:
 
 std::string Lowered(std::string_view text)
 {
-    std::string lowered(text);
-    std::ranges::transform(lowered, lowered.begin(),
-                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-
-    return lowered;
+    return xsflib::AsciiLower(std::string(text));
 }
 
 SfzRegions ReadSfzRegions(const std::filesystem::path& folder, const SfzReader& read, const std::filesystem::path& path)

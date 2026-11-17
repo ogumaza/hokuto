@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: MIT
 
 // The mode --banks of hokuto_check_replace: new banks.
+//
+// With --banks, the tool checks only File > Import > Bank… and Wave Archive…. Up to 8 sequence sounds, spread through
+// the sound table, each serve as a model. Each bank in the model's slots goes in again as a new bank, through the edits
+// that the Import windows make. Each wave archive that the bank's waves name goes in first, as a new wave archive with
+// the old one's file. The new bank's waves then lie in the new wave archives. The model's sequence file then goes in as
+// a new sound, with the new banks in the model's slots. The new sound has to play the model's samples for 10 s on
+// ntdlib's model of the console. Every other item has to keep its values, and every file its bytes. The new wave
+// archives' files have to hold the old ones' bytes. The new banks' files have to hold the old ones' bytes but for the
+// wave archives that their waves name. A model whose banks or wave archives lack their files counts apart. So does a
+// model that starts where no command of its file starts, or whose commands open tracks that it doesn't allocate.
+// Another model then takes its place.
 
 #include "check_replace.h"
 
@@ -178,7 +189,7 @@ std::pair<format::File, NewItems> WithCopies(const format::File& file, const sar
 // slots and of their wave archives, and a copy of the model that plays the new banks. `built` is the archive that
 // `file` builds. Returns nothing when nothing is wrong. Counts a new sound that stays silent.
 std::string BankProblem(const format::File& added, const Archive& built, uint32_t model, const NewItems& items,
-                        Totals& totals)
+                        NewBankTotals& totals)
 {
     const sar::Flavor flavor = built->ReadOptions().flavor;
     hokuto::tools::CheckSaved(added, true);
@@ -243,7 +254,8 @@ std::string BankProblem(const format::File& added, const Archive& built, uint32_
 } // namespace
 
 void CheckNewBanks(const format::File& file, const Archive& built,
-                   std::span<const std::optional<edit::SoundPlace>> places, const std::string& name, Totals& totals)
+                   std::span<const std::optional<edit::SoundPlace>> places, const std::string& name,
+                   NewBankTotals& totals)
 {
     const std::vector<uint32_t> models = NewModels(places);
     const std::size_t stride = std::max<std::size_t>(1, models.size() / kBankModels);

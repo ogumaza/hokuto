@@ -468,32 +468,32 @@ Sequence ReadSequence(const ntdlib::rsar::SoundArchive& archive, uint32_t sound,
 
 // Runs song `song` of the GBA's `rom` through ntdlib's performer, with one pass of its loop (song/gba.h). MP2K counts
 // 24 ticks to a quarter note. Each note leads to its command, at its offset from the song's first byte
-// (ntdlib::mp2k::DecodeSong). Every note plays the song's voice group: a note's program is its voice there. A song has
+// (agblib::mp2k::DecodeSong). Every note plays the song's voice group: a note's program is its voice there. A song has
 // no labels and no variables. Throws std::runtime_error with a message for the user if the song can't be read.
 Sequence ReadSequence(const GbaRom& rom, int song);
 
-// Runs sound `sound` of `rom` through ntdlib's performer of Konami's driver, with one pass of its loop (song/konami.h).
+// Runs sound `sound` of `rom` through agblib's performer of Konami's driver, with one pass of its loop (song/konami.h).
 // One tick is one of the driver's frames. The performer sets the timebase to the number of frames nearest a quarter
 // note, with the one tempo at which those frames last their real time. Each note leads to its command, at its offset
-// from the song's first byte (ntdlib::konami::DecodeSong). A note's velocity comes from the command's volume
+// from the song's first byte (agblib::konami::DecodeSong). A note's velocity comes from the command's volume
 // (KonamiVelocityOf). A sample note's program is its sample. Another note's program is the duty or the wave of the last
 // such command that its track ran. A track's volume is the commands' volume. The sequence contains no labels and no
 // variables. Throws std::runtime_error with a message for the user if the song can't be read.
 Sequence ReadSequence(const KonamiRom& rom, uint32_t sound);
 
-// Runs sound `sound` of `rom` through ntdlib's performer of Nintendo R&D2's driver, with one pass of its loop
+// Runs sound `sound` of `rom` through agblib's performer of Nintendo R&D2's driver, with one pass of its loop
 // (song/rd2.h). The driver counts 24 ticks to a quarter note, and its tempo commands give the tempo. Each note leads to
-// its command, at its offset from the first byte of its sequence (ntdlib::rd2::DecodeRomSequence). A note's velocity
+// its command, at its offset from the first byte of its sequence (agblib::rd2::DecodeRomSequence). A note's velocity
 // comes from the command's velocity (Rd2VelocityOf). A note's program is 128 times its bank, among the driver's banks,
 // plus its instrument. A track's volume is the commands' volume, and 128 before a command sets it. The sequence
 // contains no labels and no variables. Throws std::runtime_error with a message for the user if the song can't be read.
 Sequence ReadSequence(const Rd2Rom& rom, uint32_t sound);
 
-// Runs sound `sound` of `rom` through ntdlib's performer of Brownie Brown's driver, with one pass of its loop
+// Runs sound `sound` of `rom` through agblib's performer of Brownie Brown's driver, with one pass of its loop
 // (song/brownie.h). One tick is one of the driver's frames. The performer sets the timebase to the number of frames
 // nearest a quarter note, with the one tempo at which those frames last their real time. Each note leads to its
 // command, at its offset from the first byte of the region that contains the list of the sound
-// (ntdlib::brownie::FindRegions). A note that no command started in its tick sounds again after the channel fell
+// (agblib::brownie::FindRegions). A note that no command started in its tick sounds again after the channel fell
 // silent, and doesn't start in the tick where its command ran (Note::start_gives_tick). Each note shows at velocity
 // 127: the driver's notes have none. A note's program is the last sample set, sample, duty or wave that its channel
 // selected (BrownieProgramIndex), and a noise note shows at the byte of its command. A track's volume is the value of
@@ -501,40 +501,40 @@ Sequence ReadSequence(const Rd2Rom& rom, uint32_t sound);
 // std::runtime_error with a message for the user if the sound can't be read.
 Sequence ReadSequence(const BrownieRom& rom, uint32_t sound);
 
-// Runs sound `sound` of `rom`, a piece of music, through ntdlib's performer of Ubisoft Milan's driver, with one pass of
+// Runs sound `sound` of `rom`, a piece of music, through agblib's performer of Ubisoft Milan's driver, with one pass of
 // its loop (song/ubimilan.h). One tick is one of the console's frames. The performer sets the timebase to the number of
 // frames nearest a quarter note, with the one tempo at which those frames last their real time. A track is one of the
 // sequence's 16 channels, and contains every stretch of the piece's one track of commands. A note leads to its command,
-// at its offset from the first byte of the piece's first sequence (ntdlib::ubimilan::DecodeSequence). A note of a later
+// at its offset from the first byte of the piece's first sequence (agblib::ubimilan::DecodeSequence). A note of a later
 // sequence of the piece's list leads to no command. A note has the velocity that the converter sets. A note's program
 // is the kit's offset on channel 9, and a PSG channel's instrument on channels 0 to 2. The driver has no volume, pan or
 // sends of a track. The sequence contains no labels and no variables. Throws std::runtime_error with a message for the
 // user if the piece can't be read.
 Sequence ReadSequence(const UbiMilanRom& rom, uint32_t sound);
 
-// Runs sound `sound` of `rom` through ntdlib's performer of Rare's driver, with one pass of its loop (song/rare.h). The
+// Runs sound `sound` of `rom` through agblib's performer of Rare's driver, with one pass of its loop (song/rare.h). The
 // tune header sets the ticks of a quarter note, and the tempo commands of the tune set the tempo. Each note leads to
-// its command, at its offset from the first byte of its sequence (ntdlib::rare::DecodeRomSequence). A note has the
+// its command, at its offset from the first byte of its sequence (agblib::rare::DecodeRomSequence). A note has the
 // velocity of its command. A note's program is the program of the tune's program map. A track's volume is the volume of
 // the channels that its commands set (controller 7), and 127 before a command sets it. The sequence contains no labels
 // and no variables. Throws std::runtime_error with a message for the user if the song can't be read.
 Sequence ReadSequence(const RareRom& rom, uint32_t sound);
 
-// Runs sound `sound` of `rom` through ntdlib's performer of Quintet's driver, with one pass of its loop
+// Runs sound `sound` of `rom` through agblib's performer of Quintet's driver, with one pass of its loop
 // (song/quintet.h). The performer counts 37 ticks to one tick of the driver and 3552 to a quarter note, with the tempo
 // that the song's commands set. A note of the performer is a run of frames in which its channel sounds. A command can
 // therefore start several notes. Each note leads to its command, at its offset from the byte after the song's header
-// (ntdlib::quintet::DecodeRomSequence). Every note has the velocity 127: the driver's notes have none. A note's program
+// (agblib::quintet::DecodeRomSequence). Every note has the velocity 127: the driver's notes have none. A note's program
 // is the instrument that the commands of its channel selected last: the duty on a square, and the wave, the noise macro
 // or the sample on the other channels. A track's volume is the channel's volume, and 0 before a command sets it. The
 // sequence contains no labels and no variables. Throws std::runtime_error with a message for the user if the song can't
 // be read.
 Sequence ReadSequence(const QuintetRom& rom, uint32_t sound);
 
-// Runs sound `sound` of `rom` through ntdlib's performer of Krawall, with one pass of its loop (song/krawall.h). The
+// Runs sound `sound` of `rom` through agblib's performer of Krawall, with one pass of its loop (song/krawall.h). The
 // performer counts the ticks of the MIDI file of ntdlib's conversion. A tick of the player lasts the MIDI ticks that
 // the timing of the conversion sets for it. Each of the module's first 16 channels is a track. Each note leads to the
-// entry of its row, at its offset from the module's first pattern (ntdlib::krawall::DecodeRomSequence). Every note has
+// entry of its row, at its offset from the module's first pattern (agblib::krawall::DecodeRomSequence). Every note has
 // the velocity 127: the player's notes have none. A note's program is the sample of the game's table that its
 // instrument plays at its note. A track's volume runs from 0 to 64. The player keeps the volume of a channel in that
 // range. The sequence contains no labels and no variables. Throws std::runtime_error with a message for the user if the

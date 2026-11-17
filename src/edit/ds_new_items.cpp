@@ -117,12 +117,55 @@ void AddName(sdat::ArchiveModel& model, std::size_t kind, const std::string& nam
     }
 }
 
+// `file` with its archive cut again where the cut finds more sequences than the file contains. A file of version 1.1
+// keeps its sequence archives among the archive's bytes, and the cut makes each one a sequence (ntdlib::sdat::Cut).
+// Each sequence of the file keeps its commands and labels, under the number of the sequence that starts where it
+// starts. Throws std::invalid_argument with a message for the user where the cut gives other commands.
+format::File CutAgain(const format::File& file)
+{
+    format::File cut = format::ImportDsArchive(format::ExportArchive(file));
+    if (cut.sequences.size() <= file.sequences.size())
+    {
+        return file;
+    }
+
+    const std::vector<uint64_t> old_starts = format::NativePieceStarts(file);
+    const std::vector<uint64_t> new_starts = format::NativePieceStarts(cut);
+    const std::map<uint64_t, uint32_t> new_at = format::SequenceStarts<uint64_t>(*cut.native->pieces, new_starts);
+    for (const auto& [start, sequence] : format::SequenceStarts<uint64_t>(*file.native->pieces, old_starts))
+    {
+        const auto found = new_at.find(start);
+        if (found == new_at.end() || ntdlib::ntr::snd::EncodeSequence(*cut.sequences[found->second]).bytes !=
+                                         ntdlib::ntr::snd::EncodeSequence(*file.sequences[sequence]).bytes)
+        {
+            throw std::invalid_argument("Can't add the item. Rebuilding the archive would change its sequences.");
+        }
+
+        cut.sequences[found->second] = file.sequences[sequence];
+    }
+
+    format::File result = file;
+    result.sequences = std::move(cut.sequences);
+    result.native = std::move(cut.native);
+    const auto keep_sizes_and_image = [&file](format::NativeArchive& native)
+    {
+        native.game_sizes = file.native->game_sizes;
+        native.cartridge = file.native->cartridge;
+    };
+    result.native.Edit(keep_sizes_and_image);
+
+    return result;
+}
+
 // `file` with the archive that `model` lays out. Its sequences keep their numbers, and `added` new ones follow. Each of
-// them stays as the file contains it, its labels included. The game's sizes and the cartridge stay.
-format::File Rebuilt(const format::File& file, const sdat::ArchiveModel& model, std::size_t added)
+// them stays as the file contains it, its labels included. The game's sizes and the cartridge stay. A file whose
+// sequence archives stay among its bytes takes their sequences first (CutAgain).
+format::File Rebuilt(const format::File& original, const sdat::ArchiveModel& model, std::size_t added)
 {
     const std::vector<uint8_t> archive = sdat::BuildArchive(model);
     format::File imported = format::ImportDsArchive(archive);
+    const format::File file =
+        imported.sequences.size() > original.sequences.size() + added ? CutAgain(original) : original;
     if (imported.sequences.size() != file.sequences.size() + added)
     {
         throw std::invalid_argument("Can't add the item. Rebuilding the archive would change its sequences.");

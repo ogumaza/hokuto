@@ -67,7 +67,7 @@ struct NoteEdit
 
 // A note to add, in `stretch`, at `tick` in the sequence's ticks. The key is the command's key, before any transpose.
 // On Konami's driver, a note of a sample contains `sample`, and its key sets its semitones from the pitch of the
-// sample. Its `index` follows ntdlib/konami/commands.h. NewKonamiNote sets both.
+// sample. Its `index` follows agblib/konami/commands.h. NewKonamiNote sets both.
 struct NewNote
 {
     song::Stretch stretch;

@@ -19,7 +19,7 @@ uint32_t CodeLengthUpTo(uint32_t ticks)
     uint32_t longest = 1;
     for (int code = 1; code <= 48; code++)
     {
-        const auto length = static_cast<uint32_t>(ntdlib::mp2k::ClockLength(code));
+        const auto length = static_cast<uint32_t>(agblib::mp2k::ClockLength(code));
         if (length <= ticks)
         {
             longest = length;
@@ -372,9 +372,10 @@ std::string HeardText(const std::vector<TrackNote>& heard)
 }
 
 // Checks that sound `sound` plays its new note `note` (track, tick and key), and its other notes as before. `read` is
-// the sound in the reads of `noted`, the file with the new notes, and `after` contains the reads with the new tracks.
-// `firsts` contains the first note of each sound.
-void CheckNewNote(const Archive& archive, const File& noted, const std::map<uint32_t, song::Sequence>& after,
+// the sound in the reads of `noted`, the file with the new notes, and `after` contains the reads of `version`, the file
+// with the new tracks. `firsts` contains the first note of each sound.
+void CheckNewNote(const Archive& archive, const File& noted, const File& version,
+                  const std::map<uint32_t, song::Sequence>& after,
                   const std::map<uint32_t, std::optional<song::Note>>& firsts, uint32_t sound,
                   const std::tuple<int, uint32_t, uint8_t>& note,
                   std::map<uint32_t, song::Sequence>::const_iterator read, Totals& totals)
@@ -423,6 +424,12 @@ void CheckNewNote(const Archive& archive, const File& noted, const std::map<uint
                      return !Compare(after.at(sound), others, NumbersOf(after.at(sound)), std::nullopt, 0, std::nullopt,
                                      0, true)
                                  .difference;
+                 },
+                 [&]
+                 {
+                     return std::vector<VoiceTicks>{
+                         {&after.at(sound), CommandTicks(archive, noted, sound, read->second)},
+                         {&others, CommandTicks(archive, version, sound, after.at(sound))}};
                  }))
     {
         ++totals.voice_notes;
@@ -701,9 +708,32 @@ void AddTracks(const Archive& archive, const std::vector<uint32_t>& chosen, Tota
             continue;
         }
 
-        CheckNewNote(archive, noted, after, firsts, sound, note, read, totals);
+        CheckNewNote(archive, noted, version, after, firsts, sound, note, read, totals);
     }
 }
+
+namespace
+{
+
+// The ticks for VoicesDecide of sound `sound` before and after a copy of track `original` to track `copy`. `now` is the
+// sound in `version`, the file with the copies. The copy runs the commands of the original.
+std::vector<VoiceTicks> CopyVoiceTicks(const Archive& archive, const File& version, uint32_t sound, int original,
+                                       int copy, const song::Sequence& before, const song::Sequence& now)
+{
+    const std::set<std::pair<int, uint32_t>> commanded_before = CommandTicks(archive, archive.file, sound, before);
+    std::set<std::pair<int, uint32_t>> for_now = commanded_before;
+    for (const auto& [number, tick] : commanded_before)
+    {
+        if (number == original)
+        {
+            for_now.emplace(copy, tick);
+        }
+    }
+
+    return {{&before, CommandTicks(archive, version, sound, now)}, {&now, for_now}};
+}
+
+} // namespace
 
 void CopyTracks(const Archive& archive, const std::vector<uint32_t>& chosen, Totals& totals)
 {
@@ -794,7 +824,9 @@ void CopyTracks(const Archive& archive, const std::vector<uint32_t>& chosen, Tot
         {
             ++totals.tick_notes;
         }
-        else if (difference && VoicesDecide([&] { return !Compare(before, now, numbers, copy, original).difference; }))
+        else if (difference &&
+                 VoicesDecide([&] { return !Compare(before, now, numbers, copy, original).difference; },
+                              [&] { return CopyVoiceTicks(archive, version, sound, original, copy, before, now); }))
         {
             ++totals.voice_notes;
         }

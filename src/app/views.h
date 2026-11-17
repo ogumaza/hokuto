@@ -62,8 +62,8 @@ struct OpenViews
 void BuildLayout(ImGuiID dockspace);
 
 // Docks the zone `window` with the mixer in the lower zone where the settings hold no place for it, before the window's
-// Begin. A settings file from before the zone joined the layout holds none, and its layout stays: the List Editor
-// joined on 2026-10-18 without a new layout version. A zone that the settings place stays where they place it.
+// Begin. A settings file from before the zone joined the layout has no place for it. The layout in that file stays:
+// the List Editor joined without a new layout version. A zone that the settings place stays where they place it.
 void DockWithMixer(const char* window);
 
 // Each of these draws a zone while its flag is set. The inspector shows the selected track, and the values of the shown

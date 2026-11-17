@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 
 // A GBA ROM whose music Rare's driver plays. ntdlib finds the driver in the ROM, with its build and its tables
-// (ntdlib::rare::DetectDriver). A tune has no name in the ROM: Hokuto names it by its number. ntdlib's performer plays
-// a tune on its model of the driver for the arrangement (ntdlib::sequence_export::rare::PerformSong). ntdlib's
+// (agblib::rare::DetectDriver). A tune has no name in the ROM: Hokuto names it by its number. ntdlib's performer plays
+// a tune on its model of the driver for the arrangement (agblib::sequence_export::rare::PerformSong). ntdlib's
 // ArchivePlayer plays it on its models of the driver and the GBA's sound hardware (song/sequence_model.h).
 //
 // The driver's songs are the tunes of its tune table. One tune of a game can play two arrangements, one above water and
-// one under water (ntdlib::rare::DriverInfo::water). Each arrangement is a version of the song, and each version is a
+// one under water (agblib::rare::DriverInfo::water). Each arrangement is a version of the song, and each version is a
 // sound. Sound `song` is the song's first version. The sounds after the songs are the other versions, in the order of
 // their songs.
 //
@@ -24,16 +24,16 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/rare/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/rare/driver.h"
 
 #include "song/driver.h"
 
 namespace hokuto::song
 {
 
-// A GBA ROM, and what ntdlib found of Rare's driver in it.
+// A GBA ROM, and what agblib found of Rare's driver in it.
 struct RareRom final : DriverRom
 {
     const DriverRules& Rules() const override;
@@ -56,7 +56,7 @@ struct RareRom final : DriverRom
                                                            const std::string& program) const override;
     std::unique_ptr<DriverPlayer> MakePlayer() const override;
 
-    // An audition plays a lone note of a program of a tune on the driver's model (ntdlib's ArchivePlayer::StartNote).
+    // An audition plays a lone note of a program of a tune on the driver's model (agblib's ArchivePlayer::StartNote).
     // `DriverAudition::track` names the tune whose program map contains the program, and the setup selects the program.
     DriverAudition SampleAudition(int sample, int key, int velocity) const override;
     std::optional<DriverAudition> NoteAudition(const ntdlib::commands::Sequence& commands, const Sequence& sequence,
@@ -83,8 +83,8 @@ struct RareRom final : DriverRom
     };
     std::optional<AuditionNote> audition;
 
-    ntdlib::agb::Rom rom;
-    ntdlib::rare::DriverInfo info;
+    agblib::agb::Rom rom;
+    agblib::rare::DriverInfo info;
 };
 
 // The rules of a build of Rare's driver, by the bits of the file's revision (format/rare.h).

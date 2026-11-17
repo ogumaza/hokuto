@@ -12,8 +12,8 @@ namespace
 // track 1.
 std::shared_ptr<const hokuto::song::GbaRom> TestGbaRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
@@ -24,7 +24,7 @@ std::shared_ptr<const hokuto::song::GbaRom> TestGbaRom()
     bass.Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100).Note(96, 48, 80).Wait(96).Fine();
     cart.Song({melody, bass}, voices);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::song::LoadGbaRom(hokuto::testing::RomBytes(rom));
 }
 
@@ -33,8 +33,8 @@ std::shared_ptr<const hokuto::song::GbaRom> TestGbaRom()
 // `voice` at tick 12, and a sample note at tick 24.
 std::shared_ptr<const hokuto::song::GbaRom> GbaChannelsRom(int first_length, int voice)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(2, 2, 60, {0, 0, 15, 0})},
@@ -46,7 +46,7 @@ std::shared_ptr<const hokuto::song::GbaRom> GbaChannelsRom(int first_length, int
     second.Cmd(kCmdVoice, voice).Cmd(kCmdVol, 100).Wait(12).Note(12, 64, 90).Wait(12).Cmd(kCmdVoice, 1);
     second.Note(12, 67, 90).Wait(12).Fine();
     cart.Song({first, second}, voices);
-    const ntdlib::agb::Rom bytes = cart.ToRom();
+    const agblib::agb::Rom bytes = cart.ToRom();
     return hokuto::song::LoadGbaRom(hokuto::testing::RomBytes(bytes));
 }
 
@@ -55,7 +55,7 @@ std::shared_ptr<const hokuto::song::GbaRom> GbaChannelsRom(int first_length, int
 // that an earlier track uses at the same priority, and never starts. Its sample note plays on a DirectSound channel.
 void TestGbaChannels()
 {
-    using enum ntdlib::mp2k::Command;
+    using enum agblib::mp2k::Command;
 
     const std::shared_ptr<const hokuto::song::GbaRom> rom = GbaChannelsRom(48, 0);
     const Sequence sequence = ReadSequence(*rom, 0);
@@ -76,8 +76,8 @@ void TestGbaChannels()
 
     // Like a note that plays, the unstarted note leads to its command: the note code, then the key and the velocity.
     // The offsets count from the song's first track.
-    ntdlib::mp2k::SongHeader header;
-    SEQLIB_REQUIRE(ntdlib::mp2k::ReadSong(rom->rom, rom->info, 0, header) && header.tracks.size() == 2);
+    agblib::mp2k::SongHeader header;
+    SEQLIB_REQUIRE(agblib::mp2k::ReadSong(rom->rom, rom->info, 0, header) && header.tracks.size() == 2);
     const uint32_t base = std::min(header.tracks[0], header.tracks[1]);
     SEQLIB_CHECK(rom->rom.U8(base + unstarted.command) >= kCmdTie);
     SEQLIB_CHECK(rom->rom.U8(base + unstarted.command + 1) == 64 && rom->rom.U8(base + unstarted.command + 2) == 90);
@@ -89,8 +89,8 @@ void TestGbaChannels()
 // those three tracks and no notes.
 void TestGbaSilentSongOfMoreTracks()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
@@ -100,7 +100,7 @@ void TestGbaSilentSongOfMoreTracks()
         track.Cmd(kCmdVol, 0).Wait(24).Fine();
     }
     cart.Song(tracks, voices, 1);
-    const ntdlib::agb::Rom bytes = cart.ToRom();
+    const agblib::agb::Rom bytes = cart.ToRom();
     const std::shared_ptr<const hokuto::song::GbaRom> rom = hokuto::song::LoadGbaRom(hokuto::testing::RomBytes(bytes));
 
     const Sequence sequence = ReadSequence(*rom, 0);
@@ -135,16 +135,16 @@ void TestGbaAddedCollisions()
     SEQLIB_CHECK(AddedGbaCollisions(*clear, *both, {7}).empty());
 }
 
-// A GBA song exports as the MIDI file and the SoundFont of ntdlib's converter of MusicPlayer2000, with the default
-// settings of ntdlib::sequence_export::agb::ConvertSettings. The MIDI file contains the four notes of the song, and
+// A GBA song exports as the MIDI file and the SoundFont of agblib's converter of MusicPlayer2000, with the default
+// settings of agblib::sequence_export::agb::ConvertSettings. The MIDI file contains the four notes of the song, and
 // gets a title. A song that is missing from the table is refused with a message for the user.
 void TestGbaExport()
 {
     const std::shared_ptr<const hokuto::song::GbaRom> rom = TestGbaRom();
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = "Hokuto";
-    const ntdlib::sequence_export::mp2k::SongFiles theirs =
-        ntdlib::sequence_export::mp2k::ConvertSongFiles(rom->rom, rom->info, 0, settings);
+    const agblib::sequence_export::mp2k::SongFiles theirs =
+        agblib::sequence_export::mp2k::ConvertSongFiles(rom->rom, rom->info, 0, settings);
 
     const export_::Conversion conversion = ConvertToMidi(*rom, 0, "Hokuto");
 
@@ -181,8 +181,8 @@ struct GbaVoicesRom
 
 GbaVoicesRom MakeGbaVoicesRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t saw = cart.Wave(mp2k_cart::Saw(), 13379, 0);
@@ -190,7 +190,7 @@ GbaVoicesRom MakeGbaVoicesRom()
     GbaVoicesRom made;
     made.group_a = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, saw)},
                                     {1, mp2k_cart::Cart::Voice(2, 2, 60, {0, 0, 15, 0})},
-                                    {2, mp2k_cart::Cart::Voice(ntdlib::mp2k::kVoiceDrumKit, drums)}});
+                                    {2, mp2k_cart::Cart::Voice(agblib::mp2k::kVoiceDrumKit, drums)}});
     made.group_b = cart.VoiceGroup({{1, mp2k_cart::Cart::Voice(0, saw)}, {4, mp2k_cart::Cart::Voice(0, saw)}});
     mp2k_cart::Track first;
     first.Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100).Note(24, 60, 100).Wait(24).Cmd(kCmdVoice, 1).Note(24, 62, 100);
@@ -203,7 +203,7 @@ GbaVoicesRom MakeGbaVoicesRom()
     third.Cmd(kCmdVoice, 3).Cmd(kCmdVol, 100).Note(24, 60, 100).Wait(24).Cmd(kCmdVoice, 1).Note(24, 64, 100);
     third.Wait(24).Fine();
     cart.Song({third}, made.group_a);
-    const ntdlib::agb::Rom placed = cart.ToRom();
+    const agblib::agb::Rom placed = cart.ToRom();
     std::vector<uint8_t> bytes = hokuto::testing::RomBytes(placed);
 
     // Song 3's header comes before its track.
@@ -245,10 +245,10 @@ void TestGbaVoiceGroups()
     const GbaVoicesRom made = MakeGbaVoicesRom();
     SEQLIB_REQUIRE(made.rom->info.song_count >= 5);
     SEQLIB_REQUIRE((hokuto::song::GbaSongs(*made.rom) == std::vector<int>{0, 1, 2, 3, 4}));
-    ntdlib::mp2k::SongHeader header;
-    SEQLIB_REQUIRE(ntdlib::mp2k::ReadSong(made.rom->rom, made.rom->info, 3, header));
+    agblib::mp2k::SongHeader header;
+    SEQLIB_REQUIRE(agblib::mp2k::ReadSong(made.rom->rom, made.rom->info, 3, header));
     const bool refused =
-        !ErrorOf<std::invalid_argument>([&] { ntdlib::mp2k::DecodeSong(made.rom->rom, header); }).empty();
+        !ErrorOf<std::invalid_argument>([&] { agblib::mp2k::DecodeSong(made.rom->rom, header); }).empty();
 
     SEQLIB_REQUIRE(refused && made.group_a < made.group_b);
     SEQLIB_CHECK((hokuto::song::GbaVoiceGroups(*made.rom) ==
@@ -262,7 +262,7 @@ void TestGbaVoiceGroups()
 // program 4 only before the edit. The program still counts, and both songs of group B play other voices.
 void TestGbaSongsWithSilencedVoice()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
 
     const GbaVoicesRom made = MakeGbaVoicesRom();
     std::vector<uint8_t> bytes(made.rom->rom.Ptr(mp2k_cart::kRomBase),
@@ -278,15 +278,15 @@ void TestGbaSongsWithSilencedVoice()
 }
 
 // A voice group exports as ntdlib's converter writes it, with the default settings of
-// ntdlib::sequence_export::agb::ConvertSettings: one SoundFont with each voice at its program, under the ROM's title
+// agblib::sequence_export::agb::ConvertSettings: one SoundFont with each voice at its program, under the ROM's title
 // and the group's name. A voice that plays nothing gets a warning, and a group whose voices play nothing is refused.
 void TestGbaVoiceGroupExport()
 {
     const GbaVoicesRom made = MakeGbaVoicesRom();
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = "Hokuto";
     const std::string title = made.rom->rom.Title();
-    const ntdlib::sequence_export::mp2k::VoiceGroupFiles theirs = ntdlib::sequence_export::mp2k::ConvertVoiceGroup(
+    const agblib::sequence_export::mp2k::VoiceGroupFiles theirs = agblib::sequence_export::mp2k::ConvertVoiceGroup(
         made.rom->rom, made.rom->info, made.group_a, {0, 1, 3}, settings,
         (title.empty() ? "" : title + " ") + hokuto::song::GbaVoiceGroupName(made.group_a));
 
@@ -316,9 +316,36 @@ void TestGbaVoiceGroupExport()
     SEQLIB_CHECK(refusal == hokuto::song::GbaVoiceGroupName(made.group_a) + " has no voices that make a sound.");
 }
 
+// The output of agblib's ArchivePlayer for song `song` of `rom`, from its start to its end, in strict or enhanced
+// mixing.
+std::vector<float> ArchiveOutput(const hokuto::song::GbaRom& rom, int song, bool enhanced)
+{
+    agblib::mp2k::ArchivePlayer player(rom.rom, rom.info);
+    player.Start(song, agblib::mp2k::ArchivePlayerOptions{.enhanced = enhanced});
+    std::vector<float> out;
+    std::vector<int16_t> samples;
+    while (player.Busy())
+    {
+        if (enhanced)
+        {
+            player.RunFrame(out);
+        }
+        else
+        {
+            player.RunFrame(samples);
+        }
+    }
+    for (const int16_t sample : samples)
+    {
+        out.push_back(static_cast<float>(sample) / 32768.0f);
+    }
+
+    return out;
+}
+
 // A voice of a GBA ROM plays a note as song 4 plays it: key 60 at velocity 100 on the voice of the song's voice group,
 // at full volume in the centre, held for the 59 whole frames in a second and then released. The output equals the
-// output of ntdlib's ArchivePlayer for song 4, in both mixing modes, and the preview ends with the release. A note of
+// output of agblib's ArchivePlayer for song 4, in both mixing modes, and the preview ends with the release. A note of
 // the Key Editor holds until its flag lets it go. A drum kit plays its nearest key with a sound, and a voice without
 // one plays nothing.
 void TestGbaNotePreview()
@@ -326,30 +353,6 @@ void TestGbaNotePreview()
     using hokuto::song::GbaNotePreview;
 
     const GbaVoicesRom made = MakeGbaVoicesRom();
-    const auto direct = [&made](bool enhanced)
-    {
-        ntdlib::mp2k::ArchivePlayer player(made.rom->rom, made.rom->info);
-        player.Start(4, ntdlib::mp2k::ArchivePlayerOptions{.enhanced = enhanced});
-        std::vector<float> out;
-        std::vector<int16_t> samples;
-        while (player.Busy())
-        {
-            if (enhanced)
-            {
-                player.RunFrame(out);
-            }
-            else
-            {
-                player.RunFrame(samples);
-            }
-        }
-        for (const int16_t sample : samples)
-        {
-            out.push_back(static_cast<float>(sample) / 32768.0f);
-        }
-
-        return out;
-    };
     GbaNotePreview strict(made.rom, 0, 1);
     GbaNotePreview enhanced(made.rom, 0, 1, Mixing::kEnhanced);
     const auto release = std::make_shared<std::atomic<bool>>(false);
@@ -363,11 +366,11 @@ void TestGbaNotePreview()
     release->store(true);
     const std::vector<float> after = RunPreview(held, GbaNotePreview::LongestFrames(), 2048);
 
-    const std::vector<float> strict_expected = direct(false);
-    const std::vector<float> enhanced_expected = direct(true);
+    const std::vector<float> strict_expected = ArchiveOutput(*made.rom, 4, false);
+    const std::vector<float> enhanced_expected = ArchiveOutput(*made.rom, 4, true);
     SEQLIB_CHECK_EQ(GbaNotePreview::HoldFrames(), 59);
     SEQLIB_CHECK_EQ(strict.SampleRate(), hokuto::song::GbaRate(*made.rom));
-    SEQLIB_CHECK_EQ(enhanced.SampleRate(), ntdlib::agb::kEnhancedRate);
+    SEQLIB_CHECK_EQ(enhanced.SampleRate(), agblib::agb::kEnhancedRate);
     SEQLIB_CHECK(HasSound(std::span<const float>(strict_played)) && strict_played == strict_expected);
     SEQLIB_CHECK(HasSound(std::span<const float>(enhanced_played)) && enhanced_played == enhanced_expected);
     SEQLIB_CHECK(before.size() == hold * 1024 * 2 && HasSound(std::span<const float>(before).last(2048)));
@@ -378,13 +381,63 @@ void TestGbaNotePreview()
     SEQLIB_CHECK(RunPreview(silent, 10, 2048).empty());
 }
 
+// A game's code can set a song up as it starts it: the reverb and the volume of the music player (SongSetting), and the
+// DirectSound channels (SongChannels). A note of a song plays with the set-up of that song, whatever its number. In a
+// copy of the ROM of TestGbaNotePreview, song 1 plays the note of song 4 on voice 0, a sample. The preview of voice 0
+// of song 1 has to equal agblib's ArchivePlayer for song 1. With the set-up on song 1, the note takes it. With the
+// set-up on song 0 alone, it doesn't.
+void TestGbaNotePreviewSetUp()
+{
+    using hokuto::song::GbaNotePreview;
+
+    const GbaVoicesRom made = MakeGbaVoicesRom();
+    const uint8_t* start = made.rom->rom.Ptr(agblib::agb::kRomBase);
+    std::vector<uint8_t> bytes(start, start + made.rom->rom.Size());
+    const std::size_t table = agblib::testing::mp2k_cart::kSongTable - agblib::agb::kRomBase;
+    const uint32_t header = xsflib::LoadLe32(&bytes[table + 4 * 8]);
+    xsflib::StoreLe32(&bytes[table + 8], header);
+    const std::size_t track = xsflib::LoadLe32(&bytes[header - agblib::agb::kRomBase + 8]) - agblib::agb::kRomBase;
+    SEQLIB_REQUIRE(bytes[track] == static_cast<uint8_t>(agblib::mp2k::kCmdVoice) && bytes[track + 1] == 1);
+    bytes[track + 1] = 0;
+    const std::shared_ptr<const hokuto::song::GbaRom> loaded = hokuto::song::LoadGbaRom(std::move(bytes));
+    const agblib::mp2k::SongSetting setting{.song = 1, .mode = 0x80 | 50, .volume = 0x122};
+
+    const auto set_up = [&loaded, &setting](int song)
+    {
+        auto rom = std::make_shared<hokuto::song::GbaRom>(*loaded);
+        agblib::mp2k::SongSetting moved = setting;
+        moved.song = song;
+        rom->info.song_settings.push_back(moved);
+        rom->info.song_channels.channels = 6;
+        rom->info.song_channels.songs.push_back(song);
+        return std::shared_ptr<const hokuto::song::GbaRom>(std::move(rom));
+    };
+    const std::shared_ptr<const hokuto::song::GbaRom> on_song = set_up(1);
+    const std::shared_ptr<const hokuto::song::GbaRom> on_other = set_up(0);
+
+    GbaNotePreview strict(on_song, 1, 0);
+    GbaNotePreview enhanced(on_song, 1, 0, Mixing::kEnhanced);
+    GbaNotePreview other(on_other, 1, 0);
+    GbaNotePreview plain(loaded, 1, 0);
+    const std::vector<float> strict_played = RunPreview(strict, GbaNotePreview::LongestFrames(), 2048);
+    const std::vector<float> enhanced_played = RunPreview(enhanced, GbaNotePreview::LongestFrames(), 2048);
+    const std::vector<float> other_played = RunPreview(other, GbaNotePreview::LongestFrames(), 2048);
+    const std::vector<float> plain_played = RunPreview(plain, GbaNotePreview::LongestFrames(), 2048);
+
+    SEQLIB_CHECK(HasSound(std::span<const float>(strict_played)) && strict_played == ArchiveOutput(*on_song, 1, false));
+    SEQLIB_CHECK(HasSound(std::span<const float>(enhanced_played)) &&
+                 enhanced_played == ArchiveOutput(*on_song, 1, true));
+    SEQLIB_CHECK(HasSound(std::span<const float>(other_played)) && other_played == ArchiveOutput(*on_other, 1, false));
+    SEQLIB_CHECK(other_played == plain_played && strict_played != plain_played);
+}
+
 // A later version of Camelot's mixer plays a fixed-pitch sample of a negative size in 4-bit steps. Such a voice sounds,
 // its table lists it, and the browser plays it. The preview ends once the echo dies away.
 void TestGbaStepVoice()
 {
     using hokuto::song::GbaNotePreview;
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart(mp2k_cart::kLaterCamelotMode, {10, 3}, true, false);
     cart.WriteCamelot();
@@ -393,17 +446,17 @@ void TestGbaStepVoice()
     steps.resize(2000, 0x00);
     const uint32_t wave = cart.StepWave(steps, 4000);
     const uint32_t voices = cart.VoiceGroup(
-        {{5, mp2k_cart::Cart::Voice(ntdlib::mp2k::kVoiceFixed, wave)}, {7, mp2k_cart::Cart::Voice(0, wave)}});
+        {{5, mp2k_cart::Cart::Voice(agblib::mp2k::kVoiceFixed, wave)}, {7, mp2k_cart::Cart::Voice(0, wave)}});
     mp2k_cart::Track track;
     track.Cmd(kCmdVoice, 5).Cmd(kCmdVol, 100).Note(24, 60, 100).Wait(24).Fine();
     cart.Song({track}, voices);
-    const ntdlib::agb::Rom placed = cart.ToRom();
+    const agblib::agb::Rom placed = cart.ToRom();
     const std::shared_ptr<const hokuto::song::GbaRom> rom = hokuto::song::LoadGbaRom(hokuto::testing::RomBytes(placed));
 
-    ntdlib::mp2k::Voice fixed;
-    ntdlib::mp2k::Voice following;
-    SEQLIB_REQUIRE(ntdlib::mp2k::ReadVoice(rom->rom, voices + 12 * 5, fixed));
-    SEQLIB_REQUIRE(ntdlib::mp2k::ReadVoice(rom->rom, voices + 12 * 7, following));
+    agblib::mp2k::Voice fixed;
+    agblib::mp2k::Voice following;
+    SEQLIB_REQUIRE(agblib::mp2k::ReadVoice(rom->rom, voices + 12 * 5, fixed));
+    SEQLIB_REQUIRE(agblib::mp2k::ReadVoice(rom->rom, voices + 12 * 7, following));
     SEQLIB_CHECK(hokuto::song::GbaVoicePlaysSteps(*rom, fixed) && hokuto::song::GbaVoiceSounds(*rom, fixed));
 
     // The driver doesn't play a voice that follows the key in steps.
@@ -417,14 +470,14 @@ void TestGbaStepVoice()
     SEQLIB_CHECK(!played.empty() && played.size() < GbaNotePreview::LongestFrames() * 2048);
 }
 
-// The output of ntdlib's ArchivePlayer run directly on song 0 of `rom`, for `frames` of the console's frames, with
+// The output of agblib's ArchivePlayer run directly on song 0 of `rom`, for `frames` of the console's frames, with
 // `muted` tracks muted.
 template <typename Sample>
 std::vector<Sample> DirectGba(const hokuto::song::GbaRom& rom, bool enhanced, int frames, uint32_t muted = 0)
 {
-    ntdlib::mp2k::ArchivePlayer player(rom.rom, rom.info);
-    player.Start(0, ntdlib::mp2k::ArchivePlayerOptions{.enhanced = enhanced});
-    for (int track = 0; track < ntdlib::mp2k::kMaxTracks; track++)
+    agblib::mp2k::ArchivePlayer player(rom.rom, rom.info);
+    player.Start(0, agblib::mp2k::ArchivePlayerOptions{.enhanced = enhanced});
+    for (int track = 0; track < agblib::mp2k::kMaxTracks; track++)
     {
         player.MuteTrack(track, (muted >> track & 1) != 0);
     }
@@ -450,7 +503,7 @@ std::vector<int16_t> PlayedFrames(SequenceModel& model, int frames)
     return played;
 }
 
-// A GBA song reads with MP2K's performer, and plays as ntdlib's ArchivePlayer plays it run directly. In strict mixing,
+// A GBA song reads with MP2K's performer, and plays as agblib's ArchivePlayer plays it run directly. In strict mixing,
 // a model frame contains a 64th of a second of the console's output. The driver of the cartridge sets the output to
 // 65,536 Hz, and the console frames contain 1,097.25 samples. The output runs on from frame to frame, from the start
 // and after a seek. The song lasts 1.6 s. In enhanced mixing, a model frame is a console frame: 804 samples at about
@@ -506,8 +559,8 @@ void TestGbaPlays()
     SEQLIB_CHECK(std::equal(muted_played.begin(), muted_played.end(), muted_expected.begin()));
     SEQLIB_CHECK(muted_played != std::vector<int16_t>(played.begin(), played.begin() + muted_played.size()));
     SEQLIB_CHECK(HasSound(std::span<const int16_t>(muted_played)));
-    SEQLIB_CHECK_EQ(enhanced->FrameSamples(), static_cast<std::size_t>(ntdlib::agb::kEnhancedFrameSamples));
-    SEQLIB_CHECK_EQ(enhanced->SampleRate(), ntdlib::agb::kEnhancedRate);
+    SEQLIB_CHECK_EQ(enhanced->FrameSamples(), static_cast<std::size_t>(agblib::agb::kEnhancedFrameSamples));
+    SEQLIB_CHECK_EQ(enhanced->SampleRate(), agblib::agb::kEnhancedRate);
     SEQLIB_REQUIRE(enhanced_played.size() > 90 * 2 * 804 && enhanced_played.size() <= enhanced_expected.size());
     SEQLIB_CHECK(std::equal(enhanced_played.begin(), enhanced_played.end(), enhanced_expected.begin()));
     SEQLIB_CHECK(read && read->sequence && *read->sequence == *sequence && read->gba == rom && !read->archive);
@@ -529,6 +582,7 @@ int main()
                                         TestGbaSongsWithSilencedVoice();
                                         TestGbaVoiceGroupExport();
                                         TestGbaNotePreview();
+                                        TestGbaNotePreviewSetUp();
                                         TestGbaStepVoice();
                                     });
 }

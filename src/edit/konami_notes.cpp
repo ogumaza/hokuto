@@ -58,9 +58,9 @@ using ntdlib::commands::kOne;
 namespace note_detail
 {
 
-uint8_t KonamiKey(const Command& note, int key, ntdlib::konami::Revision revision)
+uint8_t KonamiKey(const Command& note, int key, agblib::konami::Revision revision)
 {
-    if (note.sample && revision == ntdlib::konami::Revision::kDungeonDiceMonsters)
+    if (note.sample && revision == agblib::konami::Revision::kDungeonDiceMonsters)
     {
         throw std::invalid_argument(
             "This note plays its sample at the original pitch and has no key. Can't transpose it.");
@@ -257,7 +257,7 @@ void PlaceAdditions(const Code& code, const Command& rest, std::span<const NewNo
         note.kind = Kind::kNote;
         note.sample = addition.sample;
         note.index = addition.index;
-        note.key = *code.konami == ntdlib::konami::Revision::kDungeonDiceMonsters && note.sample
+        note.key = *code.konami == agblib::konami::Revision::kDungeonDiceMonsters && note.sample
                        ? uint8_t{0}
                        : KonamiKey(note, addition.key, *code.konami);
         note.velocity = int64_t{song::KonamiVolumeOf(CheckedByte(addition.velocity, "velocity"), *code.konami,
@@ -704,7 +704,7 @@ bool VolumeMoved(const format::File& before, const Edited& edited, uint32_t sequ
 // command's item and in the order of the walk (song::KonamiVolumeStartsAlong).
 using VolumeTimes = std::map<uint32_t, std::vector<std::array<std::optional<uint32_t>, 2>>>;
 
-VolumeTimes VolumeTimesOf(const std::vector<Command>& items, const TrackWalk& walk, ntdlib::konami::Revision revision)
+VolumeTimes VolumeTimesOf(const std::vector<Command>& items, const TrackWalk& walk, agblib::konami::Revision revision)
 {
     VolumeTimes times;
     for (const song::KonamiRunStart& start : song::KonamiVolumeStartsAlong(items, walk.runs, revision))
@@ -815,7 +815,7 @@ void CheckVolumeStarts(const format::File& before, const Edited& edited, uint32_
     }
 
     // The item before the edit of each item after it. A new command has none.
-    const ntdlib::konami::Revision revision = *KonamiOf(ConsoleOf(before));
+    const agblib::konami::Revision revision = *KonamiOf(ConsoleOf(before));
     std::vector<std::optional<uint32_t>> from(now.size());
     for (uint32_t i = 0; i < edited.items.size(); ++i)
     {
@@ -1041,7 +1041,7 @@ NewNote NewKonamiNote(const format::File& file, uint32_t sequence, const song::T
         }
     }
 
-    if (copied && !ntdlib::konami::IsPsgTrack(track.number))
+    if (copied && !agblib::konami::IsPsgTrack(track.number))
     {
         return {stretch, tick, copied->semitones, velocity, length, copied->sample, 0};
     }
@@ -1079,7 +1079,7 @@ NewNote NewKonamiNote(const format::File& file, uint32_t sequence, const song::T
     }
 
     // A PSG track without notes plays note 0 at C2, MIDI's key 36, and a sample track its first sample at its pitch.
-    if (ntdlib::konami::IsPsgTrack(track.number))
+    if (agblib::konami::IsPsgTrack(track.number))
     {
         return {stretch, tick, std::max(key - kKonamiLowestPsgKey, 0), velocity, length, std::nullopt, 0};
     }

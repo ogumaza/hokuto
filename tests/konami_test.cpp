@@ -11,11 +11,11 @@
 // wait of n lasts n ticks, and a note sounds until its track's next note or rest. A square wave's note n is MIDI key
 // 36 + n.
 //
-// ntdlib's ArchivePlayer, run directly, gives the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, gives the reference output. The model's output has to match it sample for
 // sample, from the start and after a seek, in both mixing modes. So does the output with a muted track. The MIDI file
 // and the SoundFont have to equal those of ntdlib's converter, run directly.
 
-#include "ntdlib/konami/sequencer.h"
+#include "agblib/konami/sequencer.h"
 
 #include "konami_fixtures.h"
 
@@ -419,10 +419,10 @@ void TestExports()
         const std::shared_ptr<const KonamiRom> rom = song::LoadKonamiRom(cart);
         for (const uint32_t sound : {0u, 1u})
         {
-            ntdlib::sequence_export::agb::ConvertSettings settings;
+            agblib::sequence_export::agb::ConvertSettings settings;
             settings.program = "Hokuto";
-            const ntdlib::sequence_export::konami::SongFiles expected =
-                ntdlib::sequence_export::konami::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound),
+            const agblib::sequence_export::konami::SongFiles expected =
+                agblib::sequence_export::konami::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound),
                                                                   settings);
             const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
             XSFLIB_CHECK(expected.report.ok);

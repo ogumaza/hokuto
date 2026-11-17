@@ -36,24 +36,8 @@ void ReadConversion(SequenceReader::Result& result, const SequenceReader::Conver
     try
     {
         SequenceReader::EngineSound converted = convert();
-        Sequence played =
-            converted.played.Ds() ? ReadSequence(*converted.played.Ds(), converted.sound, values, changes)
-            : converted.played.Wii()
-                ? ReadSequence(*converted.played.Wii(), converted.sound, values, changes, converted.wii_build)
-                : ReadSequence(*converted.played.Sar(), converted.sound, values, changes);
-
-        // Like the song, a conversion of a song of the GBA's other drivers shows its first pass. The performer can find
-        // the conversion's loop a pass or more late.
-        if (result.sequence->driver != nullptr)
-        {
-            if (const std::optional<Loop> first = FirstLoopOfConversion(*result.sequence, played))
-            {
-                played = FirstPass(std::move(played), *first);
-            }
-        }
-
-        played.arrangement_ticks = TickMap(*result.sequence, played);
-        result.engine_sequence = std::make_shared<const Sequence>(std::move(played));
+        result.engine_sequence =
+            std::make_shared<const Sequence>(ReadEngineSequence(*result.sequence, converted, values, changes));
         result.engine = std::move(converted);
     }
     catch (const std::exception& error)
@@ -263,6 +247,26 @@ void SequenceReader::Advance()
         waiting_ = nullptr;
         wanted_ = true;
     }
+}
+
+Sequence ReadEngineSequence(const Sequence& sequence, const SequenceReader::EngineSound& converted,
+                            const StartValues& values, const Changes& changes)
+{
+    Sequence played =
+        converted.played.Ds() ? ReadSequence(*converted.played.Ds(), converted.sound, values, changes)
+        : converted.played.Wii()
+            ? ReadSequence(*converted.played.Wii(), converted.sound, values, changes, converted.wii_build)
+            : ReadSequence(*converted.played.Sar(), converted.sound, values, changes);
+    if (sequence.driver != nullptr)
+    {
+        if (const std::optional<Loop> first = FirstLoopOfConversion(sequence, played))
+        {
+            played = FirstPass(std::move(played), *first);
+        }
+    }
+
+    played.arrangement_ticks = TickMap(sequence, played);
+    return played;
 }
 
 } // namespace hokuto::song

@@ -2,7 +2,7 @@
 
 // Tests Hokuto's path for Brownie Brown's GBA driver: the import and the round trip, the sounds that the arrangement
 // shows, playback, the edits of notes and settings, the mix, the tracks, the removal of a repeat and the exports.
-// ntdlib's test cartridge of the driver (ntdlib/testing/brownie_cart.h) contains no game data. The cartridge
+// ntdlib's test cartridge of the driver (agblib/testing/brownie_cart.h) contains no game data. The cartridge
 // includes the code patterns that ntdlib's detection reads, the driver's tables, a sample set and the sounds below.
 //
 // The expected ticks, keys and bytes come from the sounds' bytes below, worked out by hand. A length byte of 80 to DF
@@ -10,7 +10,7 @@
 // A note, a rest (EC or ED), a hold (FE) and a release wait for that length. A channel's first command runs in the
 // frame after the sound's request, at tick 1.
 //
-// ntdlib's ArchivePlayer, run directly, produces the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, produces the reference output. The model's output has to match it sample for
 // sample. The MIDI file and the SoundFont have to equal those of ntdlib's converter, run directly.
 
 #include "song/brownie.h"
@@ -26,14 +26,14 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/brownie/archive_player.h"
-#include "ntdlib/brownie/driver.h"
+#include "agblib/agb/gba.h"
+#include "agblib/brownie/archive_player.h"
+#include "agblib/brownie/driver.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/brownie/convert.h"
+#include "agblib/testing/brownie_cart.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/brownie/convert.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/testing/brownie_cart.h"
 #include "xsflib/testing/check.h"
 
 #include "driver_test_support.h"
@@ -58,8 +58,8 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
-namespace brownie = ntdlib::brownie;
-namespace cart = ntdlib::testing::brownie_cart;
+namespace brownie = agblib::brownie;
+namespace cart = agblib::testing::brownie_cart;
 using format::File;
 using hokuto::testing::ClockDrift;
 using hokuto::testing::ClockRun;
@@ -76,7 +76,7 @@ using song::BrownieRom;
 using song::Sequence;
 using xsflib::testing::ErrorOf;
 
-constexpr uint32_t kRomBase = ntdlib::agb::kRomBase;
+constexpr uint32_t kRomBase = agblib::agb::kRomBase;
 
 // The offset of the first channel's data from the start of the ROM.
 constexpr uint32_t kData = cart::kSequences - kRomBase;
@@ -170,7 +170,7 @@ void TestImport()
     SEQLIB_REQUIRE(driver != nullptr);
     XSFLIB_CHECK(driver->Facts().engine == format::Engine::kBrownie);
     cart::Cart without(false);
-    const ntdlib::agb::Rom empty = without.ToRom();
+    const agblib::agb::Rom empty = without.ToRom();
     XSFLIB_CHECK(format::DriverOfRom(RomBytes(empty)) == nullptr);
 
     const File file = driver->Import(bytes);
@@ -513,10 +513,10 @@ void TestExports()
     const std::shared_ptr<const BrownieRom> rom = song::LoadBrownieRom(Cart());
     for (const uint32_t sound : {1u, 2u})
     {
-        ntdlib::sequence_export::agb::ConvertSettings settings;
+        agblib::sequence_export::agb::ConvertSettings settings;
         settings.program = "Hokuto";
-        const ntdlib::sequence_export::brownie::SongFiles expected =
-            ntdlib::sequence_export::brownie::ConvertSongFiles(rom->rom, rom->info, rom->SongOf(sound), settings);
+        const agblib::sequence_export::brownie::SongFiles expected =
+            agblib::sequence_export::brownie::ConvertSongFiles(rom->rom, rom->info, rom->SongOf(sound), settings);
         const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
         XSFLIB_CHECK(expected.report.ok);
         XSFLIB_CHECK(conversion.midi == expected.midi);

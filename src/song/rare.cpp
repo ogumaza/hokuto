@@ -16,17 +16,17 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/rare/archive_player.h"
+#include "agblib/rare/commands.h"
+#include "agblib/rare/sequencer.h"
+#include "agblib/rare/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/rare/convert.h"
+#include "agblib/sequence_export/rare/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/rare/archive_player.h"
-#include "ntdlib/rare/commands.h"
-#include "ntdlib/rare/sequencer.h"
-#include "ntdlib/rare/song.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/rare/convert.h"
-#include "ntdlib/sequence_export/rare/soundfont.h"
 #include "xsflib/binary.h"
 
 #include "format/rare.h"
@@ -40,7 +40,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace rare = ntdlib::rare;
+namespace rare = agblib::rare;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
@@ -123,10 +123,10 @@ private:
     uint8_t revision_;
 };
 
-// The model of the driver and the GBA's sound hardware, for one ROM (ntdlib::rare::ArchivePlayer).
+// The model of the driver and the GBA's sound hardware, for one ROM (agblib::rare::ArchivePlayer).
 //
 // A track of the driver counts a wait's ticks when the wait starts. The clock therefore counts the frames from the
-// first frame. That frame sets the first tempo. ntdlib's converter times the arrangement in the GBA's frames
+// first frame. That frame sets the first tempo. agblib's converter times the arrangement in the GBA's frames
 // (FrameStarts in sequence_export/rare/convert.cpp), and the tempo of the arrangement converts that time to ticks,
 // round the loop once the time passes the loop's end.
 class RarePlayer final : public ArchiveDriverPlayer<rare::ArchivePlayer>
@@ -140,7 +140,7 @@ public:
     {
         rare::ArchivePlayerOptions options;
         options.enhanced = enhanced;
-        options.under_water = rom_.VersionOf(sound) == ntdlib::sequence_export::rare::kUnderWater;
+        options.under_water = rom_.VersionOf(sound) == agblib::sequence_export::rare::kUnderWater;
         if (rom_.audition)
         {
             const RareRom::AuditionNote& note = *rom_.audition;
@@ -188,7 +188,7 @@ public:
 
 private:
     // The time of a frame, in milliseconds.
-    static constexpr double kFrameMs = ntdlib::agb::FrameSeconds(1.0) * 1000.0;
+    static constexpr double kFrameMs = agblib::agb::FrameSeconds(1.0) * 1000.0;
 
     // The ticks that a player counts at `ms` of the song's time in `sequence`: up to the loop's end, and then round the
     // loop (PositionOfTicks).
@@ -232,7 +232,7 @@ std::optional<rare::TuneHeader> HeaderOf(const RareRom& rom, int tune)
 }
 
 // The instrument at `address` where it plays a sample.
-std::optional<rare::Instrument> SampleInstrument(const ntdlib::agb::Rom& rom, uint32_t address)
+std::optional<rare::Instrument> SampleInstrument(const agblib::agb::Rom& rom, uint32_t address)
 {
     rare::Instrument instrument;
     if (address == 0 || !rare::ReadInstrument(rom, address, instrument) || !rare::SampleValid(rom, instrument))
@@ -245,7 +245,7 @@ std::optional<rare::Instrument> SampleInstrument(const ntdlib::agb::Rom& rom, ui
 
 // Each sample instrument that a program of the tune of `header` plays, once each, in the order of the programs and the
 // keys.
-std::vector<uint32_t> SamplesOfTune(const ntdlib::agb::Rom& rom, const rare::TuneHeader& header)
+std::vector<uint32_t> SamplesOfTune(const agblib::agb::Rom& rom, const rare::TuneHeader& header)
 {
     std::vector<uint32_t> found;
     for (int program = 0; program < 128; program++)
@@ -351,7 +351,7 @@ const DriverRules& RareRom::Rules() const
 
 std::span<const uint8_t> RareRom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 int RareRom::SongOf(uint32_t sound) const
@@ -388,13 +388,13 @@ uint32_t RareRom::SoundCount() const
 std::string RareRom::SoundName(uint32_t sound) const
 {
     const int song = SongOf(sound);
-    return VersionedSoundName(song, rare::SongCount(info), ntdlib::sequence_export::rare::TuneVersions(info, song),
+    return VersionedSoundName(song, rare::SongCount(info), agblib::sequence_export::rare::TuneVersions(info, song),
                               static_cast<std::size_t>(VersionOf(sound)));
 }
 
 SoundFields RareRom::FieldsOf(uint32_t sound) const
 {
-    // Each word of the tune's track list names a track's start (ntdlib::rare::Cut). The first names the sequence.
+    // Each word of the tune's track list names a track's start (agblib::rare::Cut). The first names the sequence.
     SoundFields fields;
     const std::optional<rare::TuneHeader> header = HeaderOf(*this, SongOf(sound));
     if (!header)
@@ -404,7 +404,7 @@ SoundFields RareRom::FieldsOf(uint32_t sound) const
 
     for (std::size_t track = 0; track < header->tracks.size(); track++)
     {
-        fields.tracks.push_back(uint64_t{header->track_list} + 4 * track - ntdlib::agb::kRomBase);
+        fields.tracks.push_back(uint64_t{header->track_list} + 4 * track - agblib::agb::kRomBase);
     }
     if (!fields.tracks.empty())
     {
@@ -527,11 +527,11 @@ Sequence RareRom::ReadSequence(uint32_t sound) const
 
 ntdlib::sequence_export::Conversion RareRom::ConvertToMidi(uint32_t sound, const std::string& program) const
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
     settings.version = VersionOf(sound);
-    ntdlib::sequence_export::rare::SongFiles files =
-        ntdlib::sequence_export::rare::ConvertSongFiles(rom, info, SongOf(sound), settings);
+    agblib::sequence_export::rare::SongFiles files =
+        agblib::sequence_export::rare::ConvertSongFiles(rom, info, SongOf(sound), settings);
 
     return AgbConversion(SoundName(sound), std::move(files));
 }
@@ -539,8 +539,8 @@ ntdlib::sequence_export::Conversion RareRom::ConvertToMidi(uint32_t sound, const
 ntdlib::sequence_export::BankConversion RareRom::ConvertSamples(std::span<const int> samples,
                                                                 const std::string& program) const
 {
-    namespace agb = ntdlib::sequence_export::agb;
-    ntdlib::sequence_export::rare::SoundfontBuilder builder(rom, info);
+    namespace agb = agblib::sequence_export::agb;
+    agblib::sequence_export::rare::SoundfontBuilder builder(rom, info);
     ntdlib::sequence_export::BankConversion conversion;
     for (const int sample : samples)
     {
@@ -625,7 +625,7 @@ std::shared_ptr<const RareRom> LoadRareRom(std::vector<uint8_t> bytes)
     // Each tune's first version, then the other versions.
     const int songs = rare::SongCount(rom->info);
     rom->sounds = VersionedSounds(
-        songs, [&rom](int song) { return ntdlib::sequence_export::rare::TuneVersions(rom->info, song).size(); });
+        songs, [&rom](int song) { return agblib::sequence_export::rare::TuneVersions(rom->info, song).size(); });
 
     // The sample instruments of each tune, once each.
     for (int song = 0; song < songs; ++song)

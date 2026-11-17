@@ -103,9 +103,27 @@ struct CtrDelay
     ntdlib::ctr_fx::DelayParam param;
 };
 
-// An effect on an aux bus: the Switch's I3DL2 reverb, or an effect of the Wii U, the Wii or the 3DS. nn::atk runs the
-// reverb on an aux effect's samples. A console's model plays the effects of that console and leaves out the others.
-using AuxEffect = std::variant<ntdlib::nx::audio::I3dl2ReverbParameterSet, WiiUEffect, WiiEffect, CtrReverb, CtrDelay>;
+// One of nn::atk's effects that the Switch's audio renderer runs on an aux bus: EffectDelay, EffectLightLimiter or
+// EffectReverb (ntdlib::nx::atk). The parameters are the values that the class's setters take, in a file's order: the
+// order in which the class passes them to the renderer, with the channel mode last. The times are whole microseconds.
+struct AtkEffect
+{
+    enum class Type : uint8_t
+    {
+        kDelay,
+        kLightLimiter,
+        kReverb,
+    };
+
+    Type type = Type::kDelay;
+    std::vector<float> parameters;
+};
+
+// An effect on an aux bus: the Switch's I3DL2 reverb or one of nn::atk's effects, or an effect of the Wii U, the Wii or
+// the 3DS. nn::atk runs the I3DL2 reverb on an aux effect's samples. A console's model plays the effects of that
+// console and leaves out the others.
+using AuxEffect =
+    std::variant<ntdlib::nx::audio::I3dl2ReverbParameterSet, WiiUEffect, WiiEffect, CtrReverb, CtrDelay, AtkEffect>;
 
 // The aux buses: A, B and C.
 inline constexpr std::size_t kAuxBuses = 3;
@@ -155,6 +173,12 @@ uint16_t WiiReturnVolume(float volume);
 // and a chorus's after its delay. 0 without an effect of that console.
 int WiiURingingFrames(const AuxEffects& effects);
 int WiiRingingFrames(const AuxEffects& effects);
+
+// The same for the Switch, in the renderer's frames of 5 ms: a second, and the longest time that a bus's effects of
+// nn::atk take to give their input back. A delay gives it back after its delay, a reverb after its pre-delay and a
+// limiter after its look-ahead. 0 without one of nn::atk's effects. The I3DL2 reverb's tail sounds on without a quiet
+// gap, and doesn't count.
+int SwitchRingingFrames(const AuxEffects& effects);
 
 // An I3DL2 reverb's twelve parameters, in the order of the fields of nn::audio's I3dl2ReverbParameterSet. A Hokuto file
 // keeps them in that order. I3dl2Reverb makes the set, and I3dl2Parameters takes it apart.
@@ -222,7 +246,7 @@ public:
     //   mute sets the track's volume to 0 through the sound's handle.
     // - A song of the GBA's MP2K: MP2K has no aux buses. In strict mixing, a frame contains a 64th of a second of the
     //   console's output: 512 samples at 32,768 Hz, or 1,024 at 65,536 Hz. In enhanced mixing, a frame is a frame of
-    //   the console: 804 samples at about 48,022 Hz (ntdlib::agb::kEnhancedRate). Every frame mixes.
+    //   the console: 804 samples at about 48,022 Hz (agblib::agb::kEnhancedRate). Every frame mixes.
     // - A sound of one of the drivers of song/driver.h, such as Konami's driver: the frames are those of the GBA, a
     //   64th of a second of the driver's output in strict mixing, such as 1,024 samples at 65,536 Hz. The song's
     //   commands set the driver's echo. The model has no aux buses. With `dry`, the model leaves the driver's echo out
@@ -285,10 +309,11 @@ public:
     // Runs the next frame. Returns false once the sequence has ended, no channel sounds and the last frame came out
     // silent, or if the model fails. The effects' tails sound on after the last channel. The 3DS's reverbs can leave a
     // constant offset of a step or two in the output. A delay that feeds back on the Wii U or the Wii can leave samples
-    // of ±1 for ever. With an effect of the 3DS, an effect of the Wii U that rings or an effect on a bus of the Wii, a
-    // frame within ±8 therefore counts as silent once the output has stayed there for a while (see
-    // ConsoleModel::Silent). Otherwise a silent frame holds only zeros. So does one on the Switch. Damaged data in the
-    // archive makes the model fail.
+    // of ±1 for ever. So can the delay of nn::atk on the Switch: the renderer's delay rounds down, and a line that has
+    // held a negative sample keeps -1. With an effect of the 3DS, an effect of the Wii U that rings, an effect on a bus
+    // of the Wii or one of nn::atk's effects, a frame within ±8 therefore counts as silent once the output has stayed
+    // there for a while (see ConsoleModel::Silent). Otherwise a silent frame holds only zeros. So does one on the
+    // Switch with only I3DL2 reverbs. Damaged data in the archive makes the model fail.
     bool RunFrame();
 
     // Mutes the tracks in `tracks`, a bit for each track's number, and unmutes the others. A muted track plays on, and
@@ -311,6 +336,9 @@ public:
     std::span<const float> FloatOutput();
     double Before() const;
     double After() const;
+
+    // Whether the sequence has ended: its tracks have all ended. Its tails may still sound.
+    bool SequenceEnded() const;
 
     // Whether the player's clock gives no ticks: the sequence set a tempo or a timebase of 0. A game's sequence can do
     // that, such as with a tempo from a variable that the game's code never set. The position then stays where it is,

@@ -17,10 +17,7 @@ std::vector<uint8_t> WiiFileOf(const commands::Sequence& sequence, uint32_t vers
     ntdlib::rsar::SequenceFile file;
     file.version = static_cast<uint16_t>(version);
     file.data = encoded.bytes;
-    for (const commands::Label& label : sequence.labels)
-    {
-        file.labels.push_back({label.name, encoded.offsets[label.item]});
-    }
+    file.labels = LabelsOf<ntdlib::rsar::SequenceFile>(sequence, encoded);
 
     return file.Write();
 }
@@ -61,10 +58,7 @@ bool LaidOutAsTools(const ntdlib::rsar::SoundArchive& archive)
 
 void CheckWii(const std::filesystem::path& path, const std::vector<uint8_t>& original, Totals& totals)
 {
-    std::vector<uint8_t> dol;
-    const std::optional<std::filesystem::path> main_dol = hokuto::song::FindMainDol(path);
-    const hokuto::format::File file = hokuto::format::ImportWiiArchive(
-        original, main_dol && xsflib::ReadFile(*main_dol, dol) ? hokuto::song::ReadWiiBuild(dol) : std::nullopt);
+    const hokuto::format::File file = hokuto::format::ImportWiiArchive(original, GameBuildOf(path));
     if (hokuto::format::ExportArchive(file) != original)
     {
         Problem(path, "the exported archive differs", totals);

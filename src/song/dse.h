@@ -4,7 +4,7 @@
 // wave banks (swdl) and banks of sound effects (sedl) in the image's file system. ntdlib's performer plays a song or a
 // sound effect on its model of the driver for the arrangement (ntdlib::sequence_export::dse::Perform), and ntdlib's
 // dse::Player plays it on its models of the driver and the DS's sound unit (song/sequence_model.h). The driver's build
-// comes from the image's ARM9 binary (ntdlib::dse::BuildOf).
+// comes from the image's ARM9 binary and its overlays (DseBuildOf).
 //
 // The image's sounds are its songs and its sound effects, in the order of ntdlib::sequence_export::dse::ReadSequences:
 // the songs, each with its wave bank and the main bank, then the slots of each bank of sound effects. A song without
@@ -62,8 +62,9 @@ std::shared_ptr<const DseSet> LoadDseSet(std::span<const uint8_t> image);
 // xsflib::FormatError for a set's directory that doesn't fit the set.
 std::shared_ptr<const DseSet> LoadDseSet(std::span<const uint8_t> set, ntdlib::dse::Build build);
 
-// The build of the driver in the ARM9 binary of the cartridge image `image`. Bytes that aren't such an image give the
-// later build. The image can leave out the bytes of 0xFF at its end (format::Cartridge).
+// The build of the driver in the code of the cartridge image `image`: its ARM9 binary and its overlays
+// (ntdlib::dse::BuildOf). Bytes that aren't such an image, and a build that no model covers, give the later build. The
+// image can leave out the bytes of 0xFF at its end (format::Cartridge).
 ntdlib::dse::Build DseBuildOf(std::span<const uint8_t> image);
 
 // The numbers of the sounds, in order.

@@ -61,7 +61,7 @@ Plan VelocityPlan(const File& file, const Command& command, const Plan& plan)
     // (song::UbiMilanDriverVelocity). The edit takes the nearest velocity that changes the level, and the read shows
     // the level's velocity.
     const int channel = command.index;
-    if (hokuto::edit::IsUbiMilan(hokuto::edit::ConsoleOf(file)) && !ntdlib::ubimilan::PlaysKit(channel, command.key))
+    if (hokuto::edit::IsUbiMilan(hokuto::edit::ConsoleOf(file)) && !agblib::ubimilan::PlaysKit(channel, command.key))
     {
         const int heard = hokuto::song::UbiMilanVelocityOf(channel, command.key, velocity);
         const int step = heard <= 1 ? 1 : -1;

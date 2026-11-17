@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a GBA song, by the rules of MusicPlayer2000's bytes (ntdlib/mp2k/commands.h). A wait has one of the
+// The edits of a GBA song, by the rules of MusicPlayer2000's bytes (agblib/mp2k/commands.h). A wait has one of the
 // lengths of the codes: 0 to 24 ticks, and 28 to 96 ticks in steps of 2 to 4. A note lasts the length of a code plus up
 // to 127 ticks, 223 ticks at most. A note of length 0 is a tie: it sounds until an end of the tie with its key. A
 // command can leave out what the state of the track supplies: the running status, and the last key and velocity.
@@ -30,7 +30,7 @@ inline constexpr uint32_t kLongestMp2kNote = 223;
 inline constexpr uint32_t kLongestMp2kCode = 96;
 
 // The most patterns that the stack of a track can contain. A pattern can call another, three deep, and a call past that
-// ends the track (ntdlib's MP2K sequencer). A repeat doesn't use the stack.
+// ends the track (agblib's MP2K sequencer). A repeat doesn't use the stack.
 inline constexpr int kMp2kPatternDepth = 3;
 
 // `edited` as MusicPlayer2000's bytes can hold it. `edited` is an edit of sequence `sequence` of a GBA file.

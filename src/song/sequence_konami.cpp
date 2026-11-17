@@ -2,12 +2,12 @@
 
 // The reader of the songs of Konami's GBA driver, with the commands of their notes.
 
-#include "ntdlib/konami/commands.h"
+#include "agblib/konami/commands.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/konami/performance.h"
+#include "agblib/sequence_export/konami/soundfont.h"
 #include "ntdlib/ntr/snd/commands.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/konami/performance.h"
-#include "ntdlib/sequence_export/konami/soundfont.h"
 #include "ntdlib/sequence_export/ntr/performance.h"
 
 #include "song/ds.h"
@@ -18,8 +18,6 @@ namespace hokuto::song
 {
 namespace
 {
-
-namespace export_ = ntdlib::sequence_export;
 
 using sequence_parts::AddTrack;
 using sequence_parts::ClipToLoop;
@@ -94,13 +92,13 @@ std::optional<uint32_t> VolumeStartAt(const ntdlib::commands::Sequence& commands
 void TakeKonamiCommands(Sequence& sequence, const ntdlib::commands::Sequence& commands, const KonamiRom& rom,
                         std::vector<KonamiVolumeStart>* starts)
 {
-    const ntdlib::konami::Revision revision = rom.info.revision;
-    export_::konami::SoundfontBuilder samples(rom.rom, rom.info);
+    const agblib::konami::Revision revision = rom.info.revision;
+    agblib::sequence_export::konami::SoundfontBuilder samples(rom.rom, rom.info);
     constexpr int kLoudest = 15; // the highest volume of a note whose volumes run from 0 to 15
     using ntdlib::commands::Kind;
     using ntdlib::commands::kOne;
 
-    const std::vector<uint32_t> offsets = ntdlib::konami::ItemOffsets(commands, revision);
+    const std::vector<uint32_t> offsets = agblib::konami::ItemOffsets(commands, revision);
     const std::map<uint32_t, uint32_t> items = ItemsByOffset(offsets);
 
     Runs runs;
@@ -173,7 +171,7 @@ void TakeKonamiCommands(Sequence& sequence, const ntdlib::commands::Sequence& co
             {
                 // No note command leads to this note. A PSG note keeps the key that the performer assigns it.
                 note.velocity = static_cast<uint8_t>(
-                    KonamiVelocityOf(kLoudest, revision, !ntdlib::konami::IsPsgTrack(track.number)));
+                    KonamiVelocityOf(kLoudest, revision, !agblib::konami::IsPsgTrack(track.number)));
                 note.program = 0;
                 note.sample_semitones = std::nullopt;
                 note.command = kNoCommand;
@@ -205,7 +203,7 @@ void TakeKonamiCommands(Sequence& sequence, const ntdlib::commands::Sequence& co
             note.sample_semitones = command.sample ? std::optional(static_cast<int8_t>(command.key)) : std::nullopt;
 
             // The revision without a mixer works out a sample's pitch from the channel's registers.
-            if (command.sample && revision != ntdlib::konami::Revision::kDungeonDiceMonsters)
+            if (command.sample && revision != agblib::konami::Revision::kDungeonDiceMonsters)
             {
                 note.key = static_cast<uint8_t>(
                     std::clamp(samples.DsRootKey(*command.sample) + static_cast<int8_t>(command.key), 0, 127));
@@ -222,21 +220,21 @@ Sequence ReadWithStarts(const KonamiRom& rom, uint32_t sound, std::vector<Konami
 {
     const std::string name = KonamiSoundName(rom, sound);
     const int song = KonamiSongOf(rom, sound);
-    ntdlib::konami::SongHeader header;
-    if (!ntdlib::konami::ReadSongHeader(rom.rom, rom.info.song_table, song, rom.info.revision, header) ||
+    agblib::konami::SongHeader header;
+    if (!agblib::konami::ReadSongHeader(rom.rom, rom.info.song_table, song, rom.info.revision, header) ||
         !rom.rom.Contains(header.base))
     {
         throw std::runtime_error("The ROM has no song " + std::to_string(song) + ".");
     }
 
     // The performer plays one pass of the loop.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     settings.version = KonamiSoundIsLive(rom, sound) ? 1 : 0;
     try
     {
-        const export_::konami::Performance performance =
-            export_::konami::PerformSong(rom.rom, rom.info, song, settings);
+        const agblib::sequence_export::konami::Performance performance =
+            agblib::sequence_export::konami::PerformSong(rom.rom, rom.info, song, settings);
 
         Sequence sequence = SequenceHead(performance, name, sound);
         sequence.driver = &rom.Rules();
@@ -256,7 +254,7 @@ Sequence ReadWithStarts(const KonamiRom& rom, uint32_t sound, std::vector<Konami
             AddTrack(sequence, std::move(track));
         }
 
-        const ntdlib::konami::Decoded decoded = ntdlib::konami::DecodeSong(rom.rom, rom.info, song);
+        const agblib::konami::Decoded decoded = agblib::konami::DecodeSong(rom.rom, rom.info, song);
         TakeKonamiCommands(sequence, decoded.sequence, rom, starts);
 
         return sequence;

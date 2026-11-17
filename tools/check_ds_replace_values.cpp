@@ -3,6 +3,7 @@
 // The round Sound values of hokuto_check_ds_replace.
 
 #include "check_ds_replace.h"
+#include "render_measures.h"
 
 namespace hokuto::tools::ds_replace
 {
@@ -24,18 +25,6 @@ uint32_t NextIn(const Table& table, uint32_t index)
     }
 
     return index;
-}
-
-// The level of `samples` in dBFS.
-double LevelOf(std::span<const float> samples)
-{
-    double sum = 0.0;
-    for (const float sample : samples)
-    {
-        sum += static_cast<double>(sample) * sample;
-    }
-
-    return 10.0 * std::log10(std::max(sum / static_cast<double>(std::max<std::size_t>(samples.size(), 1)), 1e-20));
 }
 
 // The values of each sound of `archive` (edit::DsSoundValuesOf), by the sound's number. A sound of a sequence archive
@@ -106,6 +95,7 @@ void CheckLevels(const Game& game, Totals& totals)
     constexpr std::size_t kMostLevels = 8;
     constexpr uint8_t kLeastVolume = 64;
     constexpr double kFloor = -50.0;
+    constexpr double kSilenceDb = -200.0; // a silent render's level: a failure prints how far a level lies from it
     constexpr double kTolerance = 0.5;
 
     const sdat::Archive& tables = game.archive->archive;
@@ -143,7 +133,7 @@ void CheckLevels(const Game& game, Totals& totals)
             continue;
         }
         const std::vector<float> played = RenderedDs(quieter, sound, kPlaySeconds);
-        const double level = LevelOf(before);
+        const double level = MeanSquareDb(before, kSilenceDb);
         const bool reaches = std::ranges::any_of(before, [](float sample) { return std::abs(sample) >= 0.999f; });
         if (level < kFloor || reaches)
         {
@@ -151,7 +141,7 @@ void CheckLevels(const Game& game, Totals& totals)
             continue;
         }
         const double ratio = 20.0 * std::log10(static_cast<double>(volume.second) / volume.first);
-        const double off = std::abs(LevelOf(played) - level - ratio);
+        const double off = std::abs(MeanSquareDb(played, kSilenceDb) - level - ratio);
         totals.levels++;
         totals.worst_level = std::max(totals.worst_level, off);
         if (off > kTolerance)

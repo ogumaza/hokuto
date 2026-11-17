@@ -152,6 +152,21 @@ std::vector<Played> UnexpectedNotes(EditsRun& run, uint32_t sound, uint32_t sequ
         return commanded_before->contains({std::get<0>(note), std::get<1>(note)});
     };
 
+    // On Konami's driver, where a PSG note command moved the pitch of the note that sounded before the edits.
+    std::optional<std::set<std::pair<int, uint32_t>>> pitch_moves;
+    const auto joined_before = [&](const Played& note)
+    {
+        if (!run.playing.Konami())
+        {
+            return false;
+        }
+        if (!pitch_moves)
+        {
+            pitch_moves = PsgPitchMoves(*run.playing.Konami(), sound, run.before[sound]->length);
+        }
+        return JoinsPsgNote(*pitch_moves, *run.before[sound], note);
+    };
+
     std::vector<Played> unexpected;
     for (const Played& note :
          Unmatched(Unmatched(comparison.extra, comparison.missing, WithoutLength), comparison.missing, WithoutVelocity))
@@ -187,7 +202,7 @@ std::vector<Played> UnexpectedNotes(EditsRun& run, uint32_t sound, uint32_t sequ
             // A PSG channel also sounds for a later volume or pan when an edit takes the track's first note away.
             ++totals.started_again;
         }
-        else if (JoinsPsgNote(*run.before[sound], note, comparison.console))
+        else if (joined_before(note))
         {
             ++totals.joined;
         }
@@ -245,6 +260,21 @@ std::vector<Played> WrongNotes(EditsRun& run, uint32_t sound, uint32_t sequence,
         return commanded_after->contains({std::get<0>(note), std::get<1>(note)});
     };
 
+    // On Konami's driver, where a PSG note command moves the pitch of the note that sounds after the edits.
+    std::optional<std::set<std::pair<int, uint32_t>>> pitch_moves;
+    const auto joined_after = [&](const Played& note)
+    {
+        if (!run.after.Konami())
+        {
+            return false;
+        }
+        if (!pitch_moves)
+        {
+            pitch_moves = PsgPitchMoves(*run.after.Konami(), sound, read.length);
+        }
+        return JoinsPsgNote(*pitch_moves, read, note);
+    };
+
     std::map<int, std::set<std::pair<uint32_t, uint32_t>>> rows_before;
     // A moved note that another command changes plays at its new tick with another key or length.
     std::vector<Played> wrong;
@@ -297,9 +327,13 @@ std::vector<Played> WrongNotes(EditsRun& run, uint32_t sound, uint32_t sequence,
         {
             ++totals.started_again;
         }
-        else if (JoinsPsgNote(read, note, comparison.console))
+        else if (joined_after(note))
         {
             ++totals.joined;
+        }
+        else if (hokuto::edit::KonamiOf(comparison.console) && NamedByTrackBefore(read, note))
+        {
+            ++totals.started_again;
         }
         else if (OffCentrePsgNote(read, note, comparison.console) ||
                  OffCentrePsgNote(*run.before[sound], note, comparison.console) ||
@@ -307,7 +341,7 @@ std::vector<Played> WrongNotes(EditsRun& run, uint32_t sound, uint32_t sequence,
         {
             ++totals.off_centre;
         }
-        else if (hokuto::edit::KonamiOf(comparison.console) && ntdlib::konami::IsPsgTrack(std::get<0>(note)) &&
+        else if (hokuto::edit::KonamiOf(comparison.console) && agblib::konami::IsPsgTrack(std::get<0>(note)) &&
                  std::get<4>(note) == static_cast<uint32_t>(hokuto::song::KonamiVelocityOf(
                                           1, *hokuto::edit::KonamiOf(comparison.console), false)))
         {
@@ -400,7 +434,7 @@ void CountQuintetDrumsApart(std::vector<Played>& wrong, std::vector<Played>& une
 {
     const auto renumbered = [](const Played& a, const Played& b)
     {
-        return std::get<0>(a) == ntdlib::quintet::kNoise && std::get<0>(a) == std::get<0>(b) &&
+        return std::get<0>(a) == agblib::quintet::kNoise && std::get<0>(a) == std::get<0>(b) &&
                std::get<1>(a) == std::get<1>(b) && std::get<2>(a) != std::get<2>(b) &&
                std::get<3>(a) == std::get<3>(b) && std::get<4>(a) == std::get<4>(b);
     };

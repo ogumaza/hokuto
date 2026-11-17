@@ -1,6 +1,33 @@
 // SPDX-License-Identifier: MIT
 
 // The checks of sequence files of hokuto_check_replace.
+//
+// Each sequence sound then takes its sequence file, the same file for each other console and another sound's file in
+// turn. Each replacement makes the edit that Replace… makes:
+//
+// - The sound's sequence file from the built archive, from the sound's start. The file has to come back unchanged.
+// - The same file for each other console among the 3DS, the Wii U and the Switch (song::OtherConsoleSequenceFile). The
+//   file has to come back unchanged too. A sequence file counts apart when the bytes that no command reaches come back
+//   otherwise from another console. So does a file whose biquad filters come back with other types or values
+//   (song::MapBiquads): its other commands have to come back, and Replace… has to offer the sound's start. So does a
+//   file that reaches a command that the 3DS lacks: it can't go to the 3DS.
+// - The sequence file of the next sequence sound in the sound table that plays another file, from that sound's start.
+//   The sound also takes the other sound's bank slots through the edit, in a list of the other sound's length.
+//   ntdlib's performer then has to play the other sound's notes and mix in the sound's place, with the tempo, the
+//   length and the loop. The performer finds a loop where every track's state repeats. When it finds the loop a whole
+//   number of passes away, the notes have to start as before up to the earlier loop's end, and the sound counts
+//   apart. The sounds that start at the jump with the sound take the slots as well, and have to play the same. The
+//   file's other sounds have to play as before. Every other file of the archive has to keep its bytes, but for the
+//   files of groups that hold a copy of the sound's file. A copy in a group file beside the archive has to take the
+//   new bytes, and the group files' other copies have to keep theirs. Every other sound has to keep its start.
+//
+// Each replacement also adds the tracks that the new commands open and the sound's old commands don't
+// (edit::TracksToAdd). A file that comes back unchanged exports the archive byte for byte. Replace… offers a file's
+// labels and its first command as starts, and the starts of the sounds whose sequence holds the file's commands
+// (edit::SoundStarts). The sound's file, and each file for another console that comes back unchanged, have to offer the
+// sound's start. A sound whose start is at no label of its file and past its first command counts apart. So does a
+// sound whose commands open tracks that it doesn't allocate. The game leaves those tracks out. Such a sound neither
+// takes another sound's file nor gives its file to another sound: the tracks would differ.
 
 #include "check_replace.h"
 
@@ -101,13 +128,9 @@ std::string CrossProblem(const format::File& file, std::span<const std::optional
             return "changes file " + std::to_string(id);
         }
     }
-    for (std::size_t i = 0; i < built.Sounds().size(); i++)
+    if (std::string problem = MovedStartProblem(built, *after, playing); !problem.empty())
     {
-        const bool plays = std::ranges::find(playing, static_cast<uint32_t>(i)) != playing.end();
-        if (!plays && after->Sounds()[i].start_offset != built.Sounds()[i].start_offset)
-        {
-            return "moves the start of " + built.Sounds()[i].name;
-        }
+        return problem;
     }
 
     // Each copy in a group's file inside the archive, and in the group files beside it, holds the new bytes.
@@ -132,7 +155,7 @@ std::string CrossProblem(const format::File& file, std::span<const std::optional
 }
 
 std::string SameProblem(const format::File& file, std::span<const std::optional<edit::SoundPlace>> places,
-                        const sar::SoundArchive& built, uint32_t sound, const Source& same, Totals& totals)
+                        const sar::SoundArchive& built, uint32_t sound, const Source& same, SequenceTotals& totals)
 {
     const sar::SoundInfo& info = built.Sounds()[sound];
     if (!same.start)

@@ -4,7 +4,7 @@
 // (edit/replace.h, edit/new_items.h). Nothing in an archive declares a variable. The game's code sets the variables
 // that a sound reads. The target game's code may never set a variable that the new commands read, or may set it for
 // another purpose. The Replace and Import windows list each variable that the new commands read before they set it.
-// Each one keeps its number, moves to another number, or takes a fixed value (the maintainer, 2026-10-16).
+// Each one keeps its number, moves to another number, or takes a fixed value.
 //
 // A move gives the variable its new number in every command that the player reaches from the sound's start. A fixed
 // value goes in as a command at the sound's start that sets the variable. The sound then plays as a scene with that

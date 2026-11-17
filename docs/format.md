@@ -1,6 +1,6 @@
 # The .hok format
 
-Version 1.1. This document specifies Hokuto's files: what they hold, their binary form and their text form. The code
+Version 1.2. This document specifies Hokuto's files: what they hold, their binary form and their text form. The code
 in `src/format/` is the reference implementation.
 
 A `.hok` file holds a sound archive in Hokuto's form. Its sequences are commands of one instruction set, with values in
@@ -30,14 +30,14 @@ the engine, each song as a sequence, and the rest of the ROM as bytes. An export
 fits. A song that outgrows its place goes into the ROM's free space, and the song table names it there.
 
 A file can also hold a sound archive of the DS (`.sdat`). NITRO-Composer, the sound driver of the DS's SDK, plays its
-sequences. The file holds the engine, each sequence file (SSEQ) as a sequence, and the rest of the archive as bytes. A
-sequence archive (SSAR) stays among those bytes. An export writes the files' offsets and sizes again after an edit. A
-file can also keep the DS's cartridge image (`.nds`) that holds the archive. Its export writes the new archive into
-the image. The archive's sound table lists the sequences of its INFO block by their indexes. From index 65,536, or
-after those sequences where the block holds more, it lists the sequences of each sequence archive in the order of the
-archive's table of sequence archives, each in the order of its table. A new sequence at the end of the INFO block's
-table therefore moves no sound. A sound's index in the chunks below is its place in that list. An entry that holds no
-sequence keeps its place. A sequence archive whose file can't be read adds nothing to the list.
+sequences. The file holds the engine, each sequence file (SSEQ) as a sequence, each sequence archive (SSAR) as one
+sequence that its records share, and the rest of the archive as bytes. An export writes the files' offsets and sizes
+again after an edit. A file can also keep the DS's cartridge image (`.nds`) that holds the archive. Its export writes
+the new archive into the image. The archive's sound table lists the sequences of its INFO block by their indexes. From
+index 65,536, or after those sequences where the block holds more, it lists the sequences of each sequence archive in
+the order of the archive's table of sequence archives, each in the order of its table. A new sequence at the end of the
+INFO block's table therefore moves no sound. A sound's index in the chunks below is its place in that list. An entry
+that holds no sequence keeps its place. A sequence archive whose file can't be read adds nothing to the list.
 
 A file can also hold the sound files of a DS game on Procyon Studio's driver (Digital Sound Elements, DSE). Such a game
 keeps no sound archive. Its songs (smdl), wave banks (swdl) and banks of sound effects (sedl) are files of the
@@ -989,6 +989,9 @@ The kinds:
 | 14 | the 3DS's reverb of nn::snd | 11 |
 | 15 | the 3DS's delay of nn::snd | 4 |
 | 16 | the 3DS's reverb of nn::snd of 2011 | 10 |
+| 17 | the Switch's delay of nn::atk (version 1.3) | 8 |
+| 18 | the Switch's light limiter of nn::atk (version 1.3) | 8 |
+| 19 | the Switch's reverb of nn::atk (version 1.3) | 12 |
 
 The I3DL2 reverb has 12 parameters. They're the fields of nn::audio's `I3dl2ReverbParameterSet`, in its order and its
 units:
@@ -1099,6 +1102,63 @@ filter keeps the highs in place of the lows. The damping filter of nn::snd's rev
 libraries take any time and size that fits the game's memory. The limits above keep each effect's buffers within a few
 megabytes.
 
+Version 1.3 adds kinds 17 to 19: the delay, the light limiter and the reverb of nn::atk, the Switch's sound library.
+The classes `EffectDelay`, `EffectLightLimiter` and `EffectReverb` set them up, and the console's audio renderer runs
+them on an aux bus. The reverb is another algorithm than the I3DL2 reverb. nn::atk has no parameter structure for these
+classes. Their parameters are the values that each class's setters take, in the order in which the class passes them
+to the renderer as it adds the effect, with the channel mode last. nn::atk takes a time in nanoseconds. A file keeps it
+in whole microseconds: the renderer keeps no finer step of any of these times. The delay, kind 17 (`switch_delay`):
+
+| Parameter | Name | Unit |
+|---|---|---|
+| 0 | `delay_time_max` | microseconds, a whole number from 0 to 10,000,000 |
+| 1 | `delay_time` | microseconds, a whole number from 0 to 10,000,000 |
+| 2 | `in_gain` | a gain from 0 to 1 |
+| 3 | `feedback_gain` | a gain from 0 to 1 |
+| 4 | `dry_gain` | a gain from 0 to 1 |
+| 5 | `low_pass_amount` | a factor from 0 to 1 |
+| 6 | `channel_spread` | a factor from 0 to 1 |
+| 7 | `channel_mode` | a mode from 0 to 3 |
+
+The light limiter, kind 18 (`switch_light_limiter`):
+
+| Parameter | Name | Unit |
+|---|---|---|
+| 0 | `look_ahead_time_max` | microseconds, a whole number from 0 to 50,000 |
+| 1 | `attack_time` | microseconds, a whole number from 0 to 10,000 |
+| 2 | `release_time` | microseconds, a whole number from 0 to 5,000,000 |
+| 3 | `look_ahead_time` | microseconds, a whole number from 0 to 50,000 |
+| 4 | `threshold` | a level from 0 to 1, where 1 is full scale |
+| 5 | `input_gain` | a gain from 0 to 4 |
+| 6 | `output_gain` | a gain from 0 to 4 |
+| 7 | `channel_mode` | a mode from 0 to 3 |
+
+The reverb, kind 19 (`switch_reverb`):
+
+| Parameter | Name | Unit |
+|---|---|---|
+| 0 | `early_mode` | a mode from 0 to 4 |
+| 1 | `early_gain` | a gain from 0 to 1 |
+| 2 | `predelay_time` | microseconds, a whole number from 0 to 300,000 |
+| 3 | `late_mode` | a mode from 0 to 4 |
+| 4 | `late_gain` | a gain from 0 to 1 |
+| 5 | `decay_time` | microseconds, a whole number from 100,000 to 20,000,000 |
+| 6 | `high_frequency_decay_ratio` | a ratio from 0.1 to 1 |
+| 7 | `coloration` | a factor from 0 to 1 |
+| 8 | `reverb_gain` | a gain from 0 to 1 |
+| 9 | `out_gain` | a gain from 0 to 1 |
+| 10 | `dry_gain` | a gain from 0 to 1 |
+| 11 | `channel_mode` | a mode from 0 to 3 |
+
+The channel mode takes 1, 2, 4 or 6 of the bus's channels: modes 0 to 3. It changes the sound. On 2 channels, each
+line of the delay takes feedback from the other line. On 4 or 6, it takes feedback from its two neighbours. The early
+mode picks a room, a chamber, a hall, a cathedral or no early reflections. The late mode picks a room, a hall, a plate,
+a cathedral or the longest lines. The limits of the times are those that nn::atk's setters keep. nn::atk sets no limit
+on the longest delay. The format holds it to 10 s. The lines of a delay of 10 s on 6 channels take 11.5 MB. nn::atk
+holds each gain, factor and ratio to its range as it sets the effect up, and a player follows the library. A delay
+longer than `delay_time_max` takes the maximum. So does a look-ahead longer than `look_ahead_time_max`. An effect in a
+file is enabled. nn::atk's classes start disabled, and a game enables them.
+
 The 3DS has two aux buses, A and B. A player of the 3DS leaves out the effects on bus C. A bus without an effect stays
 off: nn::snd turns a bus on only once a game processes it. What the tracks send to such a bus never reaches the
 output.
@@ -1113,6 +1173,7 @@ away from zero, and held to 32 bits. A chunk that ends after bus C's effects giv
 A reader refuses an effect of a kind that this specification doesn't define, with a message that a later version of
 Hokuto made the file. It also refuses an effect whose number of parameters differs from its kind's, a parameter that
 isn't a finite number, a mode or a switch that isn't one of its choices, and a parameter of the 3DS outside its limits.
+It refuses a time of nn::atk's effects that isn't a whole number of microseconds within its limits too.
 It refuses a volume that isn't a finite number from 0 to 2 too.
 
 ### SEQS: the sequences
@@ -1278,7 +1339,9 @@ its lack on a sequence sound whose file holds one, and a start past the sequence
 | Size | Contents |
 |---|---|
 | 1 | the kind of archive: 1 for the Switch's, 2 for the Wii U's, 3 for the 3DS's. The Wii's take kind 4 and the form at the section's end |
-| 3 | 0 |
+| 1 | the flags of the archive's player. Bit 0 says that it takes advanced wave sounds: byte 0x0F of its settings is 1 |
+| 1 | the sequence sound countdown of the archive's player: byte 0x10 of its settings |
+| 1 | 0 |
 | 4 | the archive's version, from its header: 0x00020200 for FSAR 2.2.0, and 0x02000000 for CSAR 2.0.0.0 |
 | 14 | what the archive's player reserves room for: the sequence sounds, the sequence tracks, the stream sounds, the stream tracks, the stream channels, the wave sounds and the wave tracks that play at once, 2 bytes each |
 | 1 | the size of each stream's buffer, in blocks |
@@ -1298,6 +1361,10 @@ its lack on a sequence sound whose file holds one, and a start past the sequence
 | 4 | the number of group files |
 | varies | the group files beside the archive: each one's size in bytes (8 bytes), then its bytes |
 | 4 for each | the group files' groups: each one's index in the groups, or 0xFFFFFFFF where Hokuto couldn't find the group |
+
+Only the Switch's archive player has the settings at bytes 1 and 2. In the other kinds, both bytes are 0. A reader
+refuses a flag of the archive's player that this specification doesn't define, and either setting in an archive of
+another kind. Version 1.2 adds the two settings. A reader of version 1.1 skips them.
 
 Names and lists take SNDS's forms. A sound group takes this form:
 
@@ -1594,13 +1661,18 @@ user chooses it. An export fails when the filler runs can't hold the songs eithe
 An archive of the DS (SDAT, kind 6) keeps its files in its FILE block, at the offsets and sizes that its file table
 (FAT) gives. Its sequence files are SSEQ files. A sequence piece holds a sequence file's bytecode, from its start, and
 its version is the 2 bytes at 6 in the SSEQ file's header. The file's header of 0x1C bytes ends the run before the
-piece. A sequence archive (SSAR) stays in a run. The fields hold the archive's size in its header, the FILE block's size
-in the header and in the block, each file's offset and size in the file table, and each sequence file's size and its
-DATA block's size in its header. An offset counts from the archive's start. Padding of 4 bytes ends a sequence file, and
-padding of 32 bytes puts each file on a multiple of 32 bytes from the archive's start. The SDK's tools lay an archive
-out that way. Each field holds its distance little-endian. A file of the DS holds no GRPF, STRM, TABL or BULD chunk, and
-it can't take the model form. Its SIZE chunk gives the archive's size. Its CART chunk can hold the cartridge image that
-holds the archive.
+piece. A sequence archive (SSAR) whose headers are the tools' becomes a sequence piece too: its bytecode, from its
+start, with the version at 6 in the SSAR file's header. Its records' sequences share the bytecode and can jump into each
+other. Its headers of 0x20 bytes and its table of records, 12 bytes each, end the run before the piece. A record of
+0xFFFFFFFF, without a sequence, keeps its bytes. Any other sequence archive stays in a run. The fields hold the
+archive's size in its header, the FILE block's size in the header and in the block, and each file's offset and size in
+the file table. They also hold the size of each sequence file and sequence archive and its DATA block's size, in its
+header, and each record's start in a sequence archive's table: the distance from the bytecode's first item to the item
+where the record's sequence starts. An offset counts from the archive's start. Padding of 4 bytes ends a sequence file
+and a sequence archive, and padding of 32 bytes puts each file on a multiple of 32 bytes from the archive's start. The
+SDK's tools lay an archive out that way. Each field holds its distance little-endian. A file of the DS holds no GRPF,
+STRM, TABL or BULD chunk, and it can't take the model form. Its SIZE chunk gives the archive's size. Its CART chunk can
+hold the cartridge image that holds the archive.
 
 A set of DSE's files (kind 7) isn't a file of the game. It starts with a directory: the magic word DSET, the set's size,
 the number of files and 4 zeros, then each file's offset from the set's start, its size and its path's offset, then the
@@ -1627,7 +1699,7 @@ After the fields, NATV holds what the driver's export requires:
 
 | Size | Contents |
 |---|---|
-| 1 | the driver's revision, from 0 to 10, in the order of ntdlib's `konami::Revision` |
+| 1 | the driver's revision, from 0 to 10, in the order of agblib's `konami::Revision` |
 | 1 | the byte that fills what the ROM grows by, up to a song |
 | 2 | 0 |
 | 4 | where the free space at the ROM's end starts, from the ROM's start |
@@ -1658,7 +1730,7 @@ reads. It holds its room in place of the file's version. Entries of the tables t
 The table of the music's sequences and the table of the sound effects' sequences stay in runs. Each entry gives a field
 of 4 bytes: the distance from the table's start to the sequence's first item. The choices of a sequence piece take the
 GBA's form above: `repeated` and `value_bytes`. After the fields, NATV holds what the driver's export requires, in the
-form that Konami's driver takes. The revision runs from 0 to 2, in the order of ntdlib's `rd2::Revision`. A sequence
+form that Konami's driver takes. The revision runs from 0 to 2, in the order of agblib's `rd2::Revision`. A sequence
 that outgrows its place moves as a song of Konami's driver does, and the free space and the filler runs follow the same
 rules. A run that holds a byte that the driver reads isn't a filler run. Those bytes are the settings, the tables, each
 sequence's bytes, the 64 KiB that a bank's offsets reach, and every sample that a sample set names. A sequence starts on
@@ -1672,7 +1744,7 @@ bytes, from the first byte that its sounds read to the last, and holds its room 
 song table stays in a run. Each entry with a list gives a field of 4 bytes: the distance from the ROM's start to the
 item where the sound's list starts, plus 0x08000000. A sequence piece holds no choices of the encoder: an item's
 `opcode` keeps what its values don't give. After the fields, NATV holds what the driver's export requires, in the form
-that Konami's driver takes. The revision runs from 0 to 1, in the order of ntdlib's `brownie::Revision`. A region that
+that Konami's driver takes. The revision runs from 0 to 1, in the order of agblib's `brownie::Revision`. A region that
 outgrows its place moves as a song of Konami's driver does, and the free space follows the same rules. A region that
 moves keeps its start's remainder modulo 4. NATV lists no filler runs: a ROM with this driver takes none.
 
@@ -2242,7 +2314,7 @@ tracks out of the order of their numbers or a track twice, and a list of bars th
 ## The text form
 
 The text form is UTF-8, one statement a line. Lines end in LF, and a reader also takes CR LF. A file starts with a
-line of `hok` and the format's version, such as `hok 1.1`: its first four bytes are `hok `. A reader also takes a UTF-8
+line of `hok` and the format's version, such as `hok 1.2`: its first four bytes are `hok `. A reader also takes a UTF-8
 byte-order mark before them. Hokuto writes none. Indentation doesn't matter. Hokuto indents a label by 4 spaces and a
 command by 8. A `#` outside quotes starts a comment that runs to the end of the line. Blank lines don't count.
 
@@ -2274,7 +2346,7 @@ An argument is a value, `random(low,high)` with no spaces, or `var(n)` for varia
 ### The header
 
 ```
-hok 1.1
+hok 1.2
 engine switch
 mixing strict
 sound_mixing 12 enhanced # BGM_CIRCUIT
@@ -2327,9 +2399,10 @@ The kind `i3dl2_reverb` is the I3DL2 reverb, with the names of MIXR's table. The
 `chorus` and `delay` are the Wii U's effects, with the names of MIXR's tables and text. The kinds that start with `wii_`
 are the Wii's, with the names of MIXR's table of the Wii's kinds. The kinds `3ds_reverb`, `3ds_delay`, `3ds_nn_reverb`,
 `3ds_nn_delay` and `3ds_nn_reverb_2011` are the 3DS's effects 12 to 16, with the names of MIXR's tables and text. The
-parameters come in any order, each at most once. A parameter that the line leaves out is 0. A reader refuses the line
-when 0 lies outside that parameter's limits. A filter's size is such a parameter. Hokuto writes every parameter, in the
-table's order. The effects come before the first sequence.
+kinds `switch_delay`, `switch_light_limiter` and `switch_reverb` are nn::atk's effects 17 to 19 of version 1.3, with the
+names of MIXR's tables. The parameters come in any order, each at most once. A parameter that the line leaves out
+is 0. A reader refuses the line when 0 lies outside that parameter's limits. A filter's size is such a parameter.
+Hokuto writes every parameter, in the table's order. The effects come before the first sequence.
 
 A parameter's value is a decimal number with an optional minus sign, fraction and exponent, such as `-1045`,
 `0.0046` or `1e-06`. A reader rounds it to a 32-bit float. It refuses a number that's too large for one. Hokuto writes
@@ -2612,7 +2685,7 @@ files, streams and cartridge image or the model, the banks and the waves, and th
 ### An example
 
 ```
-hok 1.1
+hok 1.2
 engine switch
 mixing strict
 
@@ -2662,7 +2735,15 @@ driver (engine 11, archive kind 11), a ROM with Rare's driver (engine 12, archiv
 (engine 13, archive kind 13) and a ROM with Krawall (engine 14, archive kind 14). A reader of version 1.0 refuses a
 file of the GBA or the DS, and reads every other file of version 1.1.
 
-Hokuto 1.0.0 writes version 1.0. Hokuto 2.0.0 writes version 1.1, and reads both.
+Version 1.2 adds two settings of the Switch's archive player to ITMS: the flag of advanced wave sounds and the sequence
+sound countdown. They take two of the bytes that version 1.1 keeps at 0. A reader of version 1.1 reads the file
+without them, and the archive that it builds from the model has 0 in their places. In version 1.2, a sequence archive
+of a DS archive is also a sequence piece, with a field at each record's start. A reader of version 1.1 reads such a
+file, but its join of the archive refuses those fields: Hokuto 2.0.0 can't play or export a DS file of version 1.2 that
+holds a sequence archive.
+
+Hokuto 1.0.0 writes version 1.0. Hokuto 2.0.0 writes version 1.1, and reads both. The versions after 2.0.0 write
+version 1.2, and read all three.
 
 ## The hok tool
 

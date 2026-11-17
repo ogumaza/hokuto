@@ -21,10 +21,10 @@
 #include <string_view>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/testing/mp2k_cart.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "seqlib/wav.h"
 #include "xsflib/testing/check.h"
 
@@ -41,8 +41,8 @@
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
-namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+namespace mp2k = agblib::mp2k;
+namespace mp2k_cart = agblib::testing::mp2k_cart;
 using hokuto::song::GbaSongAssembly;
 using hokuto::song::GbaSongSource;
 using hokuto::song::ReadGbaAssembly;
@@ -234,7 +234,7 @@ std::vector<uint8_t> MakeSong()
 
     cart.Song({track, other}, voices, 0, 5, 0x80 + 40);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -431,7 +431,7 @@ GroupRom MakeGroupRom()
     track.Fine();
     cart.Song({track}, made.group);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     made.bytes = hokuto::testing::RomBytes(rom);
     return made;
 }
@@ -638,7 +638,7 @@ void TestVoiceGroupFilePattern()
 
     // A voice of the game's can hold a length that an edit refuses. It keeps the length when its pattern moves.
     std::vector<uint8_t> long_bytes = made.bytes;
-    long_bytes[made.group - ntdlib::agb::kRomBase + 12 + 2] = 0xE2;
+    long_bytes[made.group - agblib::agb::kRomBase + 12 + 2] = 0xE2;
     const std::shared_ptr<const hokuto::song::GbaRom> long_rom = hokuto::song::LoadGbaRom(long_bytes);
     const hokuto::edit::GbaGroupVersion long_pattern = hokuto::edit::WithGbaVoiceGroupFile(
         hokuto::format::ImportGbaRom(long_bytes), *long_rom, made.group,
@@ -887,7 +887,7 @@ void TestCompressedSample()
     mp2k_cart::Track track;
     track.Cmd(mp2k::kCmdVol, 100).Cmd(mp2k::kCmdVoice, 0).Note(12, 60, 100).Wait(12).Fine();
     cart.Song({track}, voices);
-    const ntdlib::agb::Rom raw = cart.ToRom();
+    const agblib::agb::Rom raw = cart.ToRom();
     const std::vector<uint8_t> compressed_bytes = hokuto::testing::RomBytes(raw);
     const std::shared_ptr<const hokuto::song::GbaRom> compressed_rom = hokuto::song::LoadGbaRom(compressed_bytes);
     const bool refused = !xsflib::testing::ErrorOf<std::invalid_argument>(

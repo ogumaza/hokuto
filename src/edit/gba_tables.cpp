@@ -10,10 +10,11 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/sar/layout.h"
 #include "xsflib/ascii.h"
+#include "xsflib/bytes.h"
 
 #include "edit/gba_voices.h"
 #include "format/archive.h"
@@ -21,7 +22,7 @@
 namespace hokuto::edit
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 
 namespace
 {
@@ -165,10 +166,9 @@ format::File ChangeGbaSong(const format::File& file, const song::GbaRom& rom, ui
             const uint32_t entry = rom.info.song_table + kEntryBytes * song;
             const uint32_t first = rom.rom.U16(entry + kEntryFirstPlayer);
             const uint32_t second = rom.rom.U16(entry + kEntrySecondPlayer);
-            const auto low = static_cast<uint8_t>(player);
-            const auto high = static_cast<uint8_t>(player >> 8);
-            const std::array<uint8_t, 4> same = {low, high, low, high};
-            const std::array<uint8_t, 2> alone = {low, high};
+            std::array<uint8_t, 2> alone = {};
+            xsflib::StoreLe16(alone.data(), static_cast<uint16_t>(player));
+            const std::array<uint8_t, 4> same = {alone[0], alone[1], alone[0], alone[1]};
             return first == second ? WithGbaBytes(file, entry + kEntryFirstPlayer, same)
                                    : WithGbaBytes(file, entry + kEntryFirstPlayer, alone);
         }

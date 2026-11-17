@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MIT
 
 // Tests Hokuto's path for Ubisoft Milan's GBA driver: the import and the round trip, the pieces that the arrangement
-// shows, playback, the edits of notes and tracks, and the exports. ntdlib's test image of the driver (ubimilan_image.h
+// shows, playback, the edits of notes and tracks, and the exports. agblib's test image of the driver (ubimilan_image.h
 // in ntdlib's tests) contains no game data. It contains the code that ntdlib's detection reads, the PSG's tables, a
 // sample for the kit's key 40 and the sequences below.
 //
 // The expected ticks, keys, velocities and bytes come from the sequences' bytes, worked out by hand by the driver's
-// rules (ntdlib/ubimilan/commands.h). A sequence's first countdown of n runs its first command n frames into the
+// rules (agblib/ubimilan/commands.h). A sequence's first countdown of n runs its first command n frames into the
 // piece. Each later countdown of n runs the next command n + 1 frames later, and one of 0 in the same frame. When the
 // list of a piece starts again, its first countdown of n runs the first command n + 1 frames later too. A file
 // records the length of each wait in ticks (format/ubimilan.h). The Key Editor shows a kit note's volume of 64 and a
 // square's envelope of 15 as velocity 127.
 //
-// ntdlib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
 // sample, from the start, in both mixing modes. The MIDI file and the SoundFont have to equal those of ntdlib's
 // converter, run directly.
 
@@ -29,14 +29,14 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/ubimilan/convert.h"
+#include "agblib/testing/ubimilan_image.h"
+#include "agblib/ubimilan/archive_player.h"
+#include "agblib/ubimilan/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/ubimilan/convert.h"
-#include "ntdlib/testing/ubimilan_image.h"
-#include "ntdlib/ubimilan/archive_player.h"
-#include "ntdlib/ubimilan/driver.h"
 #include "xsflib/testing/check.h"
 
 #include "driver_test_support.h"
@@ -57,6 +57,7 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
+using agblib::testing::ubimilan_image::TestImage;
 using format::File;
 using hokuto::testing::ClockDrift;
 using hokuto::testing::ClockRun;
@@ -70,7 +71,6 @@ using hokuto::testing::SequenceAt;
 using hokuto::testing::StartsOf;
 using hokuto::testing::TrackOf;
 using ntdlib::commands::kOne;
-using ntdlib::testing::ubimilan_image::TestImage;
 using song::Mixing;
 using song::Sequence;
 using song::SequenceModel;
@@ -137,7 +137,7 @@ uint32_t SequenceOf(const File& file, uint32_t sound)
 template <typename Sample>
 std::vector<Sample> Direct(const UbiMilanRom& rom, int song, std::size_t samples, bool enhanced)
 {
-    ntdlib::ubimilan::ArchivePlayer player(rom.rom, rom.info);
+    agblib::ubimilan::ArchivePlayer player(rom.rom, rom.info);
     player.Start(song, {.enhanced = enhanced});
     return RunDirect<Sample>(player, samples);
 }
@@ -146,7 +146,7 @@ std::vector<Sample> Direct(const UbiMilanRom& rom, int song, std::size_t samples
 // silent.
 uint64_t EndFrame(const UbiMilanRom& rom, int song)
 {
-    ntdlib::ubimilan::ArchivePlayer player(rom.rom, rom.info);
+    agblib::ubimilan::ArchivePlayer player(rom.rom, rom.info);
     player.Start(song);
     while (player.Busy() && player.Frames() < 100000)
     {
@@ -366,7 +366,7 @@ void TestNoteEdits()
 // velocity converts back to the nearest level. The byte keeps its low 5 bits.
 void TestWaveLevels()
 {
-    const int wave = ntdlib::ubimilan::kWaveChannel;
+    const int wave = agblib::ubimilan::kWaveChannel;
     XSFLIB_CHECK(song::UbiMilanVelocityOf(wave, 60, 0x20) == 127);
     XSFLIB_CHECK(song::UbiMilanVelocityOf(wave, 60, 0x40) == 90);
     XSFLIB_CHECK(song::UbiMilanVelocityOf(wave, 60, 0x60) == 64);
@@ -440,10 +440,10 @@ void TestExports()
     const std::shared_ptr<const UbiMilanRom> rom = song::LoadUbiMilanRom(Image());
     for (const uint32_t sound : {0u, 1u})
     {
-        ntdlib::sequence_export::agb::ConvertSettings settings;
+        agblib::sequence_export::agb::ConvertSettings settings;
         settings.program = "Hokuto";
-        const ntdlib::sequence_export::ubimilan::SongFiles expected =
-            ntdlib::sequence_export::ubimilan::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
+        const agblib::sequence_export::ubimilan::SongFiles expected =
+            agblib::sequence_export::ubimilan::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
         const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
         XSFLIB_CHECK(expected.report.ok);
         XSFLIB_CHECK(conversion.midi == expected.midi);

@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <thread>
 
+#include "xsflib/rip/length.h"
+
 #include "song/catch_up.h"
 
 namespace hokuto::tools::playback_steps
@@ -20,7 +22,8 @@ std::size_t CheckFrames(const song::SequenceModel& model, int seconds)
     return static_cast<std::size_t>(seconds) * static_cast<std::size_t>(model.SampleRate()) / model.FrameSamples();
 }
 
-bool Render(song::SequencePlayer& player, std::size_t frames, std::size_t frame_samples, std::vector<float>& output)
+bool Render(song::SequencePlayer& player, std::size_t frames, std::size_t frame_samples, std::vector<float>& output,
+            const std::function<void()>& after_block)
 {
     std::vector<float> block(kBlock * 2);
     const std::size_t total = frames * frame_samples;
@@ -30,6 +33,10 @@ bool Render(song::SequencePlayer& player, std::size_t frames, std::size_t frame_
         const std::size_t rendered = player.Render(block.data(), wanted);
         output.insert(output.end(), block.begin(), block.begin() + static_cast<std::ptrdiff_t>(rendered * 2));
         done += rendered;
+        if (after_block)
+        {
+            after_block();
+        }
         if (rendered < wanted)
         {
             return false;
@@ -100,27 +107,30 @@ SeekResult SeekCheck(song::SequenceModel& model, std::size_t start, std::size_t 
     return result;
 }
 
-std::vector<float> RunSwitch(const song::Played& played, const std::shared_ptr<const song::Sequence>& sequence,
-                             song::Mixing mixing, std::size_t before, std::size_t frames)
+void CatchUp(const std::shared_ptr<song::SequenceModel>& model, const std::shared_ptr<song::PlaybackClock>& clock)
 {
-    const auto model = std::make_shared<song::SequenceModel>(played, sequence, song::ModelOptions{.mixing = mixing});
-    const std::size_t frame_samples = model->FrameSamples();
+    song::ModelCatchUp catch_up;
+    catch_up.Start(model, clock);
+    while (!catch_up.Finished())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    clock->Offer(catch_up.Take());
+}
+
+std::vector<float> RunSwitch(const std::shared_ptr<song::SequenceModel>& from,
+                             const std::shared_ptr<song::SequenceModel>& to, std::size_t before, std::size_t frames)
+{
+    const std::size_t frame_samples = from->FrameSamples();
     const auto clock = std::make_shared<song::PlaybackClock>(frame_samples);
-    song::SequencePlayer player(model, 0, clock);
+    song::SequencePlayer player(from, 0, clock);
     std::vector<float> output;
     if (!Render(player, before, frame_samples, output))
     {
         return output;
     }
 
-    song::ModelCatchUp catch_up;
-    catch_up.Start(std::make_shared<song::SequenceModel>(played, sequence, song::ModelOptions{.mixing = mixing}),
-                   clock);
-    while (!catch_up.Finished())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    clock->Offer(catch_up.Take());
+    CatchUp(to, clock);
     Render(player, frames - before, frame_samples, output);
 
     return output;
@@ -134,7 +144,10 @@ std::string SwitchCheck(const song::Played& played, const std::shared_ptr<const 
     const std::size_t before = heard / 2;
     if (before > 1)
     {
-        std::vector<float> switched = RunSwitch(played, sequence, mixing, before, frames);
+        const song::ModelOptions options{.mixing = mixing};
+        std::vector<float> switched =
+            RunSwitch(std::make_shared<song::SequenceModel>(played, sequence, options),
+                      std::make_shared<song::SequenceModel>(played, sequence, options), before, frames);
         const std::size_t switched_frames = switched.size() / frame_floats;
         switched.resize(switched_frames > 1 ? (switched_frames - 1) * frame_floats : 0);
         const std::size_t switch_differences = Differences(switched, before + 1, reference, frame_floats, offset);
@@ -185,6 +198,42 @@ EndLevels LevelsAfterEnd(std::span<const float> after, std::size_t frame_floats,
     }
 
     return levels;
+}
+
+float EndSpan(bool enhanced)
+{
+    return enhanced ? 2.0f * static_cast<float>(xsflib::rip::kSilenceLevel) / 32768.0f : 0.0f;
+}
+
+EndLevels LevelsBetween(std::span<const float> reference, std::size_t rest, std::size_t stop, std::size_t frame_floats,
+                        float span)
+{
+    const std::span<const float> after = reference.subspan(rest, stop - std::min(rest, stop));
+    if (after.size() < 2)
+    {
+        return {};
+    }
+
+    return LevelsAfterEnd(after, frame_floats, span);
+}
+
+std::string SoundsOnText(const EndLevels& levels)
+{
+    return ", and the reference sounds after the output's end: " +
+           std::to_string(std::lround(levels.range * 32768.0f)) + " steps in all, and " +
+           std::to_string(std::lround(levels.widest * 32768.0f)) + " within frame " + std::to_string(levels.widest_at) +
+           " after the end";
+}
+
+int PeakAfterEnd(std::span<const float> reference, std::size_t rest, std::size_t stop)
+{
+    float level = 0.0f;
+    for (std::size_t i = rest; i < stop; i++)
+    {
+        level = std::max(level, std::abs(reference[i]));
+    }
+
+    return static_cast<int>(std::lround(level * 32768.0f));
 }
 
 bool ArrangedAt(const song::Sequence& sequence, int track, int key, uint32_t tick,

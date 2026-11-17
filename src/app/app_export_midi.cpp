@@ -16,6 +16,7 @@
 #include "app/engine_names.h"
 #include "app/export_warnings.h"
 #include "edit/other_console.h"
+#include "edit/sound_exports.h"
 #include "edit/timelines.h"
 #include "format/archive.h"
 #include "format/drivers.h"
@@ -31,27 +32,6 @@ using export_parts::Converts;
 
 namespace
 {
-
-// The tags of the MIDI file of sound `sound` of `file`: the sound's title, and the sound's copyright or else the
-// file's. The file's title names the whole file. Without a title of the sound, the MIDI file keeps the sound's name.
-song::MidiTags MidiTagsOf(const format::File& file, uint32_t sound)
-{
-    const auto tag = [](const format::Tags& tags, const std::string& key)
-    {
-        const auto found = tags.find(key);
-        return found != tags.end() ? found->second : std::string();
-    };
-
-    const auto of_sound = file.sound_tags.find(sound);
-    const format::Tags sound_tags = of_sound != file.sound_tags.end() ? of_sound->second : format::Tags();
-    song::MidiTags tags{tag(sound_tags, "title"), tag(sound_tags, "copyright")};
-    if (tags.copyright.empty())
-    {
-        tags.copyright = tag(file.tags, "copyright");
-    }
-
-    return tags;
-}
 
 // Converts `sound` of `version` for `engine`, the engine of another console, into `work`. The measure plays the
 // conversion, and the sequence read from it when the zones don't show the sound (`shown`). Returns the conversion's
@@ -188,7 +168,7 @@ void App::StartSourceMidiWork(Export& job, uint32_t sound, MidiSource<Source> so
               : std::vector<std::string>();
     std::shared_ptr<const Source> from = same ? source.shown : nullptr;
     const auto convert = [version, from = std::move(from), source = std::move(source), shown, target,
-                          warnings = std::move(warnings), tags = MidiTagsOf(*version, sound)]() mutable
+                          warnings = std::move(warnings), tags = edit::MidiTagsOf(*version, sound)]() mutable
     {
         ExportWork work;
         try
@@ -389,7 +369,7 @@ void App::StartMidiWork(Export& job, uint32_t sound)
                           wii = same && !converts ? played_.Wii() : nullptr, game = GameOf(played_.Ds()),
                           name = file_name_, sound, shown, converts, engine, target, values = StartValuesOf(sound),
                           changes = ChangesOf(sound), warnings = std::move(warnings),
-                          tags = MidiTagsOf(*version, sound)]() mutable
+                          tags = edit::MidiTagsOf(*version, sound)]() mutable
     {
         ExportWork work;
         try
@@ -424,7 +404,7 @@ void App::StartMidiWork(Export& job, uint32_t sound)
             }
             if (converts)
             {
-                warnings.insert(warnings.begin(), EngineNote(EngineName(engine), EngineName(version->engine)));
+                warnings.insert(warnings.begin(), EngineNote(TheEngine(engine), EngineName(version->engine)));
             }
 
             work.conversion->midi = song::WithMidiTags(work.conversion->midi, tags);

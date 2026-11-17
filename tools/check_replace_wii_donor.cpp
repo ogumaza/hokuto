@@ -4,6 +4,27 @@
 //
 // The imports and replacements of a later console's files in an archive of the Wii. The donor is an archive of the 3DS,
 // the Wii U or the Switch.
+//
+// With a donor after an archive of the Wii, --new, --wave-sounds, --new-waves and --files check the files of the donor,
+// an archive of the 3DS, the Wii U or the Switch, in the Wii's archive. With --new, up to 8 of the donor's sequence
+// sounds come in with the bank of their first slot and the wave archives that the bank names. Each wave archive comes
+// in as a bank without instruments that holds its waves. File > Import > Wave Archive… brings one in that way on the
+// Wii. Its waves have to keep the donor's rates, loops and the samples of their first two channels. The bank comes in
+// with the waves of those banks' wave data in place of its wave archives (edit::WiiFileOf). The sound comes in
+// converted, from the label of its file where it starts. It copies the values of the archive's first sequence sound,
+// and then takes the volume, the pan mode and the pan curve of Another Console's conversion of the donor's sound
+// (edit::ForWii). It then has to play the conversion's samples for 10 s by the rules of the archive's build. File >
+// Import brings in the bank of one slot, whole. A conversion can take the banks of several slots as one bank, or a bank
+// with only the instruments that the sound selects. The tool counts such a sound apart, and the next of the donor's
+// sequence sounds takes its place. An archive before version 1.2 holds no pan mode and no pan curve. NW4R SND pans the
+// sounds of such an archive in balance mode, with the square-root curve. The conversion takes those values for the
+// reference, and the tool counts such conversions. With --wave-sounds, up to 8 of the donor's wave sound files come in
+// with their wave archives in the same way. Each new wave sound has to play the wave of the donor's wave sound at the
+// same rate. With --new-waves, the first wave of up to 8 of the donor's wave archives goes in after the waves of the
+// archive's first wave data, and in the place of its first wave. With --files, each of up to 8 banks and 8 wave sound
+// files takes the donor's first file of its kind in its place. The wave archives that the donor's file names map to the
+// present file's wave data: the Replace window's first proposal. Every copy of the file and of its wave data has to
+// take the new bytes, and every other file has to keep its bytes.
 
 #include "check_replace.h"
 
@@ -170,6 +191,107 @@ std::map<uint32_t, uint32_t> ImportNamedWaves(WiiState& state, const sar::SoundA
 constexpr std::string_view kSeveralSlots = "plays the banks of several slots";
 constexpr std::string_view kTrimmed = "keeps only the instruments that it selects";
 
+// The label of the donor's sequence file `bytes` where sound `info` starts. Nothing for a file without labels that the
+// sound plays from its first command. Throws a Refusal for a file that Hokuto refuses, and a LeftOut for a sound that
+// starts elsewhere.
+std::optional<std::string> StartLabelOf(const std::vector<uint8_t>& bytes, const sar::SoundInfo& info)
+{
+    const edit::Incoming read = Refusable([&] { return edit::ReadIncoming(bytes); });
+    const std::optional<uint32_t> item =
+        edit::ItemAtOffset(edit::Offsets(read.sequence, song::Console{.engine = hokuto::format::EngineOf(read.flavor)}),
+                           info.start_offset);
+    std::optional<std::string> label;
+    for (const ntdlib::commands::Label& named : read.sequence.labels)
+    {
+        label = item && named.item == *item ? std::optional(named.name) : label;
+    }
+    if (!label && !(read.sequence.labels.empty() && info.start_offset == 0))
+    {
+        throw LeftOut("starts where its file has no label");
+    }
+
+    return label;
+}
+
+// The sound that Another Console makes of sequence sound `sound` of `donor_file` for `build`. Throws a Refusal for a
+// conversion that Hokuto refuses. Throws a LeftOut for a conversion that takes the banks of several slots, or keeps
+// only the instruments that the sound selects: such a conversion has no import to match.
+edit::OtherConsoleSong ReferenceOf(const format::File& donor_file, uint32_t sound, const ntdlib::SndBuild& build)
+{
+    edit::OtherConsoleSong other = Refusable([&] { return edit::ForWii(donor_file, sound, build); });
+    if (!other.slot_programs.empty())
+    {
+        throw LeftOut(std::string(kSeveralSlots));
+    }
+    const auto kept_only = [](const std::string& warning)
+    {
+        return warning.starts_with("The bank keeps only the instruments");
+    };
+    if (std::ranges::any_of(other.warnings, kept_only))
+    {
+        throw LeftOut(std::string(kTrimmed));
+    }
+
+    return other;
+}
+
+// Imports the donor's bank `bank_bytes`, after the wave archives that it names, into `state`. Then imports the donor's
+// sequence file `sequence_bytes` as a new sequence sound that copies the values of sound `model` and plays the new
+// bank. The new sound starts at `label`, or at the file's first command without one. `build` is the archive's build.
+// Counts the imports in `totals`. Returns the new sound's index, or nothing when the import doesn't add the sound with
+// its bank. Throws a Refusal for an import that Hokuto refuses.
+std::optional<uint32_t> ImportDonorSound(WiiState& state, const sar::SoundArchive& donor,
+                                         const std::vector<uint8_t>& bank_bytes,
+                                         const std::vector<uint8_t>& sequence_bytes,
+                                         const std::optional<std::string>& label, uint32_t model,
+                                         const ntdlib::SndBuild& build, WiiDonorTotals& totals)
+{
+    // The wave archives and the bank.
+    const std::map<uint32_t, uint32_t> map = ImportNamedWaves(state, donor, bank_bytes, totals);
+    const sar::Flavor flavor = donor.ReadOptions().flavor;
+    const auto convert_bank = [&]
+    {
+        return edit::WiiFileOf(edit::ReadIncomingFile(bank_bytes, edit::FileKind::kBank, flavor), flavor,
+                               *state.archive, map, edit::NewWiiFileVersion(*state.archive, edit::FileKind::kBank));
+    };
+    const edit::IncomingFile wii_bank = Refusable(convert_bank);
+    const auto add_bank = [&]
+    {
+        return edit::AddWiiBank(state.file, "HOKUTO_CHECK_BANK", wii_bank.bytes, wii_bank.wave_data, {});
+    };
+    state = WiiStateOf(Refusable(add_bank));
+    totals.imports++;
+    totals.banks++;
+    const auto bank = static_cast<uint32_t>(state.archive->Banks().size() - 1);
+
+    // The sound, from the label where the donor's sound starts.
+    const auto read_for_wii = [&]
+    {
+        return edit::ReadIncoming(sequence_bytes, song::Console{.engine = hokuto::format::Engine::kWii, .wii = build});
+    };
+    edit::Incoming incoming = Refusable(read_for_wii);
+    uint32_t start = 0;
+    for (const ntdlib::commands::Label& named : incoming.sequence.labels)
+    {
+        start = label && named.name == *label ? named.item : start;
+    }
+    start = Refusable([&] { return edit::WithLaterGlobals(incoming.sequence, start).first; });
+    const std::size_t sounds = state.model.sounds.size();
+    const auto add_sound = [&]
+    {
+        return edit::AddWiiSequenceSound(state.file, model, "HOKUTO_CHECK_SEQ", incoming.sequence, start, {},
+                                         std::vector<uint32_t>{sar::ItemId(sar::kBankItem, bank)}, {});
+    };
+    state = WiiStateOf(Refusable(add_sound));
+    totals.imports++;
+    if (state.model.sounds.size() != sounds + 1 || state.model.sounds.back().bank != bank)
+    {
+        return std::nullopt;
+    }
+
+    return static_cast<uint32_t>(sounds);
+}
+
 // What is wrong when sequence sound `sound` of the donor comes into the Wii's `file` with the bank of its first slot
 // and the wave archives that the bank names, or nothing. The new sound copies the values of the archive's first
 // sequence sound `model`, and then takes the volume, the pan mode and the pan curve of the sound that Another Console
@@ -197,88 +319,25 @@ std::string DonorSoundProblem(const format::File& file, const sar::SoundArchive&
         throw LeftOut("lacks its files");
     }
 
-    // The sound's start: a label of its file, or the file's first command when the file has no label.
-    const edit::Incoming read = Refusable([&] { return edit::ReadIncoming(*sequence_bytes); });
-    const std::optional<uint32_t> item =
-        edit::ItemAtOffset(edit::Offsets(read.sequence, song::Console{.engine = hokuto::format::EngineOf(read.flavor)}),
-                           info.start_offset);
-    std::optional<std::string> label;
-    for (const ntdlib::commands::Label& named : read.sequence.labels)
-    {
-        label = item && named.item == *item ? std::optional(named.name) : label;
-    }
-    if (!label && !(read.sequence.labels.empty() && info.start_offset == 0))
-    {
-        throw LeftOut("starts where its file has no label");
-    }
-
-    // The reference: the sound that Another Console makes for the archive's build.
-    edit::OtherConsoleSong other = Refusable([&] { return edit::ForWii(donor_file, sound, build); });
-    if (!other.slot_programs.empty())
-    {
-        throw LeftOut(std::string(kSeveralSlots));
-    }
-    const auto kept_only = [](const std::string& warning)
-    {
-        return warning.starts_with("The bank keeps only the instruments");
-    };
-    if (std::ranges::any_of(other.warnings, kept_only))
-    {
-        throw LeftOut(std::string(kTrimmed));
-    }
+    // The sound's start, the reference, and the import.
+    const std::optional<std::string> label = StartLabelOf(*sequence_bytes, info);
+    edit::OtherConsoleSong other = ReferenceOf(donor_file, sound, build);
     const ntdlib::rsar::SoundModel converted =
         ntdlib::rsar::ReadArchiveModel(format::ExportArchive(other.file)).sounds.at(0);
-
-    // The wave archives, the bank and the sound.
     WiiState state = WiiStateOf(file);
-    const std::map<uint32_t, uint32_t> map = ImportNamedWaves(state, donor, *bank_bytes, totals);
-    const sar::Flavor flavor = donor.ReadOptions().flavor;
-    const auto convert_bank = [&]
-    {
-        return edit::WiiFileOf(edit::ReadIncomingFile(*bank_bytes, edit::FileKind::kBank, flavor), flavor,
-                               *state.archive, map, edit::NewWiiFileVersion(*state.archive, edit::FileKind::kBank));
-    };
-    const edit::IncomingFile wii_bank = Refusable(convert_bank);
-    const auto add_bank = [&]
-    {
-        return edit::AddWiiBank(state.file, "HOKUTO_CHECK_BANK", wii_bank.bytes, wii_bank.wave_data, {});
-    };
-    state = WiiStateOf(Refusable(add_bank));
-    totals.imports++;
-    totals.banks++;
-    const auto bank = static_cast<uint32_t>(state.archive->Banks().size() - 1);
-    edit::Incoming incoming = Refusable(
-        [&]
-        {
-            return edit::ReadIncoming(*sequence_bytes,
-                                      song::Console{.engine = hokuto::format::Engine::kWii, .wii = build});
-        });
-    uint32_t start = 0;
-    for (const ntdlib::commands::Label& named : incoming.sequence.labels)
-    {
-        start = label && named.name == *label ? named.item : start;
-    }
-    start = Refusable([&] { return edit::WithLaterGlobals(incoming.sequence, start).first; });
-    const std::size_t sounds = state.model.sounds.size();
-    const auto add_sound = [&]
-    {
-        return edit::AddWiiSequenceSound(state.file, model, "HOKUTO_CHECK_SEQ", incoming.sequence, start, {},
-                                         std::vector<uint32_t>{sar::ItemId(sar::kBankItem, bank)}, {});
-    };
-    state = WiiStateOf(Refusable(add_sound));
-    totals.imports++;
-    const auto added = static_cast<uint32_t>(sounds);
-    if (state.model.sounds.size() != sounds + 1 || state.model.sounds.back().bank != bank)
+    const std::optional<uint32_t> added =
+        ImportDonorSound(state, donor, *bank_bytes, *sequence_bytes, label, model, build, totals);
+    if (!added)
     {
         return "doesn't add the sound with its bank";
     }
 
     // The conversion's values. Before version 1.2, the conversion takes the balance mode and the square-root curve.
-    format::File valued = edit::ChangeSound(state.file, added, {edit::SoundValue::kVolume, 0, converted.volume});
+    format::File valued = edit::ChangeSound(state.file, *added, {edit::SoundValue::kVolume, 0, converted.volume});
     if (edit::HeldValuesOf(valued).pan)
     {
-        valued = edit::ChangeSound(valued, added, {edit::SoundValue::kPanMode, 0, converted.pan_mode});
-        valued = edit::ChangeSound(valued, added, {edit::SoundValue::kPanCurve, 0, converted.pan_curve});
+        valued = edit::ChangeSound(valued, *added, {edit::SoundValue::kPanMode, 0, converted.pan_mode});
+        valued = edit::ChangeSound(valued, *added, {edit::SoundValue::kPanCurve, 0, converted.pan_curve});
     }
     else if (converted.pan_mode != 1 || converted.pan_curve != 0)
     {
@@ -300,7 +359,7 @@ std::string DonorSoundProblem(const format::File& file, const sar::SoundArchive&
         return song::RenderDry(archive, sequence, song::Mixing::kStrict, seconds, kCancel).samples;
     };
     const std::vector<float> expected = render(reference, 0);
-    const std::vector<float> samples = render(state.archive, added);
+    const std::vector<float> samples = render(state.archive, *added);
     totals.sounding += std::ranges::any_of(expected, [](float sample) { return sample != 0.0f; }) ? 1 : 0;
     if (samples != expected)
     {
@@ -468,22 +527,15 @@ std::string DonorFileProblem(const format::File& file, const WiiArchive& built, 
     return {};
 }
 
-// Runs `check` of `item` in archive `name`, and counts the outcome in `totals`.
-// An attempt gives the reason why the check leaves the item out, or nothing.
+// Runs `check` of the donor's `item` in archive `name` (Attempt). Counts an item that the check leaves out in `totals`
+// by the reason, and returns the reason. Returns nothing for an item that the check doesn't leave out.
 template <typename Check>
-std::string Attempt(const std::string& name, const std::string& item, const Check& check, WiiDonorTotals& totals)
+std::string AttemptDonorItem(const std::string& name, const std::string& item, const Check& check,
+                             WiiDonorTotals& totals)
 {
     try
     {
-        if (const std::string problem = check(); !problem.empty())
-        {
-            std::printf("%s: %s %s\n", name.c_str(), item.c_str(), problem.c_str());
-            totals.failed++;
-        }
-    }
-    catch (const Refusal& error)
-    {
-        totals.refused[error.what()]++;
+        Attempt(name, item, check, totals);
     }
     catch (const LeftOut& error)
     {
@@ -494,11 +546,6 @@ std::string Attempt(const std::string& name, const std::string& item, const Chec
         totals.several_slots += why == kSeveralSlots ? 1 : 0;
         totals.trimmed += why == kTrimmed ? 1 : 0;
         return why;
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: %s fails: %s\n", name.c_str(), item.c_str(), error.what());
-        totals.failed++;
     }
 
     return {};
@@ -543,7 +590,7 @@ void ImportDonorSounds(const format::File& file, const Archive& donor, const for
             {
                 return DonorSoundProblem(file, *donor, donor_file, sound, sequences[0], build, 10.0, totals);
             };
-            const std::string left_out = Attempt(name, donor->Sounds()[sound].name, check_sound, totals);
+            const std::string left_out = AttemptDonorItem(name, donor->Sounds()[sound].name, check_sound, totals);
             if (left_out != kSeveralSlots && left_out != kTrimmed)
             {
                 break;
@@ -567,7 +614,7 @@ void ImportDonorWaveSounds(const format::File& file, const Archive& donor, const
             {
                 return DonorWaveSoundsProblem(file, *donor, sets[k], models[0], totals);
             };
-            Attempt(name, sets[k].name, check_sounds, totals);
+            AttemptDonorItem(name, sets[k].name, check_sounds, totals);
         }
     }
 }
@@ -586,7 +633,7 @@ void ImportDonorWaves(const format::File& file, const WiiArchive& built, std::sp
             {
                 return DonorWaveProblem(file, built, built_bytes, *donor, k, wave_data[0].file_id, totals);
             };
-            Attempt(name, donor->WaveArchives()[k].name, check_wave, totals);
+            AttemptDonorItem(name, donor->WaveArchives()[k].name, check_wave, totals);
         }
     }
 }
@@ -644,8 +691,9 @@ void ImportDonorFiles(const format::File& file, const WiiArchive& built, std::sp
             {
                 return DonorFileProblem(file, built, built_bytes, kind, item, id, *bytes, flavor, totals);
             };
-            Attempt(name, (kind == edit::FileKind::kBank ? "bank " : "wave sound file ") + std::to_string(item),
-                    check_file, totals);
+            AttemptDonorItem(name,
+                             (kind == edit::FileKind::kBank ? "bank " : "wave sound file ") + std::to_string(item),
+                             check_file, totals);
         }
     }
 }
@@ -721,14 +769,8 @@ int CheckWiiDonor(const format::File& file, const WiiArchive& built, std::span<c
         return 2;
     }
 
-    // An archive that the tools didn't lay out takes no new item.
-    try
+    if (!ModelForImports(built_bytes, name))
     {
-        ntdlib::rsar::ReadArchiveModel(built_bytes);
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: takes no new item: %s\n", name.c_str(), error.what());
         return 0;
     }
 

@@ -14,15 +14,15 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/driver.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/testing/dse_song_files.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sdat_files.h"

@@ -41,9 +41,6 @@ constexpr int kVoices = 256;
 // sfizz's resampling: 2 is Hermite interpolation, its default.
 constexpr int kSampleQuality = 2;
 
-// The microseconds of a quarter note until a MIDI file's first tempo change.
-constexpr uint32_t kDefaultMicros = 500000;
-
 // The folder of the SFZ files in the temporary folder. The folder of samples lies beside it. Each file's <control>
 // header points there.
 constexpr char kFilesFolder[] = "sequence";
@@ -93,20 +90,13 @@ TickTimes::TickTimes(const seqlib::midi::File& file)
     // The tempo changes of every track, in order of tick. Changes at one tick keep the order of their tracks, and the
     // last one holds.
     std::map<uint64_t, uint32_t> changes;
-    for (const seqlib::midi::Track& track : file.tracks)
+    for (const seqlib::midi::Tempo& tempo : seqlib::midi::Tempos(file))
     {
-        for (const seqlib::midi::Event& event : track.events)
-        {
-            const std::vector<uint8_t>& bytes = event.bytes;
-            if (bytes.size() == 6 && bytes[0] == 0xFF && bytes[1] == 0x51 && bytes[2] == 3)
-            {
-                changes[event.tick] = (uint32_t{bytes[3]} << 16) | (uint32_t{bytes[4]} << 8) | bytes[5];
-            }
-        }
+        changes[tempo.tick] = tempo.micros_per_quarter;
     }
 
     const double division = file.division;
-    stretches_.push_back({0, 0.0, kDefaultMicros / 1e6 / division});
+    stretches_.push_back({0, 0.0, seqlib::midi::kDefaultMicrosPerQuarter / 1e6 / division});
     for (const auto& [tick, micros] : changes)
     {
         const Stretch& last = stretches_.back();

@@ -5,6 +5,24 @@
 // The Wii's part of the check. An archive of the Wii imports with the game's build of NW4R SND, from the main.dol of
 // the extracted disc that holds the archive, or else with the build that the archive's version gives. Its sequences
 // read and play by the rules of that build.
+//
+// An archive of the Wii (RSAR) imports with the game's build of NW4R SND, from the main.dol of the extracted disc that
+// holds the archive, or else with the build that the archive's version gives. Each sequence sound takes its sequence
+// file again from its start, and the Hokuto file has to come back unchanged. It then takes the file of the next
+// sequence sound that plays another file, with that sound's bank: a sound of the Wii plays one bank. ntdlib's performer
+// has to play the other sound's notes in the sound's place, by the rules of the build. The file's other sounds have to
+// play as before. Every copy of the sound's file in the archive's groups has to hold the new commands, and every other
+// file has to keep its bytes and its wave data in every copy. Each bank's file, each wave sound file and each RWAR of a
+// file's wave data then takes its bytes again, and the Hokuto file has to come back unchanged. It then takes the next
+// file of its kind that keeps its waves in the same way: in a WAVE block, or in an RWAR. Every copy has to hold the new
+// bytes, with zeros up to a multiple of 32 bytes. The file's other part, every other file and every sound's start have
+// to stay. Each wave of each file's wave data then goes back in its place from its wave file (RWAV), and the Hokuto
+// file has to come back unchanged. The wave's WAV file from Export… then goes in as 16-bit PCM and as DSP-ADPCM. The
+// new wave has to hold the wave's rate, channels and loop, and the other waves of the wave data their values. In 16-bit
+// PCM it has to decode to the wave's samples. In DSP-ADPCM its loop may move forward to the next frame, and the tool
+// counts the waves by their ratio of signal to noise. A wave of more than two channels counts apart: the WAV file holds
+// two. So does a wave whose loop holds no samples: a WAV file can't hold such a loop, and the wave comes back without
+// it. The tool counts Replace…'s refusals by their reasons.
 
 #include "check_replace.h"
 
@@ -116,21 +134,9 @@ Source WiiSourceOf(std::span<const uint8_t> bytes, uint32_t start_offset, const 
     return source;
 }
 
-bool Untracked(const Source& source, const ntdlib::rsar::SoundInfo& info)
-{
-    return (edit::TracksOpened(source.incoming.sequence, *source.start) & ~info.allocate_track_flags) != 0;
-}
-
 song::Sequence WiiPlayed(const ntdlib::rsar::SoundArchive& archive, uint32_t sound, const ntdlib::SndBuild& build)
 {
     return Placeless(song::ReadSequence(archive, sound, {}, {}, build));
-}
-
-bool StartsAtLabel(const ntdlib::rsar::SoundArchive& archive, uint32_t sound)
-{
-    const ntdlib::rsar::SoundInfo& info = archive.Sounds()[sound];
-    const ntdlib::rsar::SequenceFile file = ntdlib::rsar::SequenceFile::Read(archive.FileData(info.file_id));
-    return std::ranges::any_of(file.labels, [&info](const auto& label) { return label.offset == info.start_offset; });
 }
 
 namespace
@@ -238,17 +244,13 @@ std::string WiiCrossProblem(const format::File& file, std::span<const std::optio
     {
         return "changes the copies of its file";
     }
-    std::string problem = OtherWiiFilesProblem(built_bytes, built, after_bytes, *after, file_id, true, false);
-    for (std::size_t i = 0; i < built.Sounds().size() && problem.empty(); i++)
+    if (std::string problem = OtherWiiFilesProblem(built_bytes, built, after_bytes, *after, file_id, true, false);
+        !problem.empty())
     {
-        const bool plays = std::ranges::find(playing, static_cast<uint32_t>(i)) != playing.end();
-        if (!plays && after->Sounds()[i].start_offset != built.Sounds()[i].start_offset)
-        {
-            problem = "moves the start of " + built.Sounds()[i].name;
-        }
+        return problem;
     }
 
-    return problem;
+    return MovedStartProblem(built, *after, playing);
 }
 
 // The banks' files, the wave sound files and the RWARs of the wave data of the Wii's `archive`, each file once, in that
@@ -366,17 +368,14 @@ std::string WiiFileProblem(const format::File& file, const ntdlib::rsar::SoundAr
         }
     }
     totals.copies += copies.size();
-    std::string problem =
-        OtherWiiFilesProblem(built_bytes, built, after_bytes, *after, item.file_id, !wave_data, wave_data);
-    for (std::size_t i = 0; i < built.Sounds().size() && problem.empty(); i++)
+    if (std::string problem =
+            OtherWiiFilesProblem(built_bytes, built, after_bytes, *after, item.file_id, !wave_data, wave_data);
+        !problem.empty())
     {
-        if (after->Sounds()[i].start_offset != built.Sounds()[i].start_offset)
-        {
-            problem = "moves the start of " + built.Sounds()[i].name;
-        }
+        return problem;
     }
 
-    return problem;
+    return MovedStartProblem(built, *after);
 }
 
 // Each file of a bank, a wave sound file and a wave archive of the Wii's `file` takes its bytes again, then the next

@@ -117,10 +117,28 @@ std::optional<EffectType> WiiUTypeOf(format::EffectKind kind)
     case format::EffectKind::kCtrNnReverb:
     case format::EffectKind::kCtrNnDelay:
     case format::EffectKind::kCtrNnReverb2011:
+    case format::EffectKind::kSwitchDelay:
+    case format::EffectKind::kSwitchLightLimiter:
+    case format::EffectKind::kSwitchReverb:
         return std::nullopt;
     }
 
     return std::nullopt;
+}
+
+std::optional<song::AtkEffect::Type> AtkTypeOf(format::EffectKind kind)
+{
+    switch (kind)
+    {
+    case format::EffectKind::kSwitchDelay:
+        return song::AtkEffect::Type::kDelay;
+    case format::EffectKind::kSwitchLightLimiter:
+        return song::AtkEffect::Type::kLightLimiter;
+    case format::EffectKind::kSwitchReverb:
+        return song::AtkEffect::Type::kReverb;
+    default:
+        return std::nullopt;
+    }
 }
 
 std::optional<ntdlib::rvl::snd::EffectType> WiiTypeOf(format::EffectKind kind)
@@ -172,6 +190,12 @@ const char* EffectName(format::EffectKind kind)
         return "nn::snd Delay";
     case format::EffectKind::kCtrNnReverb2011:
         return "nn::snd Reverb (2011)";
+    case format::EffectKind::kSwitchDelay:
+        return "nn::atk Delay";
+    case format::EffectKind::kSwitchLightLimiter:
+        return "nn::atk Light Limiter";
+    case format::EffectKind::kSwitchReverb:
+        return "nn::atk Reverb";
     }
 
     return "Effect";
@@ -210,7 +234,7 @@ bool RunsEffect(format::Engine engine, format::EffectKind kind)
         break;
     }
 
-    return kind == format::EffectKind::kI3dl2Reverb;
+    return kind == format::EffectKind::kI3dl2Reverb || format::IsAtkKind(kind);
 }
 
 std::vector<float> CtrStartingParameters(format::EffectKind kind)
@@ -263,10 +287,31 @@ std::vector<float> CtrStartingParameters(format::EffectKind kind)
     case format::EffectKind::kWiiDelay:
     case format::EffectKind::kWiiReverbStd:
     case format::EffectKind::kWiiReverbStd2008:
+    case format::EffectKind::kSwitchDelay:
+    case format::EffectKind::kSwitchLightLimiter:
+    case format::EffectKind::kSwitchReverb:
         break;
     }
 
     return parameters;
+}
+
+std::vector<float> AtkStartingParameters(format::EffectKind kind)
+{
+    // The defaults of the constructors of EffectDelay (0xdede34) and EffectLightLimiter (0xdeff38) in WarioWare: Move
+    // It!'s main, and of EffectReverb (0x544d90) in the main of Clubhouse Games: 51 Worldwide Classics. ntdlib's
+    // classes start from the same values (ntdlib/nx/atk/effect.h). The times are in microseconds.
+    switch (kind)
+    {
+    case format::EffectKind::kSwitchDelay:
+        return {2'000'000.0f, 160'000.0f, 0.5f, 0.4f, 0.5f, 0.8f, 0.3f, 2.0f};
+    case format::EffectKind::kSwitchLightLimiter:
+        return {1000.0f, 20.0f, 300'000.0f, 500.0f, 0.2f, 1.0f, 1.0f, 3.0f};
+    case format::EffectKind::kSwitchReverb:
+        return {0.0f, 0.7f, 15'000.0f, 0.0f, 0.7f, 1'500'000.0f, 0.8f, 0.7f, 0.2f, 1.0f, 0.7f, 2.0f};
+    default:
+        return {};
+    }
 }
 
 song::AuxEffects ModelEffects(const BusEffects& effects)
@@ -292,6 +337,10 @@ song::AuxEffects ModelEffects(const BusEffects& effects)
             else if (format::IsCtrKind(effect.kind))
             {
                 model[bus].push_back(CtrEffectOf(effect.kind, effect.parameters));
+            }
+            else if (const std::optional<song::AtkEffect::Type> atk = AtkTypeOf(effect.kind))
+            {
+                model[bus].push_back(song::AtkEffect{*atk, effect.parameters});
             }
             else if (effect.kind == format::EffectKind::kI3dl2Reverb)
             {

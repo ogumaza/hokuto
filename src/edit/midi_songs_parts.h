@@ -50,11 +50,6 @@ struct MidiTrack
     // The bank that control change 0 selects for the next program change, with `selects_banks`.
     uint8_t bank = 0;
 
-    // The program that the file selects on the channel, and the program that the song's commands select: on MIDI's drum
-    // channel, a drum note's pairing can select another.
-    int file_program = 0;
-    int played_program = 0;
-
     // The notes that sound on each key, by their places in `placed`, the earliest first.
     std::map<uint8_t, std::deque<std::size_t>> sounding;
 
@@ -83,10 +78,8 @@ std::vector<Placed> TimeKeepingTempos(const std::vector<std::pair<uint64_t, uint
 // `options`.
 bool Holds(uint8_t status, uint8_t data, uint8_t value, const MidiOptions& options);
 
-// Adds a note-on of key `data` at velocity `value` at `tick` to `track`, a track of MIDI channel `channel`
-// (SongOfMidi). On MIDI's drum channel, a pairing of `options` can select the note's program and key.
-void PlaceNoteOn(MidiTrack& track, uint64_t tick, uint8_t channel, uint8_t data, uint8_t value,
-                 const MidiOptions& options);
+// Adds a note-on of key `data` at velocity `value` at `tick` to `track` (SongOfMidi).
+void PlaceNoteOn(MidiTrack& track, uint64_t tick, uint8_t data, uint8_t value);
 
 // Ends the earliest note of key `data` that sounds in `track` at `tick` (SongOfMidi).
 void PlaceNoteOff(MidiTrack& track, uint64_t tick, uint8_t data);

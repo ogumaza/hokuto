@@ -565,7 +565,7 @@ void App::UpdateKeyEditor()
     }
 
     // While the reader builds the archive of another version, the notes wait for it.
-    const bool busy = reading_version_ != nullptr;
+    const bool busy = Settling();
     const ShownItem shown = ItemShown(ShownSound()).At({static_cast<uint64_t>(key_editor_track_), 0, 0});
     const std::optional<KeyEdit> edit =
         DrawKeyEditor(key_track_, key_editor_, transport_, shown, busy, &key_editor_open_);
@@ -622,7 +622,7 @@ App::FirstNote App::FirstNoteOf(const song::Track& track) const
     }
     for (std::size_t slot = 0; slot < slots.size(); slot++)
     {
-        if (!slots[slot].programs.empty() && (slot == 0 || song::Runs(console, ntdlib::commands::Kind::kBankSelect, 0)))
+        if (!slots[slot].programs.empty() && (slot == 0 || edit::TracksSelectBanks(console)))
         {
             return {edit::Program{static_cast<int>(slot), static_cast<int>(slots[slot].programs.front())}, {}};
         }

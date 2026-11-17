@@ -447,8 +447,7 @@ bool App::TracksEditable() const
                     (played_.Dse() && native && document->native->engine == format::Engine::kDse);
     const bool driver = played_.Driver() && native && document->native->driver;
     return history_ && !preview_ && sequence_ && (tables || gba || ds || driver) && archive_version_ &&
-           ShownSequence().has_value() && SameArchive(*document, *archive_version_) && reading_version_ == nullptr &&
-           !WindowWaits();
+           ShownSequence().has_value() && SameArchive(*document, *archive_version_) && !Settling() && !WindowWaits();
 }
 
 void App::AddSelectedTrack(const format::File& document, const std::vector<std::optional<edit::SoundPlace>>& places,

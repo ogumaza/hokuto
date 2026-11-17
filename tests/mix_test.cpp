@@ -20,13 +20,13 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/layout.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "xsflib/testing/check.h"
@@ -447,8 +447,8 @@ void Test3ds()
 // ROM's free space.
 std::vector<uint8_t> GbaRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
@@ -463,7 +463,7 @@ std::vector<uint8_t> GbaRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 

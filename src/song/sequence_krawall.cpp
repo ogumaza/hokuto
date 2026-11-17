@@ -2,10 +2,10 @@
 
 // The reader of the songs of Krawall, a GBA driver.
 
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/krawall/commands.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/krawall/performance.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/krawall/performance.h"
 
 #include "song/krawall.h"
 #include "song/sequence_parts.h"
@@ -14,8 +14,6 @@ namespace hokuto::song
 {
 namespace
 {
-
-namespace export_ = ntdlib::sequence_export;
 
 using sequence_parts::AddTrack;
 using sequence_parts::ClipToLoop;
@@ -72,10 +70,10 @@ std::map<std::pair<uint32_t, uint32_t>, uint16_t> KrawallInstruments(const ntdli
 }
 
 // The item at each offset of `decoded`, a module of the driver `info`. None for a module that can't be decoded.
-std::map<uint32_t, uint32_t> ItemsOfModule(const ntdlib::krawall::DriverInfo& info,
-                                           const ntdlib::krawall::Decoded& decoded)
+std::map<uint32_t, uint32_t> ItemsOfModule(const agblib::krawall::DriverInfo& info,
+                                           const agblib::krawall::Decoded& decoded)
 {
-    namespace krawall = ntdlib::krawall;
+    namespace krawall = agblib::krawall;
     std::map<uint32_t, uint32_t> items;
     if (!decoded.opaque)
     {
@@ -87,7 +85,7 @@ std::map<uint32_t, uint32_t> ItemsOfModule(const ntdlib::krawall::DriverInfo& in
 
 // Sets the program of each note of `track`, in song `sound` of `rom`. `items` contains the item of `decoded` at each
 // offset.
-void SetKrawallPrograms(const KrawallRom& rom, uint32_t sound, Track& track, const ntdlib::krawall::Decoded& decoded,
+void SetKrawallPrograms(const KrawallRom& rom, uint32_t sound, Track& track, const agblib::krawall::Decoded& decoded,
                         const std::map<uint32_t, uint32_t>& items)
 {
     // A note's program is the sample of the game's table that its instrument plays at the note of its row. Every entry
@@ -116,7 +114,7 @@ void SetKrawallPrograms(const KrawallRom& rom, uint32_t sound, Track& track, con
 
 Sequence ReadSequence(const KrawallRom& rom, uint32_t sound)
 {
-    namespace krawall = ntdlib::krawall;
+    namespace krawall = agblib::krawall;
     const std::string name = rom.SoundName(sound);
     if (sound >= rom.SoundCount())
     {
@@ -125,12 +123,12 @@ Sequence ReadSequence(const KrawallRom& rom, uint32_t sound)
 
     // The performer plays one pass of the loop. A module that can't be read makes a performance with a warning and no
     // stretches.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     try
     {
-        const export_::krawall::Performance performance =
-            export_::krawall::PerformSong(rom.ModulesRom(), rom.info, static_cast<int>(sound), settings);
+        const agblib::sequence_export::krawall::Performance performance = agblib::sequence_export::krawall::PerformSong(
+            rom.ModulesRom(), rom.info, static_cast<int>(sound), settings);
         if (!performance.warnings.empty() &&
             std::ranges::all_of(performance.stretches, [](const auto& stretches) { return stretches.empty(); }))
         {

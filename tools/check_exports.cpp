@@ -12,8 +12,8 @@
 // fails on both sides with the same error counts as the same. The tests check that the files go where the converters
 // put them.
 //
-// A GBA ROM converts with ntdlib's converter of MusicPlayer2000 and the default settings of
-// ntdlib::sequence_export::agb::ConvertSettings. The converter's side reads the ROM, and Hokuto's side the ROM that the
+// A GBA ROM converts with agblib's converter of MusicPlayer2000 and the default settings of
+// agblib::sequence_export::agb::ConvertSettings. The converter's side reads the ROM, and Hokuto's side the ROM that the
 // Hokuto file builds. Each song that plays converts on both sides. The tool compares the MIDI file, the SoundFont 2
 // file and the warnings. It then checks the voice groups that the browser lists (song::GbaVoiceGroups). Each program
 // that ntdlib's performer selects as it plays a song has to be among the programs of the song's voice group. Each voice

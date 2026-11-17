@@ -451,9 +451,8 @@ std::string ArgumentText(const song::Console& console, Kind kind, const Argument
 
 std::string IgnoredOn(std::string_view engine)
 {
-    // The rest of the program names a console with its article: "on the GBA". Krawall and DSE are drivers.
-    const bool driver = engine.ends_with("driver") || engine == "DSE" || engine == "Krawall";
-    return (driver ? " by " : " on the ") + std::string(engine);
+    // The rest of the program names a console with its article: "on the GBA".
+    return " on the " + std::string(engine);
 }
 
 std::string CallsText(const ListSubroutine& subroutine)

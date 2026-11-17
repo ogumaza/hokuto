@@ -12,17 +12,18 @@
 #include <string>
 #include <utility>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/song.h"
 
 namespace hokuto::song::gba_assembly_parts
 {
 
-inline constexpr int kLengthCodes = 49; // ClockLength's codes, from 0 to 48
+inline constexpr int kLengthCodes = agblib::mp2k::kLengthCodes;
 inline constexpr uint8_t kCentre = 0x40;
 inline constexpr uint8_t kHighestVolume = 0x7F;
 inline constexpr uint8_t kReverbSet = 0x80;
 inline constexpr std::size_t kBytesOnALine = 16;
-inline constexpr std::size_t kVoiceBytes = ntdlib::mp2k::kVoiceSize;
+inline constexpr std::size_t kVoiceBytes = agblib::mp2k::kVoiceSize;
 inline constexpr uint32_t kKeys = 128;
 inline constexpr uint32_t kPatternBytes = 16;
 
@@ -41,10 +42,9 @@ inline constexpr std::array<const char*, 18> kMemoryOperations = {
     "mem_beq",     "mem_bne",     "mem_bhi",     "mem_bhs",     "mem_bls",     "mem_blo",
     "mem_mem_beq", "mem_mem_bne", "mem_mem_bhi", "mem_mem_bhs", "mem_mem_bls", "mem_mem_blo"};
 
-// The names of keys and numbers in the text, and a little-endian word of `bytes` at `at`.
+// The names of keys and numbers in the text.
 std::string KeyName(int key);
 std::string TwoDigits(int value);
 std::string ThreeDigits(int value);
-uint32_t ReadWord(std::span<const uint8_t> bytes, std::size_t at);
 
 } // namespace hokuto::song::gba_assembly_parts

@@ -59,6 +59,9 @@ bool Within(uint32_t length, uint32_t other, uint32_t frame)
 constexpr uint32_t kCutLength = std::numeric_limits<uint32_t>::max();
 constexpr uint32_t kUnstartedLength = kCutLength - 1;
 
+// The length in the comparisons of VoicesDecide of a note that can't stand alone. It doesn't count either.
+constexpr uint32_t kUncountedLength = kCutLength - 2;
+
 } // namespace
 
 std::vector<song::Note> CommandNotes(const song::Sequence& sound, const song::Track& track)
@@ -83,20 +86,34 @@ std::vector<song::Note> CommandNotes(const song::Sequence& sound, const song::Tr
 namespace
 {
 
-// The length of `note` of CommandNotes in the comparisons: on the GBA and the DS, kCutLength for a note that a later
-// note cut, and kUnstartedLength for one that the driver never started.
-uint32_t LengthOf(const song::Sequence& sound, const song::Note& note)
+// Whether a note of `sound` on the track numbered `number` at `tick` can stand alone in the comparisons of
+// VoicesDecide: the other read runs a note command there (g_voice_ticks).
+bool VoiceAlone(const song::Sequence& sound, int number, uint32_t tick)
 {
-    return !SharesChannels(sound)                       ? note.length
-           : g_any_length || note.program == kNoProgram ? kUnstartedLength
-           : note.cut                                   ? kCutLength
-                                                        : note.length;
+    const auto ticks = std::ranges::find(g_voice_ticks, &sound, &VoiceTicks::sound);
+    return ticks != g_voice_ticks.end() && ticks->ticks.contains({number, tick});
+}
+
+// The length of `note` of CommandNotes on the track numbered `number` in the comparisons: on the GBA and the DS,
+// kCutLength for a note that a later note cut, and kUnstartedLength for one that the driver never started. In the
+// comparisons of VoicesDecide, kUnstartedLength for a note that can stand alone, and kUncountedLength for the others.
+uint32_t LengthOf(const song::Sequence& sound, int number, const song::Note& note)
+{
+    if (g_any_length && SharesChannels(sound))
+    {
+        return VoiceAlone(sound, number, note.start) ? kUnstartedLength : kUncountedLength;
+    }
+
+    return !SharesChannels(sound)       ? note.length
+           : note.program == kNoProgram ? kUnstartedLength
+           : note.cut                   ? kCutLength
+                                        : note.length;
 }
 
 // Whether the length of a note of NotesOf counts in the comparisons.
 bool LengthCounts(uint32_t length)
 {
-    return length != kCutLength && length != kUnstartedLength;
+    return length != kCutLength && length != kUnstartedLength && length != kUncountedLength;
 }
 
 // How the notes of `before` and `after` pair up by `same`. On the GBA, a note that the driver never started
@@ -143,7 +160,8 @@ Pairing Pair(const std::vector<TrackNote>& before, const std::vector<TrackNote>&
         ++pairing.alone;
     }
 
-    // Under VoicesDecide, every note can stand alone. A pair of lists with notes then has to pair one note at least.
+    // Under VoicesDecide, a note can stand alone where the other read runs a note command. A pair of lists with notes
+    // then has to pair one note at least.
     if (g_any_length && !before.empty() && !after.empty() && pairing.pairs.empty())
     {
         pairing.failed = {0, 0};
@@ -170,7 +188,7 @@ std::vector<TrackNote> NotesOf(const song::Sequence& sound, int number, uint32_t
         {
             if (note.start < end && note.length >= shortest)
             {
-                notes.emplace_back(note.start, note.key, LengthOf(sound, note), note.velocity);
+                notes.emplace_back(note.start, note.key, LengthOf(sound, number, note), note.velocity);
             }
         }
     }
@@ -202,6 +220,7 @@ std::string NoteDifference(const std::vector<TrackNote>& before, const std::vect
         const auto& [start, key, length, velocity] = notes[index];
         const std::string held = length == kCutLength         ? ", cut"
                                  : length == kUnstartedLength ? ", never started"
+                                 : length == kUncountedLength ? ""
                                                               : " for " + std::to_string(length);
         return "key " + std::to_string(key) + " at " + std::to_string(start) + held + ", velocity " +
                std::to_string(velocity);

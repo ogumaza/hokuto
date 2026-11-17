@@ -164,10 +164,10 @@ namespace
 {
 
 // The keys of the notes that the track at `address` of `rom`, a ROM of Rare's driver, starts at the tick of the start
-// of its loop, before the loop starts. ntdlib's rare::ScanTrack uses the last loop start before the loop's end.
+// of its loop, before the loop starts. agblib's rare::ScanTrack uses the last loop start before the loop's end.
 std::multiset<uint8_t> RareKeysBeforeLoop(const hokuto::song::RareRom& rom, uint32_t address)
 {
-    namespace rare = ntdlib::rare;
+    namespace rare = agblib::rare;
     std::multiset<uint8_t> at_tick;
     std::multiset<uint8_t> before;
     for (int n = 0; n < rare::kMaxTrackCommands; ++n)
@@ -200,19 +200,19 @@ std::multiset<uint8_t> RareKeysBeforeLoop(const hokuto::song::RareRom& rom, uint
 }
 
 // The loops of the tracks of the tune that sound `sound` of `archive` plays, a ROM of Rare's driver, in the driver's
-// ticks (ntdlib's rare::ScanTrack).
+// ticks (agblib's rare::ScanTrack).
 TrackLoops RareTrackLoops(const CheckedArchive& archive, uint32_t sound)
 {
     TrackLoops loops;
     const hokuto::song::RareRom& rom = *archive.Rare();
-    ntdlib::rare::TuneHeader header;
-    if (!ntdlib::rare::ReadTuneHeader(rom.rom, ntdlib::rare::TuneAddress(rom.rom, rom.info, rom.SongOf(sound)), header))
+    agblib::rare::TuneHeader header;
+    if (!agblib::rare::ReadTuneHeader(rom.rom, agblib::rare::TuneAddress(rom.rom, rom.info, rom.SongOf(sound)), header))
     {
         return loops;
     }
     for (std::size_t track = 0; track < header.tracks.size(); ++track)
     {
-        const ntdlib::agb::TrackLayout layout = ntdlib::rare::ScanTrack(rom.rom, header.tracks[track], rom.info.format);
+        const agblib::agb::TrackLayout layout = agblib::rare::ScanTrack(rom.rom, header.tracks[track], rom.info.format);
         if (layout.loops && layout.loop_end > layout.loop_start)
         {
             loops[static_cast<int>(track)] = {static_cast<uint32_t>(layout.loop_start),
@@ -296,7 +296,7 @@ uint32_t QuintetFrameTicks(const hokuto::song::Sequence& song)
         fastest = std::max(fastest, tempo.bpm);
     }
 
-    return static_cast<uint32_t>(std::max(1.0, std::ceil(song.timebase * fastest / 60.0 / ntdlib::agb::kFrameRate)));
+    return static_cast<uint32_t>(std::max(1.0, std::ceil(song.timebase * fastest / 60.0 / agblib::agb::kFrameRate)));
 }
 
 } // namespace
@@ -328,9 +328,9 @@ std::map<int, std::vector<uint32_t>> QuintetResets(const File& file, uint32_t se
     for (const hokuto::song::Track& track : song.tracks)
     {
         std::vector<uint32_t> ticks = own[track.number];
-        if (track.number != ntdlib::quintet::kSquare1)
+        if (track.number != agblib::quintet::kSquare1)
         {
-            ticks.insert(ticks.end(), own[ntdlib::quintet::kSquare1].begin(), own[ntdlib::quintet::kSquare1].end());
+            ticks.insert(ticks.end(), own[agblib::quintet::kSquare1].begin(), own[agblib::quintet::kSquare1].end());
         }
         std::ranges::sort(ticks);
         resets[track.number] = std::move(ticks);
@@ -375,7 +375,9 @@ std::vector<First> FirstNotes(const hokuto::song::Track& track)
 }
 
 // Whether the first notes of `track` of the read before and of its track in `after` start the same commands, apart by
-// up to the frames of `frame` ticks that `resets` allow, before `end`. Counts the notes apart in `counted`.
+// up to the frames of `frame` ticks that `resets` allow, before `end`. Each pair of notes has to play the same key, on
+// the noise channel aside, and the same velocity: a frame moves a note, not its volume. Counts the notes apart in
+// `counted`.
 bool MatchTrack(const hokuto::song::Track& track, const hokuto::song::Sequence& after,
                 const std::map<int, std::vector<uint32_t>>& resets, uint32_t frame, uint32_t end, QuintetApart& counted)
 {
@@ -431,8 +433,8 @@ bool MatchTrack(const hokuto::song::Track& track, const hokuto::song::Sequence& 
 
         const uint32_t later = std::max(a.start, b.start);
         const uint32_t apart_by = later - std::min(a.start, b.start);
-        const bool noise = track.number == ntdlib::quintet::kNoise;
-        if (a.command != b.command || (!noise && a.key != b.key) ||
+        const bool noise = track.number == agblib::quintet::kNoise;
+        if (a.command != b.command || (!noise && a.key != b.key) || a.velocity != b.velocity ||
             apart_by > frames_at(later) + kQuintetLateFrames * frame)
         {
             return false;

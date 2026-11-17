@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Krawall as one of the drivers of format/drivers.h. Krawall is a player of XM and S3M modules for the GBA
-// (ntdlib/krawall/layout.h). A sequence contains the patterns of a module. The fields of the module's table of patterns
+// (agblib/krawall/layout.h). A sequence contains the patterns of a module. The fields of the module's table of patterns
 // name the items where its patterns start. The revision is 1 for the builds from 2004/09/17 on, and 0 for the earlier
-// builds. The patterns of the later builds hold wider fields (ntdlib::krawall::Traits::wide).
+// builds. The patterns of the later builds hold wider fields (agblib::krawall::Traits::wide).
 
 #include "format/krawall.h"
 
@@ -14,10 +14,10 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/krawall/driver.h"
-#include "ntdlib/krawall/layout.h"
+#include "agblib/agb/rom.h"
+#include "agblib/krawall/commands.h"
+#include "agblib/krawall/driver.h"
+#include "agblib/krawall/layout.h"
 #include "xsflib/binary.h"
 
 #include "format/archive.h"
@@ -30,7 +30,7 @@ namespace hokuto::format
 namespace
 {
 
-ntdlib::krawall::Traits TraitsOf(uint8_t revision)
+agblib::krawall::Traits TraitsOf(uint8_t revision)
 {
     return {.wide = revision != 0};
 }
@@ -54,27 +54,27 @@ public:
 
     bool Holds(std::span<const uint8_t> rom) const override
     {
-        ntdlib::krawall::DriverInfo info;
+        agblib::krawall::DriverInfo info;
         std::string error;
-        return ntdlib::krawall::DetectDriver(RomOf(rom), {}, info, error);
+        return agblib::krawall::DetectDriver(RomOf(rom), {}, info, error);
     }
 
     File Import(std::span<const uint8_t> rom) const override
     {
-        const ntdlib::agb::Rom read = RomOf(rom);
-        ntdlib::krawall::DriverInfo info;
+        const agblib::agb::Rom read = RomOf(rom);
+        agblib::krawall::DriverInfo info;
         std::string error;
-        if (!ntdlib::krawall::DetectDriver(read, {}, info, error))
+        if (!agblib::krawall::DetectDriver(read, {}, info, error))
         {
             throw xsflib::FormatError(error.empty() ? "the ROM shows no sign of Krawall"
                                                     : "Hokuto can't read Krawall's tables: " + error);
         }
 
-        ntdlib::krawall::Layout layout = ntdlib::krawall::Cut(read, info);
+        agblib::krawall::Layout layout = agblib::krawall::Cut(read, info);
         NativeDriver driver{.revision = static_cast<uint8_t>(layout.traits.wide ? 1 : 0),
                             .free_start = layout.free.start,
                             .padding = layout.free.padding};
-        for (const ntdlib::krawall::Span& run : layout.free.filler)
+        for (const agblib::krawall::Span& run : layout.free.filler)
         {
             driver.filler.push_back({run.start, run.size});
         }
@@ -96,24 +96,24 @@ public:
                               std::span<const ntdlib::sar::Field> fields) const override
     {
         const NativeDriver& driver = *native.driver;
-        ntdlib::krawall::FreeSpace free{.start = driver.free_start, .padding = driver.padding};
+        agblib::krawall::FreeSpace free{.start = driver.free_start, .padding = driver.padding};
         for (const FillerRun& run : driver.filler)
         {
             free.filler.push_back({run.start, run.size});
         }
 
-        return ntdlib::krawall::Join(TraitsOf(driver.revision), sequences, pieces, fields, free,
+        return agblib::krawall::Join(TraitsOf(driver.revision), sequences, pieces, fields, free,
                                      {.filler = native.gba_filler});
     }
 
     std::vector<uint32_t> ItemOffsets(const ntdlib::commands::Sequence& sequence, uint8_t revision) const override
     {
-        return ntdlib::krawall::ItemOffsets(sequence, TraitsOf(revision));
+        return agblib::krawall::ItemOffsets(sequence, TraitsOf(revision));
     }
 
     ntdlib::commands::Scale ScaleOf(ntdlib::commands::Kind kind, uint8_t) const override
     {
-        return ntdlib::krawall::ScaleOf(kind);
+        return agblib::krawall::ScaleOf(kind);
     }
 
     // The fields of the modules' tables of patterns name the items where the patterns start, in the order of each
@@ -142,7 +142,7 @@ public:
     void Encode(const ntdlib::commands::Sequence& sequence, std::span<const uint32_t> entries,
                 uint8_t revision) const override
     {
-        ntdlib::krawall::EncodeSequence(sequence, entries, TraitsOf(revision));
+        agblib::krawall::EncodeSequence(sequence, entries, TraitsOf(revision));
     }
 
     ntdlib::commands::Sequence Alone(const ntdlib::commands::Command& item) const override

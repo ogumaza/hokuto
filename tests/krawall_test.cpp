@@ -2,16 +2,16 @@
 
 // Tests Hokuto's path for Krawall: the import and the round trip, the pieces that the arrangement shows, playback, the
 // edits of notes, the refused edits of tracks, the mix and instruments, and the exports. ntdlib's test cartridge of
-// the player (ntdlib/testing/krawall_cart.h) contains no game data. It contains the code patterns that ntdlib's
+// the player (agblib/testing/krawall_cart.h) contains no game data. It contains the code patterns that ntdlib's
 // detection reads, the player's tables, three samples and the modules below.
 //
 // The expected ticks, keys and programs come from the modules' rows, worked out by hand by the rules of the player and
 // of ntdlib's conversion. The test modules are S3M modules: a row's instrument n plays sample n - 1 of the game's
 // table. They play at speed 3, the ticks of a row. At the module's one speed, the conversion maps each tick of the
-// player to one MIDI tick (ntdlib/sequence_export/krawall/performance.h). A row therefore lasts 3 ticks. A note from 1
+// player to one MIDI tick (agblib/sequence_export/krawall/performance.h). A row therefore lasts 3 ticks. A note from 1
 // for C-0 plays MIDI key 11 more, with the sample's relative note of 0: C-4, note 49, plays key 60.
 //
-// ntdlib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
 // sample, from the start, in both mixing modes. The MIDI file and the SoundFont have to equal those of ntdlib's
 // converter, run directly.
 //
@@ -20,7 +20,7 @@
 // module's rows: see TwoSpeedImage.
 //
 // The expected notes and ticks of the edits of removals and moves come from the rules of the player in ntdlib's model
-// (Player::PlayEntry, Player::Effect and Player::SetPos in ntdlib/src/krawall/player.cpp), worked out by hand for each
+// (Player::PlayEntry, Player::Effect and Player::SetPos in agblib/src/krawall/player.cpp), worked out by hand for each
 // module's rows. A note delay plays the channel's note at its tick, with or without a note in its entry. In a module
 // without instruments (S3M), a row's instrument sets the channel's sample and volume, and a note without one uses
 // them. In a module with instruments (XM), an instrument takes effect only with a note, and a note without one plays
@@ -41,17 +41,17 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/krawall/archive_player.h"
+#include "agblib/krawall/commands.h"
+#include "agblib/krawall/driver.h"
+#include "agblib/krawall/instruments.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/krawall/convert.h"
+#include "agblib/testing/krawall_cart.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/krawall/archive_player.h"
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/krawall/driver.h"
-#include "ntdlib/krawall/instruments.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/krawall/convert.h"
-#include "ntdlib/testing/krawall_cart.h"
 #include "seqlib/wav.h"
 #include "xsflib/testing/check.h"
 
@@ -77,7 +77,7 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
-namespace cart = ntdlib::testing::krawall_cart;
+namespace cart = agblib::testing::krawall_cart;
 using format::File;
 using hokuto::testing::ClockDrift;
 using hokuto::testing::ClockRun;
@@ -100,7 +100,7 @@ using song::Sequence;
 using song::SequenceModel;
 using xsflib::testing::ErrorOf;
 
-constexpr uint32_t kRomBase = ntdlib::agb::kRomBase;
+constexpr uint32_t kRomBase = agblib::agb::kRomBase;
 
 // A row's ticks.
 constexpr uint32_t kRowTicks = cart::kSpeed;
@@ -120,7 +120,7 @@ std::vector<uint8_t> Image()
                  {{.row = 0, .channel = 0, .note = 49, .instrument = 1},
                   {.row = 2, .channel = 1, .note = 53, .instrument = 2},
                   {.row = 4, .channel = 0, .note = 51, .instrument = 1},
-                  {.row = 6, .channel = 0, .note = ntdlib::krawall::kNoteOff}});
+                  {.row = 6, .channel = 0, .note = agblib::krawall::kNoteOff}});
     image.Module(1, 4, {{.row = 0, .channel = 0, .note = 49, .instrument = 3}});
 
     return RomBytes(image.ToRom());
@@ -166,7 +166,7 @@ std::vector<uint8_t> DelayImage()
                   {.row = 2, .channel = 0, .note = 53, .instrument = 1, .effect = kNoteDelay, .op = 1},
                   {.row = 3, .channel = 0, .effect = kNoteDelay, .op = 1},
                   {.row = 5, .channel = 0, .note = 51, .instrument = 1},
-                  {.row = 7, .channel = 0, .note = ntdlib::krawall::kNoteOff}});
+                  {.row = 7, .channel = 0, .note = agblib::krawall::kNoteOff}});
     return RomBytes(image.ToRom());
 }
 
@@ -187,7 +187,7 @@ std::vector<cart::Cell> SlideRows(cart::Cell second)
             {.row = 3, .channel = 0, .note = 54, .effect = kPortaNote, .op = 0x10},
             {.row = 4, .channel = 0, .effect = kNoteDelay, .op = 1},
             {.row = 6, .channel = 0, .note = 51, .instrument = 1},
-            {.row = 7, .channel = 0, .note = ntdlib::krawall::kNoteOff}};
+            {.row = 7, .channel = 0, .note = agblib::krawall::kNoteOff}};
 }
 
 // A module of 1 channel and 8 rows whose third note has no instrument:
@@ -201,7 +201,7 @@ std::vector<cart::Cell> InstrumentRows(int second, int fourth, int effect = -1, 
     return {{.row = 0, .channel = 0, .note = 49, .instrument = 1},
             {.row = 2, .channel = 0, .note = 53, .instrument = second, .effect = effect, .op = op},
             {.row = 4, .channel = 0, .note = 51, .instrument = fourth},
-            {.row = 6, .channel = 0, .note = ntdlib::krawall::kNoteOff}};
+            {.row = 6, .channel = 0, .note = agblib::krawall::kNoteOff}};
 }
 
 std::vector<uint8_t> InstrumentImage(const std::vector<cart::Cell>& cells)
@@ -217,12 +217,12 @@ std::vector<uint8_t> XmImage(const std::vector<cart::Pattern>& patterns)
 {
     cart::Cart image;
     const uint32_t header = image.Module(1, patterns);
-    image.Put8(header + ntdlib::krawall::kModuleFlags, 1);
+    image.Put8(header + agblib::krawall::kModuleFlags, 1);
     for (uint32_t instrument = 0; instrument < 2; instrument++)
     {
-        const uint32_t at = kRomBase + 0x2400 + ntdlib::krawall::kInstrumentSize * instrument;
+        const uint32_t at = kRomBase + 0x2400 + agblib::krawall::kInstrumentSize * instrument;
         image.Put32(cart::kInstrumentTable + 4 * instrument, at);
-        for (uint32_t note = 0; note < ntdlib::krawall::kInstrumentNotes; note++)
+        for (uint32_t note = 0; note < agblib::krawall::kInstrumentNotes; note++)
         {
             image.Put16(at + 2 * note, static_cast<uint16_t>(instrument));
         }
@@ -272,7 +272,7 @@ Sequence ReadOf(const File& file, uint32_t sound)
 template <typename Sample>
 std::vector<Sample> Direct(const KrawallRom& rom, int song, std::size_t samples, bool enhanced)
 {
-    ntdlib::krawall::ArchivePlayer player(rom.rom, rom.info);
+    agblib::krawall::ArchivePlayer player(rom.rom, rom.info);
     player.Start(song, {.enhanced = enhanced});
     return RunDirect<Sample>(player, samples);
 }
@@ -355,12 +355,12 @@ void TestRead()
 
     // In the modified build, a sample's WAV file gets its points from the unpacked copy of the ROM. The copy here
     // contains silence (0x80) in each point of sample 1.
-    const std::optional<ntdlib::krawall::Sample> sample1 = ntdlib::krawall::ReadSample(rom->rom, rom->info, 1);
+    const std::optional<agblib::krawall::Sample> sample1 = agblib::krawall::ReadSample(rom->rom, rom->info, 1);
     SEQLIB_REQUIRE(sample1.has_value());
     std::vector<uint8_t> silenced = Image();
-    std::fill(silenced.begin() + (sample1->data - ntdlib::agb::kRomBase),
-              silenced.begin() + (sample1->end - ntdlib::agb::kRomBase), uint8_t{0x80});
-    auto unpacked = std::make_shared<ntdlib::agb::Rom>();
+    std::fill(silenced.begin() + (sample1->data - agblib::agb::kRomBase),
+              silenced.begin() + (sample1->end - agblib::agb::kRomBase), uint8_t{0x80});
+    auto unpacked = std::make_shared<agblib::agb::Rom>();
     unpacked->Assign(std::move(silenced));
     KrawallRom modified = *rom;
     modified.info.unpacked = unpacked;
@@ -584,7 +584,7 @@ void TestSlideRemovals()
         .command = track.notes.at(1).command, .stretch = track.stretches.at(2), .remove = true};
     const File without = edit::EditNotes(file, sequence, std::span(&removed, 1)).file;
     XSFLIB_CHECK(StartsOf(ReadOf(without, 0), 0) == (std::vector<uint32_t>{0, 6 * kRowTicks}));
-    std::vector<cart::Cell> expected = SlideRows({.row = 2, .channel = 0, .note = ntdlib::krawall::kNoteOff});
+    std::vector<cart::Cell> expected = SlideRows({.row = 2, .channel = 0, .note = agblib::krawall::kNoteOff});
     expected.erase(expected.begin() + 3);
     const std::vector<int16_t> played = Rendered(format::ExportArchive(without));
     XSFLIB_CHECK(HasSound(std::span<const int16_t>(played)));
@@ -609,7 +609,7 @@ void TestRemovedInstruments()
     XSFLIB_CHECK(TrackOf(without_piece, 0)->notes.at(1).program == 1);
 
     std::vector<cart::Cell> expected = InstrumentRows(2, 2);
-    expected[1] = {.row = 2, .channel = 0, .note = ntdlib::krawall::kNoteOff};
+    expected[1] = {.row = 2, .channel = 0, .note = agblib::krawall::kNoteOff};
     const std::vector<int16_t> played = Rendered(format::ExportArchive(without));
     XSFLIB_CHECK(HasSound(std::span<const int16_t>(played)));
     XSFLIB_CHECK(played == Rendered(InstrumentImage(expected)));
@@ -663,7 +663,7 @@ void TestRemovedXmInstruments()
                                      [](const ntdlib::commands::Command& command)
                                      {
                                          return command.kind == Kind::kOther &&
-                                                command.encoding.opcode == ntdlib::krawall::kEffectOpcode + kRetrig;
+                                                command.encoding.opcode == agblib::krawall::kEffectOpcode + kRetrig;
                                      });
     };
     for (const bool xm : {true, false})
@@ -803,10 +803,10 @@ void TestExports()
     const std::shared_ptr<const KrawallRom> rom = song::LoadKrawallRom(Image());
     for (const uint32_t sound : {0u, 1u})
     {
-        ntdlib::sequence_export::agb::ConvertSettings settings;
+        agblib::sequence_export::agb::ConvertSettings settings;
         settings.program = "Hokuto";
-        const ntdlib::sequence_export::krawall::SongFiles expected =
-            ntdlib::sequence_export::krawall::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
+        const agblib::sequence_export::krawall::SongFiles expected =
+            agblib::sequence_export::krawall::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
         const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
         XSFLIB_CHECK(expected.report.ok);
         XSFLIB_CHECK(conversion.midi == expected.midi);

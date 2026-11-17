@@ -2,11 +2,11 @@
 
 Hokuto is under the MIT licence (`LICENSE`). The program links in the following code. None of it is stored here.
 CMake downloads SDL3, Dear ImGui and sfizz when it configures the build, at versions pinned by their SHA-256
-hashes.
+hashes. The Linux build also links the system's FreeType and fontconfig libraries.
 
 | Component | Licence | Use in Hokuto |
 |---|---|---|
-| [SDL3](https://libsdl.org) 3.4.20, Copyright (C) 1997-2026 Sam Lantinga | zlib | The window, the input, the GPU and the audio device. Linked statically. |
+| [SDL3](https://libsdl.org) 3.4.20, Copyright (C) 1997-2026 Sam Lantinga | zlib | The window, the input, the GPU and the audio device. Linked statically. The build makes two changes. It changes one condition in `src/audio/wasapi/SDL_wasapi.c` (`cmake/sdl3_wine_period.cmake`): under Wine, the audio device keeps SDL3's buffer size. In the Wayland driver, in `src/video/wayland/` (`cmake/sdl3_libdecor_resize.cmake`), a window with libdecor's title bar changes size once at most for each event pump while the user resizes it. The build changes nothing else in SDL3. |
 | yuv2rgb, part of SDL3, Copyright (c) 2016, Adrien Descamps | BSD-3-Clause | SDL3's conversions of YUV images. |
 | stb_image, part of SDL3, Copyright (c) 2017 Sean Barrett | MIT, or public domain | SDL3's image loading. |
 | miniz 1.15, part of SDL3, by Rich Geldreich | Public domain (Unlicense) | SDL3's writing of PNG images. |
@@ -14,7 +14,9 @@ hashes.
 | SDL_gfx's rotation, part of SDL3, Copyright (C) 2001-2011 Andreas Schiffler | zlib | SDL3's rotation of surfaces. |
 | SDL3's table of game controllers, Copyright (C) Valve Corporation | zlib | SDL3's names of game controllers. Hokuto turns game controllers off. |
 | [Dear ImGui](https://github.com/ocornut/imgui) v1.92.9b, docking branch, Copyright (c) 2014-2026 Omar Cornut | MIT | The interface. Linked statically. |
-| stb_truetype, stb_rect_pack and stb_textedit, part of Dear ImGui, Copyright (c) 2017 Sean Barrett | MIT, or public domain | Dear ImGui's text editing, and the packing of glyphs into its texture. Core Text draws the text on the Mac, and DirectWrite on Windows. stb_truetype draws it on other systems. |
+| [FreeType](https://freetype.org), Copyright (C) 1996-2025 David Turner, Robert Wilhelm, and Werner Lemberg (FreeType 2.14.2, the version that Hokuto was tested with on Ubuntu 26.04) | FreeType License (FTL). FreeType is also under the GPL version 2, and Hokuto uses it under the FTL only. | Draws the text in the Linux build. The system provides the library, and the program links it dynamically. The Mac and Windows builds don't use it. |
+| [fontconfig](https://www.freedesktop.org/wiki/Software/fontconfig/), Copyright © 2000-2007 Keith Packard, © 2005 Patrick Lam, © 2007 Dwayne Bailey and Translate.org.za, © 2009 Roozbeh Pournader, © 2008-2020 Red Hat, Inc., © 2008 Danilo Šegan and © 2012 Google, Inc. | HPND-sell-variant, below | Finds the files of the system's fonts in the Linux build. The system provides the library, and the program links it dynamically. The Mac and Windows builds don't use it. |
+| stb_truetype, stb_rect_pack and stb_textedit, part of Dear ImGui, Copyright (c) 2017 Sean Barrett | MIT, or public domain | Dear ImGui's text editing, and the packing of glyphs into its texture. Core Text draws the text on the Mac, DirectWrite on Windows and FreeType on Linux. On the Mac and Windows, stb_truetype draws Dear ImGui's built-in font where the system's fonts are missing. |
 | ProggyClean, part of Dear ImGui, Copyright (c) 2004, 2005 Tristan Grimmer | MIT | One of Dear ImGui's built-in fonts. Hokuto draws its text with the system's fonts, and uses these only on a system without them. |
 | ProggyForever, part of Dear ImGui, Copyright (c) 2026 Disco Hello, Copyright (c) 2019,2023 Tristan Grimmer | MIT | The other built-in font. |
 | [sfizz](https://sfz.tools/sfizz/) 1.2.3, Copyright (c) 2021-2023, sfizz contributors | BSD-2-Clause | Plays an export's MIDI and SFZ files. Hokuto measures with it what an export to SFZ sounds like. Linked statically. The build turns sfizz's assertions off. It takes one fix that sfizz made after 1.2.3 into `src/sfizz/Voice.cpp` (`cmake/sfizz_loop_fix.cmake`), and changes nothing else. |
@@ -37,16 +39,16 @@ hashes.
 | hiir, part of sfizz, by Laurent de Soras | WTFPL | sfizz's oversampling. |
 | jsl, part of sfizz, Copyright Jean Pierre Cimalando 2018-2020 | BSL-1.0 | sfizz's memory helpers. |
 | ThreadPool, part of sfizz, Copyright (c) 2012 Jakob Progsch, Václav Zeman | zlib | sfizz's pool of threads that loads files. |
-| seqlib, xsflib and ntdlib, Copyright (c) 2026 the seqlib authors, the xsflib authors and the ntdlib authors | MIT | Submodules in `externals/`. ntdlib reads the sound archives of the Wii, the 3DS, the Wii U and the Switch, the DS's sound archives and DSE files, and the songs of the GBA's sound drivers. It plays them on its models of each console's sound library, sound driver and audio hardware. Its sequence export reads a sequence's notes and settings, and converts a sequence to MIDI, SoundFont 2 and SFZ files, with seqlib. xsflib holds the code that they share. The tests use the checks of xsflib and seqlib. Linked statically. |
+| seqlib, xsflib, ntdlib and agblib, Copyright (c) 2026 the seqlib authors, the xsflib authors, the ntdlib authors and the agblib authors | MIT | Submodules in `externals/`. ntdlib reads the sound archives of the Wii, the 3DS, the Wii U and the Switch, and the DS's sound archives and DSE files. agblib reads the songs of the GBA's sound drivers. Each plays them on its models of each console's sound library, sound driver and audio hardware. Their sequence exports read a sequence's notes and settings, and convert a sequence to MIDI, SoundFont 2 and SFZ files, with seqlib. xsflib holds the code that they share. The tests use the checks of xsflib and seqlib. Linked statically. |
 | [Teakra](https://github.com/wwylele/teakra), part of ntdlib, Copyright (c) 2018 Weiyi Wang | MIT | An emulator of the 3DS's DSP, in `externals/ntdlib/externals/teakra`. ntdlib's archive mode of the 3DS can run a DSP firmware that the user supplies on it. Only a check tool does: Hokuto plays the 3DS on ntdlib's model of the firmware. Linked statically. Upstream commit 3d697a1, with ntdlib's changes. |
-| puff 2.3, part of ntdlib, Copyright (C) 2002-2013 Mark Adler | zlib | A DEFLATE decoder in ntdlib's reader of GBA files (`externals/ntdlib/src/agb/inflate.cpp`), which unpacks GSF files. It's an altered copy: the decoder is rewritten as a C++ class, with the checks of the zlib header and of Adler-32. Linked statically. |
+| puff 2.3, part of ntdlib, Copyright (C) 2002-2013 Mark Adler | zlib | A DEFLATE decoder in ntdlib (`externals/ntdlib/src/common/inflate.cpp`). agblib's reader of GBA files unpacks GSF files with it. It's an altered copy: the decoder is rewritten as a C++ class, with the checks of the zlib header and of Adler-32. Linked statically. |
 
-Binary distributions must include Hokuto's MIT notice and the notices of seqlib, xsflib, ntdlib, Teakra, Dear ImGui, the
-stb libraries, the two Proggy fonts, yuv2rgb and fdlibm. They must also include the notices of sfizz and of its parts
-under the MIT, BSD and STK-4.3 licences, and Abseil's Apache licence. Shipping `LICENSE` and this file does that. SDL3's
-zlib licence requires no notice in binaries. Neither do the zlib licences of SDL_gfx's rotation, Valve's table and
-puff, nor the licences of miniz, dr_wav, dr_flac, dr_mp3, hiir, jsl and ThreadPool. The licence texts are at the end
-of this file.
+Binary distributions must include Hokuto's MIT notice and the notices of seqlib, xsflib, ntdlib, agblib, Teakra, Dear
+ImGui, the stb libraries, the two Proggy fonts, yuv2rgb and fdlibm. They must also include the notices of sfizz and of
+its parts under the MIT, BSD and STK-4.3 licences, and Abseil's Apache licence. Shipping `LICENSE` and this file does
+that. SDL3's zlib licence requires no notice in binaries. Neither do the zlib licences of SDL_gfx's rotation, Valve's
+table and puff, nor the licences of miniz, dr_wav, dr_flac, dr_mp3, hiir, jsl and ThreadPool. A binary of the Linux
+build must also carry FreeType's credit and fontconfig's notice, below. The licence texts are at the end of this file.
 
 ## Console data
 
@@ -121,9 +123,9 @@ software is freely granted, provided that this notice
 is preserved.
 ```
 
-### seqlib, xsflib and ntdlib
+### seqlib, xsflib, ntdlib and agblib
 
-The three libraries have the same licence, each with its copyright line.
+The four libraries have the same licence, each with its copyright line.
 
 ```
 MIT License
@@ -131,6 +133,7 @@ MIT License
 Copyright (c) 2026 the seqlib authors
 Copyright (c) 2026 the xsflib authors
 Copyright (c) 2026 the ntdlib authors
+Copyright (c) 2026 the agblib authors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -226,6 +229,54 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+### FreeType
+
+The Linux build uses FreeType under the FreeType License (FTL), at https://freetype.org/license.html. The FTL asks a
+program that uses FreeType to say so in its documentation, and a binary distribution to state that the software is
+based in part on the work of the FreeType Team. Hokuto gives the credit in the form that the FTL proposes. The FTL asks
+for the year of the FreeType version in use. The year below is that of FreeType 2.14.2, the version that Hokuto was
+tested with on Ubuntu 26.04.
+
+```
+Portions of this software are copyright © 2025 The FreeType Project (https://freetype.org). All rights reserved.
+
+Hokuto's Linux build is based in part on the work of the FreeType Team.
+```
+
+### fontconfig
+
+The Linux build links the system's fontconfig library. This is the notice of fontconfig's `COPYING` file, at version
+2.17.1, the version that Hokuto was tested with on Ubuntu 26.04:
+
+```
+Copyright © 2000,2001,2002,2003,2004,2006,2007 Keith Packard
+Copyright © 2005 Patrick Lam
+Copyright © 2007 Dwayne Bailey and Translate.org.za
+Copyright © 2009 Roozbeh Pournader
+Copyright © 2008,2009,2010,2011,2012,2013,2014,2015,2016,2017,2018,2019,2020 Red Hat, Inc.
+Copyright © 2008 Danilo Šegan
+Copyright © 2012 Google, Inc.
+
+
+Permission to use, copy, modify, distribute, and sell this software and its
+documentation for any purpose is hereby granted without fee, provided that
+the above copyright notice appear in all copies and that both that
+copyright notice and this permission notice appear in supporting
+documentation, and that the name of the author(s) not be used in
+advertising or publicity pertaining to distribution of the software without
+specific, written prior permission.  The authors make no
+representations about the suitability of this software for any purpose.  It
+is provided "as is" without express or implied warranty.
+
+THE AUTHOR(S) DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
+EVENT SHALL THE AUTHOR(S) BE LIABLE FOR ANY SPECIAL, INDIRECT OR
+CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
 ```
 
 ### ProggyClean

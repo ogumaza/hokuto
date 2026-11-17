@@ -619,7 +619,8 @@ void TestBanks()
     const ntdlib::dse::WaveBank bank_file = ntdlib::dse::WaveBank::Parse(files::BankFile());
     const ntdlib::dse::WaveBank main_file = ntdlib::dse::WaveBank::Parse(files::MainBankFile());
     const ntdlib::sequence_export::BankConversion direct =
-        ntdlib::sequence_export::dse::ConvertBank(bank_file, &main_file, programs, bank_name, "Hokuto");
+        ntdlib::sequence_export::dse::ConvertBank(bank_file, &main_file, programs,
+                                                  ntdlib::dse::Driver::kTickMicroseconds, bank_name, "Hokuto");
     SEQLIB_REQUIRE(converted.sound_fonts.size() == 1 && direct.sound_fonts.size() == 1);
     Check(converted.sound_fonts[0].sf2 == direct.sound_fonts[0].sf2, "a bank's SoundFont");
     Check(converted.sfz.files.size() == 2, "a bank's SFZ files");

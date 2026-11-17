@@ -24,6 +24,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
@@ -36,6 +37,8 @@
 
 #include "check_part.h"
 #include "check_support.h"
+#include "checked_archive.h"
+#include "checked_saves.h"
 #include "edit/bytecode.h"
 #include "edit/ds_files.h"
 #include "edit/other_console.h"
@@ -56,6 +59,7 @@
 #include "song/items.h"
 #include "song/konami.h"
 #include "song/midi_export.h"
+#include "song/played.h"
 #include "song/sequence.h"
 #include "song/streams.h"
 
@@ -78,25 +82,9 @@ struct Played
 // What the tool searches for in a sound's commands.
 using Test = std::function<bool(const ntdlib::commands::Command&)>;
 
-// Sound `sound` of `archive`, played dry for `seconds` seconds.
-Played Play(const std::shared_ptr<const sar::SoundArchive>& archive, uint32_t sound, double seconds);
-
-// Sound `sound` of the Wii's `archive`, played dry for `seconds` seconds by the rules of `build` of NW4R SND.
-Played PlayWii(const std::shared_ptr<const ntdlib::rsar::SoundArchive>& archive, uint32_t sound, double seconds,
-               const ntdlib::SndBuild& build);
-
-// Sequence `sound` of the DS's `archive`, played dry for `seconds` seconds.
-Played PlayDs(const std::shared_ptr<const song::DsArchive>& archive, uint32_t sound, double seconds,
-              song::Mixing mixing = song::Mixing::kStrict);
-
-// Sound `sound` of DSE's `set`, played dry for `seconds` seconds.
-Played PlayDse(const std::shared_ptr<const song::DseSet>& set, uint32_t sound, double seconds);
-
-// Song `number` of the GBA's `rom`, played dry for `seconds` seconds.
-Played PlayGba(const std::shared_ptr<const song::GbaRom>& rom, uint32_t number, double seconds);
-
-// Sound `sound` of the GBA's `rom` with another of the GBA's drivers, played dry for `seconds` seconds.
-Played PlayDriver(const std::shared_ptr<const song::DriverRom>& rom, uint32_t sound, double seconds);
+// `sequence`, a sound of `source`, played dry for `seconds` seconds in `mixing`.
+Played PlayDry(const song::Played& source, song::Sequence sequence, double seconds,
+               song::Mixing mixing = song::Mixing::kStrict);
 
 // The largest difference in milliseconds between the times of the notes that `gba`, a sound of the GBA or the DS,
 // starts in its first `seconds` and those of `sent`, or nothing when `sent` starts other notes. The notes count in the
@@ -132,18 +120,9 @@ bool SoundReaches(const sar::SoundArchive* game, const format::File& file, const
 std::vector<uint32_t> Chosen(const format::File& file, std::size_t most, const std::set<std::string>& names,
                              const std::function<bool(uint32_t)>& keep);
 
-// The songs of the GBA's `rom` that the tool checks, among the songs that play. Chosen chooses sequence sounds the same
-// way.
-std::vector<uint32_t> GbaChosen(const song::GbaRom& rom, std::size_t most, const std::set<std::string>& names);
-
-// The sounds of the GBA's `rom` with another of the GBA's drivers that the tool checks. Chosen chooses sequence sounds
-// the same way.
-std::vector<uint32_t> DriverChosen(const song::DriverRom& rom, std::size_t most, const std::set<std::string>& names);
-
-// The sequences of the DS's `archive` that the tool checks. Chosen chooses sequence sounds the same way.
-std::vector<uint32_t> DsChosen(const song::DsArchive& archive, std::size_t most, const std::set<std::string>& names);
-
-// The sounds of DSE's `set` that the tool checks. Chosen chooses sequence sounds the same way.
-std::vector<uint32_t> DseChosen(const song::DseSet& set, std::size_t most, const std::set<std::string>& names);
+// The sounds among `sounds` that the tool checks: those whose names `name_of` gives among `names`, or else up to
+// `most`, spread evenly, or all of them with 0. The sounds of a GBA ROM, a DS archive or DSE's set are chosen this way.
+std::vector<uint32_t> Chosen(const std::vector<uint32_t>& sounds, const std::function<std::string(uint32_t)>& name_of,
+                             std::size_t most, const std::set<std::string>& names);
 
 } // namespace hokuto::tools::other_console

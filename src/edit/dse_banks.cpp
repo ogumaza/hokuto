@@ -16,6 +16,8 @@
 #include <vector>
 
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/sdat/files.h"
+#include "ntdlib/sdat/formats.h"
 
 #include "edit/dse_files_parts.h"
 #include "edit/native_runs.h"
@@ -36,25 +38,7 @@ using dse_files_parts::kImaAdpcm;
 using dse_files_parts::kPcm16;
 using dse_files_parts::kPcm8;
 using dse_files_parts::kTuningOfDoubledRate;
-using dse_files_parts::kWaveFormat;
 using dse_files_parts::RetuneSplits;
-
-// The samples in a 32-bit word of a wave's format. An IMA-ADPCM wave starts with a word of state.
-uint32_t SamplesInWord(uint8_t format)
-{
-    return format == kPcm8 ? 4 : format == kPcm16 ? 2 : 8;
-}
-
-uint32_t FirstWord(uint8_t format)
-{
-    return format == kImaAdpcm ? 1 : 0;
-}
-
-uint32_t SamplesOf(uint8_t format, uint32_t words)
-{
-    const uint32_t first = FirstWord(format);
-    return words > first ? (words - first) * SamplesInWord(format) : 0;
-}
 
 const dse::WaveInfo& WaveAt(const song::DseSet& set, uint32_t bank, uint32_t wave)
 {
@@ -239,35 +223,42 @@ void RequireSet(const format::File& file)
 
 int DseRootKey(const DseSplit& split)
 {
-    return kDseMiddleKey - static_cast<int8_t>(split[kDseCoarseTuning]);
+    return kDseMiddleKey - dse::SplitView(split).CoarseTuning();
 }
 
 void SetDseRootKey(DseSplit& split, int key)
 {
-    split[kDseCoarseTuning] = static_cast<uint8_t>(static_cast<int8_t>(kDseMiddleKey - key));
+    dse::MutableSplitView(split).SetCoarseTuning(static_cast<int8_t>(kDseMiddleKey - key));
 }
 
 int DseTuning(const DseSplit& split)
 {
-    return static_cast<int16_t>(split[kDseTuning] | split[kDseTuning + 1] << 8);
+    return dse::SplitView(split).Tuning();
 }
 
 void SetDseTuning(DseSplit& split, int tuning)
 {
-    const auto bits = static_cast<uint16_t>(tuning);
-    split[kDseTuning] = static_cast<uint8_t>(bits);
-    split[kDseTuning + 1] = static_cast<uint8_t>(bits >> 8);
+    dse::MutableSplitView(split).SetTuning(static_cast<int16_t>(tuning));
 }
 
 int DseSplitWave(const DseSplit& split)
 {
-    return split[kDseWave] | split[kDseWave + 1] << 8;
+    return dse::SplitView(split).Wave();
 }
 
 void SetDseSplitWave(DseSplit& split, int wave)
 {
-    split[kDseWave] = static_cast<uint8_t>(wave);
-    split[kDseWave + 1] = static_cast<uint8_t>(wave >> 8);
+    dse::MutableSplitView(split).SetWave(static_cast<uint16_t>(wave));
+}
+
+uint8_t DseWaveFormat(const dse::WaveInfo& info)
+{
+    return static_cast<uint8_t>(info.Format() >> 8);
+}
+
+void SetDseWaveFormat(dse::WaveInfo& info, uint8_t format)
+{
+    info.SetFormat(static_cast<uint16_t>(format << 8 | (info.Format() & 0xFF)));
 }
 
 format::File WithDseSplit(const format::File& file, const song::DseSet& set, const DseSplitPlace& place,
@@ -317,11 +308,11 @@ format::File WithDseSplit(const format::File& file, const song::DseSet& set, con
 DseWaveValues DseWaveValuesOf(const song::DseSet& set, uint32_t bank, uint32_t wave)
 {
     const dse::WaveInfo& info = WaveAt(set, bank, wave);
-    const uint8_t format = info.bytes[kWaveFormat];
+    const auto encoding = static_cast<ntdlib::sdat::WaveEncoding>(DseWaveFormat(info));
     DseWaveValues values;
     values.rate = info.SampleRate();
     values.loop = info.Loops();
-    values.loop_start = values.loop ? SamplesOf(format, info.LoopStart()) : 0;
+    values.loop_start = values.loop ? ntdlib::sdat::SamplesInWords(encoding, info.LoopStart()) : 0;
 
     return values;
 }
@@ -381,10 +372,17 @@ std::vector<ArchiveBytes> RewriteWaveTables(const song::DseSet& set, uint32_t ba
             continue;
         }
 
+        // A bank that shares the main bank can hold a square wave or noise in the slot. Those have no samples, and the
+        // edit leaves them as they are.
+        if (DseWaveFormat(*other.bank->waves[wave]) > kImaAdpcm)
+        {
+            continue;
+        }
+
         done.push_back(other.bank);
         dse::WaveBank model = *other.bank;
         dse::WaveInfo& held = *model.waves[wave];
-        const uint8_t held_format = held.bytes[kWaveFormat];
+        const auto held_encoding = static_cast<ntdlib::sdat::WaveEncoding>(DseWaveFormat(held));
         if (values.rate != old.rate)
         {
             const uint32_t was = held.SampleRate();
@@ -398,8 +396,9 @@ std::vector<ArchiveBytes> RewriteWaveTables(const song::DseSet& set, uint32_t ba
         if (values.loop != old.loop || values.loop_start != old.loop_start)
         {
             const uint32_t held_end = held.LoopStart() + held.LoopLength();
-            const uint32_t word = values.loop ? values.loop_start / SamplesInWord(held_format) + FirstWord(held_format)
-                                              : FirstWord(held_format);
+            const uint32_t first = ntdlib::sdat::HeaderWords(held_encoding);
+            const uint32_t word =
+                values.loop ? values.loop_start / ntdlib::sdat::SamplesPerWord(held_encoding) + first : first;
             if (word >= held_end)
             {
                 throw std::invalid_argument("The loop must start before the end of the wave in " +
@@ -438,7 +437,7 @@ format::File WithDseWave(const format::File& file, const song::DseSet& set, uint
         return file;
     }
 
-    const uint8_t format = info.bytes[kWaveFormat];
+    const uint8_t format = DseWaveFormat(info);
     if (format != kPcm8 && format != kPcm16 && format != kImaAdpcm)
     {
         throw std::invalid_argument("Square waves and noise have no sample rate or loop.");
@@ -452,13 +451,14 @@ format::File WithDseWave(const format::File& file, const song::DseSet& set, uint
     const uint32_t end = info.LoopStart() + info.LoopLength();
     if (values.loop)
     {
-        const uint32_t step = SamplesInWord(format);
+        const auto encoding = static_cast<ntdlib::sdat::WaveEncoding>(format);
+        const uint32_t step = ntdlib::sdat::SamplesPerWord(encoding);
         if (values.loop_start % step != 0)
         {
             throw std::invalid_argument("The loop start of this wave must be a multiple of " + std::to_string(step) +
                                         " samples.");
         }
-        if (values.loop_start >= SamplesOf(format, end))
+        if (values.loop_start >= ntdlib::sdat::SamplesInWords(encoding, end))
         {
             throw std::invalid_argument("The loop must start before the end of the wave.");
         }

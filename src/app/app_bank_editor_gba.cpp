@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 #include "xsflib/files.h"
 
 #include "app/app.h"
@@ -32,7 +32,7 @@ namespace
 {
 
 // Updates `view` after `bank_edit`, an edit of `voice`.
-void ShowGbaVoiceEdit(GbaBankView& view, const BankEdit& bank_edit, const ntdlib::mp2k::Voice& voice)
+void ShowGbaVoiceEdit(GbaBankView& view, const BankEdit& bank_edit, const agblib::mp2k::Voice& voice)
 {
     // The editor shows the new values at once, wherever the voice group plays the voice's bytes. The view follows the
     // version's ROM once the program has built it. A cleared voice waits for that.
@@ -99,8 +99,9 @@ void App::UpdateGbaBankEditor()
     bool open = true;
     const BankEdit bank_edit = DrawGbaBankEditor(*gba_bank_view_, bank_state_, ItemShown(bank_editor_), busy, &open);
 
-    // The keyboard sounds its key on the selected program, with the music player, the priority and the reverb of the
-    // first song that plays the voice group. Another key, or none, lets the last key go.
+    // The keyboard sounds its key on the selected program, with the music player, the priority, the reverb and the
+    // set-up by the game's code of the first song that plays the voice group. Another key, or none, lets the last key
+    // go.
     const auto make = [&](std::pair<uint32_t, int> sounded,
                           std::shared_ptr<std::atomic<bool>> release) -> std::unique_ptr<audio::Renderer>
     {
@@ -166,7 +167,7 @@ void App::ApplyGbaVoiceEdit(const BankEdit& bank_edit)
         return;
     }
 
-    ntdlib::mp2k::Voice voice;
+    agblib::mp2k::Voice voice;
     if (bank_edit.gba_voice)
     {
         voice = *bank_edit.gba_voice;
@@ -241,7 +242,7 @@ void App::DropFilesOnGbaBank(const std::vector<std::string>& paths, const BankDr
     try
     {
         format::File file = *Document();
-        const std::optional<ntdlib::mp2k::Voice> voice = DroppedGbaVoice(*gba_bank_view_, bank_state_, drop);
+        const std::optional<agblib::mp2k::Voice> voice = DroppedGbaVoice(*gba_bank_view_, bank_state_, drop);
         if (voice)
         {
             if (samples.size() != 1)
@@ -263,7 +264,7 @@ void App::DropFilesOnGbaBank(const std::vector<std::string>& paths, const BankDr
                         (free.size() == 1 ? " free program." : " free programs."));
             return;
         }
-        std::vector<std::pair<uint32_t, ntdlib::mp2k::Voice>> voices;
+        std::vector<std::pair<uint32_t, agblib::mp2k::Voice>> voices;
         for (std::size_t i = 0; i < samples.size(); i++)
         {
             edit::PlacedGbaBytes placed = edit::WithGbaNewBytes(file, samples[i]);
@@ -361,8 +362,8 @@ void App::UpdateDriverBankEditor()
     // An edit of a rate waits for the first read of the songs: the view then names the songs that the edit changes.
     bool open = true;
     const bool reading = driver_sample_songs_.state == DriverSongsState::kReading;
-    const BankEdit bank_edit = DrawDriverBankEditor(*driver_bank_view_, bank_state_, ItemShown(bank_editor_),
-                                                    EditorsWait() || reading, &open);
+    const BankEdit bank_edit =
+        DrawDriverBankEditor(*driver_bank_view_, bank_state_, ItemShown(bank_editor_), EditorsWait() || reading, &open);
     ApplyDriverBankEdit(bank_edit);
 
     // The keyboard sounds its key on the selected sample. Another key, or none, lets the last key go.

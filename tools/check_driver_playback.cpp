@@ -39,7 +39,7 @@
 // note within a frame of the tick counts apart too. So does a note after the channel's volume commands have stepped its
 // volume down to 0. It makes no sound, and the converter leaves it out. On Krawall, every track contains the rows of
 // the module. A note command counts on the track of its channel. Its note is the track's note that names the command in
-// the command's row: a note delay starts the note after the row's tick. ntdlib's Player of Krawall plays the module
+// the command's row: a note delay starts the note after the row's tick. agblib's Player of Krawall plays the module
 // beside the conversion. The tool records whether the entry of each channel starts a voice in each pass of each row,
 // and the levels of the voice. A note command without a note counts apart when its row starts no voice on its channel,
 // for one of three causes. A note with a slide to it (effects 19 and 24) sets only the slide's goal. The player skips a
@@ -71,11 +71,13 @@ namespace
 using playback_steps::CheckFrames;
 using playback_steps::Differences;
 using playback_steps::EndLevels;
+using playback_steps::EndSpan;
 using playback_steps::FailedSeeksText;
-using playback_steps::LevelsAfterEnd;
+using playback_steps::LevelsBetween;
 using playback_steps::PrintDifferences;
 using playback_steps::Render;
 using playback_steps::SeekCheck;
+using playback_steps::SoundsOnText;
 using playback_steps::StartCheck;
 using playback_steps::StartResult;
 using playback_steps::SwitchCheck;
@@ -177,7 +179,7 @@ namespace
 // On Brownie Brown's driver, the PSG channel of a sound effect takes over the hardware from the music channel of the
 // same PSG channel, and a mute silences the hardware. Every track's meter then has to fall between the reference's
 // meters with the same track muted. In enhanced mixing, the muted track of the reference can show a meter other than 0
-// too. ntdlib's ArchivePlayer assigns the peaks of a PSG channel in a frame to the track that has the channel at the
+// too. agblib's ArchivePlayer assigns the peaks of a PSG channel in a frame to the track that has the channel at the
 // end of the frame. The tool counts such sounds apart.
 void CheckMeters(const std::string& name, const std::shared_ptr<const song::DriverRom>& rom,
                  const std::shared_ptr<const song::Sequence>& sequence, song::Mixing mixing, std::size_t frames,
@@ -206,7 +208,7 @@ void CheckMeters(const std::string& name, const std::shared_ptr<const song::Driv
         song::SequenceModel(rom, sequence, song::ModelOptions{.mixing = mixing}).FrameSamples();
     const std::size_t console_samples = static_cast<std::size_t>(std::lround(
         static_cast<double>(song::SequenceModel(rom, sequence, song::ModelOptions{.mixing = mixing}).SampleRate()) /
-        ntdlib::agb::kFrameRate));
+        agblib::agb::kFrameRate));
     const std::size_t samples = frames * frame_samples;
     const Peaks low = ReferencePeaks(*rom, sequence->sound, enhanced,
                                      samples > 2 * console_samples ? samples - 2 * console_samples : 1, tracks);
@@ -348,11 +350,9 @@ void CheckSound(const char* path, const std::shared_ptr<const song::DriverRom>& 
     // of the loop's pass, and the reference plays on round the loop.
     const std::size_t rest = std::min(lead + heard * frame_floats, reference.samples.size());
     const std::size_t stop = std::min(lead + frames * frame_floats, reference.samples.size());
-    const std::span<const float> after =
-        std::span<const float>(reference.samples).subspan(rest, stop - std::min(rest, stop));
-    const float span = enhanced ? 2.0f * static_cast<float>(xsflib::rip::kSilenceLevel) / 32768.0f : 0.0f;
+    const float span = EndSpan(enhanced);
     const EndLevels end =
-        ended && !sequence->loop && after.size() >= 2 ? LevelsAfterEnd(after, frame_floats, span) : EndLevels();
+        ended && !sequence->loop ? LevelsBetween(reference.samples, rest, stop, frame_floats, span) : EndLevels();
     if (!end.sounds_on && end.level > 0.0f)
     {
         totals.levels++;
@@ -373,10 +373,7 @@ void CheckSound(const char* path, const std::shared_ptr<const song::DriverRom>& 
         std::string after_text = FailedSeeksText(failed_seeks);
         if (end.sounds_on)
         {
-            after_text += ", and the reference sounds after the output's end: " +
-                          std::to_string(std::lround(end.range * 32768.0f)) + " steps in all, and " +
-                          std::to_string(std::lround(end.widest * 32768.0f)) + " within frame " +
-                          std::to_string(end.widest_at) + " after the end";
+            after_text += SoundsOnText(end);
         }
         if (short_loop)
         {

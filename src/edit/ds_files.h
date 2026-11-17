@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // The replacements of the files of a DS sound archive (SDAT): a sequence, a bank (SBNK), a wave archive (SWAR) and a
-// wave. Each file of the archive is a run of its own in the file's native layout (ntdlib::sdat::Cut). A new file can
-// take another size. The join then lays the files after it out again, and the archive's FAT and sizes follow
+// wave. Each file of the archive is a run or a sequence piece of its own in the file's native layout
+// (ntdlib::sdat::Cut). A sequence archive is a sequence piece, and none of these replaces it. A new file can take
+// another size. The join then lays the files after it out again, and the archive's FAT and sizes follow
 // (ntdlib::sdat::ReplaceFile). Every item that names the file reads the new bytes.
 
 #pragma once
@@ -48,6 +49,12 @@ ntdlib::sdat::Stream ReadDsStream(std::span<const uint8_t> bytes);
 // another file, and for an archive of another size whose file in the cartridge image contains other data too
 // (format::ExportDsImage refuses it).
 format::File WithDsFile(const format::File& file, uint32_t file_id, std::span<const uint8_t> bytes);
+
+// The message with which WithDsFile refuses a new size of an archive whose file in the cartridge image contains other
+// data too.
+inline constexpr std::string_view kDsSharedFileRefusal =
+    "Can't change the size of the sound archive. It shares its file in the image with other data, and Hokuto can't "
+    "move that data.";
 
 // `file` with `bytes`, a bank file, in the place of bank `bank`'s file. The bank keeps its slots of wave archives.
 // `archive` is the archive that `file` builds. Throws std::invalid_argument with a message for the user for a bank that

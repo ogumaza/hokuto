@@ -102,9 +102,30 @@ bool DragSlider(ImGuiID item, float* value, const SliderRange& range, float rese
     return changed;
 }
 
-// Draws the track of a slider in `box`, `size` large, filled up to `value`.
+// The value of a slider as its box shows it, in the middle, and the span that the text takes across the box.
+struct SliderText
+{
+    std::array<char, 64> text{};
+    float left = 0.0f;
+    float right = 0.0f;
+};
+
+SliderText SliderTextOf(const ImRect& box, const float* value, const char* format)
+{
+    SliderText shown;
+    ImGui::DataTypeFormatString(shown.text.data(), static_cast<int>(shown.text.size()), ImGuiDataType_Float, value,
+                                format);
+    const float width = TextSize(theme::GetFonts().figures, theme::kTextSize, shown.text.data()).x;
+    shown.left = (box.Min.x + box.Max.x - width) * 0.5f;
+    shown.right = shown.left + width;
+
+    return shown;
+}
+
+// Draws the track of a slider in `box`, `size` large, filled up to `value`. The line at the value's end stays out of
+// the value's text: the fill's end shows the value there.
 void DrawSliderTrack(ImDrawList* draw, const ImRect& box, ImVec2 size, float value, const SliderRange& range, bool held,
-                     bool hovered)
+                     bool hovered, const SliderText& text)
 {
     // The track, filled from the left up to the value, with a line at the value's end. Inside a disabled block, the
     // style's alpha fades it.
@@ -119,24 +140,25 @@ void DrawSliderTrack(ImDrawList* draw, const ImRect& box, ImVec2 size, float val
                             corners);
     }
     const float line = std::clamp(end, box.Min.x + Px(2.0f), box.Max.x - Px(2.0f));
-    draw->AddRectFilled(ImVec2(line - Px(1.0f), box.Min.y + Px(3.0f)), ImVec2(line + Px(1.0f), box.Max.y - Px(3.0f)),
-                        ImGui::GetColorU32(theme::kAccent));
+    const bool under_text = line + Px(1.0f) > text.left - Px(2.0f) && line - Px(1.0f) < text.right + Px(2.0f);
+    if (!under_text)
+    {
+        draw->AddRectFilled(ImVec2(line - Px(1.0f), box.Min.y + Px(3.0f)),
+                            ImVec2(line + Px(1.0f), box.Max.y - Px(3.0f)), ImGui::GetColorU32(theme::kAccent));
+    }
     draw->AddRect(box.Min, box.Max, ImGui::GetColorU32(held || hovered ? theme::kBorderStrong : theme::kBorder),
                   rounding, Px(1.0f));
 }
 
 // Draws the value in the middle of a slider's box.
-void DrawSliderText(ImDrawList* draw, const ImRect& box, const float* value, const char* format)
+void DrawSliderText(ImDrawList* draw, const ImRect& box, const SliderText& text)
 {
     // A value too long for the slider, such as one far outside its range, is cut off at the slider's ends.
-    char text[64];
-    ImGui::DataTypeFormatString(text, IM_COUNTOF(text), ImGuiDataType_Float, value, format);
     ImFont* font = theme::GetFonts().figures;
-    const ImVec2 text_size = TextSize(font, theme::kTextSize, text);
+    const float height = TextSize(font, theme::kTextSize, text.text.data()).y;
     draw->PushClipRect(box.Min, box.Max, true);
-    DrawText(draw, font, theme::kTextSize,
-             ImVec2((box.Min.x + box.Max.x - text_size.x) * 0.5f, (box.Min.y + box.Max.y - text_size.y) * 0.5f),
-             ImGui::GetColorU32(theme::kText), text);
+    DrawText(draw, font, theme::kTextSize, ImVec2(text.left, (box.Min.y + box.Max.y - height) * 0.5f),
+             ImGui::GetColorU32(theme::kText), text.text.data());
     draw->PopClipRect();
 }
 
@@ -431,8 +453,9 @@ bool ValueSlider(const char* id, float* value, const SliderRange& range, float r
     const float shown = disabled ? waiting.Shown(shown_item, item, *value) : *value;
 
     ImDrawList* draw = window->DrawList;
-    DrawSliderTrack(draw, box, size, shown, range, held, hovered);
-    DrawSliderText(draw, box, &shown, format);
+    const SliderText text = SliderTextOf(box, &shown, format);
+    DrawSliderTrack(draw, box, size, shown, range, held, hovered, text);
+    DrawSliderText(draw, box, text);
 
     return changed;
 }

@@ -141,13 +141,13 @@ private:
 
     // Adds the commands of channel `channel` with `events` as a track. `tempos` contains the tempo events of the file.
     void ChannelCommands(uint8_t channel, const std::vector<ChannelEvent>& events,
-                         const std::vector<ChannelEvent>& tempos);
+                         const std::vector<seqlib::midi::Tempo>& tempos);
 
     // Adds `command` at MIDI tick `midi_tick` to the channel's commands.
     void Add(ChannelState& channel, uint64_t midi_tick, Order order, Command command);
 
     // Adds the tempos of `tempos` to the first track.
-    void AddTempos(ChannelState& channel, const std::vector<ChannelEvent>& tempos);
+    void AddTempos(ChannelState& channel, const std::vector<seqlib::midi::Tempo>& tempos);
 
     // Adds the settings for the whole song at the track's opening.
     void AddGlobalSettings(ChannelState& channel);

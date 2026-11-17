@@ -100,7 +100,7 @@ void TestEffectCodes()
                  format::EffectKindOfCode(1) == EffectKind::kI3dl2Reverb);
     XSFLIB_CHECK(format::EffectKindNamed("i3dl2_reverb") == EffectKind::kI3dl2Reverb &&
                  format::NameOf(EffectKind::kI3dl2Reverb) == "i3dl2_reverb");
-    XSFLIB_CHECK(!format::EffectKindOfCode(0) && !format::EffectKindOfCode(17));
+    XSFLIB_CHECK(!format::EffectKindOfCode(0) && !format::EffectKindOfCode(20));
     const std::span<const std::string_view> names = format::ParameterNamesOf(EffectKind::kI3dl2Reverb);
     XSFLIB_CHECK(names.size() == 12 && names[0] == "room_gain" && names[11] == "dry_gain");
 

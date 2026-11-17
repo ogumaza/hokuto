@@ -3,14 +3,16 @@
 // Checks the import and the export of the sound archives (SDAT) of DS cartridge images, and of sound archives alone.
 // For each sound archive of an image (format::DsArchivesIn), it checks:
 //
-// - The import cuts the archive into a sequence for each sequence file that ntdlib's cut selects (ntdlib::sdat::Cut).
-//   The tool counts the archive's sequence files, and names the ones that stay in the archive's bytes.
+// - The import cuts the archive into a sequence for each sequence file and sequence archive that ntdlib's cut selects
+//   (ntdlib::sdat::Cut). The tool counts the archive's sequence files and sequence archives, and names the ones that
+//   stay in the archive's bytes.
 // - The export reproduces the image byte for byte, with no stale hash.
 // - The binary form reproduces the file. With --text, so does the text form.
-// - Longer sequences: in each sequence that waits, kCopies copies of the first wait follow it. The exported archive
-//   then contains each edited sequence, and every other file of the archive keeps its bytes. The archive file contains
-//   the new archive. The image keeps its number of files, and every other file of the image keeps its bytes. An import
-//   of the export returns the edited sequences. The digest of a DSi image uses no keys here, and the tool lists the
+// - Longer sequences: in each sequence that waits, kCopies copies of the first wait follow it. The starts of a sequence
+//   archive's records after the wait move with the copies (edit::MoveItemPlaces). The exported archive then contains
+//   each edited sequence, and every other file of the archive keeps its bytes. The archive file contains the new
+//   archive. The image keeps its number of files, and every other file of the image keeps its bytes. An import of the
+//   export returns the edited sequences. The digest of a DSi image uses no keys here, and the tool lists the
 //   stale hashes.
 // - An archive that shares its file with other data keeps its size: the export has to refuse the longer sequences.
 //
@@ -44,6 +46,7 @@
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "edit/bytecode.h"
 #include "format/archive.h"
 #include "format/file.h"
 #include "format/text.h"
@@ -94,9 +97,9 @@ std::optional<Sequence> WithWaitCopies(const Sequence& sequence)
     return longer;
 }
 
-// The files of `sdat` by ID: the sequence files, the ones among them that `file`'s cut leaves in the archive's bytes,
-// and the files that aren't sequence files. A sequence piece starts at the bytecode of its file, at the data offset of
-// the file (format::NativePieceStarts). A sequence file that ntdlib can't read stays in the archive's bytes.
+// The files of `sdat` by ID: the sequence files and sequence archives, the ones among them that `file`'s cut leaves in
+// the archive's bytes, and the other files. A sequence piece starts at the bytecode of its file, at the data offset of
+// the file (format::NativePieceStarts). A file that ntdlib can't read stays in the archive's bytes.
 struct Files
 {
     std::vector<uint32_t> sequences;
@@ -122,7 +125,9 @@ Files FilesOf(std::span<const uint8_t> sdat, const File& file)
     for (uint32_t id = 0; id < archive.files.size(); id++)
     {
         const std::span<const uint8_t> bytes = archive.File(id);
-        if (bytes.size() < 4 || std::memcmp(bytes.data(), "SSEQ", 4) != 0)
+        const bool sequence_file = bytes.size() >= 4 && std::memcmp(bytes.data(), "SSEQ", 4) == 0;
+        const bool sequence_archive = bytes.size() >= 4 && std::memcmp(bytes.data(), "SSAR", 4) == 0;
+        if (!sequence_file && !sequence_archive)
         {
             files.others.push_back(id);
             continue;
@@ -131,7 +136,8 @@ Files FilesOf(std::span<const uint8_t> sdat, const File& file)
         files.sequences.push_back(id);
         try
         {
-            const uint32_t data = ntdlib::sdat::Sequence::Parse(bytes).data_offset;
+            const uint32_t data = sequence_file ? ntdlib::sdat::Sequence::Parse(bytes).data_offset
+                                                : ntdlib::sdat::SequenceArchive::Parse(bytes).data_offset;
             if (!cut.contains(uint64_t{archive.files[id].offset} + data))
             {
                 files.kept.push_back(id);
@@ -146,13 +152,19 @@ Files FilesOf(std::span<const uint8_t> sdat, const File& file)
     return files;
 }
 
-// Why the cut leaves sequence file `id` of `sdat` in the archive's bytes, as far as the decoder tells.
+// Why the cut leaves sequence file `id` of `sdat` in the archive's bytes, as far as the decoder tells. A sequence
+// archive's reason is its headers or its bytecode.
 std::string KeptReason(std::span<const uint8_t> sdat, uint32_t id)
 {
     try
     {
         const ntdlib::sdat::Archive archive = ntdlib::sdat::Archive::Parse(sdat);
-        const std::span<const uint8_t> bytecode = ntdlib::sdat::Sequence::Parse(archive.File(id)).bytecode;
+        const std::span<const uint8_t> bytes = archive.File(id);
+        if (bytes.size() >= 4 && std::memcmp(bytes.data(), "SSAR", 4) == 0)
+        {
+            return "its headers aren't the tools', or the decoder can't read its bytecode from its records' starts";
+        }
+        const std::span<const uint8_t> bytecode = ntdlib::sdat::Sequence::Parse(bytes).bytecode;
         constexpr uint32_t kEntry = 0;
         const ntdlib::ntr::snd::Decoded decoded = ntdlib::ntr::snd::DecodeSequence(bytecode, {}, std::span(&kEntry, 1));
         if (decoded.opaque)
@@ -171,13 +183,12 @@ std::string KeptReason(std::span<const uint8_t> sdat, uint32_t id)
     }
 }
 
-// A line for each sequence file that the cut leaves in the archive's bytes, with the reason.
+// A line for each sequence file or sequence archive that the cut leaves in the archive's bytes, with the reason.
 void PrintKept(const std::string& what, std::span<const uint8_t> sdat, const Files& files)
 {
     for (const uint32_t id : files.kept)
     {
-        std::printf("%s: sequence file %u stays in the archive's bytes: %s\n", what.c_str(), id,
-                    KeptReason(sdat, id).c_str());
+        std::printf("%s: file %u stays in the archive's bytes: %s\n", what.c_str(), id, KeptReason(sdat, id).c_str());
     }
 }
 
@@ -201,6 +212,12 @@ Longer Lengthened(const File& file)
     {
         if (std::optional<Sequence> sequence = WithWaitCopies(*file.sequences[s]))
         {
+            // A sequence archive's records start at places of the fields. Those after the wait move by the copies.
+            const std::vector<ntdlib::commands::Command>& items = file.sequences[s]->items;
+            const auto at = static_cast<uint32_t>(
+                std::ranges::find(items, Kind::kWait, &ntdlib::commands::Command::kind) - items.begin() + 1);
+            hokuto::edit::MoveItemPlaces(longer.file, static_cast<uint32_t>(s),
+                                         [at](uint32_t item) { return item >= at ? item + kCopies : item; });
             longer.file.sequences[s] = std::move(*sequence);
             longer.edited++;
         }
@@ -209,8 +226,8 @@ Longer Lengthened(const File& file)
     return longer;
 }
 
-// Each other file of the archive keeps its bytes in `after`: each file of `before` that isn't a sequence file, and each
-// sequence file that `file`'s cut leaves in the archive's bytes.
+// Each other file of the archive keeps its bytes in `after`: each file of `before` that is neither a sequence file nor
+// a sequence archive, and each of those that `file`'s cut leaves in the archive's bytes.
 void CheckOtherFiles(const std::string& what, std::span<const uint8_t> before, const File& file,
                      std::span<const uint8_t> after)
 {
@@ -269,9 +286,9 @@ void CheckArchive(const std::string& path, std::span<const uint8_t> sdat, bool t
     CheckSequencesBack(path, longer.file, hokuto::format::ImportDsArchive(grown));
 
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    std::printf("%s: %zu bytes, %zu sequence files, %zu cut, %zu longer, %zu bytes longer, %.1f s\n", path.c_str(),
-                sdat.size(), files.sequences.size(), file.sequences.size(), longer.edited, grown.size() - sdat.size(),
-                seconds);
+    std::printf("%s: %zu bytes, %zu sequence files and archives, %zu cut, %zu longer, %zu bytes longer, %.1f s\n",
+                path.c_str(), sdat.size(), files.sequences.size(), file.sequences.size(), longer.edited,
+                grown.size() - sdat.size(), seconds);
 }
 
 void CheckImage(const std::string& path, const std::vector<uint8_t>& image, bool text)
@@ -315,9 +332,10 @@ void CheckImage(const std::string& path, const std::vector<uint8_t>& image, bool
                 Problem(what, "the export takes a longer archive that shares its file");
             }
             const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-            std::printf("%s: %u bytes in a file of %zu, %zu sequence files, %zu cut, %zu longer refused, %.1f s\n",
-                        what.c_str(), place.size, file_size, files.sequences.size(), file.sequences.size(),
-                        longer.edited, seconds);
+            std::printf(
+                "%s: %u bytes in a file of %zu, %zu sequence files and archives, %zu cut, %zu longer refused, %.1f s\n",
+                what.c_str(), place.size, file_size, files.sequences.size(), file.sequences.size(), longer.edited,
+                seconds);
             continue;
         }
 
@@ -354,7 +372,8 @@ void CheckImage(const std::string& path, const std::vector<uint8_t>& image, bool
         }
         const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         std::printf(
-            "%s: %u bytes, %zu sequence files, %zu cut, %zu longer, %zu bytes longer, image %td bytes longer%s, "
+            "%s: %u bytes, %zu sequence files and archives, %zu cut, %zu longer, %zu bytes longer, image %td bytes "
+            "longer%s, "
             "%.1f s\n",
             what.c_str(), place.size, files.sequences.size(), file.sequences.size(), longer.edited,
             archive.size() - place.size, static_cast<std::ptrdiff_t>(grown.image.size() - image.size()), stale.c_str(),

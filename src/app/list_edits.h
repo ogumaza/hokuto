@@ -211,8 +211,9 @@ bool Skipped(const ListTrack& track, const ListRow& row);
 // first, then the engine that plays the sound.
 const std::string& SkippingEngine(const ListTrack& track, const ListRow& row);
 
-// Where engine `engine` ignores a command, for the tooltips of rows that Skipped greys: " on the GBA", or " by DSE",
-// " by Krawall" and " by Konami's driver" for a driver. `engine` is a name that ListTrack::engine_name contains.
+// Where engine `engine` ignores a command, for the tooltips of rows that Skipped greys: " on the GBA", or " on the DS
+// (DSE)" and " on the GBA (Konami's driver)" for a driver that isn't the console's first. `engine` is a name that
+// ListTrack::engine_name contains (app::EngineName).
 std::string IgnoredOn(std::string_view engine);
 
 // The name of a command's kind in the Type column, such as Volume or Open Track.

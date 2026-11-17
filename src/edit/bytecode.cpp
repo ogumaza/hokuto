@@ -14,11 +14,11 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
-#include "ntdlib/mp2k/commands.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/sar/layout.h"
@@ -137,7 +137,7 @@ std::vector<uint32_t> Offsets(const ntdlib::commands::Sequence& sequence, const 
     }
 
     return console.engine == format::Engine::kGba
-               ? ntdlib::mp2k::EncodeSequence(sequence, ntdlib::agb::kRomBase, console.note_arguments).offsets
+               ? agblib::mp2k::EncodeSequence(sequence, agblib::agb::kRomBase, console.note_arguments).offsets
                : ntdlib::nwsnd::EncodeSequence(sequence, song::GrammarOf(console)).offsets;
 }
 

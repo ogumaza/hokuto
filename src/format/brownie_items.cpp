@@ -18,7 +18,7 @@ namespace
 // The byte of `item`, a command of a channel, with the bytes of `revision` that read as another command. Empty for a
 // note and for a command of another kind, after the checks of their bytes. Throws std::invalid_argument with the
 // reason for a command that the bytes can't hold.
-std::optional<uint8_t> BrownieCommandByte(const ntdlib::commands::Command& item, ntdlib::brownie::Revision revision)
+std::optional<uint8_t> BrownieCommandByte(const ntdlib::commands::Command& item, agblib::brownie::Revision revision)
 {
     std::optional<uint8_t> usual;
     switch (item.kind)
@@ -94,7 +94,7 @@ std::optional<uint8_t> BrownieCommandByte(const ntdlib::commands::Command& item,
     case ntdlib::commands::Kind::kOther:
         {
             const uint8_t opcode = static_cast<uint8_t>(item.encoding.opcode);
-            if (opcode < 0x80 || item.bytes.size() + 1 != ntdlib::brownie::CommandSize(revision, opcode))
+            if (opcode < 0x80 || item.bytes.size() + 1 != agblib::brownie::CommandSize(revision, opcode))
             {
                 throw std::invalid_argument("a command holds another number of bytes than the driver reads");
             }
@@ -111,12 +111,12 @@ std::optional<uint8_t> BrownieCommandByte(const ntdlib::commands::Command& item,
 }
 
 // Checks the argument's byte of `item`. Throws std::invalid_argument when the value doesn't fit in it.
-void CheckBrownieArgument(const ntdlib::commands::Command& item, ntdlib::brownie::Revision revision)
+void CheckBrownieArgument(const ntdlib::commands::Command& item, agblib::brownie::Revision revision)
 {
     const auto check = [&item, revision](int64_t low, int64_t high)
     {
         const int64_t value =
-            ntdlib::commands::FromUnit(item.value.value, ntdlib::brownie::ScaleOf(item.kind, revision));
+            ntdlib::commands::FromUnit(item.value.value, agblib::brownie::ScaleOf(item.kind, revision));
         if (item.value.source != ntdlib::commands::Source::kValue || value < low || value > high)
         {
             throw std::invalid_argument("a value of a " + std::string(ntdlib::commands::Name(item.kind)) +
@@ -161,7 +161,7 @@ void CheckBrownieArgument(const ntdlib::commands::Command& item, ntdlib::brownie
 
 // Throws std::invalid_argument with the reason when the bytes of `revision` can't hold `item`, a command of a
 // channel: a command that the revision doesn't hold or ignores, or a value past its byte.
-void CheckBrownieCommand(const ntdlib::commands::Command& item, ntdlib::brownie::Revision revision)
+void CheckBrownieCommand(const ntdlib::commands::Command& item, agblib::brownie::Revision revision)
 {
     // The command's byte, with the revision's bytes that read as another command.
     const std::optional<uint8_t> usual = BrownieCommandByte(item, revision);
@@ -170,15 +170,15 @@ void CheckBrownieCommand(const ntdlib::commands::Command& item, ntdlib::brownie:
         return;
     }
 
-    if (item.encoding.opcode & ntdlib::brownie::kKeptBytes)
+    if (item.encoding.opcode & agblib::brownie::kKeptBytes)
     {
-        if (ntdlib::brownie::CommandOf(revision, static_cast<uint8_t>(item.encoding.opcode)) != *usual)
+        if (agblib::brownie::CommandOf(revision, static_cast<uint8_t>(item.encoding.opcode)) != *usual)
         {
             throw std::invalid_argument("a " + std::string(ntdlib::commands::Name(item.kind)) +
                                         " command keeps a byte that the driver reads otherwise");
         }
     }
-    else if (*usual >= 0xE0 && ntdlib::brownie::IsNoOp(revision, *usual))
+    else if (*usual >= 0xE0 && agblib::brownie::IsNoOp(revision, *usual))
     {
         throw std::invalid_argument("this revision of the driver does nothing with a " +
                                     std::string(ntdlib::commands::Name(item.kind)) + " command");
@@ -192,11 +192,11 @@ void CheckBrownieCommand(const ntdlib::commands::Command& item, ntdlib::brownie:
 bool BrownieIsWord(const ntdlib::commands::Command& item)
 {
     return item.kind == ntdlib::commands::Kind::kOpenTrack ||
-           (item.kind == ntdlib::commands::Kind::kJump && item.encoding.opcode == ntdlib::brownie::kAddressWord) ||
+           (item.kind == ntdlib::commands::Kind::kJump && item.encoding.opcode == agblib::brownie::kAddressWord) ||
            (item.kind == ntdlib::commands::Kind::kEnd && item.index == 1);
 }
 
-std::vector<uint32_t> BrownieItemOffsets(const ntdlib::commands::Sequence& sequence, ntdlib::brownie::Revision revision)
+std::vector<uint32_t> BrownieItemOffsets(const ntdlib::commands::Sequence& sequence, agblib::brownie::Revision revision)
 {
     // The bytes that ntdlib's encoder writes for each item. A word starts on a multiple of 4 in the ROM. A region
     // starts with a word, or with the bytes before its first word. Those bytes keep the layout of the ROM.
@@ -221,7 +221,7 @@ std::vector<uint32_t> BrownieItemOffsets(const ntdlib::commands::Sequence& seque
         case ntdlib::commands::Kind::kEnd:
             return item.index == 1 ? 4 : 1;
         case ntdlib::commands::Kind::kJump:
-            return item.encoding.opcode == ntdlib::brownie::kAddressWord ? 4 : 2;
+            return item.encoding.opcode == agblib::brownie::kAddressWord ? 4 : 2;
         case ntdlib::commands::Kind::kRelease:
         case ntdlib::commands::Kind::kProgram:
         case ntdlib::commands::Kind::kPan:
@@ -291,7 +291,7 @@ bool BrownieWaits(const ntdlib::commands::Command& item)
 
 std::optional<uint8_t> BrownieLengthByte(const ntdlib::commands::Command& item)
 {
-    if (item.kind != ntdlib::commands::Kind::kOther || (item.encoding.opcode & ntdlib::brownie::kKeptBytes) ||
+    if (item.kind != ntdlib::commands::Kind::kOther || (item.encoding.opcode & agblib::brownie::kKeptBytes) ||
         item.encoding.opcode < 0x80 || item.encoding.opcode >= 0xE0)
     {
         return std::nullopt;
@@ -300,9 +300,9 @@ std::optional<uint8_t> BrownieLengthByte(const ntdlib::commands::Command& item)
     return static_cast<uint8_t>(item.encoding.opcode);
 }
 
-std::optional<int> BrownieLengthSet(const ntdlib::commands::Command& item, ntdlib::brownie::Revision revision)
+std::optional<int> BrownieLengthSet(const ntdlib::commands::Command& item, agblib::brownie::Revision revision)
 {
-    if (revision != ntdlib::brownie::Revision::kSwordOfMana || item.kind != ntdlib::commands::Kind::kOther ||
+    if (revision != agblib::brownie::Revision::kSwordOfMana || item.kind != ntdlib::commands::Kind::kOther ||
         item.encoding.opcode != 0xEE || item.bytes.size() != 1)
     {
         return std::nullopt;
@@ -345,7 +345,7 @@ void SetBrownieWait(ntdlib::commands::Command& item, uint32_t frames)
     item.value = frames != 0 ? wait : ntdlib::commands::Argument{};
 }
 
-BrownieReadings ReadBrownieLengths(const ntdlib::commands::Sequence& sequence, ntdlib::brownie::Revision revision,
+BrownieReadings ReadBrownieLengths(const ntdlib::commands::Sequence& sequence, agblib::brownie::Revision revision,
                                    const BrownieLength& length)
 {
     using ntdlib::commands::Kind;
@@ -430,7 +430,7 @@ BrownieReadings ReadBrownieLengths(const ntdlib::commands::Sequence& sequence, n
             }
             break;
         case Kind::kJump:
-            if (item.encoding.opcode != ntdlib::brownie::kAddressWord && !item.target_outside)
+            if (item.encoding.opcode != agblib::brownie::kAddressWord && !item.target_outside)
             {
                 on(item.target, frames, set, loop, back);
             }
@@ -448,7 +448,7 @@ BrownieReadings ReadBrownieLengths(const ntdlib::commands::Sequence& sequence, n
     return readings;
 }
 
-void FillBrownieWaits(ntdlib::commands::Sequence& sequence, ntdlib::brownie::Revision revision,
+void FillBrownieWaits(ntdlib::commands::Sequence& sequence, agblib::brownie::Revision revision,
                       const BrownieLength& length)
 {
     const BrownieReadings readings = ReadBrownieLengths(sequence, revision, length);

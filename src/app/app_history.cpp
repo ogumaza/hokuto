@@ -224,6 +224,9 @@ void App::FollowVersion()
 
 void App::MoveInHistory(const std::function<void(edit::History&)>& move)
 {
+    // An item's edit whose work still runs is the user's last action. It enters the history before the move.
+    TakeItemEdit(true);
+
     const std::size_t done = history_->Done();
     const std::shared_ptr<const format::File> left = history_->Current();
     move(*history_);

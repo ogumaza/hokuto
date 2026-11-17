@@ -21,10 +21,11 @@
 // A round of wave edits assigns each wave of each bank with samples three quarters of its rate, at least 256 Hz, and a
 // loop from the word at the middle of its samples. The tool works out the bytes by the format's rules: the rate and the
 // loop in the bank's table and in the table of each bank that uses its waves, and the tuning of each split that plays
-// the wave. The driver reads no rate. The tuning of a split alone sets the pitch of the wave. Each new tuning therefore
-// moves by the semitones between the table's old rate and the new one. Each wave has to decode to its samples before
-// the edit, and the file has to come back from both its forms. A square wave and noise have to refuse the edit. A wave
-// of one word of samples counts apart.
+// the wave. A square wave or noise in the slot of a bank that uses its waves stays. The driver reads no rate. The
+// tuning of a split alone sets the pitch of the wave. Each new tuning therefore moves by the semitones between the
+// table's old rate and the new one. Each wave has to decode to its samples before the edit, and the file has to come
+// back from both its forms. A square wave and noise have to refuse the edit. A wave of one word of samples counts
+// apart.
 //
 // Rounds of renders then play a note of programs of each image on ntdlib's model of the driver, at velocity 127, for
 // 1 s, before and after each of three edits. The model plays each note the way the Bank Editor's keyboard plays it. The
@@ -72,7 +73,9 @@
 //   program comes back with the program of its preset. A user pairs them the same way in the window's Instruments. The
 //   tool counts the MIDI file's notes that come back at their keys, within 2 ticks at 48 ticks a quarter note, and
 //   those whose lengths move further. The notes count up to the file's loopEnd marker, or the end of the new sound's
-//   first pass. The MIDI file leaves out the notes that start no voice and the legatos, and the tool counts the
+//   first pass. Each of those notes has to come back: the last runs on Explorers of Time and Sky brought every one
+//   back. The lengths are a measure, and so are the next sound's notes of other lengths and its tracks of more or
+//   fewer notes. The MIDI file leaves out the notes that start no voice and the legatos, and the tool counts the
 //   arrangement's notes apart.
 // - Each bank is replaced with its file, and the export has to reproduce the image. It is then replaced with the file
 //   of the next bank that contains samples where it does. Every file that held the bank has to hold the next bank's

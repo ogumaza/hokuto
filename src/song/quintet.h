@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 // A GBA ROM whose music Quintet's driver plays. ntdlib finds the driver in the ROM, with its revision and its tables
-// (ntdlib::quintet::DetectDriver). A game can keep its music in several music files (ntdlib::quintet::ReadMusicFiles).
+// (agblib::quintet::DetectDriver). A game can keep its music in several music files (agblib::quintet::ReadMusicFiles).
 // Each file numbers its songs and sound effects after the file before, and Hokuto numbers the sounds the same way. A
 // song has no name in the ROM: Hokuto names it by its number. ntdlib's performer plays a song on its model of the
-// driver for the arrangement (ntdlib::sequence_export::quintet::PerformSong). ntdlib's ArchivePlayer plays it on its
+// driver for the arrangement (agblib::sequence_export::quintet::PerformSong). agblib's ArchivePlayer plays it on its
 // models of the driver and the GBA's sound hardware (song/sequence_model.h).
 //
 // A song has 6 channels, and each is a track: square 1, square 2, the wave channel, the noise channel, FIFO A and FIFO
-// B. A channel's commands select its instrument: a duty, a wave, a noise macro or a sample (ntdlib/quintet/
+// B. A channel's commands select its instrument: a duty, a wave, a noise macro or a sample (agblib/quintet/
 // instruments.h). A sample is one of the game's PCM samples. Hokuto numbers the samples of each music file's two banks
 // once each, in the order of the files, the banks and their numbers.
 
@@ -22,16 +22,16 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/quintet/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/quintet/driver.h"
 
 #include "song/driver.h"
 
 namespace hokuto::song
 {
 
-// A GBA ROM, and what ntdlib found of Quintet's driver in it. The functions below give what the overrides give.
+// A GBA ROM, and what agblib found of Quintet's driver in it. The functions below give what the overrides give.
 struct QuintetRom final : DriverRom
 {
     const DriverRules& Rules() const override;
@@ -55,7 +55,7 @@ struct QuintetRom final : DriverRom
     std::unique_ptr<DriverPlayer> MakePlayer() const override;
 
     // An audition plays a note on a channel of a song, with the instrument that the program of the Key Editor selects
-    // (ntdlib's ArchivePlayer::StartNote). `DriverAudition::track` names the channel, and its setup selects the
+    // (agblib's ArchivePlayer::StartNote). `DriverAudition::track` names the channel, and its setup selects the
     // instrument. The key of the note sets its index in the pitch table: 36 less.
     DriverAudition SampleAudition(int sample, int key, int velocity) const override;
     std::optional<DriverAudition> NoteAudition(const ntdlib::commands::Sequence& commands, const Sequence& sequence,
@@ -64,7 +64,7 @@ struct QuintetRom final : DriverRom
 
     // The music file of song `song` (numbered across the whole game), and the number of the song in the file. Nothing
     // for a number past the songs.
-    std::optional<std::pair<const ntdlib::quintet::DriverInfo*, int>> FileOf(int song) const;
+    std::optional<std::pair<const agblib::quintet::DriverInfo*, int>> FileOf(int song) const;
 
     // A sample of a bank of a music file.
     struct SampleKey
@@ -84,8 +84,8 @@ struct QuintetRom final : DriverRom
         uint8_t volume = 15;
     };
 
-    ntdlib::agb::Rom rom;
-    std::vector<ntdlib::quintet::DriverInfo> files; // as ntdlib::quintet::ReadMusicFiles returns them
+    agblib::agb::Rom rom;
+    std::vector<agblib::quintet::DriverInfo> files; // as agblib::quintet::ReadMusicFiles returns them
     std::vector<SampleKey> samples;
     std::vector<uint32_t> waves;          // the waves that the songs' wave channels select, in order
     std::optional<AuditionNote> audition; // where the ROM's one sound plays an audition
@@ -110,6 +110,6 @@ std::shared_ptr<const QuintetRom> LoadQuintetSongs(std::vector<uint8_t> bytes);
 // RevisionTraits::wave_levels): 3, or 4 in the J revision and where the revision isn't known. Above it, ntdlib's model
 // writes another level to the hardware: the level of a square or of the noise channel wraps in its 4 bits, the level of
 // a FIFO sets the bit of the other FIFO, and the wave channel keeps the code before.
-int QuintetMostVolume(int track, std::optional<ntdlib::quintet::Revision> start);
+int QuintetMostVolume(int track, std::optional<agblib::quintet::Revision> start);
 
 } // namespace hokuto::song

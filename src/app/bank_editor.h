@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/sar/bank_file.h"
 #include "ntdlib/sdat/formats.h"
 
@@ -57,13 +57,13 @@ namespace hokuto::app
 struct BankEdit
 {
     std::optional<ntdlib::sar::BankFile> model;
-    std::optional<ntdlib::mp2k::Voice> gba_voice;
+    std::optional<agblib::mp2k::Voice> gba_voice;
     bool gba_new_pattern = false;
     std::optional<std::pair<uint32_t, edit::GbaPattern>> gba_pattern;
-    std::vector<std::pair<uint32_t, ntdlib::mp2k::Voice>> gba_new;
+    std::vector<std::pair<uint32_t, agblib::mp2k::Voice>> gba_new;
     std::optional<uint32_t> gba_cleared;
-    std::optional<std::pair<ntdlib::mp2k::Voice, std::vector<edit::GbaKeyRow>>> gba_rows;
-    std::optional<ntdlib::mp2k::Voice> gba_program_voice;
+    std::optional<std::pair<agblib::mp2k::Voice, std::vector<edit::GbaKeyRow>>> gba_rows;
+    std::optional<agblib::mp2k::Voice> gba_program_voice;
     std::optional<std::pair<edit::DsRegionPlace, ntdlib::sdat::Region>> ds_region;
     std::optional<ntdlib::sdat::Bank> ds_model;
     std::optional<std::array<uint16_t, 4>> ds_slots;
@@ -74,6 +74,14 @@ struct BankEdit
     std::string refused;
     std::optional<BrowserPlace> wave;
     BankDrop drop;
+};
+
+// A button under the list of programs.
+enum class ProgramButton
+{
+    kAdd,
+    kDuplicate,
+    kDelete,
 };
 
 // The part of a region that a drag moves: the whole region, or one of its edges.
@@ -104,6 +112,9 @@ enum class RegionPart
 // keys and velocities that the user types. A sample of another of the GBA's drivers uses `typed_rate` and
 // `typed_loop`, the rate and the loop's start that the user types.
 // `typed_waiting` keeps the text of a typed field that the user ended while the program was busy (WaitingValues).
+// The program sets `settling` while it is busy only until it has settled the last edit: it lays out the edit's files
+// or builds its archive. A press on Add, Duplicate or Delete then waits in `waiting_press`, with the program that
+// was selected, and makes its edit in the first frame that takes edits.
 struct BankEditorState
 {
     bool reveal = true;
@@ -128,7 +139,7 @@ struct BankEditorState
     ImVec2 list_min;
     ImVec2 list_max;
     std::optional<int> gba_row;
-    std::optional<ntdlib::mp2k::Voice> gba_held;
+    std::optional<agblib::mp2k::Voice> gba_held;
     std::optional<edit::GbaPattern> gba_steps;
     std::optional<int> gba_key_held;
     std::optional<int> ds_row;
@@ -148,6 +159,8 @@ struct BankEditorState
     std::array<char, 16> typed_loop{};
     bool typing_loop = false;
     WaitingValues<std::string> typed_waiting;
+    bool settling = false;
+    std::optional<std::pair<ProgramButton, std::optional<uint32_t>>> waiting_press;
 };
 
 // Whether `point` lies on the Bank Editor's window.
@@ -158,7 +171,7 @@ std::optional<BankDrop> DropAt(const BankEditorState& state, ImVec2 point);
 
 // The voice of a GBA voice group that `drop` lands on: the program's voice, or the selected row of a key split or a
 // drum kit. A drop on the list of programs lands on none.
-std::optional<ntdlib::mp2k::Voice> DroppedGbaVoice(const GbaBankView& view, const BankEditorState& state,
+std::optional<agblib::mp2k::Voice> DroppedGbaVoice(const GbaBankView& view, const BankEditorState& state,
                                                    const BankDrop& drop);
 
 // The region of a DS bank that `drop` lands on: the selected row of the drop's program, by the program and the region's

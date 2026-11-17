@@ -17,6 +17,7 @@
 #include "app/engine_names.h"
 #include "app/export_warnings.h"
 #include "edit/commands.h"
+#include "edit/other_console.h"
 #include "format/drivers.h"
 #include "format/engines.h"
 #include "format/file.h"
@@ -217,7 +218,7 @@ void App::StartMeasure(Export& job)
     const std::shared_ptr<const song::Sequence> played_sequence = other ? job.done->played_sequence
                                                                   : engine_sound_ && engine_sequence_ ? engine_sequence_
                                                                                                       : sequence_;
-    const song::Mixing mixing = other && document != nullptr ? PlayedMixing(*document, *sound) : ShownMixing();
+    const song::Mixing mixing = other && document != nullptr ? edit::PlayedMixing(*document, *sound) : ShownMixing();
     const std::optional<format::Engine> to = SongEngineOf(job.Target());
     const PlayedSource source{played, played_sequence, mixing};
     if (to)

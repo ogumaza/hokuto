@@ -10,6 +10,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -17,6 +18,9 @@
 
 namespace hokuto::edit
 {
+
+// The message with which an import refuses a MIDI file without notes.
+inline constexpr std::string_view kMidiWithoutNotes = "The MIDI file has no notes.";
 
 // The MIDI file `midi`, read for an import. Throws std::invalid_argument with a message for the user for a file that
 // seqlib can't read, and for a file in SMPTE time.

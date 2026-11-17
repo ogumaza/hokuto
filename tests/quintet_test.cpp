@@ -3,17 +3,17 @@
 // Tests Hokuto's path for Quintet's GBA driver: the import and the round trip, the songs that the arrangement shows,
 // playback, the edits of notes, the refused edits of tracks, the mixer's volume, the start tempos and the tempo row,
 // the removal of a repeat, and the exports.
-// ntdlib's test cartridge of the driver (ntdlib/testing/quintet_cart.h) holds no game data. It contains the code
+// ntdlib's test cartridge of the driver (agblib/testing/quintet_cart.h) holds no game data. It contains the code
 // patterns that ntdlib's detection reads, the driver's tables and the songs below.
 //
 // The expected ticks, keys and bytes come from the songs' bytes, worked out by hand by the driver's rules
-// (ntdlib/quintet/commands.h). A note's high nibble picks its note value from the length table: index 3 selects a
+// (agblib/quintet/commands.h). A note's high nibble picks its note value from the length table: index 3 selects a
 // quarter note of 96 of the driver's ticks, and index 4 a sixth of a whole note, 64 ticks. Its low nibble sets the
 // pitch, and 13 rests. D1 after a note adds half its length. D4 between two notes of the same pitch ties them into one.
 // 4F sets the octave, and a square channel's key is 36 more than its index in the pitch table: octave 2 and pitch 0
 // give key 60. A file counts 37 ticks for each of the driver's ticks (format/quintet.h).
 //
-// ntdlib's ArchivePlayer, run directly, gives the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, gives the reference output. The model's output has to match it sample for
 // sample, from the start, in both mixing modes, at the player's rate. The MIDI file and the SoundFont have to equal
 // those of ntdlib's converter, run directly.
 
@@ -32,16 +32,16 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/apu.h"
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/apu.h"
+#include "agblib/agb/gba.h"
+#include "agblib/quintet/archive_player.h"
+#include "agblib/quintet/driver.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/quintet/convert.h"
+#include "agblib/testing/quintet_cart.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/quintet/archive_player.h"
-#include "ntdlib/quintet/driver.h"
 #include "ntdlib/sar/layout.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/quintet/convert.h"
-#include "ntdlib/testing/quintet_cart.h"
 #include "xsflib/testing/check.h"
 
 #include "app/list_edits.h"
@@ -69,7 +69,7 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
-namespace cart = ntdlib::testing::quintet_cart;
+namespace cart = agblib::testing::quintet_cart;
 using format::File;
 using hokuto::testing::HasSound;
 using hokuto::testing::KeysOf;
@@ -91,7 +91,7 @@ using song::Sequence;
 using song::SequenceModel;
 using xsflib::testing::ErrorOf;
 
-constexpr uint32_t kRomBase = ntdlib::agb::kRomBase;
+constexpr uint32_t kRomBase = agblib::agb::kRomBase;
 
 // The file's ticks for a count of the driver's.
 constexpr uint32_t Ticks(uint32_t driver_ticks)
@@ -133,7 +133,7 @@ std::vector<uint8_t> Song1()
 
 std::vector<uint8_t> Image()
 {
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({Song0(), Song1()});
 
     return RomBytes(image.ToRom());
@@ -148,7 +148,7 @@ Sequence ReadOf(const File& file, uint32_t sound)
 template <typename Sample>
 std::vector<Sample> Direct(const QuintetRom& rom, int song, std::size_t samples, bool enhanced)
 {
-    ntdlib::quintet::ArchivePlayer player(rom.rom, rom.files);
+    agblib::quintet::ArchivePlayer player(rom.rom, rom.files);
     player.Start(song, {.enhanced = enhanced});
     return RunDirect<Sample>(player, samples);
 }
@@ -287,22 +287,22 @@ void TestPlays()
     XSFLIB_CHECK(player->Tick() == frames * 90);
 }
 
-// The S revision resets SOUNDBIAS to a resolution of 262,144 Hz. ntdlib's model of the GBA's sound mixes at 65,536 Hz
+// The S revision resets SOUNDBIAS to a resolution of 262,144 Hz. agblib's model of the GBA's sound mixes at 65,536 Hz
 // at most (agb::kMaxOutputRate), and so does ntdlib's player run directly. In strict mixing, the model and the player
 // play at that rate. The song sets the volume (8A, the S revision's 5E) and the octave (89, its 4F), and plays a
 // quarter note of C: its pitch, then its note value. The note value divides a whole note.
 void TestRevisionS()
 {
-    cart::Cart image(ntdlib::quintet::Revision::kS);
+    cart::Cart image(agblib::quintet::Revision::kS);
     image.Songs({cart::Song({cart::Channel().Bytes({0x8A, 15, 0x89, 2, 0, 4}).End()})});
-    const ntdlib::agb::Rom image_rom = image.ToRom();
+    const agblib::agb::Rom image_rom = image.ToRom();
     const std::shared_ptr<const QuintetRom> rom = song::LoadQuintetRom(RomBytes(image_rom));
-    XSFLIB_CHECK(rom->Rate() == ntdlib::agb::kMaxOutputRate);
+    XSFLIB_CHECK(rom->Rate() == agblib::agb::kMaxOutputRate);
     const auto sequence = std::make_shared<const Sequence>(rom->ReadSequence(0));
     XSFLIB_CHECK(StartsOf(*sequence, 0) == (std::vector<uint32_t>{0}));
 
     SequenceModel strict(rom, sequence, hokuto::song::ModelOptions{.mixing = Mixing::kStrict, .snapshot_interval = 20});
-    XSFLIB_CHECK(strict.SampleRate() == ntdlib::agb::kMaxOutputRate);
+    XSFLIB_CHECK(strict.SampleRate() == agblib::agb::kMaxOutputRate);
     const Played played = Play(strict, 120);
     XSFLIB_CHECK(HasSound(std::span<const int16_t>(played.samples)));
     const std::vector<int16_t> expected = Direct<int16_t>(*rom, 0, played.samples.size() + 4096, false);
@@ -422,7 +422,7 @@ void TestNoteEdits()
 // as in songs 0, 3 and 4, the volume is the reason given: a change of octave wouldn't help.
 void TestNoteAtVolume()
 {
-    using ntdlib::quintet::Revision;
+    using agblib::quintet::Revision;
     const auto channel = [](std::vector<uint8_t> before, int rests, std::vector<uint8_t> after)
     {
         cart::Channel built;
@@ -510,7 +510,7 @@ void TestNoteAtVolume()
 // note of 1.5 + 1.5 + 1 quarter notes. A key edit of it moves the whole note.
 void TestNoteAfterTie()
 {
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({cart::Song({cart::Channel().Bytes(kSetup).Note(0, 3).Bytes({0xD4}).Rest(3).Note(4, 3).End()}),
                  cart::Song({cart::Channel().Bytes(kSetup).Note(0, 3).Bytes({0xD4}).Note(0, 3).Note(4, 3).End()}),
                  cart::Song({cart::Channel().Bytes(kSetup).Note(0, 3).Bytes({0xD1, 0xD4}).Rest(3).Note(4, 3).End()}),
@@ -643,7 +643,7 @@ void TestFixedSettings()
 // driver ends at the rest's wait. The note therefore runs in the channel's second stretch.
 void TestAuditionInstrument()
 {
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({cart::Song({cart::Channel().Bytes(kSetup).Bytes({0x2F, 0x80}).Rest(3).Note(0, 3).End()})});
     const std::vector<uint8_t> bytes = RomBytes(image.ToRom());
     const File file = format::DriverOfRom(bytes)->Import(bytes);
@@ -686,7 +686,7 @@ void TestTracks()
 // A song on square 1 that plays two quarter notes of C, with `step` between them.
 std::vector<uint8_t> StepImage(const std::vector<uint8_t>& step)
 {
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({cart::Song({cart::Channel().Bytes(kSetup).Note(0, 3).Bytes(step).Note(0, 3).End()})});
     return RomBytes(image.ToRom());
 }
@@ -740,7 +740,7 @@ std::vector<uint8_t> NextSong()
 
 std::vector<uint8_t> ListImage()
 {
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({OddSong(), NextSong()});
     return RomBytes(image.ToRom());
 }
@@ -842,7 +842,7 @@ std::vector<uint8_t> TempoSong()
 }
 
 // A ROM of the driver's revision `revision` with a song that ends at once.
-std::vector<uint8_t> RevisionImage(ntdlib::quintet::Revision revision)
+std::vector<uint8_t> RevisionImage(agblib::quintet::Revision revision)
 {
     cart::Cart image(revision);
     image.Songs({cart::Song({cart::Channel().End()})});
@@ -856,7 +856,7 @@ std::vector<uint8_t> RevisionImage(ntdlib::quintet::Revision revision)
 // channel set the tempo of every channel. The tempo row shows them and leaves out those of the second channel.
 void TestTempos()
 {
-    using ntdlib::quintet::Revision;
+    using agblib::quintet::Revision;
     for (const auto& [revision, start] :
          {std::pair(Revision::kA, 90), std::pair(Revision::kJ, 120), std::pair(Revision::kS, 150)})
     {
@@ -880,10 +880,10 @@ void TestTempos()
 
     // The point shows the tempo that plays: the driver's frames run at the GBA's frame rate, 16,777,216 / 280,896 a
     // second, and not at 60. The line and the transport show the same tempo, from ntdlib's converter
-    // (ntdlib::agb::QuarterMicros, rounded to whole microseconds).
+    // (agblib::agb::QuarterMicros, rounded to whole microseconds).
     SEQLIB_REQUIRE(points[0].bpm.has_value() && !read.tempo.empty());
-    XSFLIB_CHECK(std::abs(*points[0].bpm - 90 * 3600.0 / 3552.0 * ntdlib::agb::kFrameRate / 60.0) < 1e-9);
-    XSFLIB_CHECK(std::abs(*points[0].bpm - 60'000'000.0 / ntdlib::agb::QuarterMicros(3552, 90)) < 1e-3);
+    XSFLIB_CHECK(std::abs(*points[0].bpm - 90 * 3600.0 / 3552.0 * agblib::agb::kFrameRate / 60.0) < 1e-9);
+    XSFLIB_CHECK(std::abs(*points[0].bpm - 60'000'000.0 / agblib::agb::QuarterMicros(3552, 90)) < 1e-3);
     XSFLIB_CHECK(std::abs(*points[0].bpm - read.tempo.front().bpm) < 1e-3);
 
     // A drag to the point's tempo, rounded to a whole beat a minute, keeps the command's value. One to 30 more sets the
@@ -906,7 +906,7 @@ void TestTempos()
 void TestTempoPartners()
 {
     const std::vector<uint8_t> setup = {0x5E, 15, 0x4F, 2};
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({cart::Song({cart::Channel().Bytes({0x7F, 90}).Bytes(setup).Note(0, 3).Note(0, 3).End(),
                              cart::Channel().Bytes({0x7F, 90}).Bytes(setup).Note(0, 3).Note(0, 3).End(),
                              cart::Channel().Bytes({0x7F, 60}).Bytes(setup).Note(0, 3).Note(0, 3).End()})});
@@ -945,7 +945,7 @@ void TestTempoPartners()
 // A ROM whose song repeats a quarter note of C: D6 starts the repeat, and D7 02 ends it after 2 passes.
 std::vector<uint8_t> RepeatImage()
 {
-    cart::Cart image(ntdlib::quintet::Revision::kA);
+    cart::Cart image(agblib::quintet::Revision::kA);
     image.Songs({cart::Song({cart::Channel().Bytes(kSetup).Bytes({0xD6}).Note(0, 3).Bytes({0xD7, 2}).End()})});
 
     return RomBytes(image.ToRom());
@@ -979,9 +979,9 @@ void TestExports()
     SEQLIB_REQUIRE(rom->files.size() == 1);
     for (const uint32_t sound : {0u, 1u})
     {
-        ntdlib::sequence_export::agb::ConvertSettings settings;
+        agblib::sequence_export::agb::ConvertSettings settings;
         settings.program = "Hokuto";
-        const ntdlib::sequence_export::quintet::SongFiles expected = ntdlib::sequence_export::quintet::ConvertSongFiles(
+        const agblib::sequence_export::quintet::SongFiles expected = agblib::sequence_export::quintet::ConvertSongFiles(
             rom->rom, rom->files.front(), static_cast<int>(sound), settings);
         const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
         XSFLIB_CHECK(expected.report.ok);
@@ -992,18 +992,18 @@ void TestExports()
 }
 
 // The wave channel of the A revision has the volume codes of 4 levels, 0 to 3, and the J revision's 5 (ntdlib's
-// RevisionTraits::wave_levels). A level above them keeps the code before (ntdlib's quintet::Sequencer::Output). The
+// RevisionTraits::wave_levels). A level above them keeps the code before (agblib's quintet::Sequencer::Output). The
 // rules of each revision's ROM give its top for a volume (5E) on the wave channel (song::QuintetMostVolume), and the
 // other channels' tops.
 void TestWaveTop()
 {
-    using ntdlib::quintet::Revision;
+    using agblib::quintet::Revision;
     for (const Revision revision : {Revision::kA, Revision::kJ})
     {
         cart::Cart image(revision);
         image.Songs({Song0()});
         const std::shared_ptr<const QuintetRom> rom = song::LoadQuintetRom(RomBytes(image.ToRom()));
-        XSFLIB_CHECK(rom->Rules().MostVolume(ntdlib::quintet::kWave) == (revision == Revision::kA ? 3 : 4));
+        XSFLIB_CHECK(rom->Rules().MostVolume(agblib::quintet::kWave) == (revision == Revision::kA ? 3 : 4));
         XSFLIB_CHECK(rom->Rules().MostVolume(0) == 15 && rom->Rules().MostVolume(3) == 15);
         XSFLIB_CHECK(rom->Rules().MostVolume(4) == 1 && rom->Rules().MostVolume(5) == 1);
     }

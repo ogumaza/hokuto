@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The parts of hokuto_check_replace that its files share: the totals, the refusals of the Wii's checks, the helpers and
-// the checks of each mode. check_replace.cpp describes the modes.
+// the checks of each mode. check_replace.cpp lists the files that describe the modes.
 
 #pragma once
 
@@ -26,6 +26,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -93,8 +94,8 @@ namespace song = hokuto::song;
 
 using Archive = std::shared_ptr<const sar::SoundArchive>;
 
-// What the check counted.
-struct Totals
+// What the checks of the sequences counted (SameProblem and CrossProblem).
+struct SequenceTotals
 {
     std::size_t sounds = 0;
     std::size_t failed = 0;
@@ -106,6 +107,11 @@ struct Totals
     std::size_t crossed = 0;
     std::size_t untracked = 0;
     std::size_t loops_moved = 0; // replacements whose loop the performer found a whole number of passes away
+};
+
+// What the checks of the files of banks, wave archives and wave sounds counted (CheckFiles).
+struct FileTotals
+{
     std::size_t files = 0;
     std::size_t files_failed = 0;
     std::size_t files_crossed = 0;
@@ -118,19 +124,19 @@ struct Totals
     std::size_t files_converted = 0;           // files that took the same file from another console
     std::size_t files_converted_otherwise = 0; // wave archives whose waves came back from it with other bytes
     std::size_t files_written = 0; // other files of the kind that went in written again with the archive's versions
-    std::size_t wave_archives = 0;
-    std::size_t wave_archives_failed = 0;
-    std::size_t wave_archives_out = 0;    // in neither the archive nor its group files, or shared by two file IDs
-    std::size_t wave_archives_beside = 0; // in the group files beside the archive alone
-    std::size_t waves = 0;
-    std::size_t waves_wide = 0;        // waves of more than two channels
-    std::size_t waves_loop_lost = 0;   // waves whose loop flag the WAV file doesn't keep
-    std::size_t waves_later = 0;       // looped DSP-ADPCM waves whose later passes differ from the first
-    std::size_t waves_rewritten = 0;   // waves whose files give their wave archives other bytes in their places
-    std::size_t waves_other_bytes = 0; // waves that come back with other bytes from another console
-    int later_peak = 0;                // the largest difference of a sample there
-    double later_ms = 0.0;             // the longest time from the loop's start to the last difference
 
+    // The programs that the sounds of a bank select and the next bank lacks.
+    std::size_t fixed_banks = 0;    // banks whose next bank lacks such programs
+    std::size_t fixed_programs = 0; // the programs
+    std::size_t fixes_present = 0;  // programs that took the present bank's instrument
+    std::size_t fixes_next = 0;     // programs that took the next bank's first instrument
+    std::size_t selected = 0;       // the programs that the sounds of the banks select
+    std::size_t undecided = 0;      // program changes of those sounds whose program or slot a value decides
+};
+
+// What the checks of the waves from their WAV files counted, in DSP-ADPCM (DspAdpcmProblem) and at half their rates.
+struct DspAdpcmTotals
+{
     // The waves from their WAV files as DSP-ADPCM.
     std::size_t adpcm_exact = 0;      // waves that come back exactly
     std::size_t adpcm_moved = 0;      // waves whose loop's start moves forward to a frame
@@ -144,16 +150,28 @@ struct Totals
     std::size_t resampled_samples = 0; // the new samples, in all channels
     double resampled_seconds = 0.0;    // the time that the reading of the WAV files took
     std::size_t loops_offered = 0;     // looped waves that took the present wave's loop
+};
 
-    // The programs that the sounds of a bank select and the next bank lacks.
-    std::size_t fixed_banks = 0;    // banks whose next bank lacks such programs
-    std::size_t fixed_programs = 0; // the programs
-    std::size_t fixes_present = 0;  // programs that took the present bank's instrument
-    std::size_t fixes_next = 0;     // programs that took the next bank's first instrument
-    std::size_t selected = 0;       // the programs that the sounds of the banks select
-    std::size_t undecided = 0;      // program changes of those sounds whose program or slot a value decides
+// What the checks of the waves counted (CheckWaves).
+struct WaveTotals : DspAdpcmTotals
+{
+    std::size_t wave_archives = 0;
+    std::size_t wave_archives_failed = 0;
+    std::size_t wave_archives_out = 0;    // in neither the archive nor its group files, or shared by two file IDs
+    std::size_t wave_archives_beside = 0; // in the group files beside the archive alone
+    std::size_t waves = 0;
+    std::size_t waves_wide = 0;        // waves of more than two channels
+    std::size_t waves_loop_lost = 0;   // waves whose loop flag the WAV file doesn't keep
+    std::size_t waves_later = 0;       // looped DSP-ADPCM waves whose later passes differ from the first
+    std::size_t waves_rewritten = 0;   // waves whose files give their wave archives other bytes in their places
+    std::size_t waves_other_bytes = 0; // waves that come back with other bytes from another console
+    int later_peak = 0;                // the largest difference of a sample there
+    double later_ms = 0.0;             // the longest time from the loop's start to the last difference
+};
 
-    // The new sounds of --new.
+// What the new sounds of --new counted (CheckNewSounds).
+struct NewSoundTotals
+{
     std::size_t new_sounds = 0;
     std::size_t new_failed = 0;
     std::size_t new_crossed = 0;         // the same new sounds from the files for the other consoles
@@ -164,8 +182,11 @@ struct Totals
     std::size_t new_other_biquads = 0;   // files for another console whose biquad filters come back otherwise
     std::size_t new_ctr_refused = 0;     // files that reach a command that the 3DS lacks
     double new_slowest = 0.0;            // the longest time that the edit took, in seconds
+};
 
-    // The new banks and wave archives of --banks.
+// What the new banks and wave archives of --banks counted (CheckNewBanks).
+struct NewBankTotals
+{
     std::size_t bank_checked = 0;
     std::size_t bank_failed = 0;
     std::size_t new_banks = 0;
@@ -175,8 +196,11 @@ struct Totals
     std::size_t bank_missing = 0; // models whose banks or wave archives lack their files
     std::size_t bank_skipped = 0; // models that start where no command starts, or that leave out tracks
     double bank_slowest = 0.0;    // the longest time that an edit took, in seconds
+};
 
-    // The new wave sounds of --wave-sounds.
+// What the new wave sounds of --wave-sounds counted (CheckNewWaveSounds).
+struct WaveSoundTotals
+{
     std::size_t wsd_files = 0; // wave sound files that went in as new wave sounds, once for each model
     std::size_t wsd_failed = 0;
     std::size_t wsd_sounds = 0;         // new wave sounds
@@ -188,8 +212,11 @@ struct Totals
     std::size_t wsd_wave_archives = 0;  // new wave archives
     std::size_t wsd_written = 0;        // wave archives and wave sound files written again with the archive's versions
     double wsd_slowest = 0.0;           // the longest time that an edit took, in seconds
+};
 
-    // The new waves of --new-waves.
+// What the new waves of --new-waves counted (CheckNewWaves).
+struct NewWaveTotals : DspAdpcmTotals
+{
     std::size_t nw_wave_archives = 0; // wave archives whose waves went in again as new waves
     std::size_t nw_failed = 0;
     std::size_t nw_waves = 0;          // waves that went in from each of their files
@@ -200,8 +227,13 @@ struct Totals
     std::size_t nw_written = 0;        // waves of a later version that went in written again with that version
     std::size_t nw_pairs = 0;          // second new waves after a first
     double nw_slowest = 0.0;           // the longest time that an edit took, in seconds
+    std::size_t wave_archives_out = 0; // in neither the archive nor its group files, or shared by two file IDs
+    std::size_t wave_archives_beside = 0; // in the group files beside the archive alone
+};
 
-    // The streams of --streams.
+// What the streams of --streams counted (CheckStreams and CheckDonorStreams).
+struct StreamTotals
+{
     std::size_t st_streams = 0; // streams beside the archive that a sound plays
     std::size_t st_failed = 0;
     std::size_t st_channels = 0;
@@ -222,8 +254,11 @@ struct Totals
     std::size_t st_unknown = 0;        // donors' streams for a 3DS archive whose layout of stream sounds is unknown
     std::size_t st_paired = 0;         // donors' streams that took a track for each pair of their channels
     double st_slowest = 0.0;           // the longest time that a new sound's edit took, in seconds
+};
 
-    // The variables of --variables.
+// What the variables of --variables counted (CheckVariables).
+struct VariableTotals
+{
     std::size_t va_reading = 0;  // sequence sounds whose commands read variables before they set them
     std::size_t va_checked = 0;  // such sounds that the rounds edited
     std::size_t va_failed = 0;   // edits after which a sound plays otherwise
@@ -235,8 +270,11 @@ struct Totals
     std::size_t va_no_start = 0; // sounds that start where no command of their files starts
     std::size_t va_runaway = 0;  // fixed values that left a track running without waits, and played otherwise
     std::set<std::string> va_reasons; // why the edits were refused
+};
 
-    // The groups that new and replaced items join.
+// What the joins of new and replaced items to groups counted (JoinAndNewGroupCheck).
+struct JoinTotals
+{
     std::size_t join_items = 0; // items, or sets of new items, that joined groups
     std::size_t join_failed = 0;
     std::size_t join_refused = 0;    // joins that the edit refuses, with a message that the window shows
@@ -327,19 +365,19 @@ struct Choice
 // `built`, the archive that `file` builds. Counts the items without a proposal in `totals`, and the groups that the
 // windows don't offer because they would take a file that Hokuto can't read.
 Choice ChosenGroups(const format::File& file, const sar::SoundArchive& built, std::span<const edit::Group> groups,
-                    std::span<const uint32_t> before, std::span<const uint32_t> after, bool extra, Totals& totals);
+                    std::span<const uint32_t> before, std::span<const uint32_t> after, bool extra, JoinTotals& totals);
 
 // What is wrong when `items` of `added` join the groups of `choice` through the windows' edit, or nothing. `before`
 // lists the files that the old item or the model required. Counts the join in `totals`.
 std::string JoinCheck(const format::File& added, const Choice& choice, std::span<const uint32_t> items,
-                      std::span<const uint32_t> before, Totals& totals);
+                      std::span<const uint32_t> before, JoinTotals& totals);
 
 // What is wrong when `items` of `added` join a new group through the windows' edit, or nothing. `archive` is the
 // archive that `added` started from, and `before` lists the files that the old item or the model required. The new
 // group goes in first, empty (edit::AddGroups). It then takes the items as any group without files does: links to the
 // files that the items require, or copies when a link can't reach one of them. Counts the new group in `totals`.
 std::string NewGroupCheck(const format::File& added, const sar::SoundArchive& archive, std::span<const uint32_t> items,
-                          std::span<const uint32_t> before, Totals& totals);
+                          std::span<const uint32_t> before, JoinTotals& totals);
 
 // How many items of a check have joined the groups that the windows propose, and whether one has joined a new group.
 struct Joins
@@ -361,10 +399,10 @@ bool JoinsGroups(const Joins& joins, std::span<const edit::Group> edit_groups);
 std::string JoinAndNewGroupCheck(const format::File& file, const sar::SoundArchive& built,
                                  std::span<const edit::Group> edit_groups, std::span<const uint32_t> items,
                                  std::span<const uint32_t> before, const std::function<std::vector<uint32_t>()>& after,
-                                 const std::function<const format::File&()>& added, Joins& joins, Totals& totals);
+                                 const std::function<const format::File&()>& added, Joins& joins, JoinTotals& totals);
 
 // The summary of the joins, for an archive with groups when `groups` says so, and of the new groups.
-void PrintJoins(const std::string& name, const Totals& totals, bool groups);
+void PrintJoins(const std::string& name, const JoinTotals& totals, bool groups);
 
 // A sound's sequence file as Replace… reads it for an archive of `into`, and the item where the sound starts in it, if
 // an item starts there.
@@ -378,8 +416,13 @@ struct Source
 Source SourceOf(std::span<const uint8_t> bytes, uint32_t start_offset,
                 const std::optional<song::Console>& into = std::nullopt);
 
-// Whether the commands that sound `info` plays from `source` open tracks that the sound doesn't allocate.
-bool Untracked(const Source& source, const sar::SoundInfo& info);
+// Whether the commands that sound `info` plays from `source` open tracks that the sound doesn't allocate. `info` is a
+// sound of the 3DS, the Wii U or the Switch, or of the Wii.
+template <typename SoundInfo>
+bool Untracked(const Source& source, const SoundInfo& info)
+{
+    return (edit::TracksOpened(source.incoming.sequence, *source.start) & ~info.allocate_track_flags) != 0;
+}
 
 // `played` without the places of its commands: the commands' offsets, the stretches, the labels and the calls.
 song::Sequence Placeless(song::Sequence played);
@@ -388,8 +431,39 @@ song::Sequence Placeless(song::Sequence played);
 // the places of its commands.
 song::Sequence Played(const sar::SoundArchive& archive, uint32_t sound, const song::StartValues& values = {});
 
-// Whether the sequence file of sound `sound` of `archive` has a label at the sound's start.
-bool StartsAtLabel(const sar::SoundArchive& archive, uint32_t sound);
+// Whether the sequence file of sound `sound` of `archive` has a label at the sound's start. `archive` is an archive of
+// the 3DS, the Wii U or the Switch, or of the Wii.
+template <typename SoundArchive>
+bool StartsAtLabel(const SoundArchive& archive, uint32_t sound)
+{
+    using SequenceFile = std::conditional_t<std::is_same_v<SoundArchive, sar::SoundArchive>, sar::SequenceFile,
+                                            ntdlib::rsar::SequenceFile>;
+    const auto& info = archive.Sounds()[sound];
+    const auto at_start = [&info](const auto& label)
+    {
+        return label.offset == info.start_offset;
+    };
+
+    return std::ranges::any_of(SequenceFile::Read(archive.FileData(info.file_id)).labels, at_start);
+}
+
+// What is wrong when `after` moves the start of a sound of `built` that `playing` doesn't list, or nothing. `built` and
+// `after` are archives of the 3DS, the Wii U or the Switch, or of the Wii.
+template <typename SoundArchive>
+std::string MovedStartProblem(const SoundArchive& built, const SoundArchive& after,
+                              std::span<const uint32_t> playing = {})
+{
+    for (std::size_t i = 0; i < built.Sounds().size(); i++)
+    {
+        const bool plays = std::ranges::find(playing, static_cast<uint32_t>(i)) != playing.end();
+        if (!plays && after.Sounds()[i].start_offset != built.Sounds()[i].start_offset)
+        {
+            return "moves the start of " + built.Sounds()[i].name;
+        }
+    }
+
+    return {};
+}
 
 // Whether `after` plays the notes of `before` where ntdlib's performer finds their loops a whole number of passes
 // apart. The performer finds a loop where every track's state repeats. Up to the earlier loop's end, the notes then
@@ -408,7 +482,7 @@ std::string CrossProblem(const format::File& file, std::span<const std::optional
 // What is wrong when sound `sound` of `file` takes its sequence file again, from the archive and for each other
 // console, or nothing. `built` is the archive that `file` builds. A file that the 3DS can't hold counts apart.
 std::string SameProblem(const format::File& file, std::span<const std::optional<edit::SoundPlace>> places,
-                        const sar::SoundArchive& built, uint32_t sound, const Source& same, Totals& totals);
+                        const sar::SoundArchive& built, uint32_t sound, const Source& same, SequenceTotals& totals);
 
 // A file that Replace… replaces: its kind, the item whose context menu offers it, and its file ID. A wave sound file is
 // the file of a wave sound.
@@ -461,7 +535,7 @@ uint32_t ItemIdOf(const FileItem& item);
 // file, the item joins the groups that the Replace window proposes (edit_groups), up to kJoins times.
 void CheckFiles(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
                 std::span<const edit::Group> edit_groups, std::span<const std::optional<edit::SoundPlace>> places,
-                const std::string& name, Totals& totals);
+                const std::string& name, FileTotals& totals, JoinTotals& joined);
 
 // The version in the header of `file`, a file of the console of `flavor`.
 uint32_t HeaderVersion(std::span<const uint8_t> file, sar::Flavor flavor);
@@ -474,12 +548,12 @@ uint32_t HeaderVersion(std::span<const uint8_t> file, sar::Flavor flavor);
 // The new wave archive has to keep the other waves' bytes.
 std::string DspAdpcmProblem(const sar::SoundArchive& built, const FileItem& item, const sar::WaveArchiveFile& present,
                             std::optional<uint32_t> wave, std::span<const uint8_t> wav, const sar::Pcm& pcm,
-                            Totals& totals);
+                            DspAdpcmTotals& totals);
 
 // Checks each wave of each wave archive with its WAV file. A wave archive that neither the archive nor its group files
 // hold, and one whose bytes two file IDs name, stay out: Replace… refuses them.
 void CheckWaves(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                const std::string& name, Totals& totals);
+                const std::string& name, WaveTotals& totals);
 
 // The sequence sounds that --new copies: up to kNewModels of the sounds with places, spread through the sound table.
 std::vector<uint32_t> NewModels(std::span<const std::optional<edit::SoundPlace>> places);
@@ -512,7 +586,7 @@ std::vector<std::string> NamesOf(const std::vector<Item>& items)
 // with `edit_groups`. Up to kJoins copies join the groups that the Import window proposes.
 void CheckNewSounds(const format::File& file, const sar::SoundArchive& built, std::span<const uint8_t> bytes,
                     std::span<const edit::Group> edit_groups, std::span<const std::optional<edit::SoundPlace>> places,
-                    const std::string& name, Totals& totals);
+                    const std::string& name, NewSoundTotals& totals, JoinTotals& joined);
 
 // The bits of an item ID that give the item's place in its list.
 constexpr uint32_t kIndexBits = 0x00FFFFFF;
@@ -527,7 +601,8 @@ std::span<const uint8_t> BankFile(const sar::SoundArchive& archive, uint32_t ban
 // each sound that plays the new banks. `built` is the archive that `file` builds. The models are those of --new, taken
 // in an order that spreads them through the sound table.
 void CheckNewBanks(const format::File& file, const Archive& built,
-                   std::span<const std::optional<edit::SoundPlace>> places, const std::string& name, Totals& totals);
+                   std::span<const std::optional<edit::SoundPlace>> places, const std::string& name,
+                   NewBankTotals& totals);
 
 // The wave sound files of `donor`, up to kWaveSoundFiles, as new wave sounds of `file`. `built` is the archive that
 // `file` builds, with `edit_groups`, and `self` says that the donor is that archive. Each file goes in once with a wave
@@ -535,17 +610,18 @@ void CheckNewBanks(const format::File& file, const Archive& built,
 // groups that the Import window proposes.
 void CheckNewWaveSounds(const format::File& file, const sar::SoundArchive& built,
                         std::span<const edit::Group> edit_groups, const sar::SoundArchive& donor, bool self,
-                        const std::string& name, Totals& totals);
+                        const std::string& name, WaveSoundTotals& totals, JoinTotals& joined);
 
 // Checks the new waves of each wave archive (NewWavesProblem). A wave archive that neither the archive nor its group
 // files hold, and one whose bytes two file IDs name, stay out: the Import window's edit refuses them.
 void CheckNewWaves(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                   const std::string& name, Totals& totals);
+                   const std::string& name, NewWaveTotals& totals);
 
 // Checks the variables of Replace… of a sequence (--variables). Up to kVariablePasses sounds of each sequence file take
 // each round, one sound of each file in each version.
 void CheckVariables(const format::File& file, const sar::SoundArchive& built,
-                    std::span<const std::optional<edit::SoundPlace>> places, const std::string& name, Totals& totals);
+                    std::span<const std::optional<edit::SoundPlace>> places, const std::string& name,
+                    VariableTotals& totals);
 
 // Whether `b`, a stream made again from the WAV file of `a`, plays the samples that `a` plays: the same samples up to
 // the end of `a`'s loop, then the samples from the loop's start that the later start of `b`'s loop moved after the end.
@@ -553,17 +629,18 @@ bool PlaysSame(const sar::Pcm& a, const sar::Pcm& b);
 
 // The streams beside `built`, the archive that `file` builds. Each stream goes in with the first stream sound that
 // plays it (StreamProblem, and AacStreamProblem for an AAC stream).
-void CheckStreams(const format::File& file, const sar::SoundArchive& built, const std::string& name, Totals& totals);
+void CheckStreams(const format::File& file, const sar::SoundArchive& built, const std::string& name,
+                  StreamTotals& totals);
 
 // The streams beside the archive of `donor` as new stream sounds of `built`, the archive that `file` builds
 // (DonorStreamProblem). The model alternates between the archive's first stream sound and its first sound of another
 // kind.
 void CheckDonorStreams(const format::File& file, const sar::SoundArchive& built, const format::File& donor,
-                       const std::string& name, Totals& totals);
+                       const std::string& name, StreamTotals& totals);
 
 // Prints the ratios of signal to noise of the waves from their WAV files as DSP-ADPCM, by tens of decibels. With
 // `half_rates`, also prints the waves that came back from their WAV files at half their rates.
-void PrintDspAdpcm(const std::string& name, const Totals& totals, bool half_rates);
+void PrintDspAdpcm(const std::string& name, const DspAdpcmTotals& totals, bool half_rates);
 
 using WiiArchive = std::shared_ptr<const ntdlib::rsar::SoundArchive>;
 
@@ -583,15 +660,9 @@ std::string OtherWiiFilesProblem(std::span<const uint8_t> built_bytes, const ntd
 // in it, if an item starts there.
 Source WiiSourceOf(std::span<const uint8_t> bytes, uint32_t start_offset, const ntdlib::SndBuild& build);
 
-// Whether the commands that the Wii's sound `info` plays from `source` open tracks that the sound doesn't allocate.
-bool Untracked(const Source& source, const ntdlib::rsar::SoundInfo& info);
-
 // What ntdlib's performer plays of sound `sound` of the Wii's `archive` by the rules of `build`, without the places of
 // its commands.
 song::Sequence WiiPlayed(const ntdlib::rsar::SoundArchive& archive, uint32_t sound, const ntdlib::SndBuild& build);
-
-// Whether the sequence file of sound `sound` of the Wii's `archive` has a label at the sound's start.
-bool StartsAtLabel(const ntdlib::rsar::SoundArchive& archive, uint32_t sound);
 
 // `bytes` with zeros up to a multiple of 32 bytes. NW4R's tools pad each file and each wave data that way.
 std::vector<uint8_t> PaddedForWii(std::span<const uint8_t> bytes);
@@ -624,6 +695,39 @@ auto Refusable(const Step& step)
         throw Refusal(error.what());
     }
 }
+
+// Runs `check` of `item` in archive `name`, a check of the Wii's. Prints the problem that the check returns or throws,
+// and counts it in `counts.failed`. Counts a Refusal in `counts.refused` by its reason. A LeftOut goes on to the
+// caller.
+template <typename Check, typename Counts>
+void Attempt(const std::string& name, const std::string& item, const Check& check, Counts& counts)
+{
+    try
+    {
+        if (const std::string problem = check(); !problem.empty())
+        {
+            std::printf("%s: %s %s\n", name.c_str(), item.c_str(), problem.c_str());
+            counts.failed++;
+        }
+    }
+    catch (const Refusal& error)
+    {
+        counts.refused[error.what()]++;
+    }
+    catch (const LeftOut&)
+    {
+        throw;
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: %s fails: %s\n", name.c_str(), item.c_str(), error.what());
+        counts.failed++;
+    }
+}
+
+// The model of the Wii's archive in `bytes`, archive `name`. An archive that NW4R's tools didn't lay out has no model
+// and takes no new item. For such an archive, prints a line that says so and returns nothing.
+std::optional<ntdlib::rsar::ArchiveModel> ModelForImports(std::span<const uint8_t> bytes, const std::string& name);
 
 // The Wii's imports. Up to `limit` sounds of `type` of the Wii's `archive` whose files the archive holds, spread over
 // the sound table.

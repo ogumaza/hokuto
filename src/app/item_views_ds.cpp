@@ -219,7 +219,7 @@ WaveView MakeDseWaveView(const song::DseSet& set, uint32_t bank, uint32_t wave)
 {
     const edit::DseWaveValues values = edit::DseWaveValuesOf(set, bank, wave);
     const ntdlib::wave::Pcm pcm = song::DseWavePcm(set, bank, wave);
-    const uint8_t format = set.banks[bank].bank->waves[wave]->bytes[0x13];
+    const uint8_t format = edit::DseWaveFormat(*set.banks[bank].bank->waves[wave]);
 
     WaveView view;
     view.ds = true;

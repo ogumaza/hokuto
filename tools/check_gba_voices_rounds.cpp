@@ -9,7 +9,6 @@ namespace hokuto::tools::gba_voices
 
 std::vector<Span> SpansOf(const hokuto::song::GbaRom& rom, const std::vector<hokuto::song::GbaVoiceGroup>& groups)
 {
-    constexpr uint32_t kVoiceBytes = 12;
     constexpr uint32_t kPatternBytes = 16;
     constexpr uint32_t kKeyTableBytes = 128;
     std::vector<Span> spans;
@@ -17,7 +16,7 @@ std::vector<Span> SpansOf(const hokuto::song::GbaRom& rom, const std::vector<hok
     {
         const auto add = [&](uint32_t address)
         {
-            spans.push_back({address, kVoiceBytes, &group.songs});
+            spans.push_back({address, mp2k::kVoiceSize, &group.songs});
             mp2k::Voice voice;
             if (mp2k::ReadVoice(rom.rom, address, voice) && voice.PsgChannel() == 3)
             {
@@ -27,7 +26,7 @@ std::vector<Span> SpansOf(const hokuto::song::GbaRom& rom, const std::vector<hok
         };
         for (const int program : group.programs)
         {
-            const mp2k::Voice voice = add(group.address + kVoiceBytes * static_cast<uint32_t>(program));
+            const mp2k::Voice voice = add(group.address + mp2k::kVoiceSize * static_cast<uint32_t>(program));
             if ((voice.type & mp2k::kVoiceKeySplit) != 0)
             {
                 spans.push_back({voice.key_table, kKeyTableBytes, &group.songs});
@@ -248,13 +247,13 @@ std::shared_ptr<const hokuto::song::GbaRom> Round(const Game& game, const char* 
     for (const auto& [address, voice] : voices)
     {
         const auto voice_bytes = hokuto::edit::GbaVoiceBytes(voice);
-        std::ranges::copy(voice_bytes, expected.begin() + (address - ntdlib::agb::kRomBase));
+        std::ranges::copy(voice_bytes, expected.begin() + (address - agblib::agb::kRomBase));
     }
     for (const auto& [address, steps] : patterns)
     {
         for (std::size_t i = 0; i < steps.size() / 2; ++i)
         {
-            expected[address - ntdlib::agb::kRomBase + i] = static_cast<uint8_t>(steps[2 * i] << 4 | steps[2 * i + 1]);
+            expected[address - agblib::agb::kRomBase + i] = static_cast<uint8_t>(steps[2 * i] << 4 | steps[2 * i + 1]);
         }
     }
 
@@ -269,7 +268,7 @@ std::shared_ptr<const hokuto::song::GbaRom> Round(const Game& game, const char* 
         std::printf(
             "%s: %s: the ROM holds other bytes than the edits give, first at 0x%08zX (%zu bytes, %zu "
             "expected)\n",
-            rom_name.c_str(), round, at + ntdlib::agb::kRomBase, exported.size(), expected.size());
+            rom_name.c_str(), round, at + agblib::agb::kRomBase, exported.size(), expected.size());
         totals.failed++;
         return nullptr;
     }
@@ -295,7 +294,7 @@ std::shared_ptr<const hokuto::song::GbaRom> Round(const Game& game, const char* 
     {
         if (expected[i] != bytes[i])
         {
-            changed.push_back(static_cast<uint32_t>(ntdlib::agb::kRomBase + i));
+            changed.push_back(static_cast<uint32_t>(agblib::agb::kRomBase + i));
         }
     }
     std::set<int> played;
@@ -371,8 +370,8 @@ std::size_t SustainFrames(const mp2k::Voice& voice, int rate)
         return 0;
     }
 
-    const double frame = static_cast<double>(rate) * static_cast<double>(ntdlib::agb::kFrameCycles) /
-                         static_cast<double>(ntdlib::agb::kSecondCycles);
+    const double frame = static_cast<double>(rate) * static_cast<double>(agblib::agb::kFrameCycles) /
+                         static_cast<double>(agblib::agb::kSecondCycles);
     return static_cast<std::size_t>(std::ceil(frame * (frames + 2)));
 }
 

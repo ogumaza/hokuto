@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 
@@ -237,12 +237,12 @@ void PlaceRuns(const SongView& song, const TempoMove& drag, const std::vector<st
 
 // The beats a minute that play for each beat a minute that the driver's rules count (song::DriverRules::TempoBpm).
 // Quintet's driver counts its tempos in the GBA's frames: a tempo T advances T of the 37 parts of a tick each frame
-// (ntdlib's quintet sequencer), and ntdlib's converter times the frames at ntdlib::agb::kFrameRate, about 59.73 a
+// (agblib's quintet sequencer), and agblib's converter times the frames at agblib::agb::kFrameRate, about 59.73 a
 // second. The rules count 60. The points then show the tempo that the line and the transport show.
 double PlayedRatio(const song::Console& console)
 {
     return console.driver != nullptr && console.driver->DriverEngine() == format::Engine::kQuintet
-               ? ntdlib::agb::kFrameRate / 60.0
+               ? agblib::agb::kFrameRate / 60.0
                : 1.0;
 }
 

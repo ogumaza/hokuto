@@ -94,8 +94,8 @@ void WithComparableKeys(Sequence& read, const ntdlib::commands::Sequence& comman
     {
         for (Note& note : track.notes)
         {
-            if (*hokuto::edit::KonamiOf(console) == ntdlib::konami::Revision::kDungeonDiceMonsters &&
-                !ntdlib::konami::IsPsgTrack(track.number))
+            if (*hokuto::edit::KonamiOf(console) == agblib::konami::Revision::kDungeonDiceMonsters &&
+                !agblib::konami::IsPsgTrack(track.number))
             {
                 note.key = static_cast<uint8_t>(note.program);
                 continue;
@@ -173,10 +173,41 @@ bool StartedElsewhere(const File& file, uint32_t sequence, const Sequence& read,
     return !rows.at(track->number).contains({found->command, found->start});
 }
 
-bool JoinsPsgNote(const Sequence& read, const Played& note, const hokuto::song::Console& console)
+std::set<std::pair<int, uint32_t>> PsgPitchMoves(const hokuto::song::KonamiRom& rom, uint32_t sound, uint32_t end)
 {
-    if (!hokuto::edit::KonamiOf(console) || !ntdlib::konami::EternalDuelistLayout(*hokuto::edit::KonamiOf(console)) ||
-        !ntdlib::konami::IsPsgTrack(std::get<0>(note)))
+    std::set<std::pair<int, uint32_t>> moves;
+    if (rom.info.revision != agblib::konami::Revision::kEternalDuelist)
+    {
+        return moves;
+    }
+
+    const std::unique_ptr<agblib::konami::Sequencer> sequencer = agblib::konami::Sequencer::Create(
+        rom.rom, rom.info, hokuto::song::KonamiSongOf(rom, sound), hokuto::song::KonamiRequestOf(rom, sound));
+    std::vector<agblib::konami::TrackRead> reads;
+    sequencer->SetReadLog(&reads);
+    for (uint32_t frame = 0; frame <= end && sequencer->Valid() && !sequencer->Stopped(); ++frame)
+    {
+        reads.clear();
+        const std::array<agblib::konami::TrackOutput, agblib::konami::kTracks>& outputs = sequencer->Step();
+
+        // A loop of the song runs the frame again, and the reads before it play nothing.
+        const auto loop = std::ranges::find(reads | std::views::reverse, -1, &agblib::konami::TrackRead::track);
+        for (auto read = loop.base(); read != reads.end(); ++read)
+        {
+            if (read->command.op == agblib::konami::Op::kPsgNote &&
+                outputs[static_cast<std::size_t>(read->track)].trig == 0)
+            {
+                moves.emplace(read->track, read->frame);
+            }
+        }
+    }
+
+    return moves;
+}
+
+bool JoinsPsgNote(const std::set<std::pair<int, uint32_t>>& pitch_moves, const Sequence& read, const Played& note)
+{
+    if (!pitch_moves.contains({std::get<0>(note), std::get<1>(note)}))
     {
         return false;
     }
@@ -185,13 +216,25 @@ bool JoinsPsgNote(const Sequence& read, const Played& note, const hokuto::song::
     return track != read.tracks.end() &&
            std::ranges::any_of(
                track->notes, [&note](const Note& other)
-               { return other.start <= std::get<1>(note) && std::get<1>(note) < other.start + other.length; });
+               { return other.start < std::get<1>(note) && std::get<1>(note) < other.start + other.length; });
+}
+
+bool NamedByTrackBefore(const Sequence& read, const Played& note)
+{
+    const auto track = std::ranges::find(read.tracks, std::get<0>(note), &hokuto::song::Track::number);
+    return track != read.tracks.end() &&
+           std::ranges::any_of(track->notes,
+                               [&note](const Note& other)
+                               {
+                                   return other.start == std::get<1>(note) && other.key == std::get<2>(note) &&
+                                          other.command_track >= 0 && other.command_track == std::get<0>(note) - 1;
+                               });
 }
 
 bool OffCentrePsgNote(const Sequence& read, const Played& note, const hokuto::song::Console& console)
 {
-    if (!hokuto::edit::KonamiOf(console) || !ntdlib::konami::RecordHasPan(*hokuto::edit::KonamiOf(console)) ||
-        !ntdlib::konami::IsPsgTrack(std::get<0>(note)))
+    if (!hokuto::edit::KonamiOf(console) || !agblib::konami::RecordHasPan(*hokuto::edit::KonamiOf(console)) ||
+        !agblib::konami::IsPsgTrack(std::get<0>(note)))
     {
         return false;
     }

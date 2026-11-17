@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of the sounds of Brownie Brown's GBA driver, by the rules of its bytes (ntdlib/brownie/commands.h). A note,
+// The edits of the sounds of Brownie Brown's GBA driver, by the rules of its bytes (agblib/brownie/commands.h). A note,
 // a hold, a rest and a release each wait for the channel's length. The last length byte chose that length. A Hokuto
 // file stores for each of them the frames that it waits (format/brownie_items.h). After an edit, a length byte is
 // inserted before each such command whose channels would read another length there. A command whose frames match no
@@ -34,7 +34,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/brownie/driver.h"
+#include "agblib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
 
 #include "edit/bytecode.h"
@@ -51,7 +51,7 @@ namespace hokuto::edit
 const DriverEdits& BrownieEdits();
 
 // The revision of Brownie Brown's driver whose bytes `console` follows, or nothing for another driver or console.
-std::optional<ntdlib::brownie::Revision> BrownieOf(const song::Console& console);
+std::optional<agblib::brownie::Revision> BrownieOf(const song::Console& console);
 
 // AddSettings, MoveSettings and LimitsOf on Brownie Brown's driver (edit/notes.h).
 Edited AddBrownieSettings(const format::File& file, uint32_t sequence, std::span<const NewSetting> settings);

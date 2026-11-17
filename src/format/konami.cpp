@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// Konami's driver for the GBA (ntdlib/konami/layout.h) as one of the drivers of format/drivers.h.
+// Konami's driver for the GBA (agblib/konami/layout.h) as one of the drivers of format/drivers.h.
 
 #include <cstdint>
 #include <optional>
@@ -10,11 +10,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/konami/driver.h"
-#include "ntdlib/konami/layout.h"
-#include "ntdlib/konami/seqformat.h"
+#include "agblib/agb/rom.h"
+#include "agblib/konami/commands.h"
+#include "agblib/konami/driver.h"
+#include "agblib/konami/layout.h"
+#include "agblib/konami/seqformat.h"
 #include "xsflib/binary.h"
 
 #include "format/archive.h"
@@ -27,16 +27,16 @@ namespace hokuto::format
 namespace
 {
 
-ntdlib::konami::Revision RevisionOf(uint8_t revision)
+agblib::konami::Revision RevisionOf(uint8_t revision)
 {
-    return static_cast<ntdlib::konami::Revision>(revision);
+    return static_cast<agblib::konami::Revision>(revision);
 }
 
 // The driver that `rom` contains, or nothing.
-std::optional<ntdlib::konami::DriverInfo> Detect(const ntdlib::agb::Rom& rom, std::string& error)
+std::optional<agblib::konami::DriverInfo> Detect(const agblib::agb::Rom& rom, std::string& error)
 {
-    ntdlib::konami::DriverInfo info;
-    if (!ntdlib::konami::DetectDriver(rom, {}, info, error))
+    agblib::konami::DriverInfo info;
+    if (!agblib::konami::DetectDriver(rom, {}, info, error))
     {
         return std::nullopt;
     }
@@ -47,8 +47,8 @@ std::optional<ntdlib::konami::DriverInfo> Detect(const ntdlib::agb::Rom& rom, st
 // The place of song `song`'s entry in the song table at `song_table`, a ROM address, from the ROM's start.
 uint64_t EntryPlace(const File& file, uint32_t song_table, int song)
 {
-    return uint64_t{song_table} - ntdlib::agb::kRomBase +
-           ntdlib::konami::SongEntrySize(RevisionOf(file.native->driver->revision)) * static_cast<uint64_t>(song);
+    return uint64_t{song_table} - agblib::agb::kRomBase +
+           agblib::konami::SongEntrySize(RevisionOf(file.native->driver->revision)) * static_cast<uint64_t>(song);
 }
 
 class Konami final : public Driver
@@ -60,7 +60,7 @@ public:
             .engine = Engine::kKonami,
             .title = FactsOf(Engine::kKonami).title,
             .engine_name = "Konami's",
-            .most_revision = static_cast<uint8_t>(ntdlib::konami::Revision::kDungeonDiceMonsters),
+            .most_revision = static_cast<uint8_t>(agblib::konami::Revision::kDungeonDiceMonsters),
             .two_byte_fields = true,
             .key_holds_byte = true,
             .choices = 0}; // Konami's bytes make no choice of an encoder.
@@ -75,9 +75,9 @@ public:
 
     File Import(std::span<const uint8_t> rom) const override
     {
-        const ntdlib::agb::Rom read = RomOf(rom);
+        const agblib::agb::Rom read = RomOf(rom);
         std::string error;
-        const std::optional<ntdlib::konami::DriverInfo> info = Detect(read, error);
+        const std::optional<agblib::konami::DriverInfo> info = Detect(read, error);
         if (!info)
         {
             throw xsflib::FormatError(
@@ -85,7 +85,7 @@ public:
                               : "the song table of Konami's driver has no song that Hokuto can read: " + error);
         }
 
-        ntdlib::konami::Layout layout = ntdlib::konami::Cut(read, *info);
+        agblib::konami::Layout layout = agblib::konami::Cut(read, *info);
 
         // The field of a track is 16 bits wide. The file sets the field to that size and checks that the 16 bits fall
         // within their run.
@@ -97,7 +97,7 @@ public:
         NativeDriver driver{.revision = static_cast<uint8_t>(layout.revision),
                             .free_start = layout.free.start,
                             .padding = layout.free.padding};
-        for (const ntdlib::konami::Span& run : layout.free.filler)
+        for (const agblib::konami::Span& run : layout.free.filler)
         {
             driver.filler.push_back({run.start, run.size});
         }
@@ -119,37 +119,37 @@ public:
                               std::span<const ntdlib::sar::Field> fields) const override
     {
         const NativeDriver& driver = *native.driver;
-        ntdlib::konami::FreeSpace free{.start = driver.free_start, .padding = driver.padding};
+        agblib::konami::FreeSpace free{.start = driver.free_start, .padding = driver.padding};
         for (const FillerRun& run : driver.filler)
         {
             free.filler.push_back({run.start, run.size});
         }
 
-        return ntdlib::konami::Join(RevisionOf(driver.revision), sequences, pieces, fields, free,
+        return agblib::konami::Join(RevisionOf(driver.revision), sequences, pieces, fields, free,
                                     {.filler = native.gba_filler});
     }
 
     std::vector<uint32_t> ItemOffsets(const ntdlib::commands::Sequence& sequence, uint8_t revision) const override
     {
-        return ntdlib::konami::ItemOffsets(sequence, RevisionOf(revision));
+        return agblib::konami::ItemOffsets(sequence, RevisionOf(revision));
     }
 
     ntdlib::commands::Scale ScaleOf(ntdlib::commands::Kind kind, uint8_t revision) const override
     {
-        return ntdlib::konami::ScaleOf(kind, RevisionOf(revision));
+        return agblib::konami::ScaleOf(kind, RevisionOf(revision));
     }
 
     std::vector<std::vector<uint32_t>> TrackEntries(std::span<const ntdlib::sar::Piece> pieces,
                                                     std::span<const ntdlib::sar::Field> fields,
                                                     uint8_t revision) const override
     {
-        return ntdlib::konami::TrackEntries(pieces, fields, RevisionOf(revision));
+        return agblib::konami::TrackEntries(pieces, fields, RevisionOf(revision));
     }
 
     void Encode(const ntdlib::commands::Sequence& sequence, std::span<const uint32_t> entries,
                 uint8_t revision) const override
     {
-        ntdlib::konami::EncodeSequence(sequence, entries, RevisionOf(revision));
+        agblib::konami::EncodeSequence(sequence, entries, RevisionOf(revision));
     }
 };
 
@@ -178,7 +178,7 @@ std::optional<uint32_t> KonamiSongSequence(const File& file, uint32_t song_table
         return std::nullopt;
     }
 
-    // A song's entry of the song table contains a field that names the start of the song's piece (ntdlib::konami::Cut).
+    // A song's entry of the song table contains a field that names the start of the song's piece (agblib::konami::Cut).
     return SequenceNamedAt(file, EntryPlace(file, song_table, song));
 }
 
@@ -192,7 +192,7 @@ std::vector<uint32_t> KonamiTrackFields(const File& file, uint32_t song_table, i
     // The entry's other fields follow its first: 2 bytes for each track's offset.
     const uint64_t entry = EntryPlace(file, song_table, song);
     std::vector<uint64_t> places;
-    for (int track = 0; track < ntdlib::konami::TrackCount(RevisionOf(file.native->driver->revision)); ++track)
+    for (int track = 0; track < agblib::konami::TrackCount(RevisionOf(file.native->driver->revision)); ++track)
     {
         places.push_back(entry + 4 + 2 * static_cast<uint64_t>(track));
     }

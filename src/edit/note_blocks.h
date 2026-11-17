@@ -14,9 +14,9 @@
 #include <string_view>
 #include <vector>
 
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/dse/formats.h"
-#include "ntdlib/konami/seqformat.h"
 
 #include "format/file.h"
 #include "song/archive.h"
@@ -37,7 +37,7 @@ struct Code
     std::vector<uint32_t> starts;
     bool fixed = false;
     bool dse = false;                               // the commands are DSE's
-    std::optional<ntdlib::konami::Revision> konami; // the commands are those of this revision of Konami's driver
+    std::optional<agblib::konami::Revision> konami; // the commands are those of this revision of Konami's driver
     const song::DriverRules* driver = nullptr;      // the commands are those of one of the GBA's other drivers
     bool writes_note_wait = true; // the bytes hold the command that turns the note wait off and on (WriteWaits)
 };

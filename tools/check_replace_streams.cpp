@@ -1,6 +1,41 @@
 // SPDX-License-Identifier: MIT
 
 // The mode --streams of hokuto_check_replace: the streams of the Switch, the Wii U and the 3DS.
+//
+// With --streams, the tool checks only the streams beside the archive (src/edit/streams.h), each with the first stream
+// sound that plays it. Replace… with the stream itself has to give the file back unchanged. The stream's file for the
+// other console goes back in as the browser's Export… writes it: the Wii U's file for a stream of the Switch or the
+// 3DS, and the Switch's for one of the Wii U. It takes the version that the archive's streams take
+// (edit::IncomingStreamVersion). A stream of that version has to come back with the same bytes, and any other has to
+// play the same samples in that version. A 3DS stream has to play the same samples: the Wii U's file drops the samples
+// past its end, and its original loop. On the Wii U, a stream of a later version than 3.0.0 also goes in written again
+// in 3.0.0, and on the 3DS one of a later version than 2.0.0.0 in 2.0.0.0. It has to play the same samples, and then go
+// in as it is. The stream's WAV file from Export… goes back in as 16-bit PCM. The new stream has to play the same
+// samples: a loop's start moves forward to a block, and the samples from the old start repeat after the loop's end. The
+// export then has to give the archive back unchanged, and the file has to hold the new stream as Hokuto's. The WAV file
+// also goes in as DSP-ADPCM, and the tool counts the streams by their ratio of signal to noise. Then File > Import >
+// Stream… brings the stream in again as a new stream sound with the sound as its model (src/edit/new_items.h). The new
+// sound has to hold the model's values and the new details, and play the stream from a new file at the new path. The
+// file has to hold the new stream as Hokuto's, and every other item, file and stream has to stay. In each archive, a
+// second new sound goes in after the first, from the first stream's WAV file and with a sound of another kind as its
+// model where the archive holds one. The file has to save and open again in both forms.
+//
+// With --streams and a donor archive after the archive, each stream beside the donor goes in as a new stream sound of
+// the archive instead, from the stream's file. The donor's streams thus reach archives without streams beside them. The
+// model alternates between the archive's first stream sound and its first sound of another kind. The new stream has to
+// play the donor's samples, and the new sound has to hold its model's values and the new details, as above. Where the
+// sound plays the tracks of its stream file, a stream without tracks has to take a track for each pair of its channels.
+// An AAC stream of the 3DS beside a donor counts apart: File > Import > Stream… refuses it. An AAC stream beside the
+// archive takes Replace…'s edit of an AAC stream instead (edit::ReplaceAacStream). So does the first stream sound whose
+// entry marks an AAC stream that the file lacks, with the WAV file of the first AAC stream that the file holds. The new
+// stream has to be AAC, with the channels that the sound's entry gives and the WAV file's rate. A present AAC stream's
+// file goes in as it is, with the present loop, and the file in the model form has to hold the game's model. Its WAV
+// file and its file for the Wii U go in encoded by the system's encoder. Export… writes both. The new stream has to
+// decode to their samples after the encoder's delay, at a signal-to-noise ratio of 15 dB or more, and 3 dB above the
+// ratios a sample before and after the delay. The entries of the sounds that play it have to give the loop after the
+// delay, and every other value of the model has to stay. After the first new sound, the file has to save and open again
+// in both forms. An archive without names, and a 3DS archive of CSAR 2.1.0.0 or 2.3.1.0, take no new stream sound. The
+// edit has to refuse it, and the tool counts the stream apart.
 
 #include "ntdlib/sar/archive_model.h"
 
@@ -129,7 +164,7 @@ std::string NewStreamProblem(const format::File& base, const sar::SoundArchive& 
 // oldest version that the edit writes, or nothing. `version` is the version that the archive's streams take, and
 // `decoded` are the samples of the stream. Counts the stream in `totals`.
 std::string RewrittenProblem(std::span<const uint8_t> bytes, sar::Flavor flavor, uint32_t present, uint32_t version,
-                             const sar::Pcm& decoded, Totals& totals)
+                             const sar::Pcm& decoded, StreamTotals& totals)
 {
     const bool ctr = flavor == sar::Flavor::kCtr;
 
@@ -162,7 +197,7 @@ std::string RewrittenProblem(std::span<const uint8_t> bytes, sar::Flavor flavor,
 // that the WAV file contains, in 16-bit PCM, and counts the stream in `totals`.
 std::string WavProblem(const format::File& file, const sar::SoundArchive& built, uint32_t id, uint32_t model,
                        const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& archive, uint32_t version,
-                       const sar::Pcm& decoded, edit::IncomingStream& pcm, Totals& totals)
+                       const sar::Pcm& decoded, edit::IncomingStream& pcm, StreamTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
 
@@ -209,7 +244,7 @@ std::string WavProblem(const format::File& file, const sar::SoundArchive& built,
 // `totals`.
 std::string NewSoundsProblem(const format::File& file, const sar::SoundArchive& built, uint32_t model,
                              const std::vector<uint8_t>& bytes, const std::vector<uint8_t>& archive, uint32_t version,
-                             const edit::IncomingStream& pcm, bool second, Totals& totals)
+                             const edit::IncomingStream& pcm, bool second, StreamTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
 
@@ -279,7 +314,7 @@ std::string NewSoundsProblem(const format::File& file, const sar::SoundArchive& 
 // archive that `file` builds. With `second`, a second new sound goes in after the first, and the file saves and opens
 // again.
 std::string StreamProblem(const format::File& file, const sar::SoundArchive& built, uint32_t id, uint32_t model,
-                          bool second, Totals& totals)
+                          bool second, StreamTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
     const std::vector<uint8_t>& bytes = *file.native->streams.at(id).bytes;
@@ -410,7 +445,7 @@ std::string AacModelProblem(const format::Model& model, const format::File& repl
 // What is wrong with an encoded AAC stream `encoded` from samples `source`, or nothing: its samples have to come after
 // the encoder's delay, and `loop` has to be the loop of `source` after the delay. Counts its ratio of signal to noise.
 std::string EncodedAacProblem(const edit::IncomingAac& encoded, const sar::Pcm& source,
-                              std::optional<song::AacLoop>& loop, Totals& totals)
+                              std::optional<song::AacLoop>& loop, StreamTotals& totals)
 {
     loop = source.loop ? std::optional(song::AacLoop{encoded.delay + source.loop_start,
                                                      encoded.delay + static_cast<uint32_t>(source.loop_end)})
@@ -446,7 +481,7 @@ std::string EncodedAacProblem(const edit::IncomingAac& encoded, const sar::Pcm& 
 // the encoder's delay, and the entries of the sounds that play it have to give the loop after the delay. Every other
 // value of the model has to stay.
 std::string AacStreamProblem(const format::File& file, const sar::SoundArchive& built, uint32_t id, uint32_t sound,
-                             Totals& totals)
+                             StreamTotals& totals)
 {
     const std::optional<edit::AacChanges> changes = edit::ChangesOfAacStream(file, built, sound);
     const std::optional<song::AacStream> aac = song::AacStreamOf(built, sound);
@@ -509,7 +544,7 @@ std::string AacStreamProblem(const format::File& file, const sar::SoundArchive& 
 // stream as the mean of its channels. The new stream has to decode to those samples after the encoder's delay, and the
 // entries of the sounds that play it have to give the loop after the delay. Every other value of the model has to stay.
 std::string MissingAacProblem(const format::File& file, const sar::SoundArchive& built, uint32_t sound,
-                              const std::vector<uint8_t>& wav, Totals& totals)
+                              const std::vector<uint8_t>& wav, StreamTotals& totals)
 {
     const std::optional<edit::AacChanges> changes = edit::ChangesOfAacStream(file, built, sound);
     if (!changes || changes->present || changes->bit_rate != 128000 || file.native->streams.contains(changes->file))
@@ -564,7 +599,8 @@ std::string MissingAacProblem(const format::File& file, const sar::SoundArchive&
 
 } // namespace
 
-void CheckStreams(const format::File& file, const sar::SoundArchive& built, const std::string& name, Totals& totals)
+void CheckStreams(const format::File& file, const sar::SoundArchive& built, const std::string& name,
+                  StreamTotals& totals)
 {
     bool second = true;
     for (const auto& [id, stream] : file.native->streams)
@@ -664,7 +700,7 @@ namespace
 // exports. With `save`, the file with the new sound saves and opens again.
 std::string DonorStreamProblem(const format::File& file, const sar::SoundArchive& built,
                                std::span<const uint8_t> archive, uint32_t model, const std::vector<uint8_t>& bytes,
-                               bool save, Totals& totals)
+                               bool save, StreamTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
     const std::string name = FreeTableName(*file.native->tables, "HOKUTO_NEW_STREAM");
@@ -740,7 +776,7 @@ std::string DonorStreamProblem(const format::File& file, const sar::SoundArchive
 } // namespace
 
 void CheckDonorStreams(const format::File& file, const sar::SoundArchive& built, const format::File& donor,
-                       const std::string& name, Totals& totals)
+                       const std::string& name, StreamTotals& totals)
 {
     const auto first = [&built](bool stream) -> std::optional<uint32_t>
     {

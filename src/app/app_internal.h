@@ -78,10 +78,6 @@ const PartView* SelectedPart(const std::optional<SongView>& song, const Arrangem
 // archive that their edits leave alone.
 bool SameArchive(const format::File& a, const format::File& b);
 
-// The mixing mode in which sound `sound` of `file` plays: the file's mode for the sound, or strict mixing on an engine
-// that takes no other (format::MixingRefused), such as the Wii's. The mode that the file keeps for the sound stays.
-song::Mixing PlayedMixing(const format::File& file, uint32_t sound);
-
 // Whether `archive` holds a sound of one of `types`.
 template <class Archive, class Type>
 bool HoldsSoundOf(const Archive& archive, std::initializer_list<Type> types)

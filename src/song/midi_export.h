@@ -17,9 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/sequence_export/agb/sf2.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/formats.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/convert.h"
 
 #include "song/ds.h"
@@ -45,14 +45,14 @@ ntdlib::sequence_export::Conversion ConvertToMidi(const ntdlib::rsar::SoundArchi
                                                   const std::optional<ntdlib::SndBuild>& build = {});
 
 // The same for song `song` of the GBA ROM `rom`, with the default settings of
-// ntdlib::sequence_export::agb::ConvertSettings: two passes of a loop, a MIDI channel for each track, and the events on
+// agblib::sequence_export::agb::ConvertSettings: two passes of a loop, a MIDI channel for each track, and the events on
 // the beat. The conversion contains no SFZ files. Throws std::runtime_error with a message for the user when the song
 // can't be read or plays no notes. For a song that plays no notes, the error is EmptyConversion.
 ntdlib::sequence_export::Conversion ConvertToMidi(const GbaRom& rom, int song, const std::string& program);
 
 // The conversion of song `name` of a GBA ROM with one of the drivers of song/driver.h, from the files that ntdlib's
 // converter of the driver gave: its MIDI file and its SoundFont, with its report. A driver converts each song with the
-// default settings of ntdlib::sequence_export::agb::ConvertSettings: two passes of a loop, and a MIDI channel for each
+// default settings of agblib::sequence_export::agb::ConvertSettings: two passes of a loop, and a MIDI channel for each
 // track. The conversion contains no SFZ files: a driver that writes them adds them (DriverRom::WritesSfz). Throws
 // std::runtime_error with a message for the user when the converter couldn't read the song (`ok` false), or when the
 // song plays no notes. For a song that plays no notes, the error is EmptyConversion.
@@ -60,7 +60,7 @@ ntdlib::sequence_export::Conversion AgbConversion(const std::string& name, bool 
                                                   std::vector<std::string> warnings, std::vector<uint8_t> midi,
                                                   std::vector<uint8_t> sf2);
 
-// The same from `files`, the SongFiles that ntdlib's converter of MP2K or of a driver returns: its report, its MIDI
+// The same from `files`, the SongFiles that agblib's converter of MP2K or of a driver returns: its report, its MIDI
 // file, its SoundFont and, from a converter that writes them, its SFZ files.
 template <typename Files>
 ntdlib::sequence_export::Conversion AgbConversion(const std::string& name, Files files)
@@ -177,8 +177,8 @@ ntdlib::sequence_export::BankConversion ConvertBank(const ntdlib::rsar::SoundArc
                                                     const std::optional<ntdlib::SndBuild>& build = {});
 
 // Converts the voices at `programs` of the voice group at `voices` of the GBA ROM `rom` with the default settings of
-// ntdlib::sequence_export::agb::ConvertSettings. Each voice becomes the instrument that a song's SoundFont contains for
-// it, at its program in bank 0 (ntdlib::sequence_export::mp2k::ConvertVoiceGroup). One SoundFont contains them all.
+// agblib::sequence_export::agb::ConvertSettings. Each voice becomes the instrument that a song's SoundFont contains for
+// it, at its program in bank 0 (agblib::sequence_export::mp2k::ConvertVoiceGroup). One SoundFont contains them all.
 // `program` names the program in the SoundFont. The conversion contains no SFZ files. Throws BankWithoutInstruments
 // when none of the voices plays anything.
 ntdlib::sequence_export::BankConversion ConvertVoiceGroup(const GbaRom& rom, uint32_t voices,
@@ -190,7 +190,7 @@ ntdlib::sequence_export::BankConversion ConvertVoiceGroup(const GbaRom& rom, uin
 // `title` the game. The conversion contains no SFZ files: a driver that writes them adds them. Throws
 // BankWithoutInstruments when none of them contains samples.
 ntdlib::sequence_export::BankConversion SamplesConversion(ntdlib::sequence_export::BankConversion conversion,
-                                                          ntdlib::sequence_export::agb::Sf2File& file,
+                                                          agblib::sequence_export::agb::Sf2File& file,
                                                           std::span<const int> samples, const std::string& program,
                                                           const std::string& title);
 

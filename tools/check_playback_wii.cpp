@@ -81,68 +81,39 @@ std::vector<float> RunWiiSwitch(const std::shared_ptr<const ntdlib::rsar::SoundA
                                 const std::shared_ptr<const song::Sequence>& sequence, const song::AuxEffects& effects,
                                 std::size_t before, std::size_t frames)
 {
-    const auto clock = std::make_shared<song::PlaybackClock>(kWiiFrameSamples);
-    song::SequencePlayer player(std::make_shared<song::SequenceModel>(archive, sequence), 0, clock);
-    std::vector<float> output;
-    if (!RenderFrames(player, before, kWiiFrameSamples, output))
-    {
-        return output;
-    }
-
-    song::ModelCatchUp catch_up;
-    catch_up.Start(std::make_shared<song::SequenceModel>(archive, sequence, song::ModelOptions{.effects = effects}),
-                   clock);
-    while (!catch_up.Finished())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    clock->Offer(catch_up.Take());
-    RenderFrames(player, frames, kWiiFrameSamples, output);
-
-    return output;
+    return playback_steps::RunSwitch(
+        std::make_shared<song::SequenceModel>(archive, sequence),
+        std::make_shared<song::SequenceModel>(archive, sequence, song::ModelOptions{.effects = effects}), before,
+        frames);
 }
 
 // The frames of `samples` from frame `from` on that differ from `expected`'s frames from `first` on, up to the end of
-// either, for the Wii's frames (see WiiUDifferences).
+// either, for the Wii's frames (see FrameDifferences). The Wii's runs hold no floats.
 template <class Sample>
 std::size_t WiiDifferences(std::span<const Sample> samples, std::size_t from, const WiiURun& expected,
                            std::size_t first, float scale, std::size_t* first_difference = nullptr)
 {
-    std::size_t differences = 0;
-    const std::size_t kFloats = kWiiFrameSamples * 2;
-    for (std::size_t frame = from;
-         (frame + 1) * kFloats <= samples.size() && (first + frame + 1) * kFloats <= expected.samples.size(); frame++)
-    {
-        const std::size_t at = (first + frame) * kFloats;
-        for (std::size_t i = 0; i < kFloats; i++)
-        {
-            if (static_cast<float>(samples[frame * kFloats + i]) !=
-                static_cast<float>(expected.samples[at + i]) * scale)
-            {
-                if (differences == 0 && first_difference != nullptr)
-                {
-                    *first_difference = frame;
-                }
-                differences++;
-                break;
-            }
-        }
-    }
-
-    return differences;
+    return RunDifferences(samples, from, expected, kWiiFrameSamples * 2, first, scale, first_difference);
 }
 
 // The frames that differ from `expected` after seeks of `model` back and forth through its run of `played_frames`
-// frames. A seek restores a snapshot that the run took.
+// frames. A seek restores a snapshot that the run took. A seek that fails counts as one frame.
 std::size_t CheckSnapshotSeeks(song::SequenceModel& model, std::size_t played_frames, const WiiURun& expected)
 {
     std::size_t seeks = 0;
     for (const std::size_t frame : {played_frames / 2, played_frames / 4, std::size_t{1}, played_frames * 3 / 4})
     {
-        if (frame < played_frames && model.SeekFrame(frame))
+        if (frame >= played_frames)
         {
-            seeks += WiiDifferences(model.Output(), 0, expected, frame, 1.0f);
+            continue;
         }
+        if (!model.SeekFrame(frame))
+        {
+            seeks++;
+            continue;
+        }
+
+        seeks += WiiDifferences(model.Output(), 0, expected, frame, 1.0f);
     }
 
     return seeks;

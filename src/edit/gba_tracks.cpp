@@ -3,7 +3,7 @@
 // The track edits of a GBA song (edit/engine_tracks.h).
 //
 // A song of a GBA ROM follows MusicPlayer2000's rules. Its header lists its tracks, and a field of the native layout
-// stores the address of each track there (ntdlib/mp2k/layout.h). A new track, a copy and a pasted track take the
+// stores the address of each track there (agblib/mp2k/layout.h). A new track, a copy and a pasted track take the
 // header's next place, and the next number. Their commands go before the zeros at the end of the song, and take
 // MusicPlayer2000's bytes (Writable). A header that gains a track moves with its song into the ROM's free space. The
 // music player of each song that shares the header plays its tracks up to its count, and a header has 16 tracks at
@@ -61,7 +61,7 @@ using track_detail::StartOf;
 using track_detail::TrailingDataStart;
 
 // The header of a GBA song: the fields that start its tracks, in the order of the header, the run that contains it, and
-// the piece of the song (ntdlib/mp2k/layout.h).
+// the piece of the song (agblib/mp2k/layout.h).
 struct GbaHeader
 {
     std::vector<uint32_t> fields;

@@ -13,15 +13,16 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/apu.h"
+#include "agblib/agb/apu.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/mp2k/performance.h"
+#include "agblib/sequence_export/mp2k/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/mp2k/performance.h"
-#include "ntdlib/sequence_export/mp2k/soundfont.h"
 #include "seqlib/midi/performance.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "song/gba_bytes.h"
 
@@ -33,7 +34,7 @@ std::shared_ptr<const GbaRom> LoadGbaRom(std::vector<uint8_t> bytes)
     auto rom = std::make_shared<GbaRom>();
     rom->rom.Assign(std::move(bytes));
     std::string error;
-    if (!ntdlib::mp2k::DetectDriver(rom->rom, {}, rom->info, error))
+    if (!agblib::mp2k::DetectDriver(rom->rom, {}, rom->info, error))
     {
         throw xsflib::FormatError(error.empty() ? "the ROM doesn't use MusicPlayer2000"
                                                 : "the MusicPlayer2000 song table has no song that Hokuto can read");
@@ -51,9 +52,9 @@ std::vector<int> GbaSongs(const GbaRom& rom)
     std::vector<int> songs;
     for (int song = 0; song < rom.info.song_count; song++)
     {
-        ntdlib::mp2k::SongHeader header;
-        if (ntdlib::mp2k::ReadSong(rom.rom, rom.info, song, header) &&
-            ntdlib::mp2k::PlayedTracks(rom.rom, rom.info, song, header) > 0)
+        agblib::mp2k::SongHeader header;
+        if (agblib::mp2k::ReadSong(rom.rom, rom.info, song, header) &&
+            agblib::mp2k::PlayedTracks(rom.rom, rom.info, song, header) > 0)
         {
             songs.push_back(song);
         }
@@ -64,7 +65,7 @@ std::vector<int> GbaSongs(const GbaRom& rom)
 
 std::string GbaSongName(const GbaRom& rom, int song)
 {
-    return "Song " + ntdlib::sequence_export::agb::SongNumber(song, rom.info.song_count);
+    return "Song " + agblib::sequence_export::agb::SongNumber(song, rom.info.song_count);
 }
 
 std::vector<uint32_t> GbaPlayerTracks(const GbaRom& rom, std::size_t songs)
@@ -72,7 +73,7 @@ std::vector<uint32_t> GbaPlayerTracks(const GbaRom& rom, std::size_t songs)
     std::vector<uint32_t> tracks;
     for (std::size_t song = 0; song < songs; song++)
     {
-        const int most = ntdlib::mp2k::SongPlayer(rom.rom, rom.info, static_cast<int>(song)).track_count;
+        const int most = agblib::mp2k::SongPlayer(rom.rom, rom.info, static_cast<int>(song)).track_count;
         tracks.push_back(static_cast<uint32_t>(std::max(most, 0)));
     }
 
@@ -82,26 +83,26 @@ std::vector<uint32_t> GbaPlayerTracks(const GbaRom& rom, std::size_t songs)
 int GbaRate(const GbaRom& rom)
 {
     // The resolution is bits 6 and 7 of the sound bias register's high byte.
-    return (rom.info.dac_bits >> 6 & 3) == 0 ? ntdlib::agb::kBaseOutputRate : ntdlib::agb::kMaxOutputRate;
+    return (rom.info.dac_bits >> 6 & 3) == 0 ? agblib::agb::kBaseOutputRate : agblib::agb::kMaxOutputRate;
 }
 
 namespace
 {
 
-constexpr uint32_t kVoiceBytes = ntdlib::mp2k::kVoiceSize;
+constexpr uint32_t kVoiceBytes = agblib::mp2k::kVoiceSize;
 constexpr uint32_t kVoiceWave = 4;
 constexpr uint32_t kPatternBytes = 16;
 
 // The programs that song `song`, whose header is `header`, selects: from its program commands, or from the notes that
 // sound where the decoder can't read the song.
-std::set<int> ProgramsOfSong(const GbaRom& rom, int song, const ntdlib::mp2k::SongHeader& header)
+std::set<int> ProgramsOfSong(const GbaRom& rom, int song, const agblib::mp2k::SongHeader& header)
 {
     std::set<int> selected;
     bool decoded = false;
     try
     {
-        const ntdlib::mp2k::Decoded decoding =
-            ntdlib::mp2k::DecodeSong(rom.rom, header, ntdlib::mp2k::NoteArguments(rom.info));
+        const agblib::mp2k::Decoded decoding =
+            agblib::mp2k::DecodeSong(rom.rom, header, agblib::mp2k::NoteArguments(rom.info));
         decoded = !decoding.opaque;
         for (const ntdlib::commands::Command& command : decoding.sequence.items)
         {
@@ -119,8 +120,8 @@ std::set<int> ProgramsOfSong(const GbaRom& rom, int song, const ntdlib::mp2k::So
 
     if (!decoded)
     {
-        const ntdlib::sequence_export::mp2k::Performance performance =
-            ntdlib::sequence_export::mp2k::PerformSong(rom.rom, rom.info, song, {});
+        const agblib::sequence_export::mp2k::Performance performance =
+            agblib::sequence_export::mp2k::PerformSong(rom.rom, rom.info, song, {});
         for (const std::vector<seqlib::midi::TrackEvent>& events : performance.tracks)
         {
             for (const seqlib::midi::TrackEvent& event : events)
@@ -145,10 +146,10 @@ std::set<uint32_t> MovedVoiceWords(const GbaRom& before, const GbaRom& after, co
     {
         for (const int song : group.songs)
         {
-            ntdlib::mp2k::SongHeader old_header;
-            ntdlib::mp2k::SongHeader new_header;
-            if (ntdlib::mp2k::ReadSong(before.rom, before.info, song, old_header) &&
-                ntdlib::mp2k::ReadSong(after.rom, after.info, song, new_header) &&
+            agblib::mp2k::SongHeader old_header;
+            agblib::mp2k::SongHeader new_header;
+            if (agblib::mp2k::ReadSong(before.rom, before.info, song, old_header) &&
+                agblib::mp2k::ReadSong(after.rom, after.info, song, new_header) &&
                 old_header.voices != new_header.voices)
             {
                 moved_words.insert(old_header.address + kHeaderVoices);
@@ -179,8 +180,8 @@ std::vector<uint8_t> VoicePlayed(const GbaRom& rom, uint32_t address, const std:
     }
 
     append(address, kVoiceBytes);
-    ntdlib::mp2k::Voice voice;
-    if (ntdlib::mp2k::ReadVoice(rom.rom, address, voice) && voice.PsgChannel() == 3 &&
+    agblib::mp2k::Voice voice;
+    if (agblib::mp2k::ReadVoice(rom.rom, address, voice) && voice.PsgChannel() == 3 &&
         !moved_words.contains(address + kVoiceWave) && rom.rom.Contains(voice.wave, kPatternBytes) &&
         voice.wave + kPatternBytes <= before.rom.End())
     {
@@ -236,16 +237,16 @@ private:
             return true;
         }
 
-        ntdlib::mp2k::Voice voice;
-        if (!ntdlib::mp2k::ReadVoice(after_.rom, address, voice) || !voice.IsSplit())
+        agblib::mp2k::Voice voice;
+        if (!agblib::mp2k::ReadVoice(after_.rom, address, voice) || !voice.IsSplit())
         {
             return false;
         }
 
         for (int key = 0; key <= 127; key++)
         {
-            if (Played(before_, ntdlib::mp2k::SplitVoice(before_.rom, voice, key)) !=
-                Played(after_, ntdlib::mp2k::SplitVoice(after_.rom, voice, key)))
+            if (Played(before_, agblib::mp2k::SplitVoice(before_.rom, voice, key)) !=
+                Played(after_, agblib::mp2k::SplitVoice(after_.rom, voice, key)))
             {
                 return true;
             }
@@ -274,8 +275,8 @@ std::vector<GbaVoiceGroup> GbaVoiceGroups(const GbaRom& rom)
     std::map<uint32_t, std::vector<int>> songs;
     for (const int song : GbaSongs(rom))
     {
-        ntdlib::mp2k::SongHeader header;
-        if (!ntdlib::mp2k::ReadSong(rom.rom, rom.info, song, header))
+        agblib::mp2k::SongHeader header;
+        if (!agblib::mp2k::ReadSong(rom.rom, rom.info, song, header))
         {
             continue;
         }
@@ -309,9 +310,9 @@ std::vector<int> GbaSongsWithOtherVoices(const GbaRom& before, const GbaRom& aft
         std::map<uint32_t, bool> changed;
         for (const int song : group.songs)
         {
-            ntdlib::mp2k::SongHeader header;
+            agblib::mp2k::SongHeader header;
             const uint32_t old_group =
-                ntdlib::mp2k::ReadSong(before.rom, before.info, song, header) ? header.voices : group.address;
+                agblib::mp2k::ReadSong(before.rom, before.info, song, header) ? header.voices : group.address;
             const auto [known, added] = changed.try_emplace(old_group, false);
             if (added)
             {
@@ -327,16 +328,16 @@ std::vector<int> GbaSongsWithOtherVoices(const GbaRom& before, const GbaRom& aft
     return {songs.begin(), songs.end()};
 }
 
-bool GbaVoicePlaysSteps(const GbaRom& rom, const ntdlib::mp2k::Voice& voice)
+bool GbaVoicePlaysSteps(const GbaRom& rom, const agblib::mp2k::Voice& voice)
 {
-    ntdlib::mp2k::Wave wave;
-    ntdlib::mp2k::ReadWave(rom.rom, voice.wave, wave);
+    agblib::mp2k::Wave wave;
+    agblib::mp2k::ReadWave(rom.rom, voice.wave, wave);
 
     return rom.info.camelot_adpcm && voice.PsgChannel() == 0 && !voice.IsSplit() &&
-           (voice.type & ntdlib::mp2k::kVoiceFixed) != 0 && static_cast<int32_t>(wave.size) < 0;
+           (voice.type & agblib::mp2k::kVoiceFixed) != 0 && static_cast<int32_t>(wave.size) < 0;
 }
 
-bool GbaVoiceSounds(const GbaRom& rom, const ntdlib::mp2k::Voice& voice)
+bool GbaVoiceSounds(const GbaRom& rom, const agblib::mp2k::Voice& voice)
 {
     const int psg = voice.PsgChannel();
     if (psg != 0)
@@ -344,10 +345,10 @@ bool GbaVoiceSounds(const GbaRom& rom, const ntdlib::mp2k::Voice& voice)
         return psg <= 4;
     }
 
-    ntdlib::mp2k::Wave wave;
-    return ntdlib::sequence_export::mp2k::SynthOf(rom.rom, rom.info, voice) !=
-               ntdlib::sequence_export::mp2k::Synth::kNone ||
-           GbaVoicePlaysSteps(rom, voice) || (ntdlib::mp2k::ReadWave(rom.rom, voice.wave, wave) && wave.size > 0);
+    agblib::mp2k::Wave wave;
+    return agblib::sequence_export::mp2k::SynthOf(rom.rom, rom.info, voice) !=
+               agblib::sequence_export::mp2k::Synth::kNone ||
+           GbaVoicePlaysSteps(rom, voice) || (agblib::mp2k::ReadWave(rom.rom, voice.wave, wave) && wave.size > 0);
 }
 
 bool GbaTableHoldsVoices(const GbaRom& rom, uint32_t address, std::span<const int> selected)
@@ -355,8 +356,8 @@ bool GbaTableHoldsVoices(const GbaRom& rom, uint32_t address, std::span<const in
     for (uint32_t program = 0; program < 128; program++)
     {
         const uint32_t entry = address + kVoiceBytes * program;
-        ntdlib::mp2k::Voice voice;
-        if (!rom.rom.Contains(entry, kVoiceBytes) || !ntdlib::mp2k::ReadVoice(rom.rom, entry, voice))
+        agblib::mp2k::Voice voice;
+        if (!rom.rom.Contains(entry, kVoiceBytes) || !agblib::mp2k::ReadVoice(rom.rom, entry, voice))
         {
             return false;
         }
@@ -387,8 +388,8 @@ std::vector<int> GbaListedPrograms(const GbaRom& rom, const GbaVoiceGroup& group
     {
         for (int program = 0; program < 128; program++)
         {
-            ntdlib::mp2k::Voice voice;
-            if (ntdlib::mp2k::ReadVoice(rom.rom, group.address + kVoiceBytes * static_cast<uint32_t>(program), voice) &&
+            agblib::mp2k::Voice voice;
+            if (agblib::mp2k::ReadVoice(rom.rom, group.address + kVoiceBytes * static_cast<uint32_t>(program), voice) &&
                 (voice.IsSplit() || GbaVoiceSounds(rom, voice)))
             {
                 listed.insert(program);
@@ -399,13 +400,13 @@ std::vector<int> GbaListedPrograms(const GbaRom& rom, const GbaVoiceGroup& group
     return {listed.begin(), listed.end()};
 }
 
-std::string GbaVoiceKind(const ntdlib::mp2k::Voice& voice)
+std::string GbaVoiceKind(const agblib::mp2k::Voice& voice)
 {
-    if ((voice.type & ntdlib::mp2k::kVoiceDrumKit) != 0)
+    if ((voice.type & agblib::mp2k::kVoiceDrumKit) != 0)
     {
         return "Drum kit";
     }
-    if ((voice.type & ntdlib::mp2k::kVoiceKeySplit) != 0)
+    if ((voice.type & agblib::mp2k::kVoiceKeySplit) != 0)
     {
         return "Key split";
     }
@@ -413,7 +414,7 @@ std::string GbaVoiceKind(const ntdlib::mp2k::Voice& voice)
     switch (voice.PsgChannel())
     {
     case 0:
-        return (voice.type & ntdlib::mp2k::kVoiceFixed) != 0 ? "Fixed sample" : "Sample";
+        return (voice.type & agblib::mp2k::kVoiceFixed) != 0 ? "Fixed sample" : "Sample";
     case 1:
         return "Square 1";
     case 2:
@@ -429,8 +430,8 @@ std::string GbaVoiceKind(const ntdlib::mp2k::Voice& voice)
 
 std::shared_ptr<const GbaRom> GbaAuditionRom(const GbaRom& rom, int song, int program, int key, int velocity)
 {
-    ntdlib::mp2k::SongHeader header;
-    if (!ntdlib::mp2k::ReadSong(rom.rom, rom.info, song, header))
+    agblib::mp2k::SongHeader header;
+    if (!agblib::mp2k::ReadSong(rom.rom, rom.info, song, header))
     {
         throw std::runtime_error("Can't read the header of " + GbaSongName(rom, song) + ".");
     }
@@ -444,19 +445,12 @@ std::shared_ptr<const GbaRom> GbaAuditionRom(const GbaRom& rom, int song, int pr
     {
         return EndAddress(bytes);
     };
-    const auto put32 = [&bytes](uint32_t value)
-    {
-        for (int shift = 0; shift < 32; shift += 8)
-        {
-            bytes.push_back(static_cast<uint8_t>(value >> shift));
-        }
-    };
 
     // The header: one track, no blocks, the song's priority and reverb, its voice group, and the track after it.
     const uint32_t song_header = address();
     bytes.insert(bytes.end(), {1, 0, header.priority, header.reverb});
-    put32(header.voices);
-    put32(song_header + 12);
+    xsflib::AppendLe32(bytes, header.voices);
+    xsflib::AppendLe32(bytes, song_header + 12);
 
     // VOICE, VOL 127, PAN in the centre and TIE. Each tick, a memacc jumps to the release once the byte is 1, and GOTO
     // waits for the next tick otherwise. EOT releases the note, and FINE ends the track.
@@ -464,20 +458,20 @@ std::shared_ptr<const GbaRom> GbaAuditionRom(const GbaRom& rom, int song, int pr
     const uint32_t wait = track + 9;
     const uint32_t release = track + 23;
     bytes.insert(bytes.end(),
-                 {ntdlib::mp2k::kCmdVoice, byte(program), ntdlib::mp2k::kCmdVol, 127, ntdlib::mp2k::kCmdPan, 0x40,
-                  ntdlib::mp2k::kCmdTie, byte(key), byte(velocity), ntdlib::mp2k::kCmdWait + 1,
-                  ntdlib::mp2k::kCmdMemAcc, 6, static_cast<uint8_t>(kAuditionRelease), 1});
-    put32(release);
-    bytes.push_back(ntdlib::mp2k::kCmdGoto);
-    put32(wait);
-    bytes.insert(bytes.end(), {ntdlib::mp2k::kCmdEot, byte(key), ntdlib::mp2k::kCmdFine});
+                 {agblib::mp2k::kCmdVoice, byte(program), agblib::mp2k::kCmdVol, 127, agblib::mp2k::kCmdPan, 0x40,
+                  agblib::mp2k::kCmdTie, byte(key), byte(velocity), agblib::mp2k::kCmdWait + 1,
+                  agblib::mp2k::kCmdMemAcc, 6, static_cast<uint8_t>(kAuditionRelease), 1});
+    xsflib::AppendLe32(bytes, release);
+    bytes.push_back(agblib::mp2k::kCmdGoto);
+    xsflib::AppendLe32(bytes, wait);
+    bytes.insert(bytes.end(), {agblib::mp2k::kCmdEot, byte(key), agblib::mp2k::kCmdFine});
 
     // The song table's one entry names the header, with the song's music player.
     PadToWord(bytes);
     const uint32_t table = address();
-    put32(song_header);
+    xsflib::AppendLe32(bytes, song_header);
     const uint32_t entry = rom.info.song_table + 8 * static_cast<uint32_t>(song);
-    put32(rom.rom.U32(entry + 4));
+    xsflib::AppendLe32(bytes, rom.rom.U32(entry + 4));
 
     auto audition = std::make_shared<GbaRom>();
     audition->rom.Assign(std::move(bytes));
@@ -485,12 +479,27 @@ std::shared_ptr<const GbaRom> GbaAuditionRom(const GbaRom& rom, int song, int pr
     audition->info.song_table = table;
     audition->info.song_count = 1;
 
+    // The game's code sets up some songs as it starts them: the reverb, the volume of the music player and the
+    // DirectSound channels (agblib::mp2k::SongSetting and SongChannels). Song 0 of the audition takes the set-up of
+    // song `song`.
+    audition->info.song_settings.clear();
+    for (agblib::mp2k::SongSetting setting : rom.info.song_settings)
+    {
+        if (setting.song == song)
+        {
+            setting.song = 0;
+            audition->info.song_settings.push_back(setting);
+        }
+    }
+    audition->info.song_channels.channels = agblib::mp2k::SongChannels(rom.rom, rom.info, song);
+    audition->info.song_channels.songs = {0};
+
     return audition;
 }
 
 std::string GbaVoiceGroupName(uint32_t address)
 {
-    return "Voice group " + ntdlib::agb::Hex(address);
+    return "Voice group " + agblib::agb::Hex(address);
 }
 
 } // namespace hokuto::song

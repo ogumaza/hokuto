@@ -1,6 +1,28 @@
 // SPDX-License-Identifier: MIT
 
 // The streams of hokuto_check_replace on archives of the Wii.
+//
+// With --streams, the tool checks only the streams beside an archive of the Wii (src/edit/streams.h), each with the
+// first stream sound that plays it. Replace… with the stream file itself has to give the Hokuto file back unchanged.
+// The stream's files that the browser's Export… writes for the 3DS, the Wii U and the Switch then go back in converted.
+// Each has to play the stream's samples and keep its tracks. The tool counts those that give the stream's bytes. The
+// stream's WAV file goes in as 16-bit PCM, and the new stream has to play the same samples with the present stream's
+// tracks. A loop's start moves forward to a block there. The export then has to differ from the archive only in the
+// stream's size in the file table. Replace… with the stream file then has to give the archive back. The WAV file also
+// goes in as DSP-ADPCM. Its loop has to start at a block, at the present start or after it, and each later pass has to
+// decode to the first pass's samples with the Wii's sums. The tool counts the streams by their ratio of signal to
+// noise. Then File > Import > Stream… brings the stream in again as a new stream sound with the sound as its model
+// (edit::AddWiiStreamSound). The new sound has to hold the model's values, and its entry has to name every channel and
+// track of the stream. The new file has to lie beside the archive at the new path, with the stream's size, and in no
+// group. The Hokuto file has to keep the new stream as Hokuto's, and every other item, file, group and stream has to
+// stay. The new sound has to play as the Import window plays it. Where the model's entry names every channel and track
+// of the stream, the new sound also has to play as the model does. In each archive, a second new sound goes in after
+// the first, from the first stream's WAV file, with a sound of another kind as its model. The file has to export the
+// same archive in the model form, and save and open again in both forms. An archive that NW4R's tools didn't lay out
+// takes no new sound, and the edit has to refuse it. With a donor archive of any console after the archive, each stream
+// beside the donor goes in as a new stream sound instead, as above. The model alternates between the archive's first
+// stream sound and its first sound of another kind, each at a volume above 0. A stream of a later console without
+// tracks has to take a track for each pair of its channels.
 
 #include "check_replace.h"
 
@@ -528,28 +550,11 @@ std::map<uint32_t, std::vector<uint8_t>> DonorStreamsOf(const std::filesystem::p
     return song::ReadStreams(*song::OpenArchive(path), path);
 }
 
-// Runs `check` of `item` in archive `name`, and counts the stream in `totals`.
-// Each check counts the edits that Hokuto refuses by their messages, and fails on any other error.
+// Runs `check` of `item` in archive `name` (Attempt), and counts the stream in `totals`.
 template <typename Check>
-void Attempt(const std::string& name, const std::string& item, const Check& check, WiiStreamTotals& totals)
+void AttemptStream(const std::string& name, const std::string& item, const Check& check, WiiStreamTotals& totals)
 {
-    try
-    {
-        if (const std::string problem = check(); !problem.empty())
-        {
-            std::printf("%s: %s %s\n", name.c_str(), item.c_str(), problem.c_str());
-            totals.failed++;
-        }
-    }
-    catch (const Refusal& error)
-    {
-        totals.refused[error.what()]++;
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: %s fails: %s\n", name.c_str(), item.c_str(), error.what());
-        totals.failed++;
-    }
+    Attempt(name, item, check, totals);
     totals.streams++;
 }
 
@@ -598,14 +603,12 @@ int RunDonorStreams(const format::File& file, const WiiArchive& built,
 
         const uint32_t model =
             std::exchange(turn, !turn) ? other_model.value_or(*stream_model) : stream_model.value_or(*other_model);
-        Attempt(
-            name, "the donor's stream file " + std::to_string(id),
-            [&, id, model]
-            {
-                return WiiDonorStreamProblem(file, built, before, build, model, id, stream, std::exchange(save, false),
-                                             totals);
-            },
-            totals);
+        const auto check_stream = [&, id, model]
+        {
+            return WiiDonorStreamProblem(file, built, before, build, model, id, stream, std::exchange(save, false),
+                                         totals);
+        };
+        AttemptStream(name, "the donor's stream file " + std::to_string(id), check_stream, totals);
     }
 
     std::printf(
@@ -664,14 +667,12 @@ void CheckEachStream(const format::File& file, const WiiArchive& built, std::spa
             continue;
         }
         const auto sound = static_cast<uint32_t>(model - built->Sounds().begin());
-        Attempt(
-            name, model->name,
-            [&, id, sound]
-            {
-                return WiiStreamProblem(file, built, built_bytes, before, build, id, sound,
-                                        std::exchange(second, false), totals);
-            },
-            totals);
+        const auto check_stream = [&, id, sound]
+        {
+            return WiiStreamProblem(file, built, built_bytes, before, build, id, sound, std::exchange(second, false),
+                                    totals);
+        };
+        AttemptStream(name, model->name, check_stream, totals);
     }
 }
 

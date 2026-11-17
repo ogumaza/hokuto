@@ -32,8 +32,8 @@
 #include <string_view>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/sequence_export/mp2k/convert.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/sequence_export/mp2k/convert.h"
 #include "xsflib/bytes.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
@@ -44,6 +44,7 @@
 #include "format/archive.h"
 #include "format/file.h"
 #include "format/text.h"
+#include "render_measures.h"
 #include "song/gba.h"
 #include "song/midi_export.h"
 #include "song/preview.h"
@@ -51,7 +52,7 @@
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 using hokuto::format::File;
 
 // The frames of a note that the tool compares: the 1 s that the note holds, and part of its release.
@@ -62,6 +63,10 @@ constexpr double kMostLevelOff = 3.0;
 
 // A render below this level, in dB below full scale, has too little to compare.
 constexpr double kFloor = -70.0;
+
+// The level of silence in dBFS. A verbose line prints a residual from it when a new note plays the old note's
+// samples exactly.
+constexpr double kSilenceDb = -300.0;
 
 // The kinds of voice that the tool counts apart.
 enum Kind : std::size_t
@@ -126,22 +131,6 @@ std::vector<float> NoteOf(const std::shared_ptr<const hokuto::song::GbaRom>& rom
     return samples;
 }
 
-double DecibelsOf(double power)
-{
-    return power > 0.0 ? 10.0 * std::log10(power) : -300.0;
-}
-
-double PowerOf(std::span<const float> samples)
-{
-    double sum = 0.0;
-    for (const float sample : samples)
-    {
-        sum += double(sample) * double(sample);
-    }
-
-    return samples.empty() ? 0.0 : sum / static_cast<double>(samples.size());
-}
-
 Kind KindOf(const mp2k::Voice& voice)
 {
     if (voice.type & mp2k::kVoiceDrumKit)
@@ -164,8 +153,8 @@ void CompareNote(const std::string& name, const std::shared_ptr<const hokuto::so
     const std::vector<float> before = NoteOf(rom, song, old_program);
     const std::vector<float> after = NoteOf(built, song, new_program);
     counts.notes++;
-    const double old_level = DecibelsOf(PowerOf(before));
-    const double new_level = DecibelsOf(PowerOf(after));
+    const double old_level = hokuto::tools::MeanSquareDb(before, kSilenceDb);
+    const double new_level = hokuto::tools::MeanSquareDb(after, kSilenceDb);
     if (old_level < kFloor)
     {
         counts.quiet++;
@@ -191,7 +180,7 @@ void CompareNote(const std::string& name, const std::shared_ptr<const hokuto::so
     {
         difference[i] = before[i] - after[i];
     }
-    const double residual = DecibelsOf(PowerOf(difference)) - old_level;
+    const double residual = hokuto::tools::MeanSquareDb(difference, kSilenceDb) - old_level;
     counts.residual_30 += residual <= -30.0 ? 1 : 0;
     counts.residual_20 += residual > -30.0 && residual <= -20.0 ? 1 : 0;
     counts.residual_10 += residual > -20.0 && residual <= -10.0 ? 1 : 0;
@@ -308,14 +297,14 @@ void CheckGroup(const std::string& rom_name, const File& file, const std::vector
 
         const int old_program = voices.presets[i].number;
         mp2k::Voice voice;
-        if (!mp2k::ReadVoice(rom->rom, group.address + 12 * static_cast<uint32_t>(old_program), voice))
+        if (!mp2k::ReadVoice(rom->rom, group.address + mp2k::kVoiceSize * static_cast<uint32_t>(old_program), voice))
         {
             continue;
         }
         if (totals.verbose)
         {
             mp2k::Voice made;
-            mp2k::ReadVoice(built->rom, version.group + 12 * *programs[i], made);
+            mp2k::ReadVoice(built->rom, version.group + mp2k::kVoiceSize * *programs[i], made);
             const hokuto::edit::GbaSoundFontRow& row = voices.presets[i].rows.front();
             const std::vector<uint8_t>& sample = voices.samples.at(row.sample);
             const auto word = [&sample](std::size_t at)

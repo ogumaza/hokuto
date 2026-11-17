@@ -5,7 +5,8 @@
 // its text form or its binary form, or in the model form.
 // It also writes an archive's items as files, its waves as WAV files, and its banks' instruments as SoundFont 2 or SFZ
 // files, and measures the lengths of a file's sounds for players. It also writes a sequence sound of a file as a .hok
-// file of another console. Wherever hok reads a .hok file, the file can be in either form.
+// file of another console, renders sequence sounds to WAV files (hok_mixdown.cpp) and exports them to MIDI
+// (hok_midi.cpp). Wherever hok reads a .hok file, the file can be in either form.
 
 #include <algorithm>
 #include <array>
@@ -153,6 +154,40 @@ constexpr const char* kUsage =
     "                                    stereo. Without either, they become mono only if the song plays more\n"
     "                                    channels at once than the 3DS supports. Warnings list what changes in the\n"
     "                                    conversion.\n"
+    "  hok midi [--sfz] [--sound <name or number>]... <input> <folder>\n"
+    "                                    Export sequence sounds of a sound archive or .hok file to a folder as MIDI\n"
+    "                                    files, one per sound, named after it, each with a SoundFont 2 file next to\n"
+    "                                    it. With --sfz, the instruments go to SFZ files in a folder named sfz.\n"
+    "                                    --sound picks a sound, and can repeat. Without it, every sequence sound is\n"
+    "                                    exported. A .hok file's sounds take their title and copyright tags.\n"
+    "  hok mixdown [options] <input> <folder>\n"
+    "                                    Render sequence sounds of a sound archive or .hok file to WAV files in a\n"
+    "                                    folder, as Hokuto plays them, one file per sound, named after it. A .hok file\n"
+    "                                    plays with its effects, FX channel volumes and each sound's mixing mode. A\n"
+    "                                    sound that loops plays its loop, then fades while the loop plays on. A sound\n"
+    "                                    without a loop plays to its end and its release tails, for up to 10 s after\n"
+    "                                    the end by default. A sound that plays on past 10 minutes fades there.\n"
+    "                                    --sound <name or number>  Render this sound. Repeat it for more sounds.\n"
+    "                                                              Without it, every sequence sound renders.\n"
+    "                                    --loops <n>      Times the loop plays before the fade (default 2).\n"
+    "                                    --fade <s>       Length of the fade in seconds (default 10).\n"
+    "                                    --tail <s>       Longest release tail of a sound that ends, in seconds\n"
+    "                                                     (default 10). Tails that sound on fade over the last 1 s.\n"
+    "                                    --seamless       Render the loop's second pass without a fade, and mark it\n"
+    "                                                     as a loop in the file (smpl chunk).\n"
+    "                                    --mixing strict | enhanced\n"
+    "                                                     Mixing mode for every sound.\n"
+    "                                    --rate <Hz>      Sample rate (default: the console's).\n"
+    "                                    --format 16 | 24 | 32f\n"
+    "                                                     16-bit or 24-bit PCM, or 32-bit float (default 16).\n"
+    "                                    --normalise      Scale each file so that its peak reaches 0 dBFS.\n"
+    "                                    --dither         Add TPDF dither to 16-bit files.\n"
+    "                                    --stems          Also render each track that plays notes to a file of\n"
+    "                                                     its own: <sound> - <track>.wav.\n"
+    "                                    --stem-effects dry | effects\n"
+    "                                                     Stems without or with the effects on the FX channels\n"
+    "                                                     (default effects).\n"
+    "                                    --threads <n>    Sounds to render at once (default 1).\n"
     "  hok --version                     Print the version.\n"
     "  hok --help                        Print this help. -h and help do the same.\n"
     "Any .hok file that hok reads can be in the text form or the binary form.\n";
@@ -431,12 +466,14 @@ hokuto::song::Played GameOfHok(const hokuto::format::File& hok)
 ArchiveInput InputOfHok(const std::string& path, const std::string& name)
 {
     ArchiveInput input;
-    const hokuto::format::File hok = ReadHok(path);
+    const auto read = std::make_shared<const hokuto::format::File>(ReadHok(path));
+    const hokuto::format::File& hok = *read;
     if (!hok.native)
     {
         throw std::runtime_error(path + " contains no sound archive.");
     }
 
+    input.hok = read;
     input.played = GameOfHok(hok);
     if (input.played)
     {
@@ -1128,6 +1165,16 @@ int Run(std::vector<std::string> arguments)
         return RunOther(arguments);
     }
 
+    if (arguments.size() >= 2 && arguments[1] == "mixdown")
+    {
+        return hokuto::cli::hok_parts::RunMixdown(arguments, ReadArchive);
+    }
+
+    if (arguments.size() >= 2 && arguments[1] == "midi")
+    {
+        return hokuto::cli::hok_parts::RunMidi(arguments, ReadArchive);
+    }
+
     Options options;
     if (!TakeOptions(arguments, options))
     {
@@ -1137,8 +1184,8 @@ int Run(std::vector<std::string> arguments)
     if (arguments.size() != 4)
     {
         // The message for a command that hok doesn't have comes first, before the usage.
-        constexpr std::array kCommands = {"import", "export", "text", "binary", "model", "lengths",
-                                          "items",  "wav",    "sf2",  "sfz",    "other"};
+        constexpr std::array kCommands = {"import", "export", "text", "binary", "model",  "lengths",
+                                          "items",  "wav",    "sf2",  "sfz",    "other", "mixdown", "midi"};
         if (arguments.size() >= 2 && std::ranges::find(kCommands, arguments[1]) == kCommands.end())
         {
             std::fprintf(stderr, "Unknown command: %s.\n", arguments[1].c_str());

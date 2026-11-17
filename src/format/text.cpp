@@ -19,7 +19,7 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/nwsnd/units.h"

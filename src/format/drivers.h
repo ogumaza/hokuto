@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/sar/layout.h"
@@ -25,7 +25,7 @@ namespace hokuto::format
 {
 
 // `bytes` as a GBA ROM for ntdlib's readers of the drivers.
-ntdlib::agb::Rom RomOf(std::span<const uint8_t> bytes);
+agblib::agb::Rom RomOf(std::span<const uint8_t> bytes);
 
 struct File;
 struct NativeArchive;
@@ -53,7 +53,7 @@ public:
 
     virtual const DriverFacts& Facts() const = 0;
 
-    // Whether ntdlib finds the driver in `rom`, a GBA ROM.
+    // Whether agblib finds the driver in `rom`, a GBA ROM.
     virtual bool Holds(std::span<const uint8_t> rom) const = 0;
 
     // A file made from `rom`, a GBA ROM with the driver, with the driver's engine. Each song that ntdlib's cut finds

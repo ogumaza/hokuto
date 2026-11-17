@@ -739,6 +739,103 @@ void TestSliderReleasedWhileBusy()
     XSFLIB_CHECK(!state.held);
 }
 
+// Presses at places in the lower left of the window, under the list of programs, while the program is busy, until
+// a press on `button` waits. Returns whether one waits. With `settling`, the program is busy only until it has
+// settled the last edit. No press makes an edit while the program is busy.
+bool PressProgramButton(const app::BankView& view, app::BankEditorState& state, app::ProgramButton button,
+                        bool settling)
+{
+    ImGuiIO& io = ImGui::GetIO();
+    bool open = true;
+    state.settling = settling;
+    const float middle = (state.window_min.y + state.window_max.y) * 0.5f;
+    for (float y = state.window_max.y - 6.0f; y > middle; y -= 6.0f)
+    {
+        for (float x = state.window_min.x + 6.0f; x < state.list_max.x; x += 6.0f)
+        {
+            io.AddMousePosEvent(x, y);
+            XSFLIB_CHECK(!Screen::Draw(view, state, true, &open).model);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+            XSFLIB_CHECK(!Screen::Draw(view, state, true, &open).model);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+            XSFLIB_CHECK(!Screen::Draw(view, state, true, &open).model);
+            if (state.waiting_press && state.waiting_press->first == button)
+            {
+                return true;
+            }
+            state.waiting_press.reset();
+        }
+    }
+
+    return false;
+}
+
+// A press on Duplicate while the program settles the last edit waits, and makes its edit in the first frame that
+// takes edits. The press makes one edit. A press while the program waits for something else, such as
+// another window, makes none, and neither does a press that waited when such a wait starts, or when the user selects
+// another program.
+void TestButtonPressedWhileSettling()
+{
+    Screen screen;
+    const app::BankView view = CtrBankView();
+    app::BankEditorState state;
+    bool open = true;
+    (void)Screen::Draw(view, state, false, &open);
+    SEQLIB_REQUIRE(state.program == 0u && state.window_min.x < state.window_max.x);
+
+    // The press waits through the busy frames, and the first free frame makes the copy at the next free program.
+    SEQLIB_REQUIRE(PressProgramButton(view, state, app::ProgramButton::kDuplicate, true));
+    for (int frame = 0; frame < 5; frame++)
+    {
+        XSFLIB_CHECK(!Screen::Draw(view, state, true, &open).model);
+        XSFLIB_CHECK(state.waiting_press.has_value());
+    }
+    state.settling = false;
+    const app::BankEdit made = Screen::Draw(view, state, false, &open);
+    XSFLIB_CHECK(made.model && made.name == "Duplicate Instrument" && made.refused.empty());
+    if (made.model)
+    {
+        XSFLIB_CHECK(made.model->instruments.size() == 2 && made.model->instruments[1].has_value());
+    }
+    XSFLIB_CHECK(state.program == 1u);
+    XSFLIB_CHECK(!state.waiting_press);
+    state.program = 0;
+    XSFLIB_CHECK(!Screen::Draw(view, state, false, &open).model);
+
+    // Add and Delete wait the same way.
+    SEQLIB_REQUIRE(PressProgramButton(view, state, app::ProgramButton::kAdd, true));
+    state.settling = false;
+    const app::BankEdit added = Screen::Draw(view, state, false, &open);
+    XSFLIB_CHECK(added.model && added.name == "Add Instrument");
+    state.program = 0;
+    SEQLIB_REQUIRE(PressProgramButton(view, state, app::ProgramButton::kDelete, true));
+    state.settling = false;
+    const app::BankEdit deleted = Screen::Draw(view, state, false, &open);
+    XSFLIB_CHECK(deleted.model && deleted.name == "Delete Instrument");
+    state.program = 0;
+
+    // Another window waits: no press waits, and none makes an edit later.
+    XSFLIB_CHECK(!PressProgramButton(view, state, app::ProgramButton::kDuplicate, false));
+    XSFLIB_CHECK(!Screen::Draw(view, state, false, &open).model);
+
+    // A press waits, and then another window opens before the program is free: the press goes.
+    SEQLIB_REQUIRE(PressProgramButton(view, state, app::ProgramButton::kDuplicate, true));
+    state.settling = false;
+    XSFLIB_CHECK(!Screen::Draw(view, state, true, &open).model);
+    XSFLIB_CHECK(!state.waiting_press);
+    XSFLIB_CHECK(!Screen::Draw(view, state, false, &open).model);
+
+    // A press waits, and the user selects another program: the press goes.
+    app::BankView two = view;
+    two.model.instruments.resize(2);
+    two.model.instruments[1] = two.model.instruments[0];
+    SEQLIB_REQUIRE(PressProgramButton(two, state, app::ProgramButton::kDuplicate, true));
+    state.program = 1;
+    state.settling = false;
+    XSFLIB_CHECK(!Screen::Draw(two, state, false, &open).model);
+    XSFLIB_CHECK(!state.waiting_press);
+}
+
 // Whether a slider's field is open: Dear ImGui's text input replaces the slider (ValueSlider).
 bool SliderFieldOpen()
 {
@@ -1012,6 +1109,7 @@ int main()
                                         TestTypedWhileBusy(true);
                                         TestStreamLoopNotes();
                                         TestSliderReleasedWhileBusy();
+                                        TestButtonPressedWhileSettling();
                                         TestTypedSliderWhileBusy(false, false);
                                         TestTypedSliderWhileBusy(true, false);
                                         TestTypedSliderWhileBusy(false, true);

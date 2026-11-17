@@ -15,18 +15,19 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/sequence_export/agb/psg.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/ubimilan/convert.h"
+#include "agblib/ubimilan/archive_player.h"
+#include "agblib/ubimilan/commands.h"
+#include "agblib/ubimilan/output.h"
+#include "agblib/ubimilan/sequencer.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/sequence_export/agb/psg.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/ubimilan/convert.h"
-#include "ntdlib/ubimilan/archive_player.h"
-#include "ntdlib/ubimilan/commands.h"
-#include "ntdlib/ubimilan/output.h"
-#include "ntdlib/ubimilan/sequencer.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "format/ubimilan.h"
 #include "song/driver_player.h"
@@ -40,7 +41,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace ubimilan = ntdlib::ubimilan;
+namespace ubimilan = agblib::ubimilan;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
@@ -114,7 +115,7 @@ public:
     }
 };
 
-// The model of the driver and the GBA's sound hardware, for one ROM (ntdlib::ubimilan::ArchivePlayer).
+// The model of the driver and the GBA's sound hardware, for one ROM (agblib::ubimilan::ArchivePlayer).
 class UbiMilanPlayer final : public ArchiveDriverPlayer<ubimilan::ArchivePlayer>
 {
 public:
@@ -167,7 +168,7 @@ double LevelOf(int channel, int key, int velocity)
     }
     if (channel == ubimilan::kWaveChannel)
     {
-        return ntdlib::sequence_export::agb::WaveShare(static_cast<uint16_t>(velocity << 8));
+        return agblib::sequence_export::agb::WaveShare(static_cast<uint16_t>(velocity << 8));
     }
 
     return (velocity >> 4) / 15.0;
@@ -257,7 +258,7 @@ const DriverRules& UbiMilanRom::Rules() const
 
 std::span<const uint8_t> UbiMilanRom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 std::vector<uint32_t> UbiMilanRom::Sounds() const
@@ -292,7 +293,7 @@ uint32_t UbiMilanRom::SoundCount() const
 std::string UbiMilanRom::SoundName(uint32_t sound) const
 {
     return "Song " +
-           ntdlib::sequence_export::agb::SongNumber(static_cast<int>(sound), static_cast<int>(info.songs.size()));
+           agblib::sequence_export::agb::SongNumber(static_cast<int>(sound), static_cast<int>(info.songs.size()));
 }
 
 SoundFields UbiMilanRom::FieldsOf(uint32_t sound) const
@@ -312,7 +313,7 @@ SoundFields UbiMilanRom::FieldsOf(uint32_t sound) const
         return fields;
     }
 
-    fields.sequence = uint64_t{info.resource_table} + 4 * static_cast<uint64_t>(sequence) - ntdlib::agb::kRomBase;
+    fields.sequence = uint64_t{info.resource_table} + 4 * static_cast<uint64_t>(sequence) - agblib::agb::kRomBase;
     fields.entries.push_back(0);
 
     return fields;
@@ -424,10 +425,10 @@ Sequence UbiMilanRom::ReadSequence(uint32_t sound) const
 
 ntdlib::sequence_export::Conversion UbiMilanRom::ConvertToMidi(uint32_t sound, const std::string& program) const
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
-    ntdlib::sequence_export::ubimilan::SongFiles files =
-        ntdlib::sequence_export::ubimilan::ConvertSongFiles(rom, info, static_cast<int>(sound), settings);
+    agblib::sequence_export::ubimilan::SongFiles files =
+        agblib::sequence_export::ubimilan::ConvertSongFiles(rom, info, static_cast<int>(sound), settings);
 
     return AgbConversion(SoundName(sound), std::move(files));
 }
@@ -438,7 +439,7 @@ ntdlib::sequence_export::BankConversion UbiMilanRom::ConvertSamples(std::span<co
     // Each sample at the mixer's rate, unpitched at key 60. The mixer reads 8 points at a time and checks for a loop's
     // end after each 8: a loop lasts a whole number of 8 points. In the SoundFonts that ntdlib makes of the kits of the
     // driver, the loops last whole numbers of 8 points too.
-    namespace agb = ntdlib::sequence_export::agb;
+    namespace agb = agblib::sequence_export::agb;
     agb::Sf2File file;
     ntdlib::sequence_export::BankConversion conversion;
     for (const int sample : samples)
@@ -599,22 +600,14 @@ std::shared_ptr<const DriverRom> UbiMilanRom::AuditionRom(const DriverAudition& 
     const uint32_t sequence_at = AppendWordAligned(bytes, encoded.bytes);
     const uint32_t piece_at = EndAddress(bytes);
     const int sequence_id = piece.sequences.front();
-    const std::vector<uint8_t> list = {ubimilan::kMusic,
-                                       0,
-                                       0,
-                                       0,
-                                       1,
-                                       0,
-                                       0,
-                                       0,
-                                       static_cast<uint8_t>(sequence_id),
-                                       static_cast<uint8_t>(sequence_id >> 8)};
+    std::vector<uint8_t> list = {ubimilan::kMusic, 0, 0, 0, 1, 0, 0, 0};
+    xsflib::AppendLe16(list, static_cast<uint16_t>(sequence_id));
     AppendWordAligned(bytes, list);
 
     // The resource table contains the distance of each resource from the start of the bank.
     const auto put = [&bytes, this](int resource, uint32_t address)
     {
-        const uint32_t field = info.resource_table + 4 * static_cast<uint32_t>(resource) - ntdlib::agb::kRomBase;
+        const uint32_t field = info.resource_table + 4 * static_cast<uint32_t>(resource) - agblib::agb::kRomBase;
         const uint32_t distance = address - info.bank;
         for (uint32_t i = 0; i < 4; ++i)
         {

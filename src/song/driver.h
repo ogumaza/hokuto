@@ -30,10 +30,10 @@
 #include <string_view>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/sequence_export/agb/settings.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/sequence_export/agb/settings.h"
 
 #include "format/engine.h"
 #include "format/engines.h"
@@ -239,8 +239,8 @@ struct DriverAudition
     ntdlib::commands::Command note;
 };
 
-// A driver's model of the GBA's sound hardware, playing one sound of a ROM (ntdlib's ArchivePlayer of the driver). The
-// output runs at Rate in strict mixing, and at ntdlib::agb::kEnhancedRate in enhanced mixing. A frame is a frame of the
+// A driver's model of the GBA's sound hardware, playing one sound of a ROM (agblib's ArchivePlayer of the driver). The
+// output runs at Rate in strict mixing, and at agblib::agb::kEnhancedRate in enhanced mixing. A frame is a frame of the
 // console.
 class DriverPlayer
 {
@@ -390,7 +390,7 @@ public:
     virtual Sequence ReadSequence(uint32_t sound) const = 0;
 
     // Sound `sound` as MIDI with SoundFont 2, with the default settings of
-    // ntdlib::sequence_export::agb::ConvertSettings, and the samples `samples` in a SoundFont of their own
+    // agblib::sequence_export::agb::ConvertSettings, and the samples `samples` in a SoundFont of their own
     // (song/midi_export.h). When WritesSfz returns true, both conversions contain SFZ files too.
     virtual ntdlib::sequence_export::Conversion ConvertToMidi(uint32_t sound, const std::string& program) const = 0;
     virtual ntdlib::sequence_export::BankConversion ConvertSamples(std::span<const int> samples,
@@ -439,7 +439,7 @@ struct WavLoop
 
 // A WAV file of `length` 8-bit points of `rom` from `address`, with `loop` where it's given, at `rate` Hz. The points
 // are signed, or with `is_unsigned` unsigned with 0x80 as silence.
-std::vector<uint8_t> Pcm8Wav(const ntdlib::agb::Rom& rom, uint32_t address, uint32_t length, bool is_unsigned,
+std::vector<uint8_t> Pcm8Wav(const agblib::agb::Rom& rom, uint32_t address, uint32_t length, bool is_unsigned,
                              std::optional<WavLoop> loop, uint32_t rate);
 
 // The rate of a WAV file of a sample at `rate` Hz: the nearest whole number, and 1 at least.
@@ -474,7 +474,7 @@ std::vector<std::pair<int, int>> VersionedSounds(int songs, VersionCount version
 
 // The name of version `version` of song `song` of `songs`, whose versions are `versions`: Song and the song's number,
 // and the version's name in brackets where it has one.
-std::string VersionedSoundName(int song, int songs, std::span<const ntdlib::sequence_export::agb::SongVersion> versions,
+std::string VersionedSoundName(int song, int songs, std::span<const agblib::sequence_export::agb::SongVersion> versions,
                                std::size_t version);
 
 } // namespace hokuto::song

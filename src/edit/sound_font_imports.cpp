@@ -3,7 +3,6 @@
 #include "edit/sound_font_imports.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cstring>
 #include <map>
 #include <optional>
@@ -18,6 +17,7 @@
 #include "ntdlib/sar/bank_file.h"
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/sdat/formats.h"
+#include "xsflib/ascii.h"
 
 #include "edit/ds_conversion.h"
 #include "edit/ds_new_items.h"
@@ -61,7 +61,7 @@ std::map<int, std::size_t> PresetsByMidiBank(std::span<const uint8_t> sf2)
     }
     if (presets.empty())
     {
-        throw std::invalid_argument("The SoundFont has no presets.");
+        throw std::invalid_argument(std::string(kSoundFontWithoutPresets));
     }
 
     return presets;
@@ -114,7 +114,7 @@ bool IsSoundFontName(std::string_view name)
     constexpr std::string_view kExtension = ".sf2";
     return name.size() >= kExtension.size() &&
            std::ranges::equal(name.substr(name.size() - kExtension.size()), kExtension,
-                              [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; });
+                              [](char a, char b) { return xsflib::AsciiLower(a) == b; });
 }
 
 SoundFontImport ReadSoundFontImport(const format::File& file, std::span<const uint8_t> sf2)
@@ -143,7 +143,7 @@ SoundFontImport ReadSoundFontImport(const format::File& file, std::span<const ui
         {
             const DsBankFiles made = DsFilesOf(bank);
             import.bytes += made.bank.size() + made.waves.size();
-            AddDsBankWarnings(made, true, import.warnings);
+            AddDsBankWarnings(made, import.warnings);
         }
         else if (file.native->engine == format::Engine::kWii)
         {

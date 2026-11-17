@@ -40,6 +40,17 @@
 // gives the lowest ratio, and counts the switches whose output matches the model's exactly and those that pass by the
 // floor alone.
 //
+// With --effect kind, a Switch archive's checks play with one of nn::atk's effects on aux bus A, at the defaults of its
+// class: switch_delay, switch_light_limiter or switch_reverb. The model run directly makes ntdlib's class and calls its
+// setters. The player plays the effect as a file holds it. With --game-effects, both play the effects that ntdlib's
+// rules give the archive (ntdlib::sar::RulesOf). For WarioWare: Move It!'s Sound.bfsar, those are Delay_Waltz on bus A,
+// I3DL2_Waltz on bus B and Limiter_Waltz on bus C. With --clubhouse-reverb n, both play reverb n of Clubhouse Games: 51
+// Worldwide Classics on bus A, with the values of ntdlib's rules for the game's archives: 1 for EFFECT_GAM022, and 2
+// for EFFECT_COMMON_ROOM_00. A switch halfway follows, as with --reverb. With one of nn::atk's effects, the player's
+// output ends once it has had no sound (louder than ±8) for the effects' ring (song::SwitchRingingFrames). The model's
+// output after the end then has to stay within ±8. The summary counts the runs whose model output gave samples of ±8
+// at most there.
+//
 // With --variables, the checks run once for each choice of each variable that a sequence reads, -1 aside (see
 // song::Variable). A variable without choices runs once, with 1. The player plays the sequence with the variable at
 // that starting value, and the arrangement reads it that way too. The model runs with the value set before its first
@@ -119,7 +130,8 @@
 // gives, like Hokuto's model. A sequence that differs only without it plays otherwise in the game's build. --part k/n
 // checks every nth sequence from the kth on, as for the 3DS.
 //
-// usage: hokuto_check_playback [--reverb n | --effect kind] [--variables | --changes] [--enhanced] <archive> [seconds]
+// usage: hokuto_check_playback [--reverb n | --effect kind | --game-effects | --clubhouse-reverb n]
+//                              [--variables | --changes] [--enhanced] <archive> [seconds]
 //        hokuto_check_playback --firmware <dsp firmware> [--part k/n] [--effect kind] [--variables | --changes]
 //                              <3DS archive> [seconds]
 //        hokuto_check_playback --enhanced [--part k/n] [--effect kind] [--variables | --changes]
@@ -129,7 +141,12 @@
 
 #include "check_playback.h"
 
+#include "ntdlib/sar/game_rules.h"
+
 #include "check_part.h"
+#include "edit/effects.h"
+#include "format/codes.h"
+#include "format/file.h"
 
 namespace
 {
@@ -137,6 +154,7 @@ namespace
 namespace atk = ntdlib::nx::atk;
 namespace cafe = ntdlib::cafe::snd;
 namespace sar = ntdlib::sar;
+namespace format = hokuto::format;
 namespace song = hokuto::song;
 using hokuto::tools::Part;
 using hokuto::tools::PartOf;
@@ -156,6 +174,7 @@ using hokuto::tools::playback::kWiiUEffects;
 using hokuto::tools::playback::kWiiUFramesPerSecond;
 using hokuto::tools::playback::kWiiUStrict;
 using hokuto::tools::playback::PrintSwitches;
+using hokuto::tools::playback::SwitchEffects;
 using hokuto::tools::playback::Totals;
 using hokuto::tools::playback::WiiEffects;
 using hokuto::tools::playback::WiiUEffects;
@@ -169,8 +188,9 @@ struct Options
     std::size_t part = 0;
     std::size_t parts = 1;
     bool enhanced = false;
-    atk::EngineOptions options;
-    song::AuxEffects effects;
+    SwitchEffects switch_effects;
+    std::string switch_text; // the effects of nn::atk on a Switch archive's buses, as the summary names them
+    bool game_effects = false;
     int preset = -1;
     WiiUEffects wii_u_effects;
     WiiEffects wii_effects;
@@ -228,21 +248,190 @@ bool TakeNamedOptions(std::vector<std::string>& arguments, Options& o)
     {
         arguments.erase(enhanced_option);
     }
-    o.options.enhanced = o.enhanced;
+    o.switch_effects.options.enhanced = o.enhanced;
 
     return true;
 }
 
-// Moves --reverb and --effect from `arguments` into `o`.
+// ntdlib's class for one of nn::atk's effects of `kind`, with `parameters` in a file's order, set up as nn::atk sets it
+// up: the channel mode and the longest time, then each setter with its value. A time in microseconds becomes the
+// setter's nanoseconds. The check makes the class directly, apart from Hokuto's model.
+std::shared_ptr<const atk::EffectBase> ReferenceEffect(format::EffectKind kind, const std::vector<float>& p)
+{
+    const auto nanoseconds = [](float microseconds)
+    {
+        return static_cast<int64_t>(microseconds) * 1000;
+    };
+    const auto mode = static_cast<atk::EffectBase::ChannelMode>(static_cast<uint8_t>(p.back()));
+    if (kind == format::EffectKind::kSwitchDelay)
+    {
+        auto delay = std::make_shared<atk::EffectDelay>();
+        delay->SetChannelMode(mode);
+        delay->SetDelayTimeMax(nanoseconds(p[0]));
+        delay->SetDelayTime(nanoseconds(p[1]));
+        delay->SetInGain(p[2]);
+        delay->SetFeedbackGain(p[3]);
+        delay->SetDryGain(p[4]);
+        delay->SetLowPassAmount(p[5]);
+        delay->SetChannelSpread(p[6]);
+        return delay;
+    }
+    if (kind == format::EffectKind::kSwitchLightLimiter)
+    {
+        auto limiter = std::make_shared<atk::EffectLightLimiter>();
+        limiter->SetChannelMode(mode);
+        limiter->SetLookAheadTimeMax(nanoseconds(p[0]));
+        limiter->SetAttackTime(nanoseconds(p[1]));
+        limiter->SetReleaseTime(nanoseconds(p[2]));
+        limiter->SetLookAheadTime(nanoseconds(p[3]));
+        limiter->SetThreshold(p[4]);
+        limiter->SetInputGain(p[5]);
+        limiter->SetOutputGain(p[6]);
+        return limiter;
+    }
+
+    auto reverb = std::make_shared<atk::EffectReverb>();
+    reverb->SetChannelMode(mode);
+    reverb->SetEarlyMode(static_cast<int>(p[0]));
+    reverb->SetEarlyGain(p[1]);
+    reverb->SetPredelayTime(nanoseconds(p[2]));
+    reverb->SetLateMode(static_cast<int>(p[3]));
+    reverb->SetLateGain(p[4]);
+    reverb->SetDecayTime(nanoseconds(p[5]));
+    reverb->SetHighFrequencyDecayRatio(p[6]);
+    reverb->SetColoration(p[7]);
+    reverb->SetReverbGain(p[8]);
+    reverb->SetOutGain(p[9]);
+    reverb->SetDryGain(p[10]);
+    return reverb;
+}
+
+// Puts one of nn::atk's effects of `kind` with `parameters` after the others on bus `bus` of `effects`: ntdlib's class
+// for the model run directly, and the effect as Hokuto plays a file's (edit::ModelEffects) for the player. Throws
+// std::invalid_argument for parameters that a file can't hold.
+void AddAtkEffect(SwitchEffects& effects, std::size_t bus, format::EffectKind kind, std::vector<float> parameters)
+{
+    format::Effect effect{kind, std::move(parameters)};
+    if (const std::optional<std::string> problem = format::EffectProblem(effect))
+    {
+        throw std::invalid_argument("The effect " + std::string(format::NameOf(kind)) + " " + *problem + ".");
+    }
+
+    effects.renderer[bus].push_back(ReferenceEffect(kind, effect.parameters));
+    hokuto::edit::BusEffects file;
+    file[bus].push_back(std::move(effect));
+    song::AuxEffects played = hokuto::edit::ModelEffects(file);
+    for (song::AuxEffect& model_effect : played[bus])
+    {
+        effects.effects[bus].push_back(std::move(model_effect));
+    }
+}
+
+// Puts the effects that ntdlib's rules give the archive `bytes` on its buses. Returns the text that names them, or
+// nothing for an archive whose rules give none. Move It!'s Sound.bfsar has its delay on bus A, its I3DL2 reverb on bus
+// B and its light limiter on bus C (ntdlib::sar::MoveIt).
+std::optional<std::string> AddGameEffects(std::span<const uint8_t> bytes, SwitchEffects& effects)
+{
+    const sar::ArchiveRules& rules = sar::RulesOf(bytes);
+    std::string text;
+    const auto add_name = [&text](const std::string& name, const char* bus)
+    {
+        text += (text.empty() ? "" : ", ") + name + " on bus " + bus;
+    };
+    if (rules.bus_a_delay_preset)
+    {
+        const sar::AuxEffectPreset& delay = *rules.bus_a_delay_preset;
+        AddAtkEffect(effects, 0, format::EffectKind::kSwitchDelay, {delay.parameters.begin(), delay.parameters.end()});
+        add_name(delay.name, "A");
+    }
+    if (const sar::ReverbPreset* reverb = rules.FindBusBPreset(rules.bus_b_always))
+    {
+        const std::vector<float> parameters(reverb->parameters.begin(), reverb->parameters.end());
+        if (reverb->type == sar::ReverbType::kI3dl2)
+        {
+            effects.options.aux_reverbs[1] =
+                song::I3dl2Reverb(std::span<const float, song::kI3dl2Parameters>(reverb->parameters));
+            effects.effects[1].push_back(*effects.options.aux_reverbs[1]);
+        }
+        else
+        {
+            AddAtkEffect(effects, 1, format::EffectKind::kSwitchReverb, parameters);
+        }
+        add_name(reverb->name, "B");
+    }
+    if (rules.bus_c_limiter)
+    {
+        const sar::AuxEffectPreset& limiter = *rules.bus_c_limiter;
+        AddAtkEffect(effects, 2, format::EffectKind::kSwitchLightLimiter,
+                     {limiter.parameters.begin(), limiter.parameters.end()});
+        add_name(limiter.name, "C");
+    }
+    if (text.empty())
+    {
+        return std::nullopt;
+    }
+
+    return text;
+}
+
+// The archives of Clubhouse Games: 51 Worldwide Classics whose rules hold its two reverbs of nn::atk: the
+// AddonAudioProject.bfsar of its resident archive, and the bowling game's subarc_gam005.bfsar. They're given by their
+// sizes and SHA-1s (ntdlib::sar::RulesOf), and needn't be on the machine.
+constexpr std::array<std::pair<std::size_t, std::string_view>, 2> kClubhouseArchives = {{
+    {56'574'072, "cd337a1d0041f9fed8eb6f2c9c74c419e87905bb"},
+    {3'600'192, "2f6b6c44031995054eaf70aa903d68d4faf4317b"},
+}};
+
+// Puts reverb `number` of Clubhouse Games, 1 or 2, on bus A of `effects`, with the values of ntdlib's rules. Returns
+// the text that names it, or nothing for another number.
+std::optional<std::string> AddClubhouseReverb(int number, SwitchEffects& effects)
+{
+    if (number < 1 || number > static_cast<int>(kClubhouseArchives.size()))
+    {
+        return std::nullopt;
+    }
+
+    const auto& [size, sha1] = kClubhouseArchives[static_cast<std::size_t>(number - 1)];
+    const sar::ArchiveRules& rules = sar::RulesOf(size, sha1);
+    if (rules.bus_b_presets.empty())
+    {
+        return std::nullopt;
+    }
+
+    const sar::ReverbPreset& reverb = rules.bus_b_presets.front();
+    AddAtkEffect(effects, 0, format::EffectKind::kSwitchReverb, {reverb.parameters.begin(), reverb.parameters.end()});
+
+    return reverb.name + " on bus A";
+}
+
+// Moves --reverb, --effect, --game-effects and --clubhouse-reverb from `arguments` into `o`. Throws
+// std::invalid_argument for a reverb of Clubhouse Games that ntdlib's rules don't give.
 void TakeEffectOptions(std::vector<std::string>& arguments, Options& o)
 {
+    if (arguments.size() > 1 && arguments[1] == "--game-effects")
+    {
+        o.game_effects = true;
+        arguments.erase(arguments.begin() + 1);
+    }
+    if (arguments.size() > 2 && arguments[1] == "--clubhouse-reverb")
+    {
+        const std::optional<std::string> text = AddClubhouseReverb(std::atoi(arguments[2].c_str()), o.switch_effects);
+        if (!text)
+        {
+            throw std::invalid_argument("--clubhouse-reverb takes 1 or 2.");
+        }
+        o.switch_text = *text;
+        arguments.erase(arguments.begin() + 1, arguments.begin() + 3);
+    }
     if (arguments.size() > 2 && arguments[1] == "--reverb")
     {
         o.preset = std::atoi(arguments[2].c_str());
         if (o.preset >= 0 && o.preset < static_cast<int>(ntdlib::nx::audio::kI3dl2ReverbPresets.size()))
         {
-            o.options.aux_reverbs[0] = ntdlib::nx::audio::kI3dl2ReverbPresets[static_cast<std::size_t>(o.preset)];
-            o.effects[0].push_back(*o.options.aux_reverbs[0]);
+            SwitchEffects& effects = o.switch_effects;
+            effects.options.aux_reverbs[0] =
+                ntdlib::nx::audio::kI3dl2ReverbPresets[static_cast<std::size_t>(o.preset)];
+            effects.effects[0].push_back(*effects.options.aux_reverbs[0]);
         }
         arguments.erase(arguments.begin() + 1, arguments.begin() + 3);
     }
@@ -277,6 +466,12 @@ void TakeEffectOptions(std::vector<std::string>& arguments, Options& o)
                 o.ctr_effect = &effect;
             }
         }
+        if (const std::optional<format::EffectKind> kind = format::EffectKindNamed(arguments[2]);
+            kind && format::IsAtkKind(*kind))
+        {
+            AddAtkEffect(o.switch_effects, 0, *kind, hokuto::edit::AtkStartingParameters(*kind));
+            o.switch_text = arguments[2] + " on bus A";
+        }
         arguments.erase(arguments.begin() + 1, arguments.begin() + 3);
     }
 }
@@ -285,28 +480,41 @@ void TakeEffectOptions(std::vector<std::string>& arguments, Options& o)
 std::optional<Options> ParseOptions(std::vector<std::string> arguments)
 {
     // --reverb n puts nn::audio's I3DL2 preset n on aux bus A, for the model and for the player. --effect puts an
-    // effect of the Wii U, the Wii or the 3DS there. --variables checks the choices of the variables, and --changes
-    // checks them as changes while the sequence plays. --enhanced plays in enhanced mixing.
+    // effect of the Wii U, the Wii, the 3DS or nn::atk there. --game-effects puts the effects of ntdlib's rules on a
+    // Switch archive's buses, and --clubhouse-reverb n reverb n of Clubhouse Games on bus A. --variables checks the
+    // choices of the variables, and --changes checks them as changes while the sequence plays. --enhanced plays in
+    // enhanced mixing.
     Options o;
     if (!TakeNamedOptions(arguments, o))
     {
         return std::nullopt;
     }
-    TakeEffectOptions(arguments, o);
+    try
+    {
+        TakeEffectOptions(arguments, o);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        std::fprintf(stderr, "%s\n", error.what());
+        return std::nullopt;
+    }
     o.variables = arguments.size() > 1 && arguments[1] == "--variables";
     o.changes = arguments.size() > 1 && arguments[1] == "--changes";
     if (o.variables || o.changes)
     {
         arguments.erase(arguments.begin() + 1);
     }
-    const bool unknown_effect =
-        o.wii_u_effect && o.wii_u_effects.setups.empty() && o.wii_effects.setups.empty() && o.ctr_effect == nullptr;
-    if (arguments.size() < 2 || arguments.size() > 3 || (o.preset != -1 && o.effects[0].empty()) || unknown_effect ||
-        (o.preset != -1 && o.wii_u_effect))
+    const bool unknown_effect = o.wii_u_effect && o.wii_u_effects.setups.empty() && o.wii_effects.setups.empty() &&
+                                o.ctr_effect == nullptr && o.switch_text.empty();
+    const int switch_options =
+        (o.preset != -1 ? 1 : 0) + (o.wii_u_effect ? 1 : 0) + (o.game_effects ? 1 : 0) +
+        (!o.wii_u_effect && !o.switch_text.empty() ? 1 : 0);
+    if (arguments.size() < 2 || arguments.size() > 3 ||
+        (o.preset != -1 && o.switch_effects.effects[0].empty()) || unknown_effect || switch_options > 1)
     {
         std::fprintf(stderr,
-                     "usage: hokuto_check_playback [--reverb n | --effect kind] [--variables | --changes] "
-                     "[--enhanced] <archive> [seconds]\n"
+                     "usage: hokuto_check_playback [--reverb n | --effect kind | --game-effects | "
+                     "--clubhouse-reverb n] [--variables | --changes] [--enhanced] <archive> [seconds]\n"
                      "       hokuto_check_playback --firmware <dsp firmware> [--part k/n] [--effect kind] "
                      "[--variables | --changes] <3DS archive> [seconds]\n"
                      "       hokuto_check_playback --enhanced [--part k/n] [--effect kind] [--variables | --changes] "
@@ -316,6 +524,7 @@ std::optional<Options> ParseOptions(std::vector<std::string> arguments)
         return std::nullopt;
     }
 
+    o.wii_u_effect = o.wii_u_effect && o.switch_text.empty();
     o.path = xsflib::PathFromUtf8(arguments[1]);
     o.seconds = arguments.size() > 2 ? std::max(std::atoi(arguments[2].c_str()), 1) : 30;
 
@@ -473,7 +682,7 @@ int RunSwitchArchive(const Options& o, const sar::SoundArchive& strict,
         const auto index = static_cast<uint32_t>(sound);
         if (!o.variables && !o.changes)
         {
-            CheckSequence(strict, archive, index, frames, o.options, o.effects, {}, {}, totals);
+            CheckSequence(strict, archive, index, frames, o.switch_effects, {}, {}, totals);
             continue;
         }
 
@@ -484,7 +693,7 @@ int RunSwitchArchive(const Options& o, const sar::SoundArchive& strict,
         }
         catch (const std::exception&)
         {
-            CheckSequence(strict, archive, index, frames, o.options, o.effects, {}, {}, totals);
+            CheckSequence(strict, archive, index, frames, o.switch_effects, {}, {}, totals);
             continue;
         }
 
@@ -496,10 +705,11 @@ int RunSwitchArchive(const Options& o, const sar::SoundArchive& strict,
         reading += read.empty() ? 0 : 1;
         ForEachChoice(
             read, o.changes, time, [&](const song::StartValues& values, const song::Changes& changes)
-            { CheckSequence(strict, archive, index, frames, o.options, o.effects, values, changes, totals); });
+            { CheckSequence(strict, archive, index, frames, o.switch_effects, values, changes, totals); });
     }
 
     const std::string with = (o.preset >= 0 ? " with I3DL2 preset " + std::to_string(o.preset) + " on bus A" : "") +
+                             (o.switch_text.empty() ? "" : " with " + o.switch_text) +
                              (o.enhanced ? " in enhanced mixing" : "");
     const std::string runs =
         o.variables || o.changes ? std::to_string(reading) + " sequences read variables. Their " : "";
@@ -512,6 +722,10 @@ int RunSwitchArchive(const Options& o, const sar::SoundArchive& strict,
     if (o.changes)
     {
         std::printf("The change altered the model's output in %zu runs.\n", totals.affected);
+    }
+    if (!o.switch_text.empty())
+    {
+        std::printf("%zu ended while the effects' tails gave samples of ±8 at most.\n", totals.quiet_tails);
     }
     PrintSwitches(totals);
 
@@ -553,6 +767,36 @@ PlaybackArchive OpenPlaybackArchive(const std::filesystem::path& path)
     return opened;
 }
 
+// What's wrong with the options `o` for an archive of the Switch or, with `wii_u`, of the Wii U, or nothing. A Wii U
+// archive plays dry or with its effect, with each variable at its starting value. --effect is for the Wii U's archives,
+// and --reverb, --variables and --changes for the Switch's. `switch_effects` says whether `o` gives an effect of
+// nn::atk.
+const char* OptionsProblem(const Options& o, bool wii_u, bool switch_effects)
+{
+    if (o.ctr_effect != nullptr)
+    {
+        return "An effect of the 3DS plays only on a 3DS archive.";
+    }
+    if (!o.firmware_path.empty() || o.parts != 1)
+    {
+        return "--firmware checks only the 3DS's archives, and --part only those of the 3DS and the Wii.";
+    }
+    if (wii_u && (o.preset != -1 || o.variables || o.changes))
+    {
+        return "--reverb, --variables and --changes check only the Switch's archives.";
+    }
+    if (!wii_u && o.wii_u_effect)
+    {
+        return "--effect checks only the Wii U's archives, apart from nn::atk's effects.";
+    }
+    if (wii_u && switch_effects)
+    {
+        return "An effect of nn::atk plays only on a Switch archive.";
+    }
+
+    return nullptr;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -562,7 +806,13 @@ int main(int argc, char** argv)
     {
         return 2;
     }
-    const Options& o = *parsed;
+    Options o = *parsed;
+    const bool switch_effects = !o.switch_text.empty() || o.game_effects;
+    if (switch_effects && (!o.dol_path.empty() || !o.firmware_path.empty()))
+    {
+        std::fprintf(stderr, "An effect of nn::atk plays only on a Switch archive.\n");
+        return 2;
+    }
     if (!o.dol_path.empty())
     {
         if (o.preset != -1 || !o.wii_u_effects.setups.empty() || o.ctr_effect != nullptr || o.enhanced ||
@@ -596,33 +846,33 @@ int main(int argc, char** argv)
     // A 3DS archive's reference plays on the firmware, with each variable at its starting value, or with --enhanced on
     // the model's enhanced mode. It plays dry, or with an effect of the 3DS on bus A. Teakra prints the DSP's accesses
     // that it doesn't model on stdout. The tool's lines go to stderr instead.
+    if (opened.ctr && switch_effects)
+    {
+        std::fprintf(stderr, "An effect of nn::atk plays only on a Switch archive.\n");
+        return 2;
+    }
     if (opened.ctr)
     {
         return RunCtrArchive(o, *opened.strict, opened.archive);
     }
-    if (o.ctr_effect != nullptr)
+    if (const char* problem = OptionsProblem(o, opened.wii_u, switch_effects))
     {
-        std::fprintf(stderr, "An effect of the 3DS plays only on a 3DS archive.\n");
-        return 2;
-    }
-    if (!o.firmware_path.empty() || o.parts != 1)
-    {
-        std::fprintf(stderr,
-                     "--firmware checks only the 3DS's archives, and --part only those of the 3DS and the Wii.\n");
+        std::fprintf(stderr, "%s\n", problem);
         return 2;
     }
 
-    // A Wii U archive plays dry or with its effect, with each variable at its starting value. --effect is for the Wii
-    // U's archives, and --reverb, --variables and --changes for the Switch's.
-    if (opened.wii_u && (o.preset != -1 || o.variables || o.changes))
+    // --game-effects puts the effects that ntdlib's rules give the archive on its buses.
+    if (o.game_effects)
     {
-        std::fprintf(stderr, "--reverb, --variables and --changes check only the Switch's archives.\n");
-        return 2;
-    }
-    if (!opened.wii_u && o.wii_u_effect)
-    {
-        std::fprintf(stderr, "--effect checks only the Wii U's archives.\n");
-        return 2;
+        std::vector<uint8_t> bytes;
+        xsflib::ReadFile(o.path, bytes);
+        const std::optional<std::string> text = AddGameEffects(bytes, o.switch_effects);
+        if (!text)
+        {
+            std::fprintf(stderr, "ntdlib's rules give this archive no effects.\n");
+            return 2;
+        }
+        o.switch_text = *text;
     }
 
     return opened.wii_u ? RunWiiUArchive(o, *opened.strict, opened.archive)

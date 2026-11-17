@@ -30,13 +30,20 @@
 // ROM, the tool leaves out the edits whose songs outgrow their places, and counts them apart.
 //
 // The edit has to change nothing but the programs of program changes and the slots of bank selects. It can put in
-// nothing but program changes, bank selects and a jump past them. ntdlib's performer then reads every sound of the
-// sequence file again from the exported archive. The edited track has to play its notes as before: at the same ticks,
-// with the same keys and velocities. Its notes that played the old instrument have to play the new one, and its other
-// notes their instruments as before. An instrument can lack a region for the key or the velocity of a note. A key group
-// can cut a note in the tick that it starts. The performer then leaves the note out. The tool counts apart the edits
-// after which the track leaves out notes of the new instrument, and those after which it plays more of them. An edit
-// that does both counts among the first.
+// nothing but program changes, bank selects and a jump past them. On DSE, the bank selects that it puts in select a
+// whole bank id (0xA8): one before the notes, and one after them back to their old bank. ntdlib's performer then reads
+// every sound of the sequence file again from the exported archive. The edited track has to play its notes as before:
+// at the same ticks, with the same keys and velocities. Its notes that played the old instrument have to play the new
+// one, and its other notes their instruments as before. An instrument can lack a region for the key or the velocity of
+// a note. A key group can cut a note in the tick that it starts. The performer then leaves the note out. The tool
+// counts apart the edits after which the track leaves out notes of the new instrument, and those after which it plays
+// more of them. An edit that does both counts among the first.
+//
+// On DSE, a selection of a program resets the channel's bend range, LFOs and envelope, and so does a bank select. The
+// tool plays the edited track on ntdlib's DSE driver before and after the edit. At each note, the bend range and the
+// envelope have to stay as they were. So do the LFOs, except at a note of a new instrument whose program gives other
+// LFOs, and at a note whose bank lacks its program. Such a note plays nothing. The tool counts those notes apart. An
+// LFO that is off compares by its type alone.
 //
 // The engine sets where some notes end, such as a note that a one-shot wave ends, or a note that lasts to the end of
 // the performance. The new instrument can end them elsewhere. The tool counts such notes apart. From the first end that
@@ -92,8 +99,8 @@ const std::vector<uint32_t>& GbaProgramsIn(Archive& archive, uint32_t song, int 
 {
     static const std::vector<uint32_t> kNone;
     const song::GbaRom& rom = *archive.archive.gba;
-    ntdlib::mp2k::SongHeader header;
-    if (slot != 0 || !ntdlib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(song), header))
+    agblib::mp2k::SongHeader header;
+    if (slot != 0 || !agblib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(song), header))
     {
         return kNone;
     }
@@ -557,7 +564,8 @@ void EditSound(Archive& archive, uint32_t sound, std::size_t kind, Totals& total
             changed.insert(item);
         }
     }
-    const std::string other_change = OtherChange(old_commands, *edited.file.sequences[sequence], edited, *to);
+    const std::string other_change = OtherChange(old_commands, *edited.file.sequences[sequence], edited, *to,
+                                                 console.engine == format::Engine::kDse);
     if (!other_change.empty())
     {
         std::printf("%s: %s changes the sequence otherwise: %s\n", archive.name.c_str(), what.c_str(),
@@ -605,6 +613,21 @@ void EditSound(Archive& archive, uint32_t sound, std::size_t kind, Totals& total
     for (const uint32_t other : archive.by_sequence.at(sequence))
     {
         CheckOtherSound(archive, built, other, change, totals);
+    }
+
+    // On DSE, a new selection of a program resets the bend range, the LFOs and the envelope of the channel.
+    if (archive.archive.dse && built.dse)
+    {
+        const DseSettingsChange settings =
+            DseSettingsOf(*archive.archive.dse, *built.dse, sound, track->number, track->notes.size());
+        totals.dse_lfos += settings.lfos;
+        if (!settings.change.empty())
+        {
+            std::printf("%s: %s plays notes with other settings: %s\n", archive.name.c_str(), what.c_str(),
+                        settings.change.c_str());
+            ++totals.dse_settings;
+            ++totals.problems;
+        }
     }
 }
 
@@ -663,6 +686,13 @@ void PrintTotals(const Archive& archive, const Totals& totals)
             "%s: apart on the GBA: %zu edits stayed out: the song outgrew its place, and the ROM has no room "
             "for it. %zu tracks gained or lost notes on the channels of the edited notes.\n",
             archive.name.c_str(), totals.outgrown, totals.channels);
+    }
+    if (archive.archive.dse)
+    {
+        std::printf(
+            "%s: on DSE: %zu edits played a note with another bend range, LFO or envelope. The LFOs of %zu "
+            "notes weren't compared: their programs give other LFOs, or their banks lack their programs.\n",
+            archive.name.c_str(), totals.dse_settings, totals.dse_lfos);
     }
     if (archive.archive.ds)
     {

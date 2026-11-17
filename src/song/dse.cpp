@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/dse/build.h"
+#include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/layout.h"
 #include "ntdlib/dse/sets.h"
 #include "ntdlib/ntr/rom.h"
@@ -20,6 +22,7 @@
 #include "ntdlib/sequence_export/dse/instruments.h"
 #include "seqlib/file_name.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "song/midi_export.h"
 
@@ -134,7 +137,7 @@ void ReadBanks(DseSet& set, std::span<const ntdlib::dse::NamedFile> files, std::
             continue;
         }
 
-        const auto id = static_cast<uint16_t>(bank.header[kMainBankId] | bank.header[kMainBankId + 1] << 8);
+        const auto id = xsflib::LoadLe16(&bank.header[kMainBankId]);
         for (std::size_t other = 0; other < set.banks.size(); other++)
         {
             const ntdlib::dse::WaveBank& main_bank = *set.banks[other].bank;
@@ -192,7 +195,7 @@ std::shared_ptr<const DseSet> LoadDseSet(std::span<const uint8_t> image)
     }
 
     auto set = std::make_shared<DseSet>();
-    set->build = ntdlib::dse::BuildOf(rom.Arm9());
+    set->build = ntdlib::dse::BuildOf(rom).value_or(ntdlib::dse::Build::kLater);
     ReadSounds(*set, files, image);
     return set;
 }
@@ -209,7 +212,7 @@ ntdlib::dse::Build DseBuildOf(std::span<const uint8_t> image)
 {
     try
     {
-        return ntdlib::dse::BuildOf(ntdlib::ntr::Rom::Parse(image).Arm9());
+        return ntdlib::dse::BuildOf(ntdlib::ntr::Rom::Parse(image)).value_or(ntdlib::dse::Build::kLater);
     }
     catch (const xsflib::FormatError&)
     {
@@ -439,7 +442,8 @@ ntdlib::sequence_export::BankConversion ConvertDseBank(const DseSet& set, uint32
         throw BankWithoutInstruments(name + " has no instruments.");
     }
 
-    return ntdlib::sequence_export::dse::ConvertBank(*found.bank, found.main_bank.get(), programs, name, "Hokuto");
+    return ntdlib::sequence_export::dse::ConvertBank(*found.bank, found.main_bank.get(), programs,
+                                                     ntdlib::dse::Driver::kTickMicroseconds, name, "Hokuto");
 }
 
 } // namespace hokuto::song

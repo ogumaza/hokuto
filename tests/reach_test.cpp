@@ -15,6 +15,7 @@
 
 #include "edit/reach.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -22,11 +23,11 @@
 #include <stdexcept>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/layout.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "xsflib/testing/check.h"
@@ -239,8 +240,8 @@ void TestSoundsReaching()
 // and track 1 plays a note. Song 1 has a track of its own.
 std::vector<uint8_t> GbaRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
@@ -254,7 +255,7 @@ std::vector<uint8_t> GbaRom()
     cart.Song({other}, voices);
     cart.Put32(mp2k_cart::kSongTable + 16, shared);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -283,6 +284,47 @@ void TestGbaSongs()
     XSFLIB_CHECK(Holds(shared.at(1).mix[static_cast<std::size_t>(Mix::kVolume)], {}, {2}));
     XSFLIB_CHECK(Holds(shared.at(1).mix[static_cast<std::size_t>(Mix::kPan)], {}, {2}));
     XSFLIB_CHECK(Holds(other.at(0).mix[static_cast<std::size_t>(Mix::kVolume)], {}, {}));
+}
+
+// A GBA ROM of one song whose header names one track's bytes twice: the track sets its volume and plays a note, and
+// sets no pan.
+std::vector<uint8_t> SharedTrackRom()
+{
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
+
+    mp2k_cart::Cart cart;
+    const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
+    mp2k_cart::Track track;
+    track.Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100).Note(24, 60, 100).Wait(24).Fine();
+    const uint32_t header = cart.Song({track, track}, voices);
+
+    const agblib::agb::Rom rom = cart.ToRom();
+    std::vector<uint8_t> bytes = hokuto::testing::RomBytes(rom);
+    const std::size_t fields = header - agblib::agb::kRomBase + 8;
+    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(fields), 4,
+                bytes.begin() + static_cast<std::ptrdiff_t>(fields + 4));
+    return bytes;
+}
+
+// Two tracks that open at the same bytes run the same commands. A new pan at the opening of either goes into the
+// other's commands too, so the pan's reach lists the other track. So does the volume, through its command.
+void TestSharedOpening()
+{
+    const std::vector<uint8_t> bytes = SharedTrackRom();
+    const File file = hokuto::format::ImportGbaRom(bytes);
+    const std::shared_ptr<const hokuto::song::GbaRom> rom = hokuto::song::LoadGbaRom(bytes);
+    const std::vector<std::optional<uint32_t>> sequences = {
+        hokuto::format::GbaSongSequence(file, rom->info.song_table, 0)};
+    const std::vector<std::optional<SoundPlace>> places = hokuto::edit::GbaSoundPlaces(
+        sequences, hokuto::format::GbaTrackFields(file, rom->info.song_table, sequences.size()));
+
+    const std::vector<TrackReach> reach = ReachOfTracks(file, places, 0, hokuto::song::ReadSequence(*rom, 0));
+
+    SEQLIB_REQUIRE(reach.size() == 2);
+    XSFLIB_CHECK(Holds(reach.at(0).mix[static_cast<std::size_t>(Mix::kPan)], {1}, {}));
+    XSFLIB_CHECK(Holds(reach.at(1).mix[static_cast<std::size_t>(Mix::kPan)], {0}, {}));
+    XSFLIB_CHECK(Holds(reach.at(0).mix[static_cast<std::size_t>(Mix::kVolume)], {1}, {}));
 }
 
 // The DS archive.
@@ -332,6 +374,50 @@ void TestDsAllocation()
     XSFLIB_CHECK(Holds(reach.at(1).mix[static_cast<std::size_t>(Mix::kVolume)], {}, {1}));
 }
 
+// A DS archive whose one sound opens tracks 1 and 2 with two commands at the same label. Track 0 sets its volume and
+// plays a note. The tracks at the label set the volume and play a note.
+std::vector<uint8_t> DsSharedOpeningArchive()
+{
+    namespace sdat_files = ntdlib::testing::sdat_files;
+    const sdat_files::Bytes commands = {0xFE, 0x07, 0x00, 0x93, 0x01, 0x13, 0x00, 0x00, 0x93,
+                                        0x02, 0x13, 0x00, 0x00, 0xC1, 0x64, 0x3C, 0x7F, 0x30,
+                                        0xFF, 0xC1, 0x40, 0x80, 0x18, 0x43, 0x50, 0x18, 0xFF};
+    const sdat_files::Wave square{
+        .loop = 1,
+        .loop_length = 4,
+        .data = {0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0}};
+    constexpr uint16_t kNone = 0xFFFF;
+
+    ntdlib::sdat::ArchiveModel model;
+    model.sequences = {ntdlib::sdat::SequenceInfo{0, 0, 127, 64, 64, 0, 0, ""}};
+    model.banks = {ntdlib::sdat::BankInfo{1, {0, kNone, kNone, kNone}, ""}};
+    model.wave_archives = {ntdlib::sdat::WaveArchiveInfo{2, ""}};
+    model.players = {ntdlib::sdat::PlayerInfo{1, 0, 0, 0, ""}};
+    model.files = {sdat_files::Sequence(commands), sdat_files::Bank({{.type = 1, .region = {.wave = 0}}}),
+                   sdat_files::WaveArchive({square})};
+
+    return ntdlib::sdat::BuildArchive(model);
+}
+
+// On the DS, a command opens each track by its number. A new command at track 1's opening goes into track 1 alone
+// (InsertAtOpening): the command that opens track 2 at the same label keeps leading to the label. The pan of track 1
+// therefore reaches no other track. The volume command at the label runs on both tracks, and its edit reaches track 2.
+void TestDsSharedOpening()
+{
+    const File file = hokuto::format::ImportDsArchive(DsSharedOpeningArchive());
+    const std::vector<uint8_t> built = hokuto::format::ExportArchive(file);
+    const std::shared_ptr<const hokuto::song::DsArchive> archive = hokuto::song::LoadDsArchive(built);
+    const std::vector<std::optional<SoundPlace>> places =
+        hokuto::edit::DsSoundPlaces(hokuto::format::DsSoundSequences(file, built));
+
+    const std::vector<TrackReach> reach = ReachOfTracks(file, places, 0, hokuto::song::ReadSequence(*archive, 0));
+
+    SEQLIB_REQUIRE(reach.size() == 3);
+    XSFLIB_CHECK(Holds(reach.at(1).mix[static_cast<std::size_t>(Mix::kPan)], {}, {}));
+    XSFLIB_CHECK(Holds(reach.at(1).mix[static_cast<std::size_t>(Mix::kVolume)], {2}, {}));
+    XSFLIB_CHECK(Holds(reach.at(2).mix[static_cast<std::size_t>(Mix::kPan)], {}, {}));
+}
+
 } // namespace
 
 int main()
@@ -344,6 +430,8 @@ int main()
                                         TestLaterStart();
                                         TestSoundsReaching();
                                         TestGbaSongs();
+                                        TestSharedOpening();
                                         TestDsAllocation();
+                                        TestDsSharedOpening();
                                     });
 }

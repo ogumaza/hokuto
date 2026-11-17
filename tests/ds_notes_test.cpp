@@ -3,7 +3,8 @@
 // Tests the note edits of the DS's sequences (src/edit/notes.cpp). The sequence of a DS sound archive accepts the edits
 // by the rules of NITRO-Composer's bytes. A note that the driver never starts leads to the stretch that ran its command
 // (UnstartedPlaces in edit/commands.h), and accepts edits there. A note whose new length runs past the end of its track
-// moves the end, unless that could change other notes.
+// moves the end, unless that could change other notes. A setting at the start of a sequence archive's first record
+// moves the starts of the records after it.
 
 #include "notes_fixtures.h"
 
@@ -69,9 +70,8 @@ DsSong DsSongOf(const File& file)
             hokuto::song::ReadSequence(*archive, 1)};
 }
 
-// The INFO block's sounds lead to the sequence that their file became. The sequence archive's sound and the empty
-// entry lead nowhere: the cut keeps a sequence archive among the archive's bytes. A sound starts at the first item of
-// its sequence.
+// The INFO block's sounds lead to the sequence that their file became. The empty entry leads nowhere. A sound starts at
+// the first item of its sequence.
 void TestDsSounds()
 {
     const std::vector<uint8_t> sdat = DsArchive();
@@ -83,6 +83,47 @@ void TestDsSounds()
     SEQLIB_REQUIRE(places.size() == 3 && places[0] && places[1] && !places[2]);
     XSFLIB_CHECK(places[0]->sequence == 0 && !places[0]->start_field && places[0]->track_fields.empty());
     XSFLIB_CHECK((hokuto::edit::SharingStart(places, 0) == std::vector<uint32_t>{1}));
+}
+
+// A sequence archive's bytecode becomes one sequence, after the sequence file's. Its records start at fields of the
+// sequence. A volume at tick 0 of the first record goes in at item 0, before the record's note. The edit turns note
+// wait off around the note and writes the wait out: C7 00, C1 40, the note, 80 18 and C7 01. The first record still
+// starts at item 0, and the second record's start moves with the bytes after it, from byte 4 to byte 12. Each record
+// then plays its note, and the archive comes back from a new import. The archive is DsArchive's with a sequence archive
+// of two records. Its bytecode plays key 60 from record 0 and key 62 from record 1, at byte 4.
+void TestDsArchivedSequence()
+{
+    namespace sdat_files = ntdlib::testing::sdat_files;
+    ntdlib::sdat::ArchiveModel model = ntdlib::sdat::ReadArchiveModel(DsArchive());
+    model.files.at(1) =
+        sdat_files::SequenceArchive({{.offset = 0}, {.offset = 4}}, {0x3C, 0x7F, 0x18, 0xFF, 0x3E, 0x7F, 0x18, 0xFF});
+    const std::vector<uint8_t> sdat = ntdlib::sdat::BuildArchive(model);
+    const File file = hokuto::format::ImportDsArchive(sdat);
+    SEQLIB_REQUIRE(file.sequences.size() == 2);
+
+    constexpr uint32_t kFirst = hokuto::song::kFirstDsArchivedSound;
+    const Sequence first = hokuto::song::ReadSequence(*hokuto::song::LoadDsArchive(sdat), kFirst);
+    SEQLIB_REQUIRE(first.tracks.size() == 1);
+    const std::vector<NewSetting> settings = {
+        {.stretch = first.tracks[0].stretches.at(0), .tick = 0, .command = Volume(64)}};
+    const Edited edited = AddSettings(file, 1, settings);
+
+    const std::vector<uint8_t> exported = hokuto::format::ExportArchive(edited.file);
+    const ntdlib::sdat::Archive archive = ntdlib::sdat::Archive::Parse(exported);
+    const ntdlib::sdat::SequenceArchive ssar = ntdlib::sdat::SequenceArchive::Parse(archive.File(1));
+    SEQLIB_REQUIRE(ssar.sequences.size() == 2 && ssar.bytecode.size() == 16);
+    XSFLIB_CHECK(ssar.sequences[0].offset == 0 && ssar.sequences[1].offset == 12);
+    XSFLIB_CHECK(
+        (std::ranges::equal(ssar.bytecode, std::vector<uint8_t>{0xC7, 0x00, 0xC1, 0x40, 0x3C, 0x7F, 0x18, 0x80, 0x18,
+                                                                0xC7, 0x01, 0xFF, 0x3E, 0x7F, 0x18, 0xFF})));
+
+    const std::shared_ptr<const hokuto::song::DsArchive> played = hokuto::song::LoadDsArchive(exported);
+    const Sequence one = hokuto::song::ReadSequence(*played, kFirst);
+    const Sequence two = hokuto::song::ReadSequence(*played, kFirst + 1);
+    SEQLIB_REQUIRE(one.tracks.size() == 1 && two.tracks.size() == 1);
+    XSFLIB_CHECK((GbaNotes(one, 0) == std::vector<std::vector<uint32_t>>{{0, 24, 60, 127}}));
+    XSFLIB_CHECK((GbaNotes(two, 0) == std::vector<std::vector<uint32_t>>{{0, 24, 62, 127}}));
+    XSFLIB_CHECK(hokuto::format::ExportArchive(hokuto::format::ImportDsArchive(exported)) == exported);
 }
 
 // A shorter, softer note, a new note in its wait and a note a tick earlier. The edits write the tracks' waits out, and
@@ -269,6 +310,7 @@ int main()
                                     []
                                     {
                                         TestDsSounds();
+                                        TestDsArchivedSequence();
                                         TestDsNotes();
                                         TestDsNoteOverTheEnd();
                                         TestDsValues();

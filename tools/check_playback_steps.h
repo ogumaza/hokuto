@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -63,8 +64,10 @@ struct EndLevels
 // The player's frames in `seconds` of the output of `model`.
 std::size_t CheckFrames(const song::SequenceModel& model, int seconds);
 
-// Renders `frames` of the player's frames into `output`. Returns false if the output ends sooner.
-bool Render(song::SequencePlayer& player, std::size_t frames, std::size_t frame_samples, std::vector<float>& output);
+// Renders `frames` of the player's frames into `output`, a block of kBlock stereo samples at a time, as the worker
+// renders them. `after_block`, if given, runs after each block. Returns false if the output ends sooner.
+bool Render(song::SequencePlayer& player, std::size_t frames, std::size_t frame_samples, std::vector<float>& output,
+            const std::function<void()>& after_block = {});
 
 // The frames of `output` from frame `from` on that differ from `reference`, `frame_floats` floats a frame. The
 // comparison starts `offset` floats into the reference. In strict mixing, the player's floats are the reference's
@@ -83,9 +86,14 @@ StartResult StartCheck(const std::shared_ptr<song::SequenceModel>& model, std::s
 SeekResult SeekCheck(song::SequenceModel& model, std::size_t start, std::size_t heard, std::span<const float> reference,
                      std::size_t frame_floats, StepTotals& totals);
 
-// The output of a player that switches to a new model of `sequence` after `before` frames, for `frames` frames in all.
-std::vector<float> RunSwitch(const song::Played& played, const std::shared_ptr<const song::Sequence>& sequence,
-                             song::Mixing mixing, std::size_t before, std::size_t frames);
+// Runs a catch-up of `model` up to the frame of the player that `clock` serves, and offers the result to `clock`. The
+// player takes the new model at its next frame. The program does the same after an edit during playback.
+void CatchUp(const std::shared_ptr<song::SequenceModel>& model, const std::shared_ptr<song::PlaybackClock>& clock);
+
+// The output of a player of `from` for `before` frames, then of `to` after a catch-up, for `frames` frames in all. The
+// player keeps the frames of `from`.
+std::vector<float> RunSwitch(const std::shared_ptr<song::SequenceModel>& from,
+                             const std::shared_ptr<song::SequenceModel>& to, std::size_t before, std::size_t frames);
 
 // What differs when the player switches to `sequence` halfway through `heard` frames of output, for the report: the
 // frames that differ from `reference` and where the output ends. The comparison starts `offset` floats into the
@@ -97,6 +105,22 @@ std::string SwitchCheck(const song::Played& played, const std::shared_ptr<const 
 // Measures `after`, the reference after an end of the output, in frames of `frame_floats` floats. A side that spans
 // more than `span` sounds on.
 EndLevels LevelsAfterEnd(std::span<const float> after, std::size_t frame_floats, float span);
+
+// The span within which each side of the reference has to hold a level after an end of the output: none in strict
+// mixing. In enhanced mixing, the reverb's tail rings on below the console's steps, and each side stays within ±8.
+float EndSpan(bool enhanced);
+
+// The levels of `reference` from float `rest` up to float `stop`, after an end of the output (LevelsAfterEnd), with
+// the span of EndSpan. None when fewer than two floats lie there.
+EndLevels LevelsBetween(std::span<const float> reference, std::size_t rest, std::size_t stop, std::size_t frame_floats,
+                        float span);
+
+// The text that the line of a sound adds when the reference sounds on after the output's end with `levels`.
+std::string SoundsOnText(const EndLevels& levels);
+
+// The largest magnitude of `reference` from float `rest` up to float `stop`, in 16-bit steps: what the reference plays
+// after an end of the output. 0 when nothing lies there.
+int PeakAfterEnd(std::span<const float> reference, std::size_t rest, std::size_t stop);
 
 // Whether the arrangement contains a note on `track` and `key` that starts at the arrangement's tick of `tick`. `list`
 // is the track's list of notes to look in.

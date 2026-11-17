@@ -8,9 +8,9 @@ namespace hokuto::tools::layout
 {
 
 void CheckNames(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Options& options,
-                Totals& totals)
+                Readings& readings, Totals& totals)
 {
-    const std::optional<std::span<const uint8_t>> block = StringBlockOf(original, options.flavor);
+    const std::optional<std::span<const uint8_t>> block = sar::TablesOf(original, options.flavor).strings;
     if (!block)
     {
         ++totals.nameless;
@@ -22,18 +22,34 @@ void CheckNames(const std::filesystem::path& path, const std::vector<uint8_t>& o
     {
         Problem(path, "the STRG block written again differs", totals);
     }
-    const sar::SoundArchive archive = sar::SoundArchive::Load(original, options);
+    // The reader by the default rules, and by the strict rules where they read the archive. Only the strict rules read
+    // every player and group (ReaderNameOf).
+    const auto check_reader = [&](const sar::SoundArchive& archive, bool strict, const std::string& rules)
+    {
+        for (const sar::ItemName& name : names.names)
+        {
+            const ReaderName read = ReaderNameOf(archive, name.item_id, strict);
+            if (read.read && !read.name)
+            {
+                Problem(path, "the reader has no item named " + name.name + rules, totals);
+            }
+            else if (read.name && *read.name != name.name)
+            {
+                Problem(path, "the reader names " + name.name + " " + *read.name + rules, totals);
+            }
+        }
+    };
     for (const sar::ItemName& name : names.names)
     {
         if (sar::FindItem(*block, options.flavor, name.name) != name.item_id)
         {
             Problem(path, "FindItem doesn't find " + name.name, totals);
         }
-        const std::optional<std::string> read = ReaderNameOf(archive, name.item_id);
-        if (read && *read != name.name)
-        {
-            Problem(path, "the reader names " + name.name + " " + *read, totals);
-        }
+    }
+    check_reader(readings.Default(), false, "");
+    if (const std::optional<sar::SoundArchive>& strict = readings.Strict())
+    {
+        check_reader(*strict, true, " by the strict rules");
     }
 
     ++totals.name_blocks;
@@ -135,7 +151,7 @@ void CheckSequenceStarts(const std::filesystem::path& path, const sar::SoundArch
             continue;
         }
 
-        const nwsnd::Grammar grammar = GrammarFor(layout.flavor);
+        const nwsnd::Grammar grammar = hokuto::song::GrammarOf(layout.flavor);
         const std::vector<uint32_t> old_offsets =
             nwsnd::EncodeSequence(layout.sequences[piece->sequence], grammar).offsets;
         const std::vector<uint32_t> new_offsets =
@@ -161,21 +177,16 @@ void CheckSequenceStarts(const std::filesystem::path& path, const sar::SoundArch
 }
 
 // Checks that the strict rules read `joined`, the grown archive, as `after` reads, where they read `original`.
-void CheckStrictRules(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                      const std::vector<uint8_t>& joined, const sar::SoundArchive& after, const sar::Options& options,
-                      Totals& totals)
+void CheckStrictRules(const std::filesystem::path& path, const std::vector<uint8_t>& joined,
+                      const sar::SoundArchive& after, const sar::Options& options, Readings& readings, Totals& totals)
 {
-    sar::Options strict = options;
-    strict.rules = sar::Rules::kStopAtFirstProblem;
-    try
-    {
-        sar::SoundArchive::Load(original, strict);
-    }
-    catch (const std::exception&)
+    if (!readings.Strict())
     {
         return;
     }
 
+    sar::Options strict = options;
+    strict.rules = sar::Rules::kStopAtFirstProblem;
     const sar::SoundArchive strict_after = sar::SoundArchive::Load(joined, strict);
     bool same = strict_after.Sounds().size() == after.Sounds().size();
     for (std::size_t i = 0; same && i < after.Sounds().size(); ++i)
@@ -196,11 +207,11 @@ void CheckStrictRules(const std::filesystem::path& path, const std::vector<uint8
 
 } // namespace
 
-void CheckTables(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                 const std::vector<uint8_t>& joined, const sar::Layout& layout, const sar::Layout& grown,
-                 const std::vector<uint32_t>& added, const sar::Options& options, Totals& totals)
+void CheckTables(const std::filesystem::path& path, const std::vector<uint8_t>& joined, const sar::Layout& layout,
+                 const sar::Layout& grown, const std::vector<uint32_t>& added, const sar::Options& options,
+                 Readings& readings, Totals& totals)
 {
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     const sar::SoundArchive after = sar::SoundArchive::Load(joined, options);
     if (after.GroupErrors().size() != before.GroupErrors().size() || after.Truncated() != before.Truncated() ||
         after.FileCount() != before.FileCount() || after.Sounds().size() != before.Sounds().size())
@@ -220,19 +231,15 @@ void CheckTables(const std::filesystem::path& path, const std::vector<uint8_t>& 
     CheckSequenceStarts(path, before, after, layout, grown, starts, added, totals);
 
     // The strict rules, where they read the original.
-    CheckStrictRules(path, original, joined, after, options, totals);
+    CheckStrictRules(path, joined, after, options, readings, totals);
 }
 
 void CheckValues(const std::filesystem::path& path, const std::vector<uint8_t>& original, sar::Options options,
-                 Totals& totals)
+                 Readings& readings, Totals& totals)
 {
     options.rules = sar::Rules::kStopAtFirstProblem;
-    std::optional<sar::SoundArchive> before;
-    try
-    {
-        before.emplace(sar::SoundArchive::Load(original, options));
-    }
-    catch (const std::exception&)
+    const std::optional<sar::SoundArchive>& before = readings.Strict();
+    if (!before)
     {
         return;
     }
@@ -279,15 +286,11 @@ void CheckValues(const std::filesystem::path& path, const std::vector<uint8_t>& 
 }
 
 void CheckPlaces(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                 sar::Options options, Totals& totals)
+                 sar::Options options, Readings& readings, Totals& totals)
 {
     options.rules = sar::Rules::kStopAtFirstProblem;
-    std::optional<sar::SoundArchive> before;
-    try
-    {
-        before.emplace(sar::SoundArchive::Load(original, options));
-    }
-    catch (const std::exception&)
+    const std::optional<sar::SoundArchive>& before = readings.Strict();
+    if (!before)
     {
         return;
     }
@@ -337,7 +340,7 @@ void CheckPlaces(const std::filesystem::path& path, const std::vector<uint8_t>& 
 }
 
 void CheckInfo(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-               const sar::Options& options, Totals& totals)
+               const sar::Options& options, Readings& readings, Totals& totals)
 {
     const sar::Tables tables = sar::TablesOf(original, options.flavor);
     const sar::InfoBlock info = sar::InfoBlock::Read(tables.info, options.flavor);
@@ -348,7 +351,7 @@ void CheckInfo(const std::filesystem::path& path, const std::vector<uint8_t>& or
     }
     ++totals.info_blocks;
 
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     if (before.Truncated())
     {
         ++totals.cut_short;
@@ -389,18 +392,10 @@ void CheckInfo(const std::filesystem::path& path, const std::vector<uint8_t>& or
         Problem(path, "the reader reads the archive with longer entries otherwise", totals);
     }
 
-    // The strict rules, where they read the original.
+    // The strict rules, where they read the original. Where they don't, the check leaves them out.
     sar::Options strict = options;
     strict.rules = sar::Rules::kStopAtFirstProblem;
-    std::optional<sar::SoundArchive> strict_before;
-    try
-    {
-        strict_before.emplace(sar::SoundArchive::Load(original, strict));
-    }
-    catch (const std::exception&)
-    {
-        // The strict rules don't read the original, and the check leaves them out.
-    }
+    const std::optional<sar::SoundArchive>& strict_before = readings.Strict();
     if (strict_before && !SameReading(*strict_before, sar::SoundArchive::Load(moved, strict)))
     {
         Problem(path, "the strict rules read the archive with longer entries otherwise", totals);
@@ -413,15 +408,11 @@ void CheckInfo(const std::filesystem::path& path, const std::vector<uint8_t>& or
 }
 
 void CheckValuePlaces(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                      const sar::Layout& layout, sar::Options options, Totals& totals)
+                      const sar::Layout& layout, sar::Options options, Readings& readings, Totals& totals)
 {
     options.rules = sar::Rules::kStopAtFirstProblem;
-    std::optional<sar::SoundArchive> before;
-    try
-    {
-        before.emplace(sar::SoundArchive::Load(original, options));
-    }
-    catch (const std::exception&)
+    const std::optional<sar::SoundArchive>& before = readings.Strict();
+    if (!before)
     {
         return;
     }
@@ -509,9 +500,9 @@ void CheckValuePlaces(const std::filesystem::path& path, const std::vector<uint8
 }
 
 void CheckBankLists(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                    const sar::Options& options, Totals& totals)
+                    const sar::Options& options, Readings& readings, Totals& totals)
 {
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     if (before.Truncated())
     {
         return;

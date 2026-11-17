@@ -88,6 +88,9 @@ struct Settings
     int window_width = 0;
     int window_height = 0;
     int layout_version = 0;
+    // The display's scale, in percent, that the saved layout of the zones was built at. A settings file without it
+    // counts as 100 %. The zones' saved sizes are pixels, and a start at another scale builds the layout again for it.
+    int layout_scale = 100;
     TrackColours track_colours = TrackColours::kRainbow;
     std::vector<std::string> recent_projects;
     std::string dsi_key; // the file of the DSi's digest key, or empty
@@ -96,7 +99,7 @@ struct Settings
 // The system's dialogs: File > Open gives a Hokuto file, File > Save As the file to save to, File > Import > Sound
 // Archive a sound archive, File > Import > Sequence, Bank, Wave Archive, Wave, Wave Sound File, Audio File and Stream a
 // file to bring in as new items, and the Export window the file to export to, or the folder for a wave archive's WAV
-// files and a bank's SFZ files. The browser's Replace… gives the file to put in the place of a sound's sequence, of a
+// files and a bank's SFZ files, and the Export Audio Mixdown window the folder of its files. The browser's Replace… gives the file to put in the place of a sound's sequence, of a
 // bank's, a wave archive's or a wave sound's file, of a wave or of a stream. Choose… in Studio Setup selects the file
 // of the DSi's digest key.
 enum class Dialog
@@ -113,6 +116,7 @@ enum class Dialog
     kImportStream,
     kExport,
     kExportFolder,
+    kMixdownFolder,
     kReplace,
     kDsiKey,
 };

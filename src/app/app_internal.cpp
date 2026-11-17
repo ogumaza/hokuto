@@ -83,18 +83,6 @@ bool SameArchive(const format::File& a, const format::File& b)
            std::equal(a.sequences.begin(), a.sequences.end(), b.sequences.begin(), b.sequences.end(), shared);
 }
 
-song::Mixing PlayedMixing(const format::File& file, uint32_t sound)
-{
-    const format::Engine engine = format::EngineOf(file, sound);
-    const format::Engine played = edit::EngineRefused(file, engine) ? file.engine : engine;
-    if (format::MixingRefused(played, format::Mixing::kEnhanced))
-    {
-        return song::Mixing::kStrict;
-    }
-
-    return edit::ModelMixing(format::MixingOf(file, sound));
-}
-
 std::optional<std::vector<std::optional<uint32_t>>> StartFieldsOf(const format::File& document,
                                                                   std::span<const uint8_t> bytes)
 {

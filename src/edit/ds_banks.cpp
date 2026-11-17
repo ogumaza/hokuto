@@ -16,6 +16,7 @@
 #include "ntdlib/sdat/files.h"
 #include "ntdlib/sdat/formats.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "edit/ds_files.h"
 #include "edit/native_runs.h"
@@ -64,16 +65,12 @@ void CheckValue(const char* name, int value, int before, int highest)
 // The region's 10 bytes of values.
 std::array<uint8_t, kValueBytes> ValueBytes(const sdat::Region& region)
 {
-    return {static_cast<uint8_t>(region.wave & 0xFF),
-            static_cast<uint8_t>(region.wave >> 8),
-            static_cast<uint8_t>(region.wave_archive & 0xFF),
-            static_cast<uint8_t>(region.wave_archive >> 8),
-            region.root_key,
-            region.attack,
-            region.decay,
-            region.sustain,
-            region.release,
-            region.pan};
+    std::array<uint8_t, kValueBytes> bytes = {
+        0, 0, 0, 0, region.root_key, region.attack, region.decay, region.sustain, region.release, region.pan};
+    xsflib::StoreLe16(&bytes[0], region.wave);
+    xsflib::StoreLe16(&bytes[2], region.wave_archive);
+
+    return bytes;
 }
 
 // The release of a new region. Nothing fixes it: the Bank Editor edits it.

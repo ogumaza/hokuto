@@ -45,7 +45,8 @@ enum class Mixing : uint8_t
 // the SDK's AXFX library as NW4R SND's classes set them up: FxReverbHi of the builds before 2008 and of 2008, FxChorus,
 // FxDelay, and FxReverbStd before 2008 and of 2008. The last five are the effects that the 3DS's sound libraries run on
 // the ARM11 over an aux bus: nw::snd's FxReverb and FxDelay, nn::snd's FxReverb and FxDelay, and the version of
-// nn::snd's FxReverb that games of 2011 link. A file may hold an effect of any console. A player plays only the effects
+// nn::snd's FxReverb that games of 2011 link. The last three are nn::atk's delay, light limiter and reverb, which the
+// Switch's audio renderer runs on an aux bus. A file may hold an effect of any console. A player plays only the effects
 // of the file's engine.
 enum class EffectKind : uint8_t
 {
@@ -65,13 +66,17 @@ enum class EffectKind : uint8_t
     kCtrNnReverb,
     kCtrNnDelay,
     kCtrNnReverb2011,
+    kSwitchDelay,
+    kSwitchLightLimiter,
+    kSwitchReverb,
 };
 
 // An effect on an aux bus: its kind, and its parameters in the order of the console's set of them. An I3DL2 reverb has
 // the 12 parameters of nn::audio's I3dl2ReverbParameterSet. An effect of the Wii U or the Wii has the fields of its
 // class's parameter structure. A reverb's modes are whole numbers. An effect of the 3DS has the fields of its class's
 // Param, with a reverb's filter sizes in place of the pointer to them. Its times and sizes are whole numbers, and its
-// switches 0 or 1.
+// switches 0 or 1. An effect of nn::atk has the values that its class's setters take, in the order in which the class
+// passes them to the renderer, with its times in whole microseconds and its channel mode last.
 struct Effect
 {
     friend bool operator==(const Effect&, const Effect&) = default;
@@ -237,7 +242,7 @@ struct NativeArchive
     friend bool operator==(const NativeArchive&, const NativeArchive&) = default;
 
     // The engine of the console or the driver that the archive came from. ntdlib's module of the engine's family cuts
-    // the archive: sar on the later consoles, rsar for the Wii's RSAR, mp2k for a GBA ROM (ntdlib/mp2k/layout.h), sdat
+    // the archive: sar on the later consoles, rsar for the Wii's RSAR, mp2k for a GBA ROM (agblib/mp2k/layout.h), sdat
     // for a DS sound archive (ntdlib/sdat/cut.h), dse for a set of a DS image's DSE files (ntdlib/dse/layout.h), and
     // the driver's module for a ROM of one of the GBA's other drivers (format/drivers.h).
     Engine engine = Engine::kSwitch;
@@ -250,14 +255,14 @@ struct NativeArchive
     std::map<uint32_t, NativeStream> streams; // by the stream file's ID in the archive's file table
 
     // In a GBA ROM, whether a song that would make the ROM larger than 32 MiB moves into a run of filler bytes inside
-    // the ROM (ntdlib::mp2k::JoinOptions::filler, and the same option of the other drivers). Nothing shows that the
+    // the ROM (agblib::mp2k::JoinOptions::filler, and the same option of the other drivers). Nothing shows that the
     // game doesn't read such a run. The user chooses it.
     bool gba_filler = false;
 
     // In a GBA ROM, the bytes that a note of MusicPlayer2000 reads at most after its code
-    // (ntdlib::mp2k::NoteArguments): 3 for a key, a velocity and an extra length, or 2 for a key and a velocity alone.
+    // (agblib::mp2k::NoteArguments): 3 for a key, a velocity and an extra length, or 2 for a key and a velocity alone.
     // Metroid Fusion's sequencer reads only those 2. The import reads the count from ntdlib's cut
-    // (ntdlib::mp2k::Layout::note_arguments).
+    // (agblib::mp2k::Layout::note_arguments).
     int gba_note_arguments = 3;
 
     // On the Wii, the game's build of NW4R SND, from the game's main.dol. Without it, the archive's version gives the
@@ -606,9 +611,9 @@ std::vector<ntdlib::commands::Sequence> CopySequences(const File& file);
 
 // The version that Write gives a file. Read takes every file of the major version. A minor version adds chunks that
 // older readers can skip, and numbers that they refuse, such as a new engine. Version 1.0 went out with Hokuto 1.0.0.
-// Version 1.1 adds the GBA.
+// Version 1.1 adds the GBA. Version 1.2 adds two settings of the Switch's archive player to the model form.
 inline constexpr uint16_t kMajorVersion = 1;
-inline constexpr uint16_t kMinorVersion = 1;
+inline constexpr uint16_t kMinorVersion = 2;
 
 // The first bytes of a file in the binary form.
 inline constexpr std::array<uint8_t, 8> kSignature = {0x89, 'H', 'O', 'K', 0x0D, 0x0A, 0x1A, 0x0A};

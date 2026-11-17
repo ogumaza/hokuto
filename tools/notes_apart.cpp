@@ -7,17 +7,17 @@
 namespace hokuto::tools
 {
 
-int GbaPsgChannel(const ntdlib::agb::Rom& rom, uint32_t voices, uint32_t program, int key)
+int GbaPsgChannel(const agblib::agb::Rom& rom, uint32_t voices, uint32_t program, int key)
 {
-    ntdlib::mp2k::Voice voice;
-    if (!ntdlib::mp2k::ReadVoice(rom, voices + 12 * program, voice))
+    agblib::mp2k::Voice voice;
+    if (!agblib::mp2k::ReadVoice(rom, voices + 12 * program, voice))
     {
         return 0;
     }
     if (voice.IsSplit())
     {
-        const uint32_t address = ntdlib::mp2k::SplitVoice(rom, voice, key);
-        if (address == 0 || !ntdlib::mp2k::ReadVoice(rom, address, voice))
+        const uint32_t address = agblib::mp2k::SplitVoice(rom, voice, key);
+        if (address == 0 || !agblib::mp2k::ReadVoice(rom, address, voice))
         {
             return 0;
         }
@@ -28,9 +28,9 @@ int GbaPsgChannel(const ntdlib::agb::Rom& rom, uint32_t voices, uint32_t program
 
 bool Roomless(const song::GbaRom& rom)
 {
-    constexpr uint32_t kMargin = ntdlib::mp2k::kFreeSpaceMargin;
+    constexpr uint32_t kMargin = agblib::mp2k::kFreeSpaceMargin;
     const auto size = static_cast<uint32_t>(rom.rom.Size());
-    if (size < ntdlib::mp2k::kLargestRom)
+    if (size < agblib::mp2k::kLargestRom)
     {
         return false;
     }
@@ -134,8 +134,8 @@ std::set<std::pair<int, uint32_t>> NoteCommandTicks(const format::File& file, ui
 
 NotesApart PsgNotesApart(const song::GbaRom& rom, uint32_t song, const std::set<int>& changed)
 {
-    ntdlib::mp2k::SongHeader header;
-    if (!ntdlib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(song), header))
+    agblib::mp2k::SongHeader header;
+    if (!agblib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(song), header))
     {
         return {};
     }
@@ -150,7 +150,7 @@ NotesApart BrowniePsgNotesApart(const std::set<int>& changed)
 {
     return [changed](const song::Track& track, const song::Note&)
     {
-        return changed.contains(track.number) && track.number < ntdlib::brownie::kFirstSampleChannel;
+        return changed.contains(track.number) && track.number < agblib::brownie::kFirstSampleChannel;
     };
 }
 
@@ -165,13 +165,13 @@ NotesApart Rd2PsgNotesApart(const song::Rd2Rom& rom, uint32_t sound, const std::
         }
         for (int key = 0; key < 128; key++)
         {
-            const ntdlib::rd2::Lookup lookup =
-                ntdlib::rd2::LookUpInstrument(rom.rom, rom.info, banks[note.bank_slot],
+            const agblib::rd2::Lookup lookup =
+                agblib::rd2::LookUpInstrument(rom.rom, rom.info, banks[note.bank_slot],
                                               static_cast<uint16_t>(note.program), static_cast<uint8_t>(key));
             const uint8_t type = lookup.found && !lookup.missing && lookup.region != 0
-                                     ? ntdlib::rd2::RegionType(rom.rom, lookup.region)
-                                     : ntdlib::rd2::kSampleType;
-            if (type != ntdlib::rd2::kSampleType && type <= ntdlib::rd2::kNoiseType)
+                                     ? agblib::rd2::RegionType(rom.rom, lookup.region)
+                                     : agblib::rd2::kSampleType;
+            if (type != agblib::rd2::kSampleType && type <= agblib::rd2::kNoiseType)
             {
                 return true;
             }
@@ -181,16 +181,16 @@ NotesApart Rd2PsgNotesApart(const song::Rd2Rom& rom, uint32_t sound, const std::
     };
 }
 
-NotesApart KonamiPsgNotesApart(ntdlib::konami::Revision revision)
+NotesApart KonamiPsgNotesApart(agblib::konami::Revision revision)
 {
-    if (!ntdlib::konami::RecordHasPan(revision) && !ntdlib::konami::EternalDuelistLayout(revision))
+    if (!agblib::konami::RecordHasPan(revision) && !agblib::konami::EternalDuelistLayout(revision))
     {
         return {};
     }
 
     return [](const song::Track& track, const song::Note&)
     {
-        return ntdlib::konami::IsPsgTrack(track.number);
+        return agblib::konami::IsPsgTrack(track.number);
     };
 }
 
@@ -209,14 +209,14 @@ bool HoldsSequence(const CheckedArchive& archive, const ntdlib::commands::Sequen
                 const ntdlib::commands::Command& command = sequence.items[item];
                 if (command.kind == ntdlib::commands::Kind::kOpenTrack ||
                     (command.kind == ntdlib::commands::Kind::kJump &&
-                     command.encoding.opcode == ntdlib::brownie::kAddressWord) ||
+                     command.encoding.opcode == agblib::brownie::kAddressWord) ||
                     (command.kind == ntdlib::commands::Kind::kEnd && command.index == 1))
                 {
                     remainder = (4 - offsets[item] % 4) % 4;
                     break;
                 }
             }
-            return ntdlib::brownie::EncodeSequence(sequence, brownie->info.revision, ntdlib::agb::kRomBase + remainder)
+            return agblib::brownie::EncodeSequence(sequence, brownie->info.revision, agblib::agb::kRomBase + remainder)
                 .bytes;
         };
         // The data after the last command can come back as other bytes.
@@ -240,7 +240,7 @@ bool HoldsSequence(const CheckedArchive& archive, const ntdlib::commands::Sequen
         const song::KonamiRom* konami = archive.Konami();
         const auto same = [konami](const ntdlib::commands::Command& a, const ntdlib::commands::Command& b)
         {
-            // On Konami's driver, a new pan without a level uses the level of the driver (ntdlib/konami/commands.h). A
+            // On Konami's driver, a new pan without a level uses the level of the driver (agblib/konami/commands.h). A
             // pan's value comes back as the nearest position that the revision's bytes hold. A delay that a new value
             // leaves in another form keeps its value. On Nintendo R&D2's driver, a note or a wait of one byte keeps the
             // values that the track's last note or wait gave.
@@ -249,7 +249,7 @@ bool HoldsSequence(const CheckedArchive& archive, const ntdlib::commands::Sequen
             without.bytes = a.kind == ntdlib::commands::Kind::kWait || !konami ? b.bytes : a.bytes;
             if (konami && a.kind == ntdlib::commands::Kind::kPan)
             {
-                const ntdlib::commands::Scale scale = ntdlib::konami::ScaleOf(a.kind, konami->info.revision);
+                const ntdlib::commands::Scale scale = agblib::konami::ScaleOf(a.kind, konami->info.revision);
                 without.velocity = a.velocity == 0 ? b.velocity : a.velocity;
                 without.value.value =
                     ntdlib::commands::FromUnit(a.value.value, scale) == ntdlib::commands::FromUnit(b.value.value, scale)
@@ -271,9 +271,9 @@ bool HoldsSequence(const CheckedArchive& archive, const ntdlib::commands::Sequen
         return got == want;
     }
 
-    const int note_arguments = ntdlib::mp2k::NoteArguments(archive.gba->info);
-    const std::vector<uint8_t> wanted = ntdlib::mp2k::EncodeSequence(want, ntdlib::agb::kRomBase, note_arguments).bytes;
-    const std::vector<uint8_t> held = ntdlib::mp2k::EncodeSequence(got, ntdlib::agb::kRomBase, note_arguments).bytes;
+    const int note_arguments = agblib::mp2k::NoteArguments(archive.gba->info);
+    const std::vector<uint8_t> wanted = agblib::mp2k::EncodeSequence(want, agblib::agb::kRomBase, note_arguments).bytes;
+    const std::vector<uint8_t> held = agblib::mp2k::EncodeSequence(got, agblib::agb::kRomBase, note_arguments).bytes;
     return held.size() >= wanted.size() && std::equal(wanted.begin(), wanted.end(), held.begin()) &&
            std::all_of(held.begin() + static_cast<std::ptrdiff_t>(wanted.size()), held.end(),
                        [](uint8_t b) { return b == 0; });

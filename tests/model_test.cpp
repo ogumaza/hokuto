@@ -6,7 +6,8 @@
 // forms. A wait whose length takes a byte more than it requires gives another archive: the model leaves the encoder's
 // choice out, and the second sound's start follows its note. A Wii U archive that ntdlib's builder lays out holds a
 // stream sound whose stream lies beside it. A 3DS archive that ntdlib's builder lays out as CSAR 2.3.0.0 holds a stream
-// sound whose entry holds two values of the extension as options. An archive of the Wii that ntdlib's builder lays out
+// sound whose entry holds two values of the extension as options. The two settings of the Switch's archive player come
+// back from the model. An archive of the Wii that ntdlib's builder lays out
 // holds two sequence sounds of one file and a bank. Its model gives it back, keeps the game's build of NW4R SND, and
 // leaves out the encoder's choices. A new command and a new sequence sound go into a file in the model form, and the
 // file comes back from both forms. A new file of each console takes a bank and a sound with an empty song. A new file
@@ -301,6 +302,37 @@ void TestSwitch()
     XSFLIB_CHECK(held.archive.sounds.at(0).volume == 90 && held.archive.sounds.at(1).start_offset == 0);
     XSFLIB_CHECK(held.archive.sounds.at(0).pan_mode == 1 && held.archive.sounds.at(0).pan_curve == 2);
     XSFLIB_CHECK(format::ReadModel(format::SoundsChunk(held), format::ItemsChunk(held)) == held);
+}
+
+// The two settings that only the Switch's archive player holds, at bytes 0x0F and 0x10 of its settings, come back from
+// ITMS and from the archive that the model builds. A flag that the format doesn't define, and either setting in an
+// archive of another console, throw with a message.
+void TestSwitchSettings()
+{
+    const File file = format::InModelForm(format::ImportSwitchArchive(SwitchArchive(kBytecode, 4)));
+    Model held = format::ModelOf(file);
+    held.archive.player_settings.advanced_wave_sounds = true;
+    held.archive.player_settings.sequence_sound_countdown = 3;
+    const File model = format::WithModel(file, held);
+    XSFLIB_CHECK(ComesBack(model));
+    XSFLIB_CHECK(format::ReadModel(format::SoundsChunk(held), format::ItemsChunk(held)) == held);
+
+    const File again = format::InModelForm(format::ImportSwitchArchive(format::ExportArchive(model)));
+    const sar::PlayerSettings& settings = format::ModelOf(again).archive.player_settings;
+    XSFLIB_CHECK(settings.advanced_wave_sounds && settings.sequence_sound_countdown == 3);
+
+    // ITMS: the kind of archive, the player's flags, then its sequence sound countdown.
+    const std::vector<uint8_t> binary = format::Write(model);
+    XSFLIB_CHECK(Patched(binary, "ITMS", 1, 3) ==
+                 "The file contains a flag of the archive's player that this version of Hokuto doesn't support. A "
+                 "later version of Hokuto saved it.");
+    const std::vector<uint8_t> wii_u =
+        format::Write(format::InModelForm(format::ImportArchive(WiiUArchive(), Flavor::kCafe, {}, {{2, kStream}})));
+    const std::string other_console =
+        "The file is damaged: the archive's player has settings of the Switch's player in an archive of another "
+        "console.";
+    XSFLIB_CHECK(Patched(wii_u, "ITMS", 1, 1) == other_console);
+    XSFLIB_CHECK(Patched(wii_u, "ITMS", 2, 3) == other_console);
 }
 
 // The model leaves out the encoder's choice of a wait's two bytes. The second sound's start follows the note to its new
@@ -659,6 +691,7 @@ int main()
                                     {
                                         TestLevels();
                                         TestSwitch();
+                                        TestSwitchSettings();
                                         TestChoices();
                                         TestWiiU();
                                         TestCtr();

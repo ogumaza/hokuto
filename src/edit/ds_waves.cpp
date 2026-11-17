@@ -242,13 +242,11 @@ format::File WithDsWave(const format::File& file, const song::DsArchive& archive
     const uint16_t rate = same_rate ? present.sample_rate : static_cast<uint16_t>(values.rate & 0xFFFF);
     const uint16_t timer = same_rate ? present.timer : static_cast<uint16_t>(sdat::kTimerClockHz / values.rate);
     const auto length = static_cast<uint32_t>(words - start_words);
-    const std::array<uint8_t, kParamBytes> bytes = {
-        static_cast<uint8_t>(present.encoding),      static_cast<uint8_t>(values.loop ? 1 : 0),
-        static_cast<uint8_t>(rate & 0xFF),           static_cast<uint8_t>(rate >> 8),
-        static_cast<uint8_t>(timer & 0xFF),          static_cast<uint8_t>(timer >> 8),
-        static_cast<uint8_t>(start_words & 0xFF),    static_cast<uint8_t>(start_words >> 8),
-        static_cast<uint8_t>(length & 0xFF),         static_cast<uint8_t>((length >> 8) & 0xFF),
-        static_cast<uint8_t>((length >> 16) & 0xFF), static_cast<uint8_t>(length >> 24)};
+    std::array<uint8_t, kParamBytes> bytes = {static_cast<uint8_t>(present.encoding),
+                                              static_cast<uint8_t>(values.loop ? 1 : 0)};
+    SetRateAndTimer(bytes, rate, timer);
+    xsflib::StoreLe16(&bytes[6], static_cast<uint16_t>(start_words));
+    xsflib::StoreLe32(&bytes[8], length);
 
     // The wave archive's file starts at its offset in the archive, and the wave at its offset in the file.
     const uint64_t offset = archive.archive.files[found.file_id].offset + uint64_t{found.parsed.offsets[wave]};

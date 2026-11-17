@@ -21,11 +21,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/sequence_export/mp2k/soundfont.h"
-#include "ntdlib/testing/mp2k_cart.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/sequence_export/mp2k/soundfont.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "seqlib/sf2/soundfont.h"
 #include "seqlib/sf2/writer.h"
 #include "xsflib/testing/check.h"
@@ -41,8 +41,8 @@
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
-namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+namespace mp2k = agblib::mp2k;
+namespace mp2k_cart = agblib::testing::mp2k_cart;
 namespace sf2 = seqlib::sf2;
 using hokuto::edit::GbaSoundFontVoices;
 using hokuto::edit::GbaVoicesOfSoundFont;
@@ -115,7 +115,7 @@ int FramesOf(int fade, int from, int to)
 // The seconds in which a SoundFont's envelope falls 100 dB at the pace of `frames` from `from` to `to`.
 double SecondsOfFall(int frames, int from, int to)
 {
-    return 100.0 / (20.0 * std::log10(static_cast<double>(from) / to)) * frames / ntdlib::agb::kFrameRate;
+    return 100.0 / (20.0 * std::log10(static_cast<double>(from) / to)) * frames / agblib::agb::kFrameRate;
 }
 
 // Whether `fade` brings the driver from `from` to `to` within a frame of a fall of 100 dB in `seconds`.
@@ -169,7 +169,7 @@ void TestValues()
     SEQLIB_REQUIRE(envelope.rows.size() == 1);
     XSFLIB_CHECK(envelope.rows[0].first_key == 0 && envelope.rows[0].last_key == 127);
     // An attack of a second gains 255/(frames + 1) a frame.
-    XSFLIB_CHECK(envelope.rows[0].voice.attack == std::lround(255.0 / (ntdlib::agb::kFrameRate + 1.0)));
+    XSFLIB_CHECK(envelope.rows[0].voice.attack == std::lround(255.0 / (agblib::agb::kFrameRate + 1.0)));
     XSFLIB_CHECK(KeepsPace(envelope.rows[0].voice.decay, 1.0, 255, envelope.rows[0].voice.sustain));
     XSFLIB_CHECK(KeepsPace(envelope.rows[0].voice.release, 2.0, envelope.rows[0].voice.sustain,
                            envelope.rows[0].voice.sustain / 8));
@@ -295,12 +295,12 @@ void TestCamelotRelease()
     const hokuto::edit::GbaSoundFontPreset& runs = PresetNamed(voices, "runs");
     SEQLIB_REQUIRE(runs.rows.size() == 2 && runs.rows[1].voice.sustain == 255);
     mp2k::Voice voice = runs.rows[1].voice;
-    const int taken = std::abs(ntdlib::sequence_export::mp2k::EnvelopeFor(camelot, voice).release);
+    const int taken = std::abs(agblib::sequence_export::mp2k::EnvelopeFor(camelot, voice).release);
     int nearest = taken;
     for (int release = 0; release <= 255; ++release)
     {
         voice.release = static_cast<uint8_t>(release);
-        nearest = std::min(nearest, std::abs(ntdlib::sequence_export::mp2k::EnvelopeFor(camelot, voice).release));
+        nearest = std::min(nearest, std::abs(agblib::sequence_export::mp2k::EnvelopeFor(camelot, voice).release));
     }
     XSFLIB_CHECK(taken == nearest && taken <= 100);
 }
@@ -339,14 +339,14 @@ void TestFades()
 void TestFixedPitch()
 {
     // A scale tuning of 0 at the mixer's rate is the driver's voice of fixed pitch, over every key.
-    ntdlib::mp2k::DriverInfo driver;
+    agblib::mp2k::DriverInfo driver;
     driver.mix_rate = kRate;
     const GbaSoundFontVoices voices = GbaVoicesOfSoundFont(TestFont(), driver);
     const hokuto::edit::GbaSoundFontPreset& fixed = PresetNamed(voices, "fixed");
     XSFLIB_CHECK(!fixed.drums);
     SEQLIB_REQUIRE(fixed.rows.size() == 1);
     XSFLIB_CHECK(fixed.rows[0].first_key == 0 && fixed.rows[0].last_key == 127);
-    XSFLIB_CHECK(fixed.rows[0].voice.type == ntdlib::mp2k::kVoiceFixed);
+    XSFLIB_CHECK(fixed.rows[0].voice.type == agblib::mp2k::kVoiceFixed);
     // The other presets stay ordinary voices.
     XSFLIB_CHECK(PresetNamed(voices, "envelope").rows.at(0).voice.type == 0);
 
@@ -367,7 +367,7 @@ void TestMasterVolume()
     // the driver scales the samples by (master volume + 1) / 16, and the points take that back as far as the peak
     // allows.
     const double peak = std::max(25000.0, static_cast<double>(kPeriod - 1) * 800.0 - 25000.0);
-    const auto first = [](const ntdlib::mp2k::DriverInfo& driver)
+    const auto first = [](const agblib::mp2k::DriverInfo& driver)
     {
         const GbaSoundFontVoices voices = GbaVoicesOfSoundFont(TestFont(), driver);
         return static_cast<int8_t>(voices.samples.front().at(16));
@@ -376,7 +376,7 @@ void TestMasterVolume()
     {
         return std::abs(point - expected / 256.0) <= 1.0;
     };
-    ntdlib::mp2k::DriverInfo driver;
+    agblib::mp2k::DriverInfo driver;
     XSFLIB_CHECK(near(first(driver), -25000.0));
     driver.master_volume = 13;
     XSFLIB_CHECK(near(first(driver), -25000.0 * 16.0 / 14.0));
@@ -535,7 +535,7 @@ SmallCart MakeCart()
     track.Fine();
     cart.Song({track}, made.voices);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     made.bytes = hokuto::testing::RomBytes(rom);
     made.bytes.resize(made.bytes.size() + 0x40000, 0xFF);
 
@@ -571,7 +571,7 @@ void TestPlays()
     XSFLIB_CHECK(type_of(1) == mp2k::kVoiceDrumKit);
 
     // A preset at the mixer's rate imports as a fixed-pitch voice of the driver.
-    ntdlib::mp2k::DriverInfo at_mixer_rate = rom->info;
+    agblib::mp2k::DriverInfo at_mixer_rate = rom->info;
     at_mixer_rate.mix_rate = kRate;
     const hokuto::edit::GbaGroupVersion fixed_version =
         hokuto::edit::WithGbaSoundFont(file, *rom, cart.voices, GbaVoicesOfSoundFont(TestFont(), at_mixer_rate));

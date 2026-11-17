@@ -19,11 +19,11 @@
 #include <variant>
 #include <vector>
 
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/layout.h"
 #include "ntdlib/dse/layout.h"
 #include "ntdlib/dse/sets.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/layout.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/rsar/layout.h"
 #include "ntdlib/sar/formats.h"
@@ -153,12 +153,12 @@ std::map<uint32_t, std::span<const uint8_t>> Spans(const std::map<uint32_t, std:
 std::vector<uint8_t> JoinPieces(const NativeArchive& native, std::span<const ntdlib::commands::Sequence> sequences,
                                 std::span<const ntdlib::sar::Piece> pieces, std::span<const ntdlib::sar::Field> fields)
 {
-    const ntdlib::mp2k::JoinOptions mp2k_options{.filler = native.gba_filler,
+    const agblib::mp2k::JoinOptions mp2k_options{.filler = native.gba_filler,
                                                  .note_arguments = native.gba_note_arguments};
     try
     {
         return native.engine == Engine::kWii ? ntdlib::rsar::Join(BuildOfWiiArchive(native), sequences, pieces, fields)
-               : native.engine == Engine::kGba ? ntdlib::mp2k::Join(sequences, pieces, fields, mp2k_options)
+               : native.engine == Engine::kGba ? agblib::mp2k::Join(sequences, pieces, fields, mp2k_options)
                : native.engine == Engine::kDs  ? ntdlib::sdat::Join(sequences, pieces, fields)
                : native.engine == Engine::kDse ? ntdlib::dse::Join(sequences, pieces, fields)
                : native.driver                 ? DriverOf(native.engine)->Join(native, sequences, pieces, fields)

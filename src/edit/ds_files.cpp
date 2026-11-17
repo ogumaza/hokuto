@@ -139,9 +139,7 @@ format::File WithDsFile(const format::File& file, uint32_t file_id, std::span<co
     result.native.Edit([&](format::NativeArchive& native) { native.pieces = std::move(pieces); });
     if (format::DsArchiveSharesFile(file) && format::ExportArchive(result).size() != format::ExportArchive(file).size())
     {
-        throw std::invalid_argument(
-            "Can't change the size of the sound archive. It shares its file in the image with other data, and "
-            "Hokuto can't move that data.");
+        throw std::invalid_argument(std::string(kDsSharedFileRefusal));
     }
 
     return result;

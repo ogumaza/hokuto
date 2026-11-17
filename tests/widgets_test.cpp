@@ -6,7 +6,8 @@
 // tests Return in the search field of a menu (FilteredCombo). The mouse and the keys reach Dear ImGui through its queue
 // of events.
 // A field of an info line that the user opened before the program turned busy checks BusyInfoEntry. WaitingValues
-// keeps a typed value for its item only, and only while its version exists.
+// keeps a typed value for its item only, and only while its version exists. A dialog window opens in the middle at its
+// measured size (BeginDialogWindow).
 
 #include "app/widgets.h"
 
@@ -14,6 +15,7 @@
 #include <imgui_internal.h>
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -369,6 +371,135 @@ void TestWaitingValuesOfAVersionThatIsGone()
     ImGui::DestroyContext();
 }
 
+// What one frame of a dialog window showed: its place and size, and whether Dear ImGui hid it.
+struct DialogFrame
+{
+    ImVec2 pos;
+    ImVec2 size;
+    bool hidden = false;
+};
+
+// Draws one frame with the dialog window "Dialog" open with `lines` lines of text, or closed. Like Studio Setup, the
+// window has a fixed width and an automatic height. With `resizable`, the window "Resizable" takes 400 by 300 as it
+// appears, and the user can resize it, like the Bank Editor.
+DialogFrame DrawDialog(int lines, bool open, bool resizable = false)
+{
+    ImGui::NewFrame();
+    DialogFrame frame;
+    if (open)
+    {
+        ImGui::SetNextWindowSize(ImVec2(400.0f, resizable ? 300.0f : 0.0f),
+                                 resizable ? ImGuiCond_Appearing : ImGuiCond_Always);
+        bool shown = true;
+        if (app::BeginDialogWindow(resizable ? "Resizable" : "Dialog", &shown,
+                                   resizable ? ImGuiWindowFlags_None : ImGuiWindowFlags_NoResize))
+        {
+            for (int i = 0; i < lines; i++)
+            {
+                ImGui::TextUnformatted("A line of the dialog");
+            }
+        }
+        frame = {ImGui::GetWindowPos(), ImGui::GetWindowSize(), ImGui::GetCurrentWindow()->Hidden};
+        ImGui::End();
+    }
+    hokuto::testing::EndHeadlessFrame();
+
+    return frame;
+}
+
+// Whether `frame` shows the window in the middle of the display, to the pixel.
+bool Centred(const DialogFrame& frame)
+{
+    const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
+    return !frame.hidden && std::abs(frame.pos.x + frame.size.x * 0.5f - centre.x) <= 1.0f &&
+           std::abs(frame.pos.y + frame.size.y * 0.5f - centre.y) <= 1.0f;
+}
+
+// A dialog window of an automatic height opens in the middle at its measured size, each time it opens. Its
+// first frame is hidden while Dear ImGui measures it. Text that makes it taller keeps it in the middle. A click on its
+// title bar that moves nothing keeps it there too. Once the user drags it by its title bar, it stays where the drag
+// left it, and its top stays put as it grows. A window that the user can resize opens in the middle and then stays
+// where the user puts it.
+void TestDialogWindowCentred()
+{
+    hokuto::testing::CreateHeadlessContext(true);
+    XSFLIB_CHECK(DrawDialog(3, true).hidden);
+    const DialogFrame first = DrawDialog(3, true);
+    XSFLIB_CHECK(Centred(first));
+
+    // More text while the window shows.
+    const DialogFrame taller = DrawDialog(8, true);
+    const DialogFrame grown = DrawDialog(8, true);
+    XSFLIB_CHECK(Centred(grown) && grown.size.y > first.size.y && taller.size.y <= grown.size.y);
+
+    // The window opens again with more text than it showed last: the stale size never shows.
+    DrawDialog(0, false);
+    DrawDialog(0, false);
+    XSFLIB_CHECK(DrawDialog(14, true).hidden);
+    const DialogFrame reopened = DrawDialog(14, true);
+    XSFLIB_CHECK(Centred(reopened) && reopened.size.y > grown.size.y);
+
+    // A click on the title bar that moves nothing isn't a drag, even while the button stays down for a few frames. More
+    // text keeps the window in the middle.
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 grip(reopened.pos.x + 40.0f, reopened.pos.y + ImGui::GetFrameHeight() * 0.5f);
+    io.AddMousePosEvent(grip.x, grip.y);
+    DrawDialog(14, true);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    DrawDialog(14, true);
+    DrawDialog(14, true);
+    DrawDialog(14, true);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    DrawDialog(14, true);
+    DrawDialog(16, true);
+    const DialogFrame clicked = DrawDialog(16, true);
+    XSFLIB_CHECK(Centred(clicked) && clicked.size.y > reopened.size.y);
+
+    // A drag by the title bar moves it. More text then makes it grow down from where the drag left it.
+    const ImVec2 title(clicked.pos.x + 40.0f, clicked.pos.y + ImGui::GetFrameHeight() * 0.5f);
+    io.AddMousePosEvent(title.x, title.y);
+    DrawDialog(16, true);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    DrawDialog(16, true);
+    io.AddMousePosEvent(title.x - 100.0f, title.y - 60.0f);
+    DrawDialog(16, true);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    const DialogFrame dragged = DrawDialog(16, true);
+    XSFLIB_CHECK(std::abs(dragged.pos.x - (clicked.pos.x - 100.0f)) <= 1.0f &&
+                 std::abs(dragged.pos.y - (clicked.pos.y - 60.0f)) <= 1.0f);
+    DrawDialog(18, true);
+    const DialogFrame longer = DrawDialog(18, true);
+    XSFLIB_CHECK(longer.pos.x == dragged.pos.x && longer.pos.y == dragged.pos.y && longer.size.y > dragged.size.y);
+
+    // Closed and opened again, it opens in the middle once more.
+    DrawDialog(0, false);
+    DrawDialog(3, true);
+    XSFLIB_CHECK(Centred(DrawDialog(3, true)));
+    DrawDialog(0, false);
+
+    // A window that the user can resize opens in the middle. After a drag, it stays where the drag left it, and it
+    // opens in the middle again.
+    DrawDialog(3, true, true);
+    const DialogFrame resizable = DrawDialog(3, true, true);
+    XSFLIB_CHECK(Centred(resizable) && resizable.size.y == 300.0f);
+    const ImVec2 bar(resizable.pos.x + 40.0f, resizable.pos.y + ImGui::GetFrameHeight() * 0.5f);
+    io.AddMousePosEvent(bar.x, bar.y);
+    DrawDialog(3, true, true);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+    DrawDialog(3, true, true);
+    io.AddMousePosEvent(bar.x + 80.0f, bar.y + 50.0f);
+    DrawDialog(3, true, true);
+    io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+    DrawDialog(3, true, true);
+    const DialogFrame moved = DrawDialog(8, true, true);
+    XSFLIB_CHECK(std::abs(moved.pos.x - (resizable.pos.x + 80.0f)) <= 1.0f &&
+                 std::abs(moved.pos.y - (resizable.pos.y + 50.0f)) <= 1.0f);
+    DrawDialog(0, false, true);
+    DrawDialog(3, true, true);
+    XSFLIB_CHECK(Centred(DrawDialog(3, true, true)));
+    ImGui::DestroyContext();
+}
+
 } // namespace
 
 int main()
@@ -383,5 +514,6 @@ int main()
                                         TestWaitingValuesOfAnotherItem();
                                         TestWaitingValuesOfAnotherSound();
                                         TestWaitingValuesOfAVersionThatIsGone();
+                                        TestDialogWindowCentred();
                                     });
 }

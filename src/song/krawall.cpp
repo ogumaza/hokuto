@@ -16,17 +16,17 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
+#include "agblib/krawall/archive_player.h"
+#include "agblib/krawall/commands.h"
+#include "agblib/krawall/instruments.h"
+#include "agblib/krawall/player.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/krawall/convert.h"
+#include "agblib/sequence_export/krawall/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/krawall/archive_player.h"
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/krawall/instruments.h"
-#include "ntdlib/krawall/player.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/krawall/convert.h"
-#include "ntdlib/sequence_export/krawall/soundfont.h"
 #include "xsflib/binary.h"
 
 #include "format/krawall.h"
@@ -40,14 +40,14 @@ namespace hokuto::song
 namespace
 {
 
-namespace krawall = ntdlib::krawall;
+namespace krawall = agblib::krawall;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 
 // The row's note of C-4, from 1 for C-0, and the Key Editor's key of a sample's C-4 at its rate.
-constexpr int kRootRowNote = static_cast<int>(ntdlib::sequence_export::krawall::kRootNote) + 1;
-constexpr int kRootKey = ntdlib::sequence_export::krawall::kRootKey;
+constexpr int kRootRowNote = static_cast<int>(agblib::sequence_export::krawall::kRootNote) + 1;
+constexpr int kRootKey = agblib::sequence_export::krawall::kRootKey;
 
 // The rules of Krawall's builds.
 class KrawallDriverRules final : public DriverRules
@@ -176,7 +176,7 @@ std::size_t RowsBetween(uint64_t ticks, int speed, int next_speed)
     return static_cast<std::size_t>(ticks);
 }
 
-// The model of Krawall and the GBA's sound hardware, for one ROM (ntdlib::krawall::ArchivePlayer).
+// The model of Krawall and the GBA's sound hardware, for one ROM (agblib::krawall::ArchivePlayer).
 //
 // In many songs, the timing of the conversion spreads a tick of the player over several ticks of the arrangement: a
 // row's ticks in the arrangement, over the row's speed (ntdlib's MakeTiming). Tick() therefore counts the arrangement's
@@ -451,7 +451,7 @@ const KrawallRom* KrawallOf(const DriverRom* rom)
     return dynamic_cast<const KrawallRom*>(rom);
 }
 
-const ntdlib::agb::Rom& KrawallRom::ModulesRom() const
+const agblib::agb::Rom& KrawallRom::ModulesRom() const
 {
     return info.unpacked ? *info.unpacked : rom;
 }
@@ -481,7 +481,7 @@ const DriverRules& KrawallRom::Rules() const
 
 std::span<const uint8_t> KrawallRom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 std::vector<uint32_t> KrawallRom::Sounds() const
@@ -505,7 +505,7 @@ uint32_t KrawallRom::SoundCount() const
 
 std::string KrawallRom::SoundName(uint32_t sound) const
 {
-    return "Song " + ntdlib::sequence_export::agb::SongNumber(static_cast<int>(sound), static_cast<int>(SoundCount()));
+    return "Song " + agblib::sequence_export::agb::SongNumber(static_cast<int>(sound), static_cast<int>(SoundCount()));
 }
 
 SoundFields KrawallRom::FieldsOf(uint32_t sound) const
@@ -519,14 +519,14 @@ SoundFields KrawallRom::FieldsOf(uint32_t sound) const
         return fields;
     }
 
-    fields.sequence = uint64_t{info.songs[sound].module} + krawall::ModulePatterns(info.build) - ntdlib::agb::kRomBase;
+    fields.sequence = uint64_t{info.songs[sound].module} + krawall::ModulePatterns(info.build) - agblib::agb::kRomBase;
 
     return fields;
 }
 
 int KrawallRom::Rate() const
 {
-    // The sound bias register's default resolution: 9 bits at 32,768 Hz (ntdlib::krawall::ArchivePlayer).
+    // The sound bias register's default resolution: 9 bits at 32,768 Hz (agblib::krawall::ArchivePlayer).
     return 32768;
 }
 
@@ -544,7 +544,7 @@ std::string KrawallRom::SampleName(int sample) const
 
 double KrawallRom::SampleRate(int sample) const
 {
-    return ntdlib::sequence_export::krawall::SampleRate(ModulesRom(), info, song::SampleOf(*this, sample).header);
+    return agblib::sequence_export::krawall::SampleRate(ModulesRom(), info, song::SampleOf(*this, sample).header);
 }
 
 std::vector<uint8_t> KrawallRom::SampleWav(int sample) const
@@ -591,10 +591,10 @@ ntdlib::sequence_export::Conversion KrawallRom::ConvertToMidi(uint32_t sound, co
         throw std::runtime_error("The ROM has no song " + std::to_string(sound) + ".");
     }
 
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
-    ntdlib::sequence_export::krawall::SongFiles converted =
-        ntdlib::sequence_export::krawall::ConvertSongFiles(ModulesRom(), info, static_cast<int>(sound), settings);
+    agblib::sequence_export::krawall::SongFiles converted =
+        agblib::sequence_export::krawall::ConvertSongFiles(ModulesRom(), info, static_cast<int>(sound), settings);
 
     return AgbConversion(SoundName(sound), std::move(converted));
 }
@@ -603,7 +603,7 @@ ntdlib::sequence_export::BankConversion KrawallRom::ConvertSamples(std::span<con
                                                                    const std::string& program) const
 {
     // The converter's set numbers its programs in the order that they come. Each gets the number of the sample here.
-    ntdlib::sequence_export::krawall::InstrumentSet set;
+    agblib::sequence_export::krawall::InstrumentSet set;
     ntdlib::sequence_export::BankConversion conversion;
     std::map<int, int> numbered;
     for (const int sample : numbers)
@@ -619,7 +619,7 @@ ntdlib::sequence_export::BankConversion KrawallRom::ConvertSamples(std::span<con
         }
     }
 
-    ntdlib::sequence_export::agb::Sf2File file = set.Build(ModulesRom(), info);
+    agblib::sequence_export::agb::Sf2File file = set.Build(ModulesRom(), info);
     for (auto& preset : file.presets)
     {
         const auto found = numbered.find(preset.bank * 128 + preset.program);

@@ -44,11 +44,11 @@ InsertBraces: true
 EmptyLineBeforeAccessModifier: Always
 # Includes go in the guide's groups: the related header, C system headers, C++
 # standard library headers, other libraries' headers, then the project's
-# headers. Other libraries are xsflib, ntdlib and seqlib in quotes, and the
-# third-party libraries in the first three categories in angle brackets (SDK/ is
-# the foobar2000 SDK). OS headers, such as <windows.h>, count as C system
-# headers. In the code of xsflib, ntdlib or seqlib, remove that library from the
-# list.
+# headers. Other libraries are xsflib, ntdlib, seqlib and agblib in quotes, and
+# the third-party libraries in the first three categories in angle brackets
+# (SDK/ is the foobar2000 SDK). OS headers, such as <windows.h>, count as C
+# system headers. In the code of xsflib, ntdlib, seqlib or agblib, remove that
+# library from the list.
 IncludeBlocks: Regroup
 # A test, such as tests/biquads_test.cpp, and a platform's file, such as
 # system_ui_mac.mm or aac_windows.cpp, take the header without the suffix as
@@ -67,7 +67,7 @@ IncludeCategories:
     Priority: 1
   - Regex: '^<.*'
     Priority: 2
-  - Regex: '^"(xsflib|ntdlib|seqlib)/'
+  - Regex: '^"(xsflib|ntdlib|seqlib|agblib)/'
     Priority: 3
   - Regex: '.*'
     Priority: 4

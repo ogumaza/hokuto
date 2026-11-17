@@ -15,10 +15,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/ubimilan/commands.h"
+#include "agblib/ubimilan/driver.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/ubimilan/commands.h"
-#include "ntdlib/ubimilan/driver.h"
 
 #include "edit/bytecode.h"
 #include "edit/drivers.h"
@@ -36,6 +36,10 @@ namespace hokuto::edit
 namespace
 {
 
+using agblib::ubimilan::kKitChannel;
+using agblib::ubimilan::kPsgChannels;
+using agblib::ubimilan::kWaveChannel;
+using agblib::ubimilan::PlaysKit;
 using event_timelines::Event;
 using event_timelines::kInPlace;
 using event_timelines::kMovedNote;
@@ -49,10 +53,6 @@ using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
 using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
-using ntdlib::ubimilan::kKitChannel;
-using ntdlib::ubimilan::kPsgChannels;
-using ntdlib::ubimilan::kWaveChannel;
-using ntdlib::ubimilan::PlaysKit;
 
 // The channels of a sequence, and the highest key of a note.
 constexpr int kChannels = 16;
@@ -191,7 +191,7 @@ Edited UbiMilanWritable(const format::File&, Edited edited, uint32_t sequence)
 
     const auto encode = [&]
     {
-        ntdlib::ubimilan::EncodeSequence(format::UbiMilanCountdowns(after));
+        agblib::ubimilan::EncodeSequence(format::UbiMilanCountdowns(after));
     };
     CheckEncodes("Can't make this edit: ", encode);
 

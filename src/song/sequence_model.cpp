@@ -17,7 +17,7 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/sequence_export/consoles.h"
@@ -130,10 +130,10 @@ FrameFacts FrameFactsOf(const Played& played, Mixing mixing)
         return {kWiiFrameMs, WiiFrameSamples(), WiiSampleRate()};
     case format::Family::kMp2k:
         return {GbaFrameMs(mixing), GbaFrameSamples(*played.Gba(), mixing),
-                enhanced ? ntdlib::agb::kEnhancedRate : GbaRate(*played.Gba())};
+                enhanced ? agblib::agb::kEnhancedRate : GbaRate(*played.Gba())};
     case format::Family::kGbaDriver:
         return {GbaFrameMs(mixing), DriverFrameSamples(*played.Driver(), mixing),
-                enhanced ? ntdlib::agb::kEnhancedRate : played.Driver()->Rate()};
+                enhanced ? agblib::agb::kEnhancedRate : played.Driver()->Rate()};
     case format::Family::kNitroComposer:
     case format::Family::kDse:
         return {kDsFrameMs, DsFrameSamples(mixing), DsSampleRate(mixing)};
@@ -468,6 +468,11 @@ std::span<const float> SequenceModel::FloatOutput()
 double SequenceModel::Before() const
 {
     return before_;
+}
+
+bool SequenceModel::SequenceEnded() const
+{
+    return model_->IsFinished();
 }
 
 double SequenceModel::After() const

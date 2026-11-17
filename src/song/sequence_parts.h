@@ -26,11 +26,11 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/sequence_export/brownie/performance.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/sar/sequence_file.h"
-#include "ntdlib/sequence_export/brownie/performance.h"
 #include "ntdlib/sequence_export/performer.h"
 
 #include "song/sequence.h"
@@ -114,7 +114,8 @@ void StartNote(Track& track, int number, const TrackEvent& event, const AnyPerfo
     {
         if (event.note >= 1 && event.note <= performance.note_causes.size())
         {
-            note.start_gives_tick = performance.note_causes[event.note - 1] == export_::brownie::NoteCause::kNote;
+            note.start_gives_tick =
+                performance.note_causes[event.note - 1] == agblib::sequence_export::brownie::NoteCause::kNote;
         }
     }
     // Konami's performer reports the track that contains the command of each note.

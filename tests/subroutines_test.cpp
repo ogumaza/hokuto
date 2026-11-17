@@ -18,12 +18,12 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/layout.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "xsflib/testing/check.h"
@@ -372,8 +372,8 @@ void TestCopySubroutine()
 // once. The ROM has free space for a song that grows.
 std::vector<uint8_t> GbaRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     // The pattern's place is known once the track before it is.
     const auto track = [](std::size_t pattern)
@@ -394,7 +394,7 @@ std::vector<uint8_t> GbaRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -402,8 +402,8 @@ std::vector<uint8_t> GbaRom()
 // the last. The ROM has free space for a song that grows.
 std::vector<uint8_t> GbaRepeatRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Track track;
     track.Cmd(kCmdTempo, 75).Cmd(kCmdVoice, 0).Cmd(kCmdVol, 100).Note(12, 60, 100).Wait(12);
@@ -418,7 +418,7 @@ std::vector<uint8_t> GbaRepeatRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 

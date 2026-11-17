@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // Tests the new data of a GBA ROM's voices (src/edit/gba_voices.h). A sample's bytes have to hold MP2K's header and the
-// samples rounded to 8 bits, worked out by hand. New bytes have to start where ntdlib::mp2k::Join finds its free space,
+// samples rounded to 8 bits, worked out by hand. New bytes have to start where agblib::mp2k::Join finds its free space,
 // and a song that moves has to go after them. A voice has to change its kind. A new voice in a table with other data
 // after it has to move the table: each song's header names the new table, each song plays as before, and the voice
 // plays from the new table. A key split and a drum kit have to play through their new tables. A WAV file's sample has
@@ -21,11 +21,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/archive_player.h"
-#include "ntdlib/mp2k/layout.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/testing/mp2k_cart.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/archive_player.h"
+#include "agblib/mp2k/layout.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "seqlib/midi/builder.h"
 #include "seqlib/wav.h"
 #include "xsflib/testing/check.h"
@@ -41,8 +41,8 @@
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
-namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+namespace mp2k = agblib::mp2k;
+namespace mp2k_cart = agblib::testing::mp2k_cart;
 using hokuto::format::File;
 using xsflib::testing::ErrorOf;
 
@@ -102,7 +102,7 @@ SmallCart MakeCart(std::size_t tail, const std::vector<int8_t>& pcm = Saw(), boo
     track.Fine();
     made.header = cart.Song({track}, made.voices);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     made.bytes = hokuto::testing::RomBytes(rom);
     made.before_tail = made.bytes.size();
     made.bytes.resize(made.bytes.size() + tail, 0xFF);
@@ -428,7 +428,7 @@ void TestRowOverHeader()
     const uint32_t kit =
         cart.VoiceGroup({{0, Cart::Voice(0, sample, 60, {255, 0, 255, 165})}, {60, Cart::Voice(3, header)}});
 
-    const ntdlib::agb::Rom small = cart.ToRom();
+    const agblib::agb::Rom small = cart.ToRom();
     std::vector<uint8_t> bytes = hokuto::testing::RomBytes(small);
     const uint32_t kit_entry = group - kRomBase + 12 + 4;
     for (uint32_t i = 0; i < 4; i++)

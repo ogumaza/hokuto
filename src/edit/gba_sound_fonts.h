@@ -35,8 +35,8 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/song.h"
 
 #include "edit/gba_voices.h"
 #include "format/file.h"
@@ -52,7 +52,7 @@ struct GbaSoundFontRow
     int first_key = 0;
     int last_key = 127;
     std::size_t sample = 0;
-    ntdlib::mp2k::Voice voice;
+    agblib::mp2k::Voice voice;
 };
 
 // What becomes of a preset.
@@ -79,7 +79,7 @@ struct GbaSoundFontVoices
 // With `rate`, a sample above that rate is imported resampled to it (audio::Resample). Throws std::invalid_argument
 // with a message for the user for a file that Hokuto can't read as a SoundFont, and one without a preset that plays a
 // sample.
-GbaSoundFontVoices GbaVoicesOfSoundFont(std::span<const uint8_t> sf2, const ntdlib::mp2k::DriverInfo& driver,
+GbaSoundFontVoices GbaVoicesOfSoundFont(std::span<const uint8_t> sf2, const agblib::mp2k::DriverInfo& driver,
                                         std::optional<uint32_t> rate = std::nullopt);
 
 // The program that each preset of `voices` uses, in the order of the presets, among the empty programs `free` and

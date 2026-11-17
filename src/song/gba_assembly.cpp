@@ -12,10 +12,11 @@
 #include <stdexcept>
 #include <utility>
 
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/song.h"
+#include "xsflib/bytes.h"
 #include "xsflib/text.h"
 
 #include "song/gba_assembly_parts.h"
@@ -25,7 +26,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 namespace commands = ntdlib::commands;
 
 using gba_assembly_parts::kBytesOnALine;
@@ -38,7 +39,6 @@ using gba_assembly_parts::kModTargets;
 using gba_assembly_parts::kPatternBytes;
 using gba_assembly_parts::kReverbSet;
 using gba_assembly_parts::kVoiceBytes;
-using gba_assembly_parts::ReadWord;
 using gba_assembly_parts::ThreeDigits;
 using gba_assembly_parts::TwoDigits;
 
@@ -299,7 +299,7 @@ void AppendCommand(std::string& out, std::span<const uint8_t> bytes, uint8_t& ru
         waits || has_address || code == mp2k::kCmdFine || code == mp2k::kCmdPend ? "\t.byte\t" : "\t.byte\t\t", tokens);
     if (has_address)
     {
-        out += "\t .word\t" + word_token(ReadWord(args, args.size() - 4)) + "\n";
+        out += "\t .word\t" + word_token(xsflib::LoadLe32(&args[args.size() - 4])) + "\n";
     }
 }
 

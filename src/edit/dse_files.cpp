@@ -6,7 +6,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <map>
 #include <memory>
 #include <optional>
@@ -59,24 +58,8 @@ constexpr uint16_t kKeyBend = ntdlib::dse::kKeyBend;
 // WithBanks replaces it with a select of the first bank of the sound where the sound plays no bank 0.
 constexpr uint16_t kStandInBank = 0;
 
-// A track's start: the chunk's header and the preamble (ntdlib/dse/commands.h). The second byte of the preamble sets
-// the channel of the track.
-constexpr std::size_t kTrackStart = 20;
-constexpr std::size_t kTrackChannel = 17;
-
-// The places of a sequence's settings (ntdlib::dse::SequenceInfo): the ticks of a quarter note, and the count of
-// tracks. The count of channels follows it.
-constexpr std::size_t kTicksPerQuarter = 2;
-constexpr std::size_t kTrackCount = 6;
-
 // The driver's channels.
 constexpr std::size_t kDseChannels = 16;
-
-bool IsTrackStart(const Command& command)
-{
-    return command.kind == Kind::kData && command.bytes.size() == kTrackStart &&
-           std::memcmp(command.bytes.data(), "trk ", 4) == 0;
-}
 
 bool SelectsBank(const Command& command)
 {
@@ -141,7 +124,7 @@ std::vector<SelectRun> SelectRuns(const Sequence& tracks)
     for (std::size_t item = 0; item < tracks.items.size(); ++item)
     {
         const Command& command = tracks.items[item];
-        if (IsTrackStart(command))
+        if (dse::ReadTrackOpening(command))
         {
             id = 0;
             continue;
@@ -242,10 +225,10 @@ TrackCount TracksOf(const Sequence& tracks)
     TrackCount count;
     for (const Command& command : tracks.items)
     {
-        if (IsTrackStart(command))
+        if (const std::optional<dse::TrackStart> start = dse::ReadTrackOpening(command))
         {
             count.tracks++;
-            count.channels = std::max<std::size_t>(count.channels, std::size_t{command.bytes[kTrackChannel]} + 1);
+            count.channels = std::max<std::size_t>(count.channels, std::size_t{start->channel} + 1);
         }
     }
 
@@ -630,14 +613,12 @@ format::File ReplaceDseSound(const format::File& file, const song::DseSet& set, 
     // The settings take the new ticks of a quarter note and the counts of tracks and channels. The counts of a song
     // file can exceed the tracks that it contains, and they stay.
     const uint64_t info = held->second.offset + set.tracks_offsets[sound] - dse::SequenceInfo::kSize;
-    const uint8_t channels = static_cast<uint8_t>(std::max<std::size_t>(song.channels, count.channels));
-    const uint8_t track_count = static_cast<uint8_t>(std::max<std::size_t>(song.track_count, count.tracks));
-    const std::vector<ArchiveBytes> changes = {
-        {info + kTicksPerQuarter,
-         {static_cast<uint8_t>(song.ticks_per_quarter), static_cast<uint8_t>(song.ticks_per_quarter >> 8)}},
-        {info + kTrackCount, {track_count, channels}},
-    };
-    format::File result = WithArchiveBytes(file, format::NativePieceStarts(file), changes, name);
+    dse::SequenceInfo settings;
+    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(info), settings.bytes.size(), settings.bytes.begin());
+    settings.SetTicksPerQuarter(song.ticks_per_quarter);
+    settings.SetTrackCount(static_cast<uint8_t>(std::max<std::size_t>(song.track_count, count.tracks)));
+    settings.SetChannelCount(static_cast<uint8_t>(std::max<std::size_t>(song.channels, count.channels)));
+    format::File result = WithArchiveBytes(file, format::NativePieceStarts(file), info, settings.bytes, name);
     result.sequences[*sequence] = std::move(tracks);
 
     return result;

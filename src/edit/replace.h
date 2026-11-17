@@ -40,6 +40,7 @@
 #include "format/file.h"
 #include "song/archive.h"
 #include "song/driver.h"
+#include "song/gba.h"
 
 namespace hokuto::edit
 {
@@ -160,6 +161,16 @@ std::vector<std::optional<SoundPlace>> GbaSoundPlaces(std::span<const std::optio
 // sound's start in it (song::SoundFields::starts), that field is `start_field`.
 std::vector<std::optional<SoundPlace>> DriverSoundPlaces(const format::File& file, const song::DriverRom& rom,
                                                          std::span<const std::optional<uint32_t>> sequences);
+
+// The sequence of `file` that each song of `rom`'s song table is, by the song's number (format::GbaSongSequence), or
+// nothing for a song that the cut leaves among the ROM's bytes. `file` is the file of the ROM.
+std::vector<std::optional<uint32_t>> GbaSongSequences(const format::File& file, const song::GbaRom& rom);
+
+// The sequence of `file` that each sound of `rom`, a ROM of another of the GBA's drivers, plays, by its number: the one
+// that the field of its sequence names (format::SequenceNamedAt). A song that the cut leaves among the ROM's bytes, and
+// a number that names no sound (song::DriverRom::Sounds), have none. A sound of Konami's driver that plays a song's
+// live version plays the song's sequence. `file` is the file of the ROM.
+std::vector<std::optional<uint32_t>> DriverSoundSequences(const format::File& file, const song::DriverRom& rom);
 
 // Where each sound of a DS sound archive or of a set of DSE's files plays in a file, by its number (song::DsSounds and
 // song::DseSounds). `sequences` contains each sound's sequence (format::DsSoundSequences and

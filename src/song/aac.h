@@ -3,9 +3,11 @@
 // AAC streams. A stream sound of the 3DS can play an AAC file beside the archive in place of a stream file: AAC-LC
 // frames in ADTS, such as BGM_TITLE.aac. The sound's entry marks the stream as AAC, and gives its loop in samples
 // (song::AacStreamOf in streams.h). The system's decoder decodes the file, and the system's encoder makes a new one:
-// Audio Toolbox on the Mac and Media Foundation on Windows. Each frame gives 1,024 samples, from the file's first frame
-// on. The decoders' samples can differ between the two systems in their last bits. They can also differ by a step
-// between two decodings on one system. Audio Toolbox's did. The step followed where the process kept its buffers.
+// Audio Toolbox on the Mac and Media Foundation on Windows. Where the system has no decoder or encoder, such as on
+// Linux or under Wine, FFmpeg's program decodes or encodes, if the user installed it (song/ffmpeg.h). Each frame gives
+// 1,024 samples, from the file's first frame on. The decoders' samples can differ between the two systems in their last
+// bits. They can also differ by a step between two decodings on one system. Audio Toolbox's did. The step followed
+// where the process kept its buffers.
 
 #pragma once
 
@@ -19,6 +21,9 @@
 
 namespace hokuto::song
 {
+
+// Whether Hokuto can decode and encode AAC streams on this system: with the system's codec, or with FFmpeg's program.
+bool HasAacCodec();
 
 // Whether `bytes` start as an ADTS frame: the sync word, and layer 0.
 bool IsAdts(std::span<const uint8_t> bytes);

@@ -17,11 +17,11 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/konami/driver.h"
-#include "ntdlib/konami/layout.h"
-#include "ntdlib/konami/seqformat.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/konami/driver.h"
+#include "agblib/konami/layout.h"
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/rounding.h"
 #include "xsflib/bytes.h"
 
@@ -37,7 +37,7 @@ namespace hokuto::edit
 namespace
 {
 
-namespace konami = ntdlib::konami;
+namespace konami = agblib::konami;
 
 // The least and the largest step of a header that the edits write. The model of the driver refuses a step below 0x40 in
 // a header. A voice keeps the low 16 bits of the step at its pitch, and a larger step at semitone 0 would wrap.
@@ -67,7 +67,7 @@ bool Dungeon(const song::KonamiRom& rom)
 }
 
 // The address of sample `sample`'s entry in its table. A sample of a live stage's table has bit 15 set
-// (ntdlib::konami::DriverInfo::Sample).
+// (agblib::konami::DriverInfo::Sample).
 uint32_t EntryOf(const song::KonamiRom& rom, int sample)
 {
     if (sample >= 0x8000 && rom.info.live_sample_table)
@@ -102,7 +102,7 @@ uint32_t StepOf(const song::KonamiRom& rom, uint32_t rate)
 
     if (Dungeon(rom))
     {
-        const auto period = static_cast<uint32_t>(std::lround(static_cast<double>(ntdlib::agb::kSecondCycles) / rate));
+        const auto period = static_cast<uint32_t>(std::lround(static_cast<double>(agblib::agb::kSecondCycles) / rate));
         return std::clamp(period, kLeastPeriod, kMostPeriod);
     }
 
@@ -120,7 +120,7 @@ std::array<uint8_t, 4> Word(uint32_t value)
 
 uint64_t OffsetOf(uint32_t address)
 {
-    return uint64_t{address} - ntdlib::agb::kRomBase;
+    return uint64_t{address} - agblib::agb::kRomBase;
 }
 
 // `file` with `bytes` in the free space at the ROM's end (format::NativeDriver::free_start), on a multiple of 4 bytes,
@@ -157,7 +157,7 @@ PlacedGbaBytes WithNewBytes(const format::File& file, std::span<const uint8_t> b
             native.driver->free_start = static_cast<uint32_t>(ntdlib::AlignUp<uint64_t>(end, konami::kFreeSpaceMargin));
         });
 
-    return {result, static_cast<uint32_t>(start + ntdlib::agb::kRomBase)};
+    return {result, static_cast<uint32_t>(start + agblib::agb::kRomBase)};
 }
 
 void CheckFile(const format::File& file)
@@ -174,7 +174,7 @@ KonamiRates KonamiSampleRates(const song::KonamiRom& rom)
 {
     if (Dungeon(rom))
     {
-        const auto cycles = static_cast<double>(ntdlib::agb::kSecondCycles);
+        const auto cycles = static_cast<double>(agblib::agb::kSecondCycles);
         return {static_cast<uint32_t>(std::ceil(cycles / kMostPeriod)),
                 static_cast<uint32_t>(std::floor(cycles / kLeastPeriod)), false};
     }

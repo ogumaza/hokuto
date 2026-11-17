@@ -17,11 +17,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/archive_player.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/archive_player.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/sar/formats.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "xsflib/testing/check.h"
 
 #include "cart_bytes.h"
@@ -33,8 +33,8 @@
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
-namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+namespace mp2k = agblib::mp2k;
+namespace mp2k_cart = agblib::testing::mp2k_cart;
 using hokuto::edit::ChangeGbaSong;
 using hokuto::edit::SoundChange;
 using hokuto::edit::SoundValue;
@@ -76,7 +76,7 @@ Cart MakeCart(std::vector<int> players = {10, 3})
     cart.Song({track}, voices);
     cart.Song({track}, voices, 1);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     made.bytes = hokuto::testing::RomBytes(rom);
     const uint32_t entry = kSongTable + 16 - kRomBase;
     for (uint32_t i = 0; i < 4; i++)

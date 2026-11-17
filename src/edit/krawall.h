@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a piece of Krawall, by the rules of a module's patterns (ntdlib/krawall/commands.h). A sequence contains
+// The edits of a piece of Krawall, by the rules of a module's patterns (agblib/krawall/commands.h). A sequence contains
 // the patterns of a module, and each of the module's channels is a track. A row contains an entry for each channel that
 // it has data for: a note with its instrument, a volume and an effect. A wait ends a run of rows. A note sounds until
 // the next note or note off of its channel. A note has no velocity: its sample and the volume column set its volume.

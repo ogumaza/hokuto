@@ -53,11 +53,11 @@ void TestUnusualChunks()
     const std::vector<uint8_t>& binary = fixture.binary;
     const std::string& text = fixture.text;
 
-    // Version 1.1, and the group files in the GRPF chunk before the other chunks: their count, then each one's group,
+    // Version 1.2, and the group files in the GRPF chunk before the other chunks: their count, then each one's group,
     // the game's size and SHA-1, its pieces and its fields. The pieces and the fields take the forms of those in NATV.
     // NATV holds the sequence's encodings.
-    XSFLIB_CHECK(binary[8] == 1 && binary[9] == 0 && binary[10] == 1 && binary[11] == 0);
-    XSFLIB_CHECK(text.starts_with("hok 1.1\n") &&
+    XSFLIB_CHECK(binary[8] == 1 && binary[9] == 0 && binary[10] == 2 && binary[11] == 0);
+    XSFLIB_CHECK(text.starts_with("hok 1.2\n") &&
                  text.find(std::string("\nchunk GRPF 160\n") + kGroupFilesText + "\nchunk XTRA") != std::string::npos);
     XSFLIB_CHECK(std::ranges::equal(ChunkBytes(binary, 5), kGroupFilesChunk));
 

@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 
 #include "app/bank_editor.h"
 #include "app/bank_editor_parts.h"
@@ -149,7 +149,7 @@ constexpr int kSweepPart = 7;
 constexpr int kDrumCentre = 0xC0;
 
 // A field of a GBA voice that contains a number.
-using GbaField = NumberField<ntdlib::mp2k::Voice>;
+using GbaField = NumberField<agblib::mp2k::Voice>;
 
 const GbaField kGbaSweepTime = {
     "Sweep time",
@@ -157,8 +157,8 @@ const GbaField kGbaSweepTime = {
     kGbaSweepTimeTip,
     kSweepPart,
     0,
-    [](const ntdlib::mp2k::Voice& voice) { return (voice.pan_sweep >> kSweepTimeShift) & kSweepPart; },
-    [](ntdlib::mp2k::Voice& voice, int value)
+    [](const agblib::mp2k::Voice& voice) { return (voice.pan_sweep >> kSweepTimeShift) & kSweepPart; },
+    [](agblib::mp2k::Voice& voice, int value)
     {
         voice.pan_sweep = static_cast<uint8_t>((voice.pan_sweep & ~(kPanBit | (kSweepPart << kSweepTimeShift))) |
                                                (value << kSweepTimeShift));
@@ -169,47 +169,47 @@ const GbaField kGbaSweepShift = {
     kGbaSweepShiftTip,
     kSweepPart,
     0,
-    [](const ntdlib::mp2k::Voice& voice) { return voice.pan_sweep & kSweepPart; },
-    [](ntdlib::mp2k::Voice& voice, int value)
+    [](const agblib::mp2k::Voice& voice) { return voice.pan_sweep & kSweepPart; },
+    [](agblib::mp2k::Voice& voice, int value)
     { voice.pan_sweep = static_cast<uint8_t>((voice.pan_sweep & ~(kPanBit | kSweepPart)) | value); }};
 const GbaField kGbaLength = {"Length",
                              "Length",
                              kGbaLengthTip,
                              edit::kHighestPsgLength,
                              0,
-                             [](const ntdlib::mp2k::Voice& voice) { return static_cast<int>(voice.length); },
-                             [](ntdlib::mp2k::Voice& voice, int value) { voice.length = static_cast<uint8_t>(value); }};
+                             [](const agblib::mp2k::Voice& voice) { return static_cast<int>(voice.length); },
+                             [](agblib::mp2k::Voice& voice, int value) { voice.length = static_cast<uint8_t>(value); }};
 const GbaField kGbaKey = {"Key",
                           "Key",
                           kGbaKeyTip,
                           kHighest,
                           static_cast<int>(kMiddleC),
-                          [](const ntdlib::mp2k::Voice& voice) { return static_cast<int>(voice.key); },
-                          [](ntdlib::mp2k::Voice& voice, int value) { voice.key = static_cast<uint8_t>(value); }};
+                          [](const agblib::mp2k::Voice& voice) { return static_cast<int>(voice.key); },
+                          [](agblib::mp2k::Voice& voice, int value) { voice.key = static_cast<uint8_t>(value); }};
 const GbaField kGbaPan = {"Pan",
                           "Pan",
                           kGbaPanTip,
                           kHighest,
                           kDrumCentre - kPanBit,
-                          [](const ntdlib::mp2k::Voice& voice) { return voice.pan_sweep - kPanBit; },
-                          [](ntdlib::mp2k::Voice& voice, int value)
+                          [](const agblib::mp2k::Voice& voice) { return voice.pan_sweep - kPanBit; },
+                          [](agblib::mp2k::Voice& voice, int value)
                           { voice.pan_sweep = static_cast<uint8_t>(value + kPanBit); }};
 
 // The envelope's fields of a sample's voice, and of a PSG voice.
 constexpr int kHighestByte = 255;
 const std::array<GbaField, 4> kGbaSampleEnvelope = {{
     {"Attack", "Attack", kGbaSampleAttackTip, kHighestByte, kHighestByte,
-     [](const ntdlib::mp2k::Voice& voice) { return static_cast<int>(voice.attack); },
-     [](ntdlib::mp2k::Voice& voice, int value) { voice.attack = static_cast<uint8_t>(value); }},
+     [](const agblib::mp2k::Voice& voice) { return static_cast<int>(voice.attack); },
+     [](agblib::mp2k::Voice& voice, int value) { voice.attack = static_cast<uint8_t>(value); }},
     {"Decay", "Decay", kGbaSampleDecayTip, kHighestByte, 0,
-     [](const ntdlib::mp2k::Voice& voice) { return static_cast<int>(voice.decay); },
-     [](ntdlib::mp2k::Voice& voice, int value) { voice.decay = static_cast<uint8_t>(value); }},
+     [](const agblib::mp2k::Voice& voice) { return static_cast<int>(voice.decay); },
+     [](agblib::mp2k::Voice& voice, int value) { voice.decay = static_cast<uint8_t>(value); }},
     {"Sustain", "Sustain", kGbaSampleSustainTip, kHighestByte, kHighestByte,
-     [](const ntdlib::mp2k::Voice& voice) { return static_cast<int>(voice.sustain); },
-     [](ntdlib::mp2k::Voice& voice, int value) { voice.sustain = static_cast<uint8_t>(value); }},
+     [](const agblib::mp2k::Voice& voice) { return static_cast<int>(voice.sustain); },
+     [](agblib::mp2k::Voice& voice, int value) { voice.sustain = static_cast<uint8_t>(value); }},
     {"Release", "Release", kGbaSampleReleaseTip, kHighestByte, 0,
-     [](const ntdlib::mp2k::Voice& voice) { return static_cast<int>(voice.release); },
-     [](ntdlib::mp2k::Voice& voice, int value) { voice.release = static_cast<uint8_t>(value); }},
+     [](const agblib::mp2k::Voice& voice) { return static_cast<int>(voice.release); },
+     [](agblib::mp2k::Voice& voice, int value) { voice.release = static_cast<uint8_t>(value); }},
 }};
 const std::array<GbaField, 4> kGbaPsgEnvelope = {{
     {"Attack", "Attack", kGbaPsgAttackTip, edit::kHighestPsgStep, 0, kGbaSampleEnvelope[0].get,
@@ -222,20 +222,20 @@ const std::array<GbaField, 4> kGbaPsgEnvelope = {{
 }};
 
 // The voice that the GBA's fields show: the one that the user holds a slider of, or else `voice`.
-const ntdlib::mp2k::Voice& GbaShown(const ntdlib::mp2k::Voice& voice, const BankEditorState& state)
+const agblib::mp2k::Voice& GbaShown(const agblib::mp2k::Voice& voice, const BankEditorState& state)
 {
     return state.gba_held ? *state.gba_held : voice;
 }
 
 // The row of `field` for `voice`, with the value as `format` writes it. ByteRow does the same for a region. With
 // `grey_tip`, the row shows grey and takes no edits, and the tip says why.
-void GbaRow(const GbaField& field, const ntdlib::mp2k::Voice& voice, const std::string& format, BankEditorState& state,
+void GbaRow(const GbaField& field, const agblib::mp2k::Voice& voice, const std::string& format, BankEditorState& state,
             bool* released, const char* grey_tip = nullptr)
 {
     FieldLabel(field.label, grey_tip != nullptr ? grey_tip : field.tooltip, grey_tip != nullptr);
     ImGui::BeginDisabled(grey_tip != nullptr);
     const bool holding = state.gba_held && state.held_name == field.name;
-    ntdlib::mp2k::Voice changed = holding ? *state.gba_held : voice;
+    agblib::mp2k::Voice changed = holding ? *state.gba_held : voice;
     auto shown = static_cast<float>(field.get(changed));
     const auto high = static_cast<float>(field.high);
     const SliderRange typed{0.0f, high};
@@ -350,7 +350,7 @@ std::string GbaDetails(const GbaBankView& view, const GbaProgram& program, const
 
 // Places `voice` at the first free program after the selected one, or else at the first free program, as the edit
 // `name`. `chosen` is true when a program is selected.
-void GbaPlaceVoice(const GbaBankView& view, bool chosen, const char* name, const ntdlib::mp2k::Voice& voice,
+void GbaPlaceVoice(const GbaBankView& view, bool chosen, const char* name, const agblib::mp2k::Voice& voice,
                    BankEditorState& state, BankEdit& edit)
 {
     const auto free =
@@ -485,7 +485,7 @@ void DrawGbaRowList(const GbaProgram& program, bool drums, BankEditorState& stat
 void GbaAddRow(const GbaBankView& view, const GbaProgram& program, const std::vector<edit::GbaKeyRow>& rows,
                std::optional<int> after, BankEditorState& state, BankEdit& edit)
 {
-    const bool drums = (program.voice.voice.type & ntdlib::mp2k::kVoiceDrumKit) != 0;
+    const bool drums = (program.voice.voice.type & agblib::mp2k::kVoiceDrumKit) != 0;
     std::vector<edit::GbaKeyRow> made = edit::GbaRowsWithNew(rows, drums, after);
     for (const edit::GbaKeyRow& one : made)
     {
@@ -503,7 +503,7 @@ void GbaAddRow(const GbaBankView& view, const GbaProgram& program, const std::ve
 void GbaDeleteRow(const GbaBankView& view, const GbaProgram& program, const std::vector<edit::GbaKeyRow>& rows,
                   std::vector<GbaVoiceRow>::const_iterator row, BankEditorState& state, BankEdit& edit)
 {
-    const bool drums = (program.voice.voice.type & ntdlib::mp2k::kVoiceDrumKit) != 0;
+    const bool drums = (program.voice.voice.type & agblib::mp2k::kVoiceDrumKit) != 0;
     // The selection moves to the row that gets the keys of the deleted row. On a drum kit, it moves to the next
     // row, or else the row before.
     edit.name = drums ? "Delete Drum" : "Delete Key Range";
@@ -533,7 +533,7 @@ void DrawGbaRows(const GbaBankView& view, const GbaProgram& program, BankEditorS
                  ImVec2 full_size, BankEdit& edit)
 {
     const ImVec2 size(full_size.x, std::max(full_size.y - ImGui::GetFrameHeight() - Px(kGap), Px(kRowHeight)));
-    const bool drums = (program.voice.voice.type & ntdlib::mp2k::kVoiceDrumKit) != 0;
+    const bool drums = (program.voice.voice.type & agblib::mp2k::kVoiceDrumKit) != 0;
     DrawGbaRowList(program, drums, state, pos, size);
 
     // The new rows of a key split or a drum kit use new tables in the ROM's free space. Delete on a drum kit clears
@@ -564,7 +564,7 @@ void DrawGbaRows(const GbaBankView& view, const GbaProgram& program, BankEditorS
     ImGui::SameLine();
     if (ImGui::Button("Make Single Voice") && chosen)
     {
-        ntdlib::mp2k::Voice single = row->voice;
+        agblib::mp2k::Voice single = row->voice;
         single.address = program.voice.voice.address;
         edit.gba_program_voice = single;
         edit.name = "Make Single Voice";
@@ -607,7 +607,7 @@ std::optional<int> RowKeySlider(const char* label, const char* tooltip, int key,
 }
 
 // The time of a PSG voice's length as its row shows it: off at 0, and else the time before the PSG ends the note.
-std::string GbaLengthText(const ntdlib::mp2k::Voice& voice)
+std::string GbaLengthText(const agblib::mp2k::Voice& voice)
 {
     if (voice.length == 0)
     {
@@ -626,11 +626,11 @@ std::string GbaLengthText(const ntdlib::mp2k::Voice& voice)
 // a slider.
 struct GbaFieldEdit
 {
-    std::optional<ntdlib::mp2k::Voice> changed;
+    std::optional<agblib::mp2k::Voice> changed;
     std::string name;
     bool released = false;
 
-    void Change(ntdlib::mp2k::Voice after, std::string action)
+    void Change(agblib::mp2k::Voice after, std::string action)
     {
         changed = after;
         name = std::move(action);
@@ -639,9 +639,9 @@ struct GbaFieldEdit
 
 // The menu of the voice's kind.
 void GbaKindCombo(const GbaBankView& view, const GbaProgram& program, const GbaVoiceRow* row,
-                  const ntdlib::mp2k::Voice& voice, BankEditorState& state, GbaFieldEdit& fields, BankEdit& edit)
+                  const agblib::mp2k::Voice& voice, BankEditorState& state, GbaFieldEdit& fields, BankEdit& edit)
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     const int psg = voice.PsgChannel();
     static constexpr std::array<const char*, 7> kKinds = {"Sample", "Square 1",  "Square 2", "Wave",
                                                           "Noise",  "Key split", "Drum kit"};
@@ -722,10 +722,10 @@ void GbaRowKeys(const GbaBankView& view, const GbaProgram& program, const GbaVoi
 }
 
 // A sample's rows: the sample and its pitch, and its rate.
-void GbaSampleRows(const GbaBankView& view, const ntdlib::mp2k::Voice& voice, BankEditorState& state,
+void GbaSampleRows(const GbaBankView& view, const agblib::mp2k::Voice& voice, BankEditorState& state,
                    GbaFieldEdit& fields)
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     // The sample, from a menu of the samples that the ROM's voices play, and whether it follows the key.
     FieldLabel("Sample", kGbaSampleTip);
     const auto found = std::ranges::find(view.samples, voice.wave, &GbaSample::address);
@@ -758,10 +758,10 @@ void GbaSampleRows(const GbaBankView& view, const ntdlib::mp2k::Voice& voice, Ba
 }
 
 // A square wave's rows: its duty, square 1's sweep, and the length.
-void GbaSquareRows(const ntdlib::mp2k::Voice& voice, const ntdlib::mp2k::Voice& current, BankEditorState& state,
+void GbaSquareRows(const agblib::mp2k::Voice& voice, const agblib::mp2k::Voice& current, BankEditorState& state,
                    GbaFieldEdit& fields)
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     const int psg = voice.PsgChannel();
 
     const std::array<std::string, 4> kDuties = {"12.5 %", "25 %", "50 %", "75 %"};
@@ -796,8 +796,8 @@ void GbaSquareRows(const ntdlib::mp2k::Voice& voice, const ntdlib::mp2k::Voice& 
 }
 
 // A wave's rows: its pattern and the length. Returns the pattern that the user drew, if any.
-std::optional<edit::GbaPattern> GbaWaveRows(const GbaBankView& view, const ntdlib::mp2k::Voice& voice,
-                                            const ntdlib::mp2k::Voice& current, BankEditorState& state,
+std::optional<edit::GbaPattern> GbaWaveRows(const GbaBankView& view, const agblib::mp2k::Voice& voice,
+                                            const agblib::mp2k::Voice& current, BankEditorState& state,
                                             GbaFieldEdit& fields)
 {
     std::optional<edit::GbaPattern> drawn;
@@ -817,10 +817,10 @@ std::optional<edit::GbaPattern> GbaWaveRows(const GbaBankView& view, const ntdli
 }
 
 // The noise's rows: its mode and the length.
-void GbaNoiseRows(const ntdlib::mp2k::Voice& voice, const ntdlib::mp2k::Voice& current, BankEditorState& state,
+void GbaNoiseRows(const agblib::mp2k::Voice& voice, const agblib::mp2k::Voice& current, BankEditorState& state,
                   GbaFieldEdit& fields)
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
 
     const int mode = SwitchRow("Noise", kGbaNoiseTip, std::array<std::string, 2>{"15-bit", "7-bit"},
                                voice.wave <= edit::kHighestNoiseMode ? static_cast<int>(voice.wave) : -1);
@@ -834,10 +834,10 @@ void GbaNoiseRows(const ntdlib::mp2k::Voice& voice, const ntdlib::mp2k::Voice& c
 }
 
 // The rows of a voice in a drum kit: its key, and its pan.
-void GbaDrumRows(const ntdlib::mp2k::Voice& voice, const ntdlib::mp2k::Voice& current, BankEditorState& state,
+void GbaDrumRows(const agblib::mp2k::Voice& voice, const agblib::mp2k::Voice& current, BankEditorState& state,
                  GbaFieldEdit& fields)
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     GbaRow(kGbaKey, voice, "%.0f  (" + KeyName(current.key) + ")", state, &fields.released);
     const bool panned = (voice.pan_sweep & kPanBit) != 0;
     const int pan = SwitchRow("Drum pan", kGbaPanTip, std::array<std::string, 2>{"Off", "On"}, panned ? 1 : 0);
@@ -856,7 +856,7 @@ void GbaDrumRows(const ntdlib::mp2k::Voice& voice, const ntdlib::mp2k::Voice& cu
 // Makes the edit of the fields: the slider that the user let go of, the voice that a field changed or the pattern that
 // the user drew. A busy editor makes none.
 void GbaFinishEdit(const GbaBankView& view, const GbaProgram& program, const GbaVoiceRow* row,
-                   const ntdlib::mp2k::Voice& voice, const std::optional<edit::GbaPattern>& drawn, bool busy,
+                   const agblib::mp2k::Voice& voice, const std::optional<edit::GbaPattern>& drawn, bool busy,
                    BankEditorState& state, GbaFieldEdit& fields, BankEdit& edit)
 {
     if (fields.released && state.gba_held)
@@ -890,7 +890,7 @@ void GbaFinishEdit(const GbaBankView& view, const GbaProgram& program, const Gba
 void DrawGbaFields(const GbaBankView& view, const GbaProgram& program, const GbaVoiceRow* row, BankEditorState& state,
                    bool busy, ImVec2 pos, ImVec2 size, BankEdit& edit)
 {
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k = agblib::mp2k;
     const mp2k::Voice& voice = row != nullptr ? row->voice : program.voice.voice;
     const mp2k::Voice& current = GbaShown(voice, state);
     const bool drums = row != nullptr && (program.voice.voice.type & mp2k::kVoiceDrumKit) != 0;
@@ -956,7 +956,7 @@ void DrawGbaFields(const GbaBankView& view, const GbaProgram& program, const Gba
 
 // The facts of a GBA voice group at `pos`, `size` large: the songs that play it, the other places that play the shown
 // voice's bytes, and the voices that play the shown wave's pattern.
-void DrawGbaFacts(const GbaBankView& view, const ntdlib::mp2k::Voice* voice, const GbaVoiceRow* shown, ImVec2 pos,
+void DrawGbaFacts(const GbaBankView& view, const agblib::mp2k::Voice* voice, const GbaVoiceRow* shown, ImVec2 pos,
                   ImVec2 size, bool top)
 {
     BeginFacts(pos, size, top);
@@ -983,7 +983,7 @@ void DrawGbaFacts(const GbaBankView& view, const ntdlib::mp2k::Voice* voice, con
 struct GbaProgramSide
 {
     const GbaVoiceRow* row = nullptr;
-    const ntdlib::mp2k::Voice* voice = nullptr;
+    const agblib::mp2k::Voice* voice = nullptr;
     const GbaVoiceRow* shown = nullptr;
     std::optional<std::pair<int, int>> covered;
 };
@@ -997,7 +997,7 @@ GbaProgramSide DrawGbaProgramSide(const GbaBankView& view, const GbaProgram& pro
     const ImVec2 rows_min(layout.right, layout.rows_top);
     const ImVec2 rows_max(layout.right + layout.right_width, layout.keyboard_top - Px(2.0f));
     const GbaVoiceRow* row = nullptr;
-    const ntdlib::mp2k::Voice* voice = nullptr;
+    const agblib::mp2k::Voice* voice = nullptr;
     const GbaVoiceRow* shown = nullptr;
     std::optional<std::pair<int, int>> covered;
     // A file that the system drops over the rows or the fields lands on the shown voice (DroppedGbaVoice).
@@ -1049,7 +1049,7 @@ GbaProgramSide DrawGbaProgramSide(const GbaBankView& view, const GbaProgram& pro
 
 } // namespace
 
-std::optional<ntdlib::mp2k::Voice> DroppedGbaVoice(const GbaBankView& view, const BankEditorState& state,
+std::optional<agblib::mp2k::Voice> DroppedGbaVoice(const GbaBankView& view, const BankEditorState& state,
                                                    const BankDrop& drop)
 {
     if (!drop.program)

@@ -208,6 +208,11 @@ ntdlib::wave::Pcm DecodeAdts(std::span<const uint8_t> bytes)
     return pcm;
 }
 
+bool HasAacCodec()
+{
+    return true;
+}
+
 bool EncodesConstantRate()
 {
     return true;

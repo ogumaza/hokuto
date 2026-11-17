@@ -209,20 +209,9 @@ std::vector<std::vector<int16_t>> DecodedSamples(const sar::WaveFile& wave, uint
             continue;
         }
 
-        decoded.resize(count);
-        for (std::size_t i = 0; i < count; ++i)
-        {
-            if (wave.encoding == sar::WaveEncoding::kPcm8)
-            {
-                decoded[i] = static_cast<int16_t>(static_cast<int8_t>(channel.samples[i]) * 256);
-            }
-            else
-            {
-                const uint8_t* at = &channel.samples[i * 2];
-                decoded[i] = static_cast<int16_t>(wave.flavor == sar::Flavor::kCafe ? xsflib::LoadBe16(at)
-                                                                                    : xsflib::LoadLe16(at));
-            }
-        }
+        decoded = wave.encoding == sar::WaveEncoding::kPcm8
+                      ? wave::DecodePcm8(channel.samples, count)
+                      : wave::DecodePcm16(channel.samples, count, wave.flavor == sar::Flavor::kCafe);
     }
 
     return channels;

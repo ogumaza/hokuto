@@ -2,9 +2,9 @@
 
 // The reader of the songs of Rare's GBA driver.
 
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/rare/performance.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/rare/performance.h"
 
 #include "song/rare.h"
 #include "song/sequence_parts.h"
@@ -13,8 +13,6 @@ namespace hokuto::song
 {
 namespace
 {
-
-namespace export_ = ntdlib::sequence_export;
 
 using sequence_parts::AddTrack;
 using sequence_parts::ClipToLoop;
@@ -29,18 +27,19 @@ Sequence ReadSequence(const RareRom& rom, uint32_t sound)
 {
     const std::string name = rom.SoundName(sound);
     const int song = rom.SongOf(sound);
-    if (song < 0 || song >= ntdlib::rare::SongCount(rom.info))
+    if (song < 0 || song >= agblib::rare::SongCount(rom.info))
     {
         throw std::runtime_error("The ROM has no song " + std::to_string(sound) + ".");
     }
 
     // The performer plays one pass of the loop.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     settings.version = rom.VersionOf(sound);
     try
     {
-        const export_::rare::Performance performance = export_::rare::PerformSong(rom.rom, rom.info, song, settings);
+        const agblib::sequence_export::rare::Performance performance =
+            agblib::sequence_export::rare::PerformSong(rom.rom, rom.info, song, settings);
 
         Sequence sequence = SequenceHead(performance, name, sound);
         sequence.driver = &rom.Rules();

@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/ascii.h"
+
 #include "app/theme.h"
 
 namespace hokuto::app
@@ -208,7 +210,42 @@ float ToolbarCaps(ImDrawList* draw, float x, float top, const char* label)
 
 bool BeginDialogWindow(const char* title, bool* open, ImGuiWindowFlags flags)
 {
-    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    // Dear ImGui measures a window in a hidden frame only when it first creates the window. A window that opens again
+    // would otherwise show at once with the size of its last showing. Each time the window appears, its first frame is
+    // hidden. Dear ImGui then places it in the middle at its measured size. The flags of a hidden frame count down
+    // before Begin reads them: 2 hides one frame.
+    ImGuiWindow* window = ImGui::FindWindowByName(title);
+    const bool appearing = window == nullptr || window->LastFrameActive < ImGui::GetFrameCount() - 1;
+    if (window != nullptr && appearing)
+    {
+        window->HiddenFramesCannotSkipItems = std::max<ImS8>(window->HiddenFramesCannotSkipItems, 2);
+    }
+
+    // A window that the user can't resize stays in the middle at its current size until the user drags it. Text that
+    // changes its height keeps it there. The window's storage keeps whether the user has dragged it since it appeared.
+    // A click on the title bar makes the window the moving window before the mouse moves. Only a move of more than a
+    // pixel from the middle counts as a drag. FollowDialogDrag tells a click from a drag the same way. A window that
+    // the user can resize takes the middle as it appears, and then stays where it is.
+    const ImGuiID dragged_id = ImHashStr("##dialog dragged");
+    const auto moved = [](const ImGuiWindow& shown)
+    {
+        const ImVec2 centre = ImGui::GetMainViewport()->GetCenter();
+        return std::abs(shown.Pos.x + shown.Size.x * 0.5f - centre.x) > 1.0f ||
+               std::abs(shown.Pos.y + shown.Size.y * 0.5f - centre.y) > 1.0f;
+    };
+    const bool dragged = window != nullptr && !appearing &&
+                         (window->StateStorage.GetBool(dragged_id, false) ||
+                          (ImGui::GetCurrentContext()->MovingWindow == window && moved(*window)));
+    if (window != nullptr)
+    {
+        window->StateStorage.SetBool(dragged_id, dragged);
+    }
+    if (!dragged)
+    {
+        const bool centred = (flags & ImGuiWindowFlags_NoResize) != 0;
+        ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), centred ? ImGuiCond_Always : ImGuiCond_Appearing,
+                                ImVec2(0.5f, 0.5f));
+    }
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Px(theme::kDialogPadding));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(theme::kRaised));
     ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(theme::kBorderStrong));
@@ -745,11 +782,17 @@ std::string FittedText(const std::string& text, float width)
     return "…";
 }
 
+std::string ComboPreview(const std::string& text)
+{
+    // Dear ImGui's combo draws its preview from the frame's padding up to the arrow, a square of the frame's height.
+    return FittedText(text, ImGui::CalcItemWidth() - ImGui::GetFrameHeight() - ImGui::GetStyle().FramePadding.x);
+}
+
 bool Matches(std::string_view item, std::string_view filter)
 {
     const auto same = [](char a, char b)
     {
-        return std::tolower(static_cast<unsigned char>(a)) == std::tolower(static_cast<unsigned char>(b));
+        return xsflib::AsciiLower(a) == xsflib::AsciiLower(b);
     };
     return filter.empty() || std::search(item.begin(), item.end(), filter.begin(), filter.end(), same) != item.end();
 }
@@ -758,9 +801,10 @@ bool FilteredCombo(const char* id, const std::vector<std::string>& items, int& c
                    std::array<char, 128>& filter, float width)
 {
     const bool listed = chosen >= 0 && static_cast<std::size_t>(chosen) < items.size();
-    const char* preview = listed ? items[static_cast<std::size_t>(chosen)].c_str() : none != nullptr ? none : "";
     ImGui::SetNextItemWidth(width);
-    if (!ImGui::BeginCombo(id, preview, ImGuiComboFlags_HeightLargest))
+    const std::string preview =
+        ComboPreview(listed ? items[static_cast<std::size_t>(chosen)] : none != nullptr ? none : "");
+    if (!ImGui::BeginCombo(id, preview.c_str(), ImGuiComboFlags_HeightLargest))
     {
         return false;
     }

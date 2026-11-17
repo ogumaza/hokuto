@@ -84,7 +84,7 @@ enum class RomRoom
 // The warnings about a GBA ROM after an export: the `moved` songs that outgrew their places, where the export put them,
 // and how the ROM grew from `before` to `after` bytes. No file of the game says where its free space is, and nothing
 // shows that the game's other code doesn't read a filler run. A filler run is 16 KiB of 0xFF bytes for MP2K
-// (ntdlib::mp2k::kLeastFillerRun), and 4 KiB of 0xFF or zero bytes for Konami's driver (`konami`).
+// (agblib::mp2k::kLeastFillerRun), and 4 KiB of 0xFF or zero bytes for Konami's driver (`konami`).
 std::vector<std::string> RomWarnings(std::size_t moved, std::size_t before, std::size_t after,
                                      RomRoom room = RomRoom::kFreeSpace, bool konami = false);
 
@@ -125,12 +125,12 @@ std::string GroupFilesNote(const std::vector<std::string>& names);
 // find its group.
 std::string UnknownGroupNote(std::size_t index);
 
-// The name of `console` for the middle of a sentence, such as "the Wii U". DSE takes no article.
+// The name of `console`, an EngineName, for the middle of a sentence, such as "the Wii U" or "the DS (DSE)".
 std::string TheConsole(const std::string& console);
 
-// The note of an export to MIDI of a sound that plays on the engine of `console`, another console than the file's
-// `file_console`. The files hold the sound's conversion for that console.
-std::string EngineNote(const std::string& console, const std::string& file_console);
+// The note of an export to MIDI of a sound that plays on `the_engine` (TheEngine), the engine of another console than
+// the file's `file_console`. The files hold the sound's conversion for that console.
+std::string EngineNote(const std::string& the_engine, const std::string& file_console);
 
 // The note of an export of the archive whose sounds `names` play on other consoles' engines in Hokuto. The archive
 // keeps them for `file_console`.

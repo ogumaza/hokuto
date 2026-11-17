@@ -13,6 +13,21 @@ namespace hokuto::tools::players
 namespace
 {
 
+// `gain` times a sinc at `x` in a Blackman window at `distance` from its centre, of `reach` on each side.
+double BlackmanSinc(double gain, double x, double distance, double reach)
+{
+    const double sinc = x == 0.0 ? 1.0 : std::sin(std::numbers::pi * x) / (std::numbers::pi * x);
+    const double window = 0.42 + 0.5 * std::cos(std::numbers::pi * distance / reach) +
+                          0.08 * std::cos(2.0 * std::numbers::pi * distance / reach);
+    return gain * sinc * window;
+}
+
+// The ratio of the energies `kept` and `left`, in dB.
+double Ratio(double kept, double left)
+{
+    return left <= 0.0 ? 999.0 : 10.0 * std::log10(kept / left);
+}
+
 // A windowed sinc that resamples the reference at a step: a table of the kernel at 256 phases of a sample. Above a step
 // of 1, the console reads faster than the output's rate, and the cutoff drops to the output's Nyquist frequency. A
 // `band` below 1 lowers the cutoff by that factor.
@@ -64,11 +79,8 @@ private:
         {
             return 0.0;
         }
-        const double x = distance * scale_;
-        const double sinc = x == 0.0 ? 1.0 : std::sin(std::numbers::pi * x) / (std::numbers::pi * x);
-        const double window = 0.42 + 0.5 * std::cos(std::numbers::pi * distance / reach) +
-                              0.08 * std::cos(2.0 * std::numbers::pi * distance / reach);
-        return scale_ * sinc * window;
+
+        return BlackmanSinc(scale_, distance * scale_, distance, reach);
     }
 
     double scale_;
@@ -218,6 +230,7 @@ public:
     void Add(const std::vector<std::vector<float>>& resampled, int reach, std::span<const float> output,
              std::size_t first, std::size_t count)
     {
+        solutions_.reset();
         const auto width = static_cast<std::size_t>(2 * taps_ + 1);
         const auto skip = static_cast<std::size_t>(reach - taps_);
         std::vector<double> x(size_);
@@ -256,20 +269,12 @@ public:
     // The gain of each channel to each side at 0 Hz, and the energy of the output that the fit leaves.
     std::pair<std::vector<std::array<double, 2>>, double> Solved() const
     {
-        std::vector<std::vector<double>> full = gram_;
-        for (std::size_t a = 0; a < size_; a++)
-        {
-            for (std::size_t b = 0; b < a; b++)
-            {
-                full[a][b] = full[b][a];
-            }
-        }
         const auto width = static_cast<std::size_t>(2 * taps_ + 1);
         std::vector<std::array<double, 2>> gains(channels_);
         double left = energy_;
         for (std::size_t side = 0; side < 2; side++)
         {
-            const std::vector<double> g = Solve(full, cross_[side]);
+            const std::vector<double>& g = Solutions()[side];
             for (std::size_t a = 0; a < size_; a++)
             {
                 gains[a / width][side] += g[a];
@@ -285,15 +290,7 @@ public:
     void Residual(const std::vector<std::vector<float>>& resampled, int reach, std::span<const float> output,
                   std::size_t first, std::size_t count, std::vector<float>& residual) const
     {
-        std::vector<std::vector<double>> full = gram_;
-        for (std::size_t a = 0; a < size_; a++)
-        {
-            for (std::size_t b = 0; b < a; b++)
-            {
-                full[a][b] = full[b][a];
-            }
-        }
-        const std::array<std::vector<double>, 2> g = {Solve(full, cross_[0]), Solve(full, cross_[1])};
+        const std::array<std::vector<double>, 2>& g = Solutions();
         const auto width = static_cast<std::size_t>(2 * taps_ + 1);
         const auto skip = static_cast<std::size_t>(reach - taps_);
         for (std::size_t n = 0; n < count; n++)
@@ -326,6 +323,26 @@ public:
     }
 
 private:
+    // The taps of the fit to each side: the solution of the full Gram matrix for each side's cross products. The fit
+    // keeps the solutions until Add takes more samples.
+    const std::array<std::vector<double>, 2>& Solutions() const
+    {
+        if (!solutions_)
+        {
+            std::vector<std::vector<double>> full = gram_;
+            for (std::size_t a = 0; a < size_; a++)
+            {
+                for (std::size_t b = 0; b < a; b++)
+                {
+                    full[a][b] = full[b][a];
+                }
+            }
+            solutions_ = std::array<std::vector<double>, 2>{Solve(full, cross_[0]), Solve(full, cross_[1])};
+        }
+
+        return *solutions_;
+    }
+
     std::size_t channels_;
     int taps_;
     std::size_t size_;
@@ -333,6 +350,7 @@ private:
     std::vector<std::vector<double>> cross_;
     double energy_ = 0.0;
     double reference_energy_ = 0.0;
+    mutable std::optional<std::array<std::vector<double>, 2>> solutions_;
 };
 
 // The share of a window's output that the best fit of the reference from `place` on leaves, or nothing when either
@@ -504,6 +522,48 @@ double SearchStep(const Reference& reference, const Kernel& search, std::span<co
     return found;
 }
 
+// The sum of the two sides of `output` over its first `opening` samples.
+std::vector<double> SidesOf(std::span<const float> output, std::size_t opening)
+{
+    std::vector<double> sides(opening);
+    for (std::size_t n = 0; n < opening; n++)
+    {
+        sides[n] = double{output[n * 2]} + double{output[n * 2 + 1]};
+    }
+
+    return sides;
+}
+
+// The start within kRefine samples of `guess` at which `reference` fits `sides` best in `search`'s band (BestLag), or
+// `guess` when no lag fits.
+std::size_t RefinedStart(const Reference& reference, double step, const std::vector<double>& sides,
+                         const Kernel& search, std::size_t guess)
+{
+    return BestLag(reference, step, sides, sides.size(), search, guess > kRefine ? guess - kRefine : 0, guess + kRefine)
+        .value_or(guess);
+}
+
+// The steps that SearchStep finds from `anchor`. The first search takes only the windows where the reference fits
+// well. When it passes a window over, a second search takes every window, and its step follows when it differs.
+std::vector<double> SearchSteps(const Reference& reference, const Kernel& search, std::span<const float> output,
+                                double step, std::size_t total, std::size_t anchor, double anchor_place)
+{
+    bool passed_over = false;
+    std::vector<double> steps{
+        SearchStep(reference, search, output, step, total, anchor, anchor_place, false, passed_over)};
+    if (passed_over)
+    {
+        const double every =
+            SearchStep(reference, search, output, step, total, anchor, anchor_place, true, passed_over);
+        if (every != steps.front())
+        {
+            steps.push_back(every);
+        }
+    }
+
+    return steps;
+}
+
 // Fits `reference` to `output`, the output of `run`, at the place and the step of `found`. `kernel` resamples the
 // reference a piece of `piece` output samples at a time, over the output's `total` samples. Sets the gains, the energy
 // and the ratios of `found`, and returns the fit with the filter.
@@ -545,18 +605,13 @@ Fit FitWholeOutput(const Run& run, const Reference& reference, const Kernel& ker
         gain_fit.Add(low_reference, 0, low_output, 0, count);
     }
 
-    const auto snr = [](const Fit& fit, double left)
-    {
-        return left <= 0.0 ? 999.0 : 10.0 * std::log10(fit.Energy() / left);
-    };
-
     const double plain_left = plain.Solved().second;
     const double filtered_left = filtered.Solved().second;
     found.gains = gain_fit.Solved().first;
     found.low_share = plain.ReferenceEnergy() > 0.0 ? gain_fit.ReferenceEnergy() / plain.ReferenceEnergy() : 0.0;
     found.energy = plain.Energy();
-    found.snr = snr(plain, plain_left);
-    found.filtered_snr = snr(filtered, filtered_left);
+    found.snr = Ratio(plain.Energy(), plain_left);
+    found.filtered_snr = Ratio(filtered.Energy(), filtered_left);
 
     return filtered;
 }
@@ -569,20 +624,11 @@ std::vector<double> BandLowPass(double band, double rate, int half)
     const double cutoff = band / rate;
     for (int k = -half; k <= half; k++)
     {
-        const double x = 2.0 * cutoff * k;
-        const double sinc = k == 0 ? 1.0 : std::sin(std::numbers::pi * x) / (std::numbers::pi * x);
-        const double window = 0.42 + 0.5 * std::cos(std::numbers::pi * k / (half + 1)) +
-                              0.08 * std::cos(2.0 * std::numbers::pi * k / (half + 1));
-        low[static_cast<std::size_t>(k + half)] = 2.0 * cutoff * sinc * window;
+        low[static_cast<std::size_t>(k + half)] =
+            BlackmanSinc(2.0 * cutoff, 2.0 * cutoff * k, k, static_cast<double>(half + 1));
     }
 
     return low;
-}
-
-// The ratio of the energies `kept` and `left`, in dB.
-double Ratio(double kept, double left)
-{
-    return left <= 0.0 ? 999.0 : 10.0 * std::log10(kept / left);
 }
 
 // Prints the ratios in each piece of `piece` samples of `output`, the output of `run`, from `begin` to `total`:
@@ -614,23 +660,13 @@ void PrintPieces(const Run& run, std::span<const float> output, const std::vecto
     }
 }
 
-// The fits of `reference` to the `output` of `run` at step `fitted_step`, from the start of `result`. The place at the
-// start comes from `anchor_place`, the place `skip` output samples after it. `kernel` resamples the reference a piece
-// of `piece` output samples at a time, over the output's `total` samples, and `step` is the pitch's step. With `print`,
-// prints the ratios in each piece. With `without_full_scale`, the residual counts as zero at each output sample at full
-// scale.
-Comparison FitAt(const Run& run, const Reference& reference, double step, const Kernel& kernel,
-                 std::span<const float> output, std::size_t total, std::size_t piece, const Comparison& result,
-                 double anchor_place, std::size_t skip, double fitted_step, bool print, bool without_full_scale)
+// What the solved fit `filtered` leaves of `output`, the output of `run`, from `begin` to `total`, interleaved as the
+// output. `kernel` resamples `reference` a piece of `piece` output samples at a time, at the place and the step of
+// `found`. With `without_full_scale`, the residual counts as zero at each output sample at full scale.
+std::vector<float> ResidualOf(const Run& run, const Reference& reference, const Kernel& kernel, const Fit& filtered,
+                              std::span<const float> output, std::size_t total, std::size_t piece,
+                              const Comparison& found, std::size_t begin, bool without_full_scale)
 {
-    Comparison found = result;
-    found.step = fitted_step;
-    found.place = anchor_place - fitted_step * static_cast<double>(skip);
-    const Fit filtered = FitWholeOutput(run, reference, kernel, output, total, piece, found);
-
-    // What the filter leaves, and the ratio below the band: the output and the residual each through a low-pass
-    // filter.
-    const std::size_t begin = found.start + std::min(run.frame_samples, total - found.start);
     std::vector<float> residual(run.output.size());
     for (std::size_t first = begin; first < total; first += piece)
     {
@@ -649,6 +685,35 @@ Comparison FitAt(const Run& run, const Reference& reference, double step, const 
             }
         }
     }
+
+    return residual;
+}
+
+// The output sample at which `reference`, fitted at the start, the place and the step of `found`, ends.
+double ReferenceEnd(const Reference& reference, const Comparison& found)
+{
+    return static_cast<double>(found.start) + (static_cast<double>(reference.Length()) - found.place) / found.step;
+}
+
+// The fits of `reference` to the `output` of `run` at step `fitted_step`, from the start of `result`. The place at the
+// start comes from `anchor_place`, the place `skip` output samples after it. `kernel` resamples the reference a piece
+// of `piece` output samples at a time, over the output's `total` samples, and `step` is the pitch's step. With `print`,
+// prints the ratios in each piece. With `without_full_scale`, the residual counts as zero at each output sample at full
+// scale.
+Comparison FitAt(const Run& run, const Reference& reference, double step, const Kernel& kernel,
+                 std::span<const float> output, std::size_t total, std::size_t piece, const Comparison& result,
+                 double anchor_place, std::size_t skip, double fitted_step, bool print, bool without_full_scale)
+{
+    Comparison found = result;
+    found.step = fitted_step;
+    found.place = anchor_place - fitted_step * static_cast<double>(skip);
+    const Fit filtered = FitWholeOutput(run, reference, kernel, output, total, piece, found);
+
+    // What the filter leaves, and the ratio below the band: the output and the residual each through a low-pass
+    // filter.
+    const std::size_t begin = found.start + std::min(run.frame_samples, total - found.start);
+    const std::vector<float> residual =
+        ResidualOf(run, reference, kernel, filtered, output, total, piece, found, begin, without_full_scale);
     found.band = std::min(kBand, kBandShare * step * run.rate);
     const int half = std::min(kMostBandTaps, static_cast<int>(std::ceil(kBandTaps * kBand / found.band)));
     const std::vector<double> low = BandLowPass(found.band, run.rate, half);
@@ -687,9 +752,7 @@ Comparison FitAt(const Run& run, const Reference& reference, double step, const 
     std::size_t last = total;
     if (!reference.Loops())
     {
-        const double end =
-            static_cast<double>(found.start) + (static_cast<double>(reference.Length()) - found.place) / found.step;
-        last = std::min(total, static_cast<std::size_t>(std::max(0.0, std::ceil(end))));
+        last = std::min(total, static_cast<std::size_t>(std::max(0.0, std::ceil(ReferenceEnd(reference, found)))));
     }
     const std::size_t measured = last > begin + 2 * reach ? last - begin - 2 * reach : 0;
     found.band_measured = last >= begin + 2 * low.size();
@@ -721,13 +784,39 @@ Comparison FitAt(const Run& run, const Reference& reference, double step, const 
     // A reference without a loop ends. The engine detects the end of the voices a frame or so later.
     if (!reference.Loops() && run.ended)
     {
-        const double end =
-            static_cast<double>(found.start) + (static_cast<double>(reference.Length()) - found.place) / found.step;
-        const auto end_frame = static_cast<long long>(std::ceil(end / static_cast<double>(run.frame_samples)));
+        const auto end_frame =
+            static_cast<long long>(std::ceil(ReferenceEnd(reference, found) / static_cast<double>(run.frame_samples)));
         found.end_frames = static_cast<long long>(run.frames) - end_frame;
     }
 
     return found;
+}
+
+// The fit of `fit_at` at the step of `steps` that fits better. A search can still settle on a step a little off where
+// the reference holds little in the lowest third of the band. When the sound fits below kLeastSnr with the searches'
+// steps, the pitch's step `step` takes their place if it fits better.
+template <class FitAtFn>
+Comparison BestFit(const FitAtFn& fit_at, const std::vector<double>& steps, double step)
+{
+    Comparison fitted = fit_at(steps.front(), false);
+    if (steps.size() > 1)
+    {
+        Comparison other = fit_at(steps.back(), false);
+        if (Judged(other) > Judged(fitted))
+        {
+            fitted = std::move(other);
+        }
+    }
+    if (Judged(fitted) < kLeastSnr && std::find(steps.begin(), steps.end(), step) == steps.end())
+    {
+        Comparison nominal = fit_at(step, false);
+        if (Judged(nominal) > Judged(fitted))
+        {
+            fitted = std::move(nominal);
+        }
+    }
+
+    return fitted;
 }
 
 } // namespace
@@ -759,26 +848,16 @@ Comparison Compare(const Run& run, const Reference& reference, double step, bool
     // positive: a tone fits half a period off inverted. Within kRefine samples of that lag, the start is then the lag
     // that fits best in the lowest third of the band. Higher up, a burst of high sounds can fit best a few samples off.
     const auto lead = static_cast<std::size_t>(std::ceil(static_cast<double>(sounds) / step));
-    const std::size_t opening = std::min(total, kMostStart + lead + kOpening);
-    std::vector<double> sides(opening);
-    for (std::size_t n = 0; n < opening; n++)
-    {
-        sides[n] = double{output[n * 2]} + double{output[n * 2 + 1]};
-    }
-
-    const auto best_lag = [&](const Kernel& band, std::size_t lowest, std::size_t highest)
-    {
-        return BestLag(reference, step, sides, opening, band, lowest, highest);
-    };
-
+    const std::vector<double> sides = SidesOf(output, std::min(total, kMostStart + lead + kOpening));
     if (start)
     {
         result.start = *start;
     }
     else
     {
-        const std::size_t coarse = best_lag(Kernel(step, 2.0 / 3.0), 0, kMostStart).value_or(0);
-        result.start = best_lag(search, coarse > kRefine ? coarse - kRefine : 0, coarse + kRefine).value_or(coarse);
+        const std::size_t coarse =
+            BestLag(reference, step, sides, sides.size(), Kernel(step, 2.0 / 3.0), 0, kMostStart).value_or(0);
+        result.start = RefinedStart(reference, step, sides, search, coarse);
     }
 
     // The place there, within 4 samples of `skip_place`. Then the step: the place at windows ever further on. The step
@@ -790,20 +869,7 @@ Comparison Compare(const Run& run, const Reference& reference, double step, bool
     const std::size_t anchor_count = std::min(kWindow, total - anchor);
     const double anchor_place =
         BestPlace(reference, search, skip_place, step, output, anchor, anchor_count).value_or(skip_place);
-    bool passed_over = false;
-    const auto search_step = [&](bool every_window)
-    {
-        return SearchStep(reference, search, output, step, total, anchor, anchor_place, every_window, passed_over);
-    };
-    std::vector<double> steps{search_step(false)};
-    if (passed_over)
-    {
-        const double every = search_step(true);
-        if (every != steps.front())
-        {
-            steps.push_back(every);
-        }
-    }
+    const std::vector<double> steps = SearchSteps(reference, search, output, step, total, anchor, anchor_place);
 
     // The fits at a step. The step gives the place at the start from the place at the anchor.
     const auto fit_at = [&](double fitted_step, bool print)
@@ -812,26 +878,8 @@ Comparison Compare(const Run& run, const Reference& reference, double step, bool
                      false);
     };
 
-    // The step that fits better counts. A search can still settle on a step a little off where the reference holds
-    // little in the lowest third of the band. When the sound fits below kLeastSnr with the searches' steps, the pitch's
-    // step takes their place if it fits better.
-    Comparison fitted = fit_at(steps.front(), false);
-    if (steps.size() > 1)
-    {
-        Comparison other = fit_at(steps.back(), false);
-        if (Judged(other) > Judged(fitted))
-        {
-            fitted = std::move(other);
-        }
-    }
-    if (Judged(fitted) < kLeastSnr && std::find(steps.begin(), steps.end(), step) == steps.end())
-    {
-        Comparison nominal = fit_at(step, false);
-        if (Judged(nominal) > Judged(fitted))
-        {
-            fitted = std::move(nominal);
-        }
-    }
+    // The step that fits better counts (BestFit).
+    Comparison fitted = BestFit(fit_at, steps, step);
 
     // A tone that swells can fit best whole periods early. When the sound fits below kLeastSnr from the start that the
     // search found, the start at the output's onset takes its place if it fits better: where the output first reaches
@@ -841,8 +889,7 @@ Comparison Compare(const Run& run, const Reference& reference, double step, bool
         if (const std::optional<std::size_t> onset = Onset(output))
         {
             const std::size_t guess = *onset > lead ? *onset - lead : 0;
-            const std::size_t other_start =
-                best_lag(search, guess > kRefine ? guess - kRefine : 0, guess + kRefine).value_or(guess);
+            const std::size_t other_start = RefinedStart(reference, step, sides, search, guess);
             if (other_start != result.start)
             {
                 Comparison other = Compare(run, reference, step, false, other_start);

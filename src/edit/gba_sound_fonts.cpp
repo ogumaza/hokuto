@@ -16,9 +16,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/sequence_export/mp2k/soundfont.h"
+#include "agblib/agb/gba.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/sequence_export/mp2k/soundfont.h"
 #include "xsflib/bytes.h"
 
 #include "audio/resampler.h"
@@ -30,7 +30,7 @@ namespace hokuto::edit
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 
 // The velocity whose voices a key uses, and the MIDI bank of the percussion.
 constexpr int kVelocity = 100;
@@ -59,7 +59,7 @@ uint8_t AttackOf(double timecents)
         return 255;
     }
 
-    return static_cast<uint8_t>(std::clamp(std::lround(255.0 / (seconds * ntdlib::agb::kFrameRate + 1.0)), 1L, 255L));
+    return static_cast<uint8_t>(std::clamp(std::lround(255.0 / (seconds * agblib::agb::kFrameRate + 1.0)), 1L, 255L));
 }
 
 // The frames in which the fade of the driver brings the level from `from` to `to` or below. The level becomes `fade`
@@ -86,7 +86,7 @@ uint8_t FadeOf(double timecents, int from, int to)
         return 0;
     }
 
-    const double per_frame = kFadeDecibels / (seconds * ntdlib::agb::kFrameRate);
+    const double per_frame = kFadeDecibels / (seconds * agblib::agb::kFrameRate);
     const auto line = static_cast<int>(std::clamp(std::lround(256.0 * std::pow(10.0, -per_frame / 20.0)), 0L, 255L));
     const int bottom = std::max(to, 1);
     if (from <= bottom)
@@ -121,7 +121,7 @@ uint8_t FadeOf(double timecents, int from, int to)
 }
 
 // The release of Camelot's mixer whose fade ntdlib's export converts to the SoundFont release nearest `timecents`
-// (ntdlib::sequence_export::mp2k::EnvelopeFor). The mixer subtracts 256 less the release from the level each frame, in
+// (agblib::sequence_export::mp2k::EnvelopeFor). The mixer subtracts 256 less the release from the level each frame, in
 // a straight line from the sustain level of `voice`. Among the releases that last the same frames, the slowest is
 // chosen. Its line ends nearest the last frame.
 uint8_t StraightReleaseOf(double timecents, const mp2k::DriverInfo& driver, mp2k::Voice voice)
@@ -131,7 +131,7 @@ uint8_t StraightReleaseOf(double timecents, const mp2k::DriverInfo& driver, mp2k
     for (int release = 0; release <= 255; release++)
     {
         voice.release = static_cast<uint8_t>(release);
-        const double off = std::abs(ntdlib::sequence_export::mp2k::EnvelopeFor(driver, voice).release - timecents);
+        const double off = std::abs(agblib::sequence_export::mp2k::EnvelopeFor(driver, voice).release - timecents);
         if (off <= distance)
         {
             nearest = release;
@@ -363,7 +363,7 @@ private:
         }
         // The driver keeps its voices at the full level for a frame before the decay (ntdlib's export writes that as a
         // hold).
-        if (SecondsOf(at(kHoldVolEnv)) * ntdlib::agb::kFrameRate > 2.0)
+        if (SecondsOf(at(kHoldVolEnv)) * agblib::agb::kFrameRate > 2.0)
         {
             ++left_out_["volume envelope hold"];
         }

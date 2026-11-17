@@ -272,21 +272,21 @@ std::optional<std::pair<std::size_t, std::string>> OffScale(const ntdlib::comman
 }
 
 // Why MP2K's bytes can't store the commands of `sequence` as they are in the text form, where a note reads up to
-// `note_arguments` bytes: the item, and the encoder's reason (ntdlib::mp2k::EncodeSequence), or a value between two of
+// `note_arguments` bytes: the item, and the encoder's reason (agblib::mp2k::EncodeSequence), or a value between two of
 // MP2K's values. Nothing where the bytes hold them. The encoder rounds a value to the nearest value of MP2K. When the
 // encoder refuses the sequence, the function encodes each item alone, without its target and without the choices that
 // tie it to the items before, to find the item. A refusal that no single item causes is reported at the first item.
 std::optional<std::pair<std::size_t, std::string>> Mp2kProblem(const ntdlib::commands::Sequence& sequence,
                                                                int note_arguments)
 {
-    if (auto off = OffScale(sequence, [](Kind kind) { return ntdlib::mp2k::ScaleOf(kind); }, "MP2K's", true))
+    if (auto off = OffScale(sequence, [](Kind kind) { return agblib::mp2k::ScaleOf(kind); }, "MP2K's", true))
     {
         return off;
     }
 
     try
     {
-        ntdlib::mp2k::EncodeSequence(sequence, ntdlib::agb::kRomBase, note_arguments);
+        agblib::mp2k::EncodeSequence(sequence, agblib::agb::kRomBase, note_arguments);
         return std::nullopt;
     }
     catch (const std::invalid_argument& error)
@@ -304,7 +304,7 @@ std::optional<std::pair<std::size_t, std::string>> Mp2kProblem(const ntdlib::com
             probe.encoding.arguments.reset();
             try
             {
-                ntdlib::mp2k::EncodeSequence(ntdlib::commands::Sequence{{probe}, {}}, ntdlib::agb::kRomBase,
+                agblib::mp2k::EncodeSequence(ntdlib::commands::Sequence{{probe}, {}}, agblib::agb::kRomBase,
                                              note_arguments);
             }
             catch (const std::invalid_argument& alone)

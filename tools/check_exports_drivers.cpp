@@ -29,7 +29,7 @@ struct TheirFiles
 TheirFiles TheirFilesOf(const hokuto::song::DriverRom& rom, uint32_t sound, const std::string& stem,
                         const std::string& program)
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
     TheirFiles files;
     const auto take = [&files](auto&& converted)
@@ -45,46 +45,46 @@ TheirFiles TheirFilesOf(const hokuto::song::DriverRom& rom, uint32_t sound, cons
         const bool live = hokuto::song::KonamiSoundIsLive(*konami, sound);
         const int song = hokuto::song::KonamiSongOf(*konami, sound);
         settings.version = live ? 1 : 0;
-        ntdlib::sequence_export::konami::SongFiles converted =
-            ntdlib::sequence_export::konami::ConvertSongFiles(konami->rom, konami->info, song, settings);
+        agblib::sequence_export::konami::SongFiles converted =
+            agblib::sequence_export::konami::ConvertSongFiles(konami->rom, konami->info, song, settings);
         files.sfz = std::move(converted.sfz);
         take(std::move(converted));
-        files.base = stem + "_" + ntdlib::sequence_export::agb::SongNumber(song, 1) + (live ? "_live" : "");
+        files.base = stem + "_" + agblib::sequence_export::agb::SongNumber(song, 1) + (live ? "_live" : "");
     }
     else if (const hokuto::song::Rd2Rom* rd2 = hokuto::song::Rd2Of(&rom))
     {
         const int song = rd2->SongOf(sound);
         const int version = rd2->VersionOf(sound);
         settings.version = version;
-        take(ntdlib::sequence_export::rd2::ConvertSongFiles(rd2->rom, rd2->info, song, settings));
-        const std::vector<ntdlib::sequence_export::agb::SongVersion> versions =
-            ntdlib::sequence_export::rd2::SongVersions(rd2->info, song);
+        take(agblib::sequence_export::rd2::ConvertSongFiles(rd2->rom, rd2->info, song, settings));
+        const std::vector<agblib::sequence_export::agb::SongVersion> versions =
+            agblib::sequence_export::rd2::SongVersions(rd2->info, song);
         const std::size_t picked = std::min(static_cast<std::size_t>(std::max(version, 0)), versions.size() - 1);
-        files.base = stem + "_" + ntdlib::sequence_export::agb::SongNumber(song, 0) + versions[picked].suffix;
+        files.base = stem + "_" + agblib::sequence_export::agb::SongNumber(song, 0) + versions[picked].suffix;
     }
     else if (const hokuto::song::RareRom* rare = hokuto::song::RareOf(&rom))
     {
         const int song = rare->SongOf(sound);
         const int version = rare->VersionOf(sound);
         settings.version = version;
-        take(ntdlib::sequence_export::rare::ConvertSongFiles(rare->rom, rare->info, song, settings));
-        const std::vector<ntdlib::sequence_export::agb::SongVersion> versions =
-            ntdlib::sequence_export::rare::TuneVersions(rare->info, song);
+        take(agblib::sequence_export::rare::ConvertSongFiles(rare->rom, rare->info, song, settings));
+        const std::vector<agblib::sequence_export::agb::SongVersion> versions =
+            agblib::sequence_export::rare::TuneVersions(rare->info, song);
         const std::size_t picked = std::min(static_cast<std::size_t>(std::max(version, 0)), versions.size() - 1);
-        files.base = stem + "_" + ntdlib::sequence_export::agb::SongNumber(song, 0) + versions[picked].suffix;
+        files.base = stem + "_" + agblib::sequence_export::agb::SongNumber(song, 0) + versions[picked].suffix;
     }
     else if (const hokuto::song::BrownieRom* brownie = hokuto::song::BrownieOf(&rom))
     {
         const int song = brownie->SongOf(sound);
-        take(ntdlib::sequence_export::brownie::ConvertSongFiles(brownie->rom, brownie->info, song, settings));
-        files.base = stem + "_" + ntdlib::sequence_export::agb::SongNumber(song, brownie->info.song_count);
+        take(agblib::sequence_export::brownie::ConvertSongFiles(brownie->rom, brownie->info, song, settings));
+        files.base = stem + "_" + agblib::sequence_export::agb::SongNumber(song, brownie->info.song_count);
     }
     else if (const hokuto::song::UbiMilanRom* milan = hokuto::song::UbiMilanOf(&rom))
     {
         const int song = static_cast<int>(sound);
-        take(ntdlib::sequence_export::ubimilan::ConvertSongFiles(milan->rom, milan->info, song, settings));
+        take(agblib::sequence_export::ubimilan::ConvertSongFiles(milan->rom, milan->info, song, settings));
         files.base =
-            stem + "_" + ntdlib::sequence_export::agb::SongNumber(song, static_cast<int>(milan->info.songs.size()));
+            stem + "_" + agblib::sequence_export::agb::SongNumber(song, static_cast<int>(milan->info.songs.size()));
     }
     else if (const hokuto::song::QuintetRom* quintet = hokuto::song::QuintetOf(&rom))
     {
@@ -93,14 +93,14 @@ TheirFiles TheirFilesOf(const hokuto::song::DriverRom& rom, uint32_t sound, cons
         {
             throw std::invalid_argument("The ROM has no song " + std::to_string(sound) + ".");
         }
-        take(ntdlib::sequence_export::quintet::ConvertSongFiles(quintet->rom, *file->first, file->second, settings));
-        files.base = stem + "_" + ntdlib::sequence_export::agb::SongNumber(static_cast<int>(sound), 0);
+        take(agblib::sequence_export::quintet::ConvertSongFiles(quintet->rom, *file->first, file->second, settings));
+        files.base = stem + "_" + agblib::sequence_export::agb::SongNumber(static_cast<int>(sound), 0);
     }
     else if (const hokuto::song::KrawallRom* krawall = hokuto::song::KrawallOf(&rom))
     {
-        take(ntdlib::sequence_export::krawall::ConvertSongFiles(krawall->ModulesRom(), krawall->info,
+        take(agblib::sequence_export::krawall::ConvertSongFiles(krawall->ModulesRom(), krawall->info,
                                                                 static_cast<int>(sound), settings));
-        files.base = stem + "_" + ntdlib::sequence_export::agb::SongNumber(static_cast<int>(sound), 0);
+        files.base = stem + "_" + agblib::sequence_export::agb::SongNumber(static_cast<int>(sound), 0);
     }
     else
     {

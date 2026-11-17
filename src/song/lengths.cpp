@@ -12,7 +12,7 @@
 #include <optional>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
+#include "agblib/agb/gba.h"
 #include "ntdlib/cafe/snd/length_model.h"
 #include "ntdlib/ctr/snd/engine.h"
 #include "ntdlib/ctr/snd/length_model.h"
@@ -170,7 +170,7 @@ uint64_t LoopTarget(const Sequence& sequence, uint64_t longest)
         const double start = MsOfTick(sequence, sequence.loop->start);
         const double pass = MsOfTick(sequence, sequence.loop->end) - start;
         const double ms = start + kLengthLoops * pass;
-        return std::min<uint64_t>(longest, static_cast<uint64_t>(std::llround(ms * ntdlib::agb::kFrameRate / 1000.0)));
+        return std::min<uint64_t>(longest, static_cast<uint64_t>(std::llround(ms * agblib::agb::kFrameRate / 1000.0)));
     }
 
     return longest;
@@ -229,9 +229,9 @@ std::optional<Length> MeasureLength(const DriverRom& rom, uint32_t sound)
 
     const auto ms_of = [](uint64_t frames)
     {
-        return static_cast<uint32_t>(std::llround(static_cast<double>(frames) * 1000.0 / ntdlib::agb::kFrameRate));
+        return static_cast<uint32_t>(std::llround(static_cast<double>(frames) * 1000.0 / agblib::agb::kFrameRate));
     };
-    const auto longest = static_cast<uint64_t>(kRules.max_ms / 1000.0 * ntdlib::agb::kFrameRate);
+    const auto longest = static_cast<uint64_t>(kRules.max_ms / 1000.0 * agblib::agb::kFrameRate);
     const uint64_t target = LoopTarget(*sequence, longest);
 
     const std::unique_ptr<DriverPlayer> player = rom.MakePlayer();

@@ -94,22 +94,17 @@ std::string LeftDsWavesWarning(std::size_t left, const std::string& name)
                       : " are left out because Hokuto can't read them. Their regions are silent.");
 }
 
-// The rates that the waves of a sound take in turn when they don't fit on the DS at its mix rate: 3/4, 1/2, 3/8 and 1/4
-// of that rate, near enough.
-constexpr std::array<uint32_t, 4> kDsLowerRates = {24000, 16364, 12000, 8182};
-
 // A wave of a later console that converts to the DS. ds_conversion reads it in this form.
 sar::WaveFile WaveAsItIs(sar::WaveFile wave)
 {
     return wave;
 }
 
-// The bank, its DS files and the highest sample rate of its waves (FitDsBank).
+// The bank and its DS files (FitDsBank).
 struct FittedDsBank
 {
     MergedBank<sar::WaveFile> bank;
     std::optional<DsBankFiles> files;
-    uint32_t most_rate = kDsMixRate;
 };
 
 // The bank for the DS of sound `source` of `archive` (FitDsBank): the banks of the slots that the notes play, merged,
@@ -168,12 +163,17 @@ double StereoGain(const format::NativeSound& source, const MonoLevel& level)
     return std::max(GainAt(mono, level, {&kCentre, 1}), 1.0);
 }
 
-// The DS files of `bank` with sample rates up to `most_rate`, or nothing where they don't fit in `room` bytes. The
-// waves take the stereo gain of sound `source` (FitDsBank).
-std::optional<DsBankFiles> DsFilesIn(const MergedBank<sar::WaveFile>& bank, uint32_t most_rate, std::size_t room,
-                                     const format::NativeSound& source)
+// The DS files of `bank` with sample rates up to the DS's mix rate and `wave_rates`, or nothing where they don't fit in
+// `room` bytes. The waves take the stereo gain of sound `source` (FitDsBank). `overhead` contains the most bytes that
+// files encoded before took beyond DsWavesSize: the bank file, the heap's tables and the words of the waves. The
+// files aren't encoded where DsWavesSize and `overhead` already pass the room, unless `exact`. Encoding a large bank
+// takes seconds. The overhead varies a little with the rates: a looped wave takes whole words of its loop.
+std::optional<DsBankFiles> DsFilesIn(const MergedBank<sar::WaveFile>& bank, const DsWaveRates& wave_rates,
+                                     std::size_t room, const format::NativeSound& source, std::size_t& overhead,
+                                     bool exact = true)
 {
-    if (DsWavesSize(bank.file, bank.waves, most_rate) > room)
+    const std::size_t estimate = DsWavesSize(bank.file, bank.waves, kDsMixRate, wave_rates);
+    if (estimate > room || (!exact && estimate + overhead > room))
     {
         return std::nullopt;
     }
@@ -185,16 +185,32 @@ std::optional<DsBankFiles> DsFilesIn(const MergedBank<sar::WaveFile>& bank, uint
 
     // The heap puts each file on a multiple of 32 bytes. A large wave archive loads its waves one at a time, each
     // on such a multiple, with a table of 8 bytes for each wave (sdat::SoundHeap).
-    DsBankFiles made = DsBankFilesOf(bank.file, bank.waves, stereo_gain, most_rate);
-    if (made.bank.size() + made.waves.size() + 40 * made.wave_count + 96 > room)
+    DsBankFiles made = DsBankFilesOf(bank.file, bank.waves, stereo_gain, kDsMixRate, wave_rates);
+    const std::size_t size = made.bank.size() + made.waves.size() + 40 * made.wave_count + 96;
+    if (size > room)
     {
+        overhead = std::max(overhead, size > estimate ? size - estimate : 0);
         return std::nullopt;
     }
 
     return made;
 }
 
-// The bank for the DS of sound `source` of `archive`, with its files and the highest sample rate of its waves (ForDs).
+// The waves that `files` resampled to lower rates, with the frequencies that each rate loses (FitDsBank).
+std::string LoweredRatesText(const DsBankFiles& files)
+{
+    std::string text = "The waves don't fit in Hokuto's DS model at their sample rates.";
+    for (auto lowered = files.lowered_rates.rbegin(); lowered != files.lowered_rates.rend(); ++lowered)
+    {
+        const auto [rate, count] = *lowered;
+        text += " " + std::to_string(count) + (count == 1 ? " wave is" : " waves are") + " resampled to " +
+                std::to_string(rate) + " Hz. Frequencies above " + std::to_string(rate / 2) + " Hz are lost.";
+    }
+
+    return text;
+}
+
+// The bank for the DS of sound `source` of `archive`, with its files (ForDs).
 // `programs` contains the programs of the sound's slots. The files fit in `ds_memory` beside a sequence file of
 // `sequence_size` bytes. Throws std::invalid_argument with a message for the user where they don't.
 FittedDsBank FitDsBank(Song& song, const sar::SoundArchive& archive, const format::NativeSound& source,
@@ -211,52 +227,58 @@ FittedDsBank FitDsBank(Song& song, const sar::SoundArchive& archive, const forma
     const std::string holds =
         "Hokuto's DS model has room for " + SizeText(room) + " of banks and waves besides the sequence.";
 
-    // Every instrument at the DS's rate, then only the instruments that the sound selects, and then those at lower
-    // rates. Each step loses more of the sound than the one before it.
+    // Every instrument at the DS's rate, then only the instruments that the sound selects, and then those with the
+    // largest waves at lower rates, one wave and one rate at a time. Each step loses more of the sound than the one
+    // before it.
     MergedBank<sar::WaveFile> bank = SoundBankForDs(song, archive, source, programs, read, false);
     const std::size_t whole = DsWavesSize(bank.file, bank.waves);
-    std::optional<DsBankFiles> files = DsFilesIn(bank, kDsMixRate, room, source);
-    uint32_t most_rate = kDsMixRate;
+    DsWaveRates wave_rates;
+    std::size_t overhead = 0;
+    std::optional<DsBankFiles> files = DsFilesIn(bank, wave_rates, room, source, overhead);
     if (!files && programs)
     {
         song.result.warnings.resize(warned);
         bank = SoundBankForDs(song, archive, source, programs, read, true);
-        files = DsFilesIn(bank, kDsMixRate, room, source);
+        overhead = 0;
+        files = DsFilesIn(bank, wave_rates, room, source, overhead);
         song.result.warnings.push_back(
             "The bank keeps only the instruments that the sound uses. With every instrument, the bank and its waves "
             "would use " +
             SizeText(whole) + ". " + holds);
     }
 
-    for (const uint32_t rate : kDsLowerRates)
+    // A rate's turn ends once every wave above it has taken it. The files are then encoded wherever the estimate alone
+    // fits, whatever the overhead measured before.
+    std::optional<uint32_t> rate = LowerLargestDsWave(bank.file, bank.waves, wave_rates);
+    while (!files && rate)
     {
-        if (files)
+        DsWaveRates next = wave_rates;
+        const std::optional<uint32_t> next_rate = LowerLargestDsWave(bank.file, bank.waves, next);
+        files = DsFilesIn(bank, wave_rates, room, source, overhead, !next_rate || *next_rate < *rate);
+        if (!files)
         {
-            break;
+            wave_rates = std::move(next);
+            rate = next_rate;
         }
-
-        files = DsFilesIn(bank, rate, room, source);
-        most_rate = rate;
     }
+
     if (!files)
     {
-        throw std::invalid_argument(
-            "The sound's bank and its waves use " + SizeText(DsWavesSize(bank.file, bank.waves, most_rate)) + " at " +
-            std::to_string(most_rate) + " Hz" + (programs ? ", even without the unused instruments. " : ". ") + holds +
-            (!programs                            ? kProgramsNotFollowed
-             : VariableSelectsPrograms(*programs) ? kVariablePrograms
-                                                  : ""));
+        throw std::invalid_argument("The sound's bank and its waves use " +
+                                    SizeText(DsWavesSize(bank.file, bank.waves, kDsMixRate, wave_rates)) + " at " +
+                                    std::to_string(kDsLowerRates.back()) + " Hz" +
+                                    (programs ? ", even without the unused instruments. " : ". ") + holds +
+                                    (!programs                            ? kProgramsNotFollowed
+                                     : VariableSelectsPrograms(*programs) ? kVariablePrograms
+                                                                          : ""));
     }
 
-    if (most_rate < kDsMixRate)
+    if (!files->lowered_rates.empty())
     {
-        song.result.warnings.push_back(
-            "The waves don't fit in Hokuto's DS model at their sample rates. " + std::to_string(files->rates_lowered) +
-            (files->rates_lowered == 1 ? " wave is" : " waves are") + " resampled to " + std::to_string(most_rate) +
-            " Hz. Frequencies above " + std::to_string(most_rate / 2) + " Hz are lost. " + holds);
+        song.result.warnings.push_back(LoweredRatesText(*files) + " " + holds);
     }
 
-    return {std::move(bank), std::move(files), most_rate};
+    return {std::move(bank), std::move(files)};
 }
 
 // Adds the warnings about sound `sound` of `archive`, whose bytes `bytes` give, that the DS can't play as `source`
@@ -452,14 +474,14 @@ OtherConsoleSong ForDs(const format::File& file, uint32_t sound, std::size_t ds_
     const std::vector<uint8_t> sequence_file = DsSequenceFileOf(commands);
     AddDsCommandWarnings(commands, reads, song.result.warnings);
 
-    auto [bank, files, most_rate] = FitDsBank(song, *archive, source, programs, ds_memory, sequence_file.size());
+    auto [bank, files] = FitDsBank(song, *archive, source, programs, ds_memory, sequence_file.size());
 
     if (merged)
     {
         SetSlotPrograms(song, *programs);
     }
 
-    AddDsBankWarnings(*files, most_rate == kDsMixRate, song.result.warnings);
+    AddDsBankWarnings(*files, song.result.warnings);
     AddOneBankWarnings(song, *archive, source.banks, programs, merged, from, "DS");
     AddDsSoundWarnings(song, *archive, bytes, sound, source, from);
 

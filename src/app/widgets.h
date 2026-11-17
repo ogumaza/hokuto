@@ -217,7 +217,9 @@ float FaderPosition(float level);
 
 // Begins a window over the middle of the main window, in the style of the dialogs: Studio Setup, the Bank Editor and
 // the like. The window doesn't collapse, dock or keep its settings, and `flags` add to that. The caller sets the size
-// first. Returns ImGui::Begin's result: the caller ends the window either way.
+// first. The window opens in the middle at its measured size. A window with ImGuiWindowFlags_NoResize stays in the
+// middle as its height changes, until the user drags it. Returns ImGui::Begin's result: the caller ends the window
+// either way.
 bool BeginDialogWindow(const char* title, bool* open, ImGuiWindowFlags flags);
 
 // Whether MIDI key `key` is a black key of a piano keyboard.
@@ -463,6 +465,11 @@ void RectTooltip(ImVec2 min, ImVec2 max, std::string_view text);
 // `text`, cut short with an ellipsis where it's wider than `width` in the present font. The cut falls between whole
 // characters.
 std::string FittedText(const std::string& text, float width);
+
+// `text` as the preview of the combo that follows, after its SetNextItemWidth: cut short with an ellipsis where it's
+// wider than the room before the arrow. Dear ImGui's combo cuts its preview at the arrow without one. A width
+// that counts from the right edge, such as -FLT_MIN, counts as Dear ImGui resolves it.
+std::string ComboPreview(const std::string& text);
 
 // Makes the figures the font of the controls that follow, at the present size. A field that types a number then keeps
 // the figures that its value shows in. ImGui::PopFont takes it off.

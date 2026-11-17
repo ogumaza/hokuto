@@ -21,6 +21,7 @@
 #include "ntdlib/rvl/snd/stream_sound.h"
 #include "ntdlib/sar/bank_file.h"
 #include "ntdlib/sar/decode.h"
+#include "ntdlib/sar/encodings.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/wave_file.h"
 #include "ntdlib/sound_build.h"
@@ -607,7 +608,7 @@ WaveView MakeStreamView(const format::File& file, const rsar::SoundArchive& arch
     WaveView view;
     view.name = name;
     view.stream = true;
-    const auto encoding = static_cast<sar::WaveEncoding>(stream.encoding);
+    const sar::WaveEncoding encoding = sar::EncodingOf(stream.encoding);
     view.values = {encoding, stream.sample_rate, stream.loop, stream.loop ? stream.loop_start : 0, stream.sample_count};
     sar::Pcm pcm;
     try

@@ -152,6 +152,10 @@ void App::Execute(Command command)
         }
         break;
 
+    case Command::kExportAudioMixdown:
+        OpenMixdown();
+        break;
+
     // The submenu's items open the files (ExecuteListed).
     case Command::kRecentProjects:
         break;
@@ -503,7 +507,7 @@ bool App::IsEnabled(Command command) const
     // also wait until no version is being read (`settled`).
     const bool importable =
         history_ && !preview_ && document != nullptr && document->native && !replace_.shown && !export_;
-    const bool settled = reading_version_ == nullptr;
+    const bool settled = !Settling();
     switch (command)
     {
     case Command::kSave:
@@ -559,13 +563,18 @@ bool App::IsEnabled(Command command) const
                ((played_.Sar() && archive_version_) || played_.Wii() ||
                 ((played_.Ds() || played_.Dse() || (played_.Driver() && played_.Driver()->WritesSfz())) &&
                  archive_version_));
+    case Command::kExportAudioMixdown:
+        return history_ && !preview_ && document != nullptr && document->native && archive_version_ && !Settling() &&
+               (played_.Sar() || played_.Wii() || song::OnGbaOrDs(played_));
     case Command::kExportOtherConsole:
         return exports && sequence_ && archive_version_ &&
                (((played_.Sar() || played_.Wii()) && document->native->tables) || song::OnGbaOrDs(played_));
+    // An item's edit whose work still runs is the last edit: Undo waits for it and undoes it (MoveInHistory). It
+    // leaves nothing to redo once it's done.
     case Command::kUndo:
-        return history_ && history_->CanUndo() && !typing && !replace_.shown;
+        return history_ && (history_->CanUndo() || item_edit_.Waiting()) && !typing && !replace_.shown;
     case Command::kRedo:
-        return history_ && history_->CanRedo() && !typing && !replace_.shown;
+        return history_ && history_->CanRedo() && !item_edit_.Waiting() && !typing && !replace_.shown;
     case Command::kLocatorsToSelection:
         return SelectedPart(song_, arrangement_) != nullptr;
     case Command::kOpenCloseEditor:
@@ -576,15 +585,13 @@ bool App::IsEnabled(Command command) const
     case Command::kOpenListEditor:
         return list_editor_open_ || sequence_ != nullptr;
     case Command::kQuantize:
-        return key_editor_open_ && key_editor_.focused && reading_version_ == nullptr;
+        return key_editor_open_ && key_editor_.focused && settled;
     case Command::kCut:
-        return key_editor_open_ && key_editor_.focused && !key_editor_.selected.empty() && !typing &&
-               reading_version_ == nullptr;
+        return key_editor_open_ && key_editor_.focused && !key_editor_.selected.empty() && !typing && settled;
     case Command::kCopy:
         return key_editor_open_ && key_editor_.focused && !key_editor_.selected.empty() && !typing;
     case Command::kPaste:
-        return key_editor_open_ && key_editor_.focused && !key_editor_.clipboard.empty() && !typing &&
-               reading_version_ == nullptr;
+        return key_editor_open_ && key_editor_.focused && !key_editor_.clipboard.empty() && !typing && settled;
     case Command::kSelectAll:
         return !typing && ((key_editor_open_ && key_editor_.focused) || (list_editor_open_ && list_editor_.focused));
     case Command::kAddTrack:
@@ -626,11 +633,15 @@ void App::ExecuteListed(Command command, std::size_t index)
 std::string App::Title(Command command, std::string_view name) const
 {
     std::string title(name);
-    if (command == Command::kUndo && history_ && history_->CanUndo())
+    if (command == Command::kUndo && item_edit_.Waiting())
+    {
+        title += " " + item_edit_names_.name;
+    }
+    else if (command == Command::kUndo && history_ && history_->CanUndo())
     {
         title += " " + history_->Actions()[history_->Done() - 1].name;
     }
-    else if (command == Command::kRedo && history_ && history_->CanRedo())
+    else if (command == Command::kRedo && history_ && history_->CanRedo() && !item_edit_.Waiting())
     {
         title += " " + history_->Actions()[history_->Done()].name;
     }

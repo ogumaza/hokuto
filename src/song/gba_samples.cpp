@@ -8,10 +8,12 @@
 #include <cstddef>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
+#include "ntdlib/wave/pcm.h"
 #include "seqlib/pcm.h"
 #include "seqlib/wav.h"
 #include "xsflib/bytes.h"
@@ -21,7 +23,7 @@ namespace hokuto::song
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 
 constexpr std::size_t kHeaderBytes = 16;
 constexpr uint8_t kLoopFlag = 0x40;
@@ -338,12 +340,7 @@ std::vector<uint8_t> GbaSampleWav(const GbaRom& rom, uint32_t address)
     }
 
     seqlib::Pcm pcm;
-    pcm.channels.emplace_back(wave.size);
-    const uint8_t* const data = rom.rom.Ptr(wave.Data());
-    for (uint32_t i = 0; i < wave.size; i++)
-    {
-        pcm.channels[0][i] = static_cast<int16_t>(static_cast<int8_t>(data[i]) * 256);
-    }
+    pcm.channels.push_back(ntdlib::wave::DecodePcm8(std::span(rom.rom.Ptr(wave.Data()), wave.size), wave.size));
 
     if (wave.loops && wave.loop_start < wave.size)
     {

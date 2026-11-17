@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: MIT
 
 // The mode --new-waves of hokuto_check_replace: new waves.
+//
+// With --new-waves, the tool checks only File > Import > Wave… and Audio File…. Each wave of each wave archive goes in
+// again as a new wave after the wave archive's waves: from its wave file, from its wave file for each other console and
+// from its WAV file as 16-bit PCM, through the reads of the Import window. The first also goes in from its WAV file as
+// DSP-ADPCM. A wave archive without waves takes the archive's first wave, or a short WAV file in an archive without
+// waves. The new wave archive has to hold the old waves' bytes and the new wave after them. The new wave has to decode
+// to the samples of the wave that it came from. A wave that Hokuto makes or converts has to take the version of the
+// wave archive's first wave. So does a wave file of a later version. Hokuto writes it again. The first wave's file then
+// goes in through the Import window's edit. The exported archive has to hold the new wave archive in every copy, and
+// every other file has to keep its bytes. In one wave archive of each archive, a second new wave goes in after the
+// first, and the file has to save and open again in both forms.
 
 #include "check_replace.h"
 
@@ -93,7 +104,7 @@ std::string AppendProblem(const sar::SoundArchive& built, const FileItem& item, 
 // nothing. The new wave has to take the version of Export…'s waves and decode to the WAV file's samples. The edit then
 // goes through the file as in NewWavesProblem. `built` is the archive that `file` builds, with `groups`.
 std::string WavelessProblem(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                            const FileItem& item, Totals& totals)
+                            const FileItem& item, NewWaveTotals& totals)
 {
     // The WAV file goes in as 16-bit PCM.
     const sar::Flavor flavor = built.ReadOptions().flavor;
@@ -137,7 +148,7 @@ std::string WavelessProblem(const format::File& file, const sar::SoundArchive& b
 // file, and the `first` wave also from its WAV file as DSP-ADPCM (NewWavesProblem). Counts the wave in `totals`.
 std::string AddedWaveProblem(const sar::SoundArchive& built, const FileItem& item, const sar::WaveArchiveFile& present,
                              uint32_t version, const sar::Options& options, const song::Item& source, bool first,
-                             const sar::Pcm& pcm, Totals& totals)
+                             const sar::Pcm& pcm, NewWaveTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
 
@@ -223,7 +234,7 @@ std::string AddedWaveProblem(const sar::SoundArchive& built, const FileItem& ite
 // builds.
 std::string ImportWindowProblem(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
                                 const FileItem& item, const sar::WaveArchiveFile& present, const song::Item& first,
-                                const sar::Pcm& first_pcm, format::File& once, Archive& after, Totals& totals)
+                                const sar::Pcm& first_pcm, format::File& once, Archive& after, NewWaveTotals& totals)
 {
     const auto start = std::chrono::steady_clock::now();
     const edit::IncomingWave incoming = edit::ReadIncomingWaveFile(song::ItemFile(built, first), built, item.item);
@@ -254,7 +265,7 @@ std::string ImportWindowProblem(const format::File& file, const sar::SoundArchiv
 // `count` is the number of waves before the new ones. Sets `paired` once that works, and counts the pair in `totals`.
 std::string SecondWaveProblem(const sar::SoundArchive& built, const format::File& once, const Archive& after,
                               const FileItem& item, const song::Item& first, const sar::Pcm& first_pcm, uint32_t count,
-                              bool& paired, Totals& totals)
+                              bool& paired, NewWaveTotals& totals)
 {
     const edit::IncomingWave again = edit::ReadIncomingWave(song::WaveAsWav(built, first.index, first.wave), *after,
                                                             item.item, std::nullopt, sar::WaveEncoding::kPcm16);
@@ -290,7 +301,7 @@ std::string SecondWaveProblem(const sar::SoundArchive& built, const format::File
 // first, and the file has to save and open again in both forms. `built` is the archive that `file` builds, with
 // `groups`.
 std::string NewWavesProblem(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                            const FileItem& item, bool& paired, Totals& totals)
+                            const FileItem& item, bool& paired, NewWaveTotals& totals)
 {
     // The wave archive, and the waves that go in.
     const sar::Options options = song::ItemOptions(built);
@@ -348,7 +359,7 @@ std::string NewWavesProblem(const format::File& file, const sar::SoundArchive& b
 } // namespace
 
 void CheckNewWaves(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
-                   const std::string& name, Totals& totals)
+                   const std::string& name, NewWaveTotals& totals)
 {
     bool paired = false;
     for (const FileItem& item : FileItemsOf(built))

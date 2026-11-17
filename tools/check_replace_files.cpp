@@ -1,8 +1,37 @@
 // SPDX-License-Identifier: MIT
 
 // The checks of banks, wave archives and wave sound files in the places of others of hokuto_check_replace.
+//
+// Each file of a bank, a wave archive or a wave sound then takes three kinds of file in turn, with Replace…'s edit.
+// Like the Replace window, the tool reads the file before each edit and finds what it changes:
+//
+// - The file itself. The Hokuto file has to come back unchanged, but for a file with a copy in a group that holds other
+//   bytes. That copy takes the file's bytes, and the file counts apart. A copy of a bank or a wave sound file can name
+//   the file's waves at other places, such as in a wave archive of the group's. That copy takes the file with its
+//   places, and the Hokuto file comes back unchanged.
+// - The file that Export… writes for each other console (song::OtherConsoleFile). It goes in converted, with the
+//   versions of the present file (edit::IncomingVersions). The Hokuto file has to come back unchanged too, but for a
+//   wave archive whose waves come back with other bytes. Such a wave archive counts apart, and its waves have to decode
+//   to the same samples, at the same rate and with the same loop.
+// - The next file of the same kind in the archive's list. Every copy of the file has to hold the new bytes. A copy that
+//   named the file's waves at other places has to hold the new file with its places instead: each wave that the
+//   present file names at the old copy's place for it, and each other wave at its place in the new file. Every other
+//   file has to keep its bytes, but for the files of groups that hold a copy. Every sound has to keep its start.
+//
+// The sounds of a bank can select programs that the next bank lacks (edit::ProgramsOfBank). The next bank then goes in
+// again twice with the Replace window's rows of instruments (edit::WithProgramFixes): with the present bank's
+// instrument at each such program that the present bank holds, then with the next bank's first instrument at each. The
+// copies have to pass the checks of the next file. ntdlib's reader has to read each copy as its instrument, with the
+// same regions and the same waves by their wave archives and indices. Every other instrument of the next bank has to
+// read as before.
+//
+// The group files beside the archive count as well. Each copy of the file there has to hold the new bytes, and each
+// other copy there its bytes. A file that several items share counts once. A file that two file IDs name counts apart:
+// Replace… refuses it. So does a file that neither the archive nor its group files hold. The tool counts the files that
+// only the group files hold, and checks them like the others.
 
 #include "check_replace.h"
+#include "same_instrument.h"
 
 namespace hokuto::tools::replace
 {
@@ -17,57 +46,16 @@ const sar::Instrument* InstrumentAt(const sar::Bank& bank, uint32_t program)
 }
 
 // Whether ntdlib reads the same instrument at program `p` of `a` as at program `q` of `b`, or neither: the same key and
-// velocity regions with the same values, and each region's wave by its wave archive and index.
+// velocity regions with the same values, and each region's wave by its wave archive and index (SameInstrument).
 bool SameInstrument(const sar::Bank& a, uint32_t p, const sar::Bank& b, uint32_t q)
 {
-    const sar::Instrument* x = InstrumentAt(a, p);
-    const sar::Instrument* y = InstrumentAt(b, q);
-    if (!x || !y)
+    static const std::optional<sar::Instrument> kNone;
+    const auto at = [](const sar::Bank& bank, uint32_t program) -> const std::optional<sar::Instrument>&
     {
-        return !x && !y;
-    }
-
-    const auto same_region = [&a, &b](const sar::VelocityRegion& r, const sar::VelocityRegion& s)
-    {
-        const bool waves = r.wave_id_index < a.waves.size() && s.wave_id_index < b.waves.size() &&
-                           a.waves[r.wave_id_index].wave_archive_item == b.waves[s.wave_id_index].wave_archive_item &&
-                           a.waves[r.wave_id_index].index == b.waves[s.wave_id_index].index;
-
-        const auto envelope = [](const sar::Adshr& e)
-        {
-            return std::array<uint8_t, 5>{e.attack, e.decay, e.sustain, e.hold, e.release};
-        };
-
-        return waves && r.original_key == s.original_key && r.volume == s.volume && r.pan == s.pan &&
-               r.pitch == s.pitch && r.ignore_note_off == s.ignore_note_off && r.key_group == s.key_group &&
-               r.interpolation == s.interpolation && envelope(r.adshr) == envelope(s.adshr);
+        return program < bank.instruments.size() ? bank.instruments[program] : kNone;
     };
 
-    if (x->keys.size() != y->keys.size())
-    {
-        return false;
-    }
-    for (std::size_t k = 0; k < x->keys.size(); k++)
-    {
-        const sar::KeyRegion& i = x->keys[k];
-        const sar::KeyRegion& j = y->keys[k];
-        if (i.lo != j.lo || i.hi != j.hi || i.velocities.size() != j.velocities.size())
-        {
-            return false;
-        }
-        for (std::size_t v = 0; v < i.velocities.size(); v++)
-        {
-            const sar::KeyRegion::Vel& m = i.velocities[v];
-            const sar::KeyRegion::Vel& n = j.velocities[v];
-            if (m.lo != n.lo || m.hi != n.hi || m.region.has_value() != n.region.has_value() ||
-                (m.region && !same_region(*m.region, *n.region)))
-            {
-                return false;
-            }
-        }
-    }
-
-    return true;
+    return hokuto::tools::SameInstrument(a, at(a, p), b, at(b, q));
 }
 
 // What is wrong when bank `item` takes `bytes`, the next bank, with copies of instruments at the programs that the
@@ -75,7 +63,7 @@ bool SameInstrument(const sar::Bank& a, uint32_t p, const sar::Bank& b, uint32_t
 // `places` gives where each sound plays. A bank whose sounds select no such program gives nothing.
 std::string FixesProblem(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
                          std::span<const std::optional<edit::SoundPlace>> places, const FileItem& item,
-                         std::span<const uint8_t> bytes, Totals& totals)
+                         std::span<const uint8_t> bytes, FileTotals& totals)
 {
     // The programs that the sounds select and the next bank lacks.
     const sar::Options& options = built.ReadOptions();
@@ -185,7 +173,7 @@ std::string CrossAndJoinFile(const format::File& file, const sar::SoundArchive& 
                              std::span<const edit::Group> edit_groups,
                              std::span<const std::optional<edit::SoundPlace>> places, const FileItem& item,
                              std::span<const uint8_t> other_bytes, const song::FileVersions& versions, Joins& joins,
-                             Totals& totals)
+                             FileTotals& totals, JoinTotals& joined)
 {
     Archive after;
     std::string problem = FileProblem(file, built, groups, item, other_bytes, after, &totals.files_placed_copies);
@@ -217,7 +205,7 @@ std::string CrossAndJoinFile(const format::File& file, const sar::SoundArchive& 
             return *replaced;
         };
         problem = JoinAndNewGroupCheck(file, built, edit_groups, std::span(&id, 1), files_before, files_after, added,
-                                       joins, totals);
+                                       joins, joined);
     }
 
     return problem;
@@ -229,7 +217,7 @@ std::string CrossAndJoinFile(const format::File& file, const sar::SoundArchive& 
 std::string ItemFileProblem(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
                             std::span<const edit::Group> edit_groups,
                             std::span<const std::optional<edit::SoundPlace>> places, std::span<const FileItem> items,
-                            std::size_t i, Joins& joins, Totals& totals)
+                            std::size_t i, Joins& joins, FileTotals& totals, JoinTotals& joined)
 {
     const FileItem& item = items[i];
     const std::span<const uint8_t> bytes = built.FileData(item.file_id);
@@ -279,8 +267,8 @@ std::string ItemFileProblem(const format::File& file, const sar::SoundArchive& b
             continue;
         }
 
-        problem =
-            CrossAndJoinFile(file, built, groups, edit_groups, places, item, other_bytes, versions, joins, totals);
+        problem = CrossAndJoinFile(file, built, groups, edit_groups, places, item, other_bytes, versions, joins, totals,
+                                   joined);
         break;
     }
 
@@ -291,7 +279,7 @@ std::string ItemFileProblem(const format::File& file, const sar::SoundArchive& b
 
 void CheckFiles(const format::File& file, const sar::SoundArchive& built, std::span<const Group> groups,
                 std::span<const edit::Group> edit_groups, std::span<const std::optional<edit::SoundPlace>> places,
-                const std::string& name, Totals& totals)
+                const std::string& name, FileTotals& totals, JoinTotals& joined)
 {
     const std::vector<FileItem> items = FileItemsOf(built);
     Joins joins;
@@ -314,7 +302,7 @@ void CheckFiles(const format::File& file, const sar::SoundArchive& built, std::s
         std::string problem;
         try
         {
-            problem = ItemFileProblem(file, built, groups, edit_groups, places, items, i, joins, totals);
+            problem = ItemFileProblem(file, built, groups, edit_groups, places, items, i, joins, totals, joined);
         }
         catch (const std::exception& error)
         {

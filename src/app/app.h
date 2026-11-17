@@ -35,6 +35,7 @@
 #include "app/bank_editor.h"
 #include "app/effect_editor.h"
 #include "app/export_window.h"
+#include "app/item_edit.h"
 #include "app/item_views.h"
 #include "app/key_edits.h"
 #include "app/list_editor.h"
@@ -81,6 +82,10 @@ enum class LowerZone
     kKeyEditor,
     kListEditor,
 };
+
+// The Export Audio Mixdown window and its exports (app_mixdown.cpp), and what an export renders (mixdown_jobs.h).
+struct MixdownWork;
+struct MixdownSources;
 
 class App final : public MenuTarget
 {
@@ -265,8 +270,9 @@ private:
     bool ReadChosenFile(const std::filesystem::path& file, std::vector<uint8_t>& bytes);
 
     // Shows a dialog. SDL3 may call the dialog's callback on another thread. The program acts on the chosen file in its
-    // next frame.
-    void ShowDialog(Dialog dialog);
+    // next frame. Returns false where no dialog opens: on systems other than macOS and Windows, while another file
+    // dialog is open.
+    bool ShowDialog(Dialog dialog);
 
     // The filters of `dialog`'s files. ImportDialogFilters returns the filters of File > Import, and
     // ReplaceDialogFilters the filters of Replace…, by the item that the user replaces.
@@ -366,6 +372,19 @@ private:
     void StartExport(ExportTarget target);
     void DrawExport();
     void ExportTo(const std::string& path);
+
+    // File > Export > Audio Mixdown… opens the Export Audio Mixdown window on the open archive, ROM or set
+    // (app_mixdown.cpp). The window reads the songs away from the program's thread, and its exports run there too.
+    // The window keeps its settings and its queue until another file opens: DropMixdown then stops its work. Choose…
+    // opens a dialog of folders, and SetMixdownFolder sets the folder that the user chose. MixdownSourcesNow collects
+    // what an export renders: the last edit, the variables, the mix and the shown song's muted tracks. MixdownMoving
+    // says that the shown window reads its songs or runs exports: Pace then draws each frame.
+    void OpenMixdown();
+    bool MixdownMoving() const;
+    void DrawMixdown();
+    void SetMixdownFolder(const std::string& folder);
+    void DropMixdown();
+    MixdownSources MixdownSourcesNow() const;
 
     // Takes the files and the warnings of the export work once the work is done, and offers the option that they call
     // for.
@@ -932,6 +951,25 @@ private:
     // Makes `file`, the version with `model` as the Bank Editor's bank, an action in the history by `name` and
     // `details`. The editor shows the model at once, before the program has built the version's archive.
     void DoBankEdit(std::string name, std::string details, format::File file, ntdlib::sar::BankFile model);
+
+    // Makes `model` the Bank Editor's bank: an action in the history by `name` and `details`. A thread lays the bank
+    // out (edit::WithBankModel): on a large archive that takes seconds, and the window draws on meanwhile. The editor
+    // shows the model at once (ShowBankModel), and the editors wait until the action is in the history (Settling).
+    void StartBankEdit(std::string name, std::string details, ntdlib::sar::BankFile model);
+
+    // Shows `model` in the Bank Editor's view, with the names of its waves.
+    void ShowBankModel(ntdlib::sar::BankFile model);
+
+    // Makes the item's edit whose work is done an action in the history (`item_edit_`). An edit that keeps the
+    // archive, such as an effect's, can enter the history while the work runs: the work then runs again from that
+    // edit's version. With `wait`, the call waits for the work. A move in the history, a save and a question about
+    // the changes come after the edit that the user made before them, and wait for it. An edit that can't be made
+    // shows its reason, and the Bank Editor shows the archive's bank again.
+    void TakeItemEdit(bool wait = false);
+
+    // Whether the program settles a version: the reader builds its archive (`reading_version_`), or the work of an
+    // item's edit runs (`item_edit_`). The editors and the commands that wait for the reader wait for both.
+    bool Settling() const;
 
     // Makes `file`, the version with the bank of `dropped`, an action in the history. DoBankEdit does the same. The
     // details name the programs that the drop changes. The editor then selects the first of them and the region that
@@ -1806,6 +1844,10 @@ private:
     std::vector<std::string> bank_drops_;
     std::optional<BankDrop> bank_drop_;
     std::optional<WaitingBankDrop> waiting_bank_drop_;
+
+    // The edit of an item whose work runs away from the program's thread, with its names in the Undo History.
+    ItemEdit item_edit_;
+    ActionNames item_edit_names_;
     std::future<std::vector<std::string>> bank_group_sizes_;
     std::optional<uint32_t> bank_to_open_;
 
@@ -1834,6 +1876,14 @@ private:
     std::mutex chosen_mutex_;
     std::optional<std::pair<Dialog, std::string>> chosen_;
 
+    // Whether a file dialog is open, on systems other than macOS and Windows (ShowDialog). There, zenity or the desktop
+    // portal shows the dialog as another program's window, and nothing blocks input to the program's window. While the
+    // dialog is open, the window drops the input that it drops during a message box (HandleEvent), and no other file
+    // dialog opens. Frames still draw. The dialog's callback clears `file_dialog_open_`, on a thread of SDL3's.
+    // `file_dialog_shown_` stays set on the program's thread until the window accepts input again.
+    std::atomic<bool> file_dialog_open_ = false;
+    bool file_dialog_shown_ = false;
+
     // A file from a dialog for an Import or Replace window, and the frames that DrawPreparing has drawn for it. The
     // preparation starts once that window shows.
     std::optional<std::pair<Dialog, std::string>> preparing_;
@@ -1851,6 +1901,11 @@ private:
     std::optional<Export> export_;
     std::vector<std::future<ExportWork>> dropped_exports_;
     std::vector<std::future<MeasuredView>> dropped_measures_;
+
+    // The Export Audio Mixdown window and its exports (app_mixdown.cpp), or null before it first opens. A dropped
+    // window's work runs on to its end in `dropped_mixdowns_`, stopped.
+    std::shared_ptr<MixdownWork> mixdown_;
+    std::vector<std::shared_ptr<MixdownWork>> dropped_mixdowns_;
 
     // The centre of the Export window where the user last dragged it. The window opens there until Hokuto quits.
     std::optional<ImVec2> export_place_;

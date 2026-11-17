@@ -6,7 +6,7 @@
 // fields. An archive that nothing changed comes back byte for byte, and so do its group files. After an edit, each
 // sequence file takes the size that its commands give, and the files after it move. A copy of a sequence file in a
 // group file follows its sequence too. The Wii's archives (RSAR) come in and go out the same way, through ntdlib's rsar
-// module (ntdlib/rsar/layout.h). So do the songs of a GBA ROM, through ntdlib's mp2k module (ntdlib/mp2k/layout.h). The
+// module (ntdlib/rsar/layout.h). So do the songs of a GBA ROM, through agblib's mp2k module (agblib/mp2k/layout.h). The
 // whole ROM is the archive there.
 
 #pragma once
@@ -69,7 +69,7 @@ File ImportWiiArchive(std::span<const uint8_t> archive, const std::optional<ntdl
                       const ntdlib::sar::KnownSequences& known = {});
 
 // A file made from `rom`, a GBA ROM whose songs MusicPlayer2000 plays, with Engine::kGba. Each song that ntdlib's cut
-// finds becomes a sequence (ntdlib::mp2k::Cut), and the ROM's other bytes stay as they are. The file keeps the ROM's
+// finds becomes a sequence (agblib::mp2k::Cut), and the ROM's other bytes stay as they are. The file keeps the ROM's
 // size as the game's size and has no tables. Throws xsflib::FormatError if Hokuto finds no MusicPlayer2000 in the ROM,
 // or no song in its song table.
 File ImportGbaRom(std::span<const uint8_t> rom);
@@ -78,12 +78,12 @@ File ImportGbaRom(std::span<const uint8_t> rom);
 // signature of a sound archive or of a Hokuto file.
 bool IsGbaRom(std::span<const uint8_t> bytes);
 
-// Whether `rom`, a GBA ROM, contains Konami's driver (ntdlib::konami::DetectDriver). Such a ROM has no sign of
+// Whether `rom`, a GBA ROM, contains Konami's driver (agblib::konami::DetectDriver). Such a ROM has no sign of
 // MusicPlayer2000's driver, and imports with ImportKonamiRom.
 bool HoldsKonamiDriver(std::span<const uint8_t> rom);
 
 // A file made from `rom`, a GBA ROM with Konami's driver, with Engine::kKonami. Each song that ntdlib's cut finds
-// becomes a sequence (ntdlib::konami::Cut), and the ROM's other bytes stay as they are. The file keeps the ROM's size
+// becomes a sequence (agblib::konami::Cut), and the ROM's other bytes stay as they are. The file keeps the ROM's size
 // as the game's size and has no tables. Throws xsflib::FormatError if Hokuto finds no such driver in the ROM.
 File ImportKonamiRom(std::span<const uint8_t> rom);
 
@@ -175,7 +175,7 @@ bool DsArchiveSharesFile(const File& file);
 
 // Where each piece of the native layout of `file`, a file of a GBA ROM, a DS sound archive or a set of DSE files,
 // starts in the ROM, the archive or the set that the file builds, then the layout's end. A run occupies its bytes, and
-// a song of a GBA ROM the size of its place (ntdlib::mp2k::Cut). On the GBA's other drivers, a song occupies the bytes
+// a song of a GBA ROM the size of its place (agblib::mp2k::Cut). On the GBA's other drivers, a song occupies the bytes
 // that the driver encodes for it (Driver::PieceBytes), and the piece after a list's room starts at the room's end. A
 // sequence of a DS archive or a set occupies the bytes of its commands, and padding brings the next piece to its
 // alignment (ntdlib::sdat::Join and ntdlib::dse::Join). Returns nothing for a file of another console. Throws the
@@ -202,8 +202,8 @@ std::map<Start, uint32_t> SequenceStarts(std::span<const ntdlib::sar::Piece> pie
 
 // The sequence of `file`, a file of a DS sound archive, that each sequence of the INFO block's table plays, by its
 // index there: the sequence that its file became (ntdlib::sdat::Cut). The sounds of the archive's sequence archives
-// come after those of the table (song::DsSounds), and have none: the cut keeps a sequence archive among the archive's
-// bytes. Nothing either for an entry that has no sequence, or whose file stays among the bytes. `sdat` is the archive
+// come after those of the table (song::DsSounds), and have none here, although the cut makes each sequence archive a
+// sequence. Nothing either for an entry that has no sequence, or whose file stays among the bytes. `sdat` is the archive
 // that `file` builds (ExportArchive). Returns nothing for a file of another console. Throws the exceptions of
 // ntdlib::ntr::snd::EncodeSequence.
 std::vector<std::optional<uint32_t>> DsSoundSequences(const File& file, std::span<const uint8_t> sdat);
@@ -236,7 +236,7 @@ std::optional<uint32_t> KonamiSongSequence(const File& file, uint32_t song_table
 std::vector<uint32_t> KonamiTrackFields(const File& file, uint32_t song_table, int song);
 
 // The sequences of `file`, a file of a GBA ROM, with songs that outgrow their places in the ROM or headers that gain
-// tracks. An export moves them into the ROM's free space (ntdlib::mp2k::Join). Returns nothing for a file of another
+// tracks. An export moves them into the ROM's free space (agblib::mp2k::Join). Returns nothing for a file of another
 // console, and for a driver whose songs are in lists with rooms (DriverFacts::rooms). Throws std::invalid_argument for
 // a song that MP2K's bytes can't hold.
 std::vector<uint32_t> MovedSongs(const File& file);
@@ -281,7 +281,7 @@ uint16_t WiiVersionOf(const NativeArchive& native);
 // range. It also throws for tables that the archive can't take, such as a new place or a list of another length in an
 // archive that NintendoWare's tools didn't lay out. An archive of the Wii takes the values in place, and nothing moves.
 // It throws there for a value that the archive's version doesn't hold, such as a pan mode before version 1.2. A GBA ROM
-// keeps its songs in their places where they fit, and the others go into the ROM's free space (ntdlib::mp2k::Join).
+// keeps its songs in their places where they fit, and the others go into the ROM's free space (agblib::mp2k::Join).
 std::vector<uint8_t> ExportArchive(const File& file);
 
 // The group files that `file`'s native layout builds, in its order. Throws the exceptions of ExportArchive.

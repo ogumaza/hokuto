@@ -14,6 +14,7 @@
 #include "edit/bytecode.h"
 #include "edit/effects.h"
 #include "edit/other_console.h"
+#include "edit/sound_exports.h"
 #include "edit/timelines.h"
 #include "format/archive.h"
 #include "format/drivers.h"
@@ -73,7 +74,7 @@ song::Mixing App::ShownMixing() const
         return song::Mixing::kStrict;
     }
 
-    return PlayedMixing(*document, sequence_->sound);
+    return edit::PlayedMixing(*document, sequence_->sound);
 }
 
 void App::ApplyEngineRequest()
@@ -204,31 +205,9 @@ song::SequenceReader::Convert App::ConvertFor(const std::shared_ptr<const format
         };
     }
 
-    // The conversion's file holds the sound alone. A conversion for the Wii plays by the rules of its file's build of
-    // NW4R SND.
     return [version, sound, engine, name = file_name_]
     {
-        edit::OtherConsoleSong converted = edit::ForEngine(*version, sound, engine);
-        if (engine == format::Engine::kDs)
-        {
-            song::SequenceReader::EngineSound ds{.warnings = std::move(converted.warnings)};
-            ds.played = song::LoadDsArchive(format::ExportArchive(converted.file));
-            ds.slot_programs = std::move(converted.slot_programs);
-            return ds;
-        }
-        if (engine == format::Engine::kWii)
-        {
-            song::SequenceReader::EngineSound wii{.warnings = std::move(converted.warnings)};
-            wii.played = WiiArchiveOf(converted.file, name);
-            wii.wii_build = format::BuildOfWiiArchive(*converted.file.native);
-            wii.slot_programs = std::move(converted.slot_programs);
-            return wii;
-        }
-
-        return song::SequenceReader::EngineSound{
-            .played = song::LoadArchive(format::ExportArchive(converted.file), name),
-            .sound = 0,
-            .warnings = std::move(converted.warnings)};
+        return edit::EngineSoundOf(*version, sound, engine, name);
     };
 }
 

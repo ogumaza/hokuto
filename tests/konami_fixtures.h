@@ -19,12 +19,12 @@
 #include <thread>
 #include <vector>
 
+#include "agblib/konami/archive_player.h"
+#include "agblib/konami/commands.h"
+#include "agblib/konami/layout.h"
+#include "agblib/sequence_export/konami/convert.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/konami/archive_player.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/konami/layout.h"
-#include "ntdlib/sequence_export/konami/convert.h"
 #include "seqlib/midi/reader.h"
 #include "seqlib/wav.h"
 #include "xsflib/bytes.h"
@@ -58,7 +58,7 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
-namespace konami = ntdlib::konami;
+namespace konami = agblib::konami;
 using format::File;
 using hokuto::testing::HasSound;
 using hokuto::testing::Play;
@@ -72,7 +72,7 @@ using song::Sequence;
 using song::SequenceModel;
 using xsflib::testing::ErrorOf;
 
-constexpr uint32_t kRomBase = ntdlib::agb::kRomBase;
+constexpr uint32_t kRomBase = agblib::agb::kRomBase;
 
 // The places of the cartridges' tables. An entry of the song table contains the address of the song, and 16 offsets of
 // 2 bytes from there to its tracks.

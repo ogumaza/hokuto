@@ -2,7 +2,7 @@
 
 // The values of a GBA song that the Sound sections edit: its music player, its priority and its reverb. The song table
 // stores the number of the music player of the song, and the header of the song stores the other two. An edit changes
-// those bytes in place, in the runs of the file's ROM (ntdlib/mp2k/layout.h). The ROM keeps its size. A song has no
+// those bytes in place, in the runs of the file's ROM (agblib/mp2k/layout.h). The ROM keeps its size. A song has no
 // other value of the tables: its commands set its volume and its pans, and it plays one voice group.
 
 #pragma once

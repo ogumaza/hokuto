@@ -17,12 +17,13 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/mp2k/convert.h"
 #include "ntdlib/sequence_export/dse/convert.h"
-#include "ntdlib/sequence_export/mp2k/convert.h"
 #include "ntdlib/sequence_export/ntr/convert.h"
 #include "ntdlib/sequence_export/sfz.h"
 #include "seqlib/midi/encoder.h"
+#include "xsflib/bytes.h"
 #include "xsflib/files.h"
 
 #include "song/archive.h"
@@ -110,12 +111,6 @@ constexpr std::size_t kChunkStart = 8;
 // The longest text that a meta event holds. Its length takes four bytes at most.
 constexpr std::size_t kLongestMetaText = 0x0FFFFFFF;
 
-// The big-endian 32-bit number at the start of `bytes`.
-uint32_t BigEndian32(std::span<const uint8_t> bytes)
-{
-    return uint32_t{bytes[0]} << 24 | uint32_t{bytes[1]} << 16 | uint32_t{bytes[2]} << 8 | uint32_t{bytes[3]};
-}
-
 // Whether `bytes` holds the four characters of `id` at `at`.
 bool HasId(std::span<const uint8_t> bytes, std::size_t at, std::string_view id)
 {
@@ -196,10 +191,10 @@ export_::Conversion ConvertToMidi(const ntdlib::rsar::SoundArchive& archive, uin
 
 export_::Conversion ConvertToMidi(const GbaRom& rom, int song, const std::string& program)
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
-    ntdlib::sequence_export::mp2k::SongFiles files =
-        ntdlib::sequence_export::mp2k::ConvertSongFiles(rom.rom, rom.info, song, settings);
+    agblib::sequence_export::mp2k::SongFiles files =
+        agblib::sequence_export::mp2k::ConvertSongFiles(rom.rom, rom.info, song, settings);
 
     return AgbConversion(GbaSongName(rom, song), std::move(files));
 }
@@ -282,11 +277,11 @@ export_::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::
 export_::BankConversion ConvertVoiceGroup(const GbaRom& rom, uint32_t voices, const std::vector<int>& programs,
                                           const std::string& program)
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
     const std::string name = GbaVoiceGroupName(voices);
     const std::string title = rom.rom.Title();
-    ntdlib::sequence_export::mp2k::VoiceGroupFiles files = ntdlib::sequence_export::mp2k::ConvertVoiceGroup(
+    agblib::sequence_export::mp2k::VoiceGroupFiles files = agblib::sequence_export::mp2k::ConvertVoiceGroup(
         rom.rom, rom.info, voices, programs, settings, title.empty() ? name : title + " " + name);
     if (!files.ok)
     {
@@ -303,7 +298,7 @@ export_::BankConversion ConvertVoiceGroup(const GbaRom& rom, uint32_t voices, co
 }
 
 export_::BankConversion SamplesConversion(export_::BankConversion conversion,
-                                          ntdlib::sequence_export::agb::Sf2File& file, std::span<const int> samples,
+                                          agblib::sequence_export::agb::Sf2File& file, std::span<const int> samples,
                                           const std::string& program, const std::string& title)
 {
     if (file.presets.empty())
@@ -367,14 +362,14 @@ std::vector<uint8_t> WithMidiTags(std::span<const uint8_t> midi, const MidiTags&
     // The header, then the first track's chunk. The track's first event names the sequence.
     const std::runtime_error unnamed(
         "Can't add the tags to the MIDI file. Its first track doesn't start with a sequence name.");
-    if (!HasId(midi, 0, "MThd") || midi.size() < kMidiHeader + kChunkStart || BigEndian32(midi.subspan(4)) != 6 ||
+    if (!HasId(midi, 0, "MThd") || midi.size() < kMidiHeader + kChunkStart || xsflib::LoadBe32(&midi[4]) != 6 ||
         !HasId(midi, kMidiHeader, "MTrk"))
     {
         throw unnamed;
     }
 
     const std::size_t kTrackStart = kMidiHeader + kChunkStart;
-    const uint32_t size = BigEndian32(midi.subspan(kMidiHeader + 4));
+    const uint32_t size = xsflib::LoadBe32(&midi[kMidiHeader + 4]);
     if (size > midi.size() - kTrackStart)
     {
         throw unnamed;

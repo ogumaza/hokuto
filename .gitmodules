@@ -7,3 +7,6 @@
 [submodule "externals/seqlib"]
 	path = externals/seqlib
 	url = ../seqlib.git
+[submodule "externals/agblib"]
+	path = externals/agblib
+	url = ../agblib.git

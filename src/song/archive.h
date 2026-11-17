@@ -96,7 +96,7 @@ class DriverRules;
 struct Console
 {
     // The engine. On the Wii, `wii` also contains the build of NW4R SND, and on one of the GBA's other drivers,
-    // `driver` contains the driver's rules. MusicPlayer2000 reads the bytes of ntdlib/mp2k/commands.h, NITRO-Composer
+    // `driver` contains the driver's rules. MusicPlayer2000 reads the bytes of agblib/mp2k/commands.h, NITRO-Composer
     // those of ntdlib/ntr/snd/commands.h, and Procyon Studio's sound driver those of ntdlib/dse/commands.h.
     format::Engine engine = format::Engine::kSwitch;
 

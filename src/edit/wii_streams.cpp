@@ -160,7 +160,7 @@ std::vector<uint8_t> WiiStreamWithValues(std::span<const uint8_t> bytes, const S
         }
 
         rsar::StreamFile made =
-            rsar::MakeStream(static_cast<rsar::WaveEncoding>(values.encoding), values.rate, decoded.channels,
+            rsar::MakeStream(WiiEncoding(values.encoding), values.rate, decoded.channels,
                              values.loop ? std::optional<uint32_t>(values.loop_start) : std::nullopt);
         made.extended_tracks = stream.extended_tracks;
         made.tracks = std::move(stream.tracks);
@@ -239,7 +239,7 @@ IncomingStream ReadIncomingWiiStreamWav(std::span<const uint8_t> bytes, sar::Wav
     rsar::StreamFile stream;
     try
     {
-        stream = rsar::MakeStream(static_cast<rsar::WaveEncoding>(encoding), wav.rate, wav.channels, wav.loop_start);
+        stream = rsar::MakeStream(WiiEncoding(encoding), wav.rate, wav.channels, wav.loop_start);
         TakeTracks(stream, tracks);
         wav.incoming.bytes = stream.Write();
     }

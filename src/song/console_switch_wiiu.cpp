@@ -7,6 +7,8 @@
 #include <limits>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -24,6 +26,80 @@ namespace hokuto::song
 namespace
 {
 
+// A time of nn::atk's effects in whole microseconds as the nanoseconds that its setter takes.
+int64_t Nanoseconds(float microseconds)
+{
+    return static_cast<int64_t>(microseconds) * 1000;
+}
+
+// nn::atk's channel mode for a mode from 0 to 3. The format keeps the mode within its choices.
+ntdlib::nx::atk::EffectBase::ChannelMode ChannelModeOf(float mode)
+{
+    return static_cast<ntdlib::nx::atk::EffectBase::ChannelMode>(static_cast<uint8_t>(mode));
+}
+
+// ntdlib's class for `effect`, set up as a game sets it up: the channel mode and the longest time, then each setter
+// with the effect's value, in the parameters' order. WarioWare: Move It! makes the same calls. Throws
+// std::invalid_argument when the effect has another number of parameters than its class takes: 8 for the delay and the
+// light limiter, 12 for the reverb.
+std::unique_ptr<ntdlib::nx::atk::EffectBase> MakeAtkEffect(const AtkEffect& effect)
+{
+    const std::vector<float>& p = effect.parameters;
+    const std::size_t count = effect.type == AtkEffect::Type::kReverb ? 12 : 8;
+    if (p.size() != count)
+    {
+        throw std::invalid_argument("An effect of nn::atk has " + std::to_string(p.size()) + " parameters, not " +
+                                    std::to_string(count) + ".");
+    }
+
+    switch (effect.type)
+    {
+    case AtkEffect::Type::kDelay:
+    {
+        auto delay = std::make_unique<ntdlib::nx::atk::EffectDelay>();
+        delay->SetChannelMode(ChannelModeOf(p[7]));
+        delay->SetDelayTimeMax(Nanoseconds(p[0]));
+        delay->SetDelayTime(Nanoseconds(p[1]));
+        delay->SetInGain(p[2]);
+        delay->SetFeedbackGain(p[3]);
+        delay->SetDryGain(p[4]);
+        delay->SetLowPassAmount(p[5]);
+        delay->SetChannelSpread(p[6]);
+        return delay;
+    }
+    case AtkEffect::Type::kLightLimiter:
+    {
+        auto limiter = std::make_unique<ntdlib::nx::atk::EffectLightLimiter>();
+        limiter->SetChannelMode(ChannelModeOf(p[7]));
+        limiter->SetLookAheadTimeMax(Nanoseconds(p[0]));
+        limiter->SetAttackTime(Nanoseconds(p[1]));
+        limiter->SetReleaseTime(Nanoseconds(p[2]));
+        limiter->SetLookAheadTime(Nanoseconds(p[3]));
+        limiter->SetThreshold(p[4]);
+        limiter->SetInputGain(p[5]);
+        limiter->SetOutputGain(p[6]);
+        return limiter;
+    }
+    case AtkEffect::Type::kReverb:
+        break;
+    }
+
+    auto reverb = std::make_unique<ntdlib::nx::atk::EffectReverb>();
+    reverb->SetChannelMode(ChannelModeOf(p[11]));
+    reverb->SetEarlyMode(static_cast<int>(p[0]));
+    reverb->SetEarlyGain(p[1]);
+    reverb->SetPredelayTime(Nanoseconds(p[2]));
+    reverb->SetLateMode(static_cast<int>(p[3]));
+    reverb->SetLateGain(p[4]);
+    reverb->SetDecayTime(Nanoseconds(p[5]));
+    reverb->SetHighFrequencyDecayRatio(p[6]);
+    reverb->SetColoration(p[7]);
+    reverb->SetReverbGain(p[8]);
+    reverb->SetOutGain(p[9]);
+    reverb->SetDryGain(p[10]);
+    return reverb;
+}
+
 // The Switch: ntdlib's model of nn::atk and the audio renderer, with the effects on its aux buses.
 struct Switch
 {
@@ -32,7 +108,8 @@ struct Switch
     static std::unique_ptr<Model> Make(const ntdlib::sar::SoundArchive& archive, const AuxEffects& effects,
                                        Mixing mixing)
     {
-        // The effects go on their buses before the sound starts. A game sets up its effects the same way.
+        // The effects go on their buses before the sound starts, in the order that they process each bus. A game sets
+        // up its effects the same way. The engine enables each effect as it appends it.
         ntdlib::nx::atk::EngineOptions options;
         options.enhanced = mixing == Mixing::kEnhanced;
         auto model = std::make_unique<Model>(archive, options);
@@ -45,17 +122,21 @@ struct Switch
                     model->engine->AppendEffect(static_cast<int>(bus),
                                                 std::make_unique<ntdlib::nx::atk::I3dl2AuxEffect>(*reverb));
                 }
+                else if (const auto* atk = std::get_if<AtkEffect>(&effect))
+                {
+                    model->engine->AppendEffect(static_cast<int>(bus), MakeAtkEffect(*atk));
+                }
             }
         }
 
         return model;
     }
 
-    // The I3DL2 reverb's tail sounds on without a quiet gap. The model ends once the engine has stopped and a frame has
-    // come out silent.
-    static int RingingFrames(const AuxEffects&)
+    // The I3DL2 reverb's tail sounds on without a quiet gap. With only I3DL2 reverbs, the model ends once the engine
+    // has stopped and a frame has come out silent. nn::atk's effects ring as the Wii U's do (SwitchRingingFrames).
+    static int RingingFrames(const AuxEffects& effects)
     {
-        return 0;
+        return SwitchRingingFrames(effects);
     }
 
     static std::span<const int16_t> Output(const Model& model)

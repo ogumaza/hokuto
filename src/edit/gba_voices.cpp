@@ -17,9 +17,9 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/layout.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/layout.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/rounding.h"
 #include "ntdlib/wave/pcm.h"
 #include "xsflib/bytes.h"
@@ -34,7 +34,7 @@ namespace hokuto::edit
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 
 // The run of the ROM of `file` that contains `size` bytes at `offset` from the start of the ROM. Throws
 // std::invalid_argument with a message for the user when no run contains them all, or when a field is among them.
@@ -216,7 +216,7 @@ GbaGroupVersion MovedGbaGroup(const format::File& file, const song::GbaRom& rom,
             continue;
         }
 
-        const uint64_t offset = uint64_t{header.address} - ntdlib::agb::kRomBase + 4;
+        const uint64_t offset = uint64_t{header.address} - agblib::agb::kRomBase + 4;
         const std::variant<RunPlace, RunMiss> found = RunOf(*moved.file.native, starts, offset, 4);
         const auto* place = std::get_if<RunPlace>(&found);
         if (place != nullptr &&
@@ -241,30 +241,10 @@ GbaGroupVersion MovedGbaGroup(const format::File& file, const song::GbaRom& rom,
 
 std::array<uint8_t, kGbaVoiceBytes> GbaVoiceBytes(const mp2k::Voice& voice)
 {
-    // The type, the key, the length and the pan or the sweep, then the sample or the PSG's value, then the envelope or
-    // a key split's key table. The ROM stores its numbers little-endian.
-    std::array<uint8_t, kGbaVoiceBytes> bytes{};
-    bytes[0] = voice.type;
-    bytes[1] = voice.key;
-    bytes[2] = voice.length;
-    bytes[3] = voice.pan_sweep;
-    xsflib::StoreLe32(&bytes[4], voice.wave);
-    if ((voice.type & mp2k::kVoiceKeySplit) != 0)
-    {
-        xsflib::StoreLe32(&bytes[8], voice.key_table);
-    }
-    else
-    {
-        bytes[8] = voice.attack;
-        bytes[9] = voice.decay;
-        bytes[10] = voice.sustain;
-        bytes[11] = voice.release;
-    }
-
-    return bytes;
+    return mp2k::VoiceBytes(voice);
 }
 
-GbaPattern GbaPatternOf(const ntdlib::agb::Rom& rom, uint32_t address)
+GbaPattern GbaPatternOf(const agblib::agb::Rom& rom, uint32_t address)
 {
     if (!rom.Contains(address, kGbaPatternSteps / 2))
     {
@@ -288,12 +268,12 @@ format::File WithGbaBytes(const format::File& file, uint32_t address, std::span<
     {
         throw std::invalid_argument("The file contains no GBA ROM.");
     }
-    if (address < ntdlib::agb::kRomBase)
+    if (address < agblib::agb::kRomBase)
     {
         throw std::invalid_argument("These bytes are outside the ROM.");
     }
 
-    return WithRunBytes(file, GbaRunOf(file, uint64_t{address} - ntdlib::agb::kRomBase, bytes.size()), bytes);
+    return WithRunBytes(file, GbaRunOf(file, uint64_t{address} - agblib::agb::kRomBase, bytes.size()), bytes);
 }
 
 format::File WithGbaVoice(const format::File& file, const mp2k::Voice& voice)
@@ -305,25 +285,11 @@ format::File WithGbaVoice(const format::File& file, const mp2k::Voice& voice)
 
     // The values that the ROM contains now. A split keeps its kind and its tables: the edits of the Bank Editor don't
     // change them.
-    const uint64_t offset = uint64_t{voice.address} - ntdlib::agb::kRomBase;
+    const uint64_t offset = uint64_t{voice.address} - agblib::agb::kRomBase;
     const RunPlace place = GbaRunOf(file, offset, kGbaVoiceBytes);
     const auto& run = std::get<std::vector<uint8_t>>((*file.native->pieces)[place.piece]);
-    const mp2k::Voice before = [&run, at = place.offset, &voice]
-    {
-        mp2k::Voice held;
-        held.address = voice.address;
-        held.type = run[at];
-        held.key = run[at + 1];
-        held.length = run[at + 2];
-        held.pan_sweep = run[at + 3];
-        held.wave = xsflib::LoadLe32(&run[at + 4]);
-        held.key_table = xsflib::LoadLe32(&run[at + 8]);
-        held.attack = run[at + 8];
-        held.decay = run[at + 9];
-        held.sustain = run[at + 10];
-        held.release = run[at + 11];
-        return held;
-    }();
+    const mp2k::Voice before =
+        mp2k::VoiceOfBytes(std::span(run).subspan(place.offset).first<mp2k::kVoiceSize>(), voice.address);
     if (before.IsSplit() != voice.IsSplit() ||
         (voice.IsSplit() && (before.type != voice.type || before.wave != voice.wave ||
                              ((voice.type & mp2k::kVoiceKeySplit) != 0 && before.key_table != voice.key_table))))
@@ -425,7 +391,7 @@ PlacedGbaBytes WithGbaNewBytes(const format::File& file, std::span<const uint8_t
     if (start + placed.size() <= mp2k::kLargestRom)
     {
         return {WithLastRunBytes(file, static_cast<std::size_t>(start - run_start), placed, 0xFF),
-                static_cast<uint32_t>(start + ntdlib::agb::kRomBase)};
+                static_cast<uint32_t>(start + agblib::agb::kRomBase)};
     }
 
     // No room after the ROM's data.
@@ -439,7 +405,7 @@ PlacedGbaBytes WithGbaNewBytes(const format::File& file, std::span<const uint8_t
                 const auto found = RunOf(*file.native, starts, filler.start, placed.size());
                 if (const auto* place = std::get_if<RunPlace>(&found))
                 {
-                    return {WithRunBytes(file, *place, placed), filler.start + ntdlib::agb::kRomBase};
+                    return {WithRunBytes(file, *place, placed), filler.start + agblib::agb::kRomBase};
                 }
             }
         }
@@ -561,7 +527,7 @@ GbaGroupVersion WithGbaVoicesAt(const format::File& file, const song::GbaRom& ro
 
     // A table that Hokuto wrote, or a table of a game that's as safe: every entry is a voice or empty, up to the data
     // of the ROM.
-    const uint64_t offset = uint64_t{group} - ntdlib::agb::kRomBase;
+    const uint64_t offset = uint64_t{group} - agblib::agb::kRomBase;
     const std::vector<uint64_t> starts = format::NativePieceStarts(file);
     const auto found = RunOf(*file.native, starts, offset, 128 * kGbaVoiceBytes);
     const auto* place = std::get_if<RunPlace>(&found);
@@ -647,22 +613,7 @@ GbaGroupVersion WithGbaVoiceGroupFile(const format::File& file, const song::GbaR
             continue;
         }
 
-        const auto word = [bytes](std::size_t at)
-        {
-            return xsflib::LoadLe32(&bytes[at]);
-        };
-        mp2k::Voice voice;
-        voice.type = bytes[0];
-        voice.key = bytes[1];
-        voice.length = bytes[2];
-        voice.pan_sweep = bytes[3];
-        voice.wave = word(4);
-        voice.attack = bytes[8];
-        voice.decay = bytes[9];
-        voice.sustain = bytes[10];
-        voice.release = bytes[11];
-        voice.key_table = word(8);
-        voices.emplace_back(static_cast<uint32_t>(program), voice);
+        voices.emplace_back(static_cast<uint32_t>(program), mp2k::VoiceOfBytes(bytes.first<mp2k::kVoiceSize>()));
     }
     if (voices.empty())
     {

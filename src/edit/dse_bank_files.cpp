@@ -22,6 +22,7 @@
 
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/sar/encodings.h"
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sdat/formats.h"
 #include "xsflib/binary.h"
@@ -40,7 +41,6 @@ namespace dse = ntdlib::dse;
 using dse_files_parts::BankAt;
 using dse_files_parts::kImaAdpcm;
 using dse_files_parts::kTuningOfDoubledRate;
-using dse_files_parts::kWaveFormat;
 using dse_files_parts::NumberList;
 using dse_files_parts::ProgramsOf;
 using dse_files_parts::RequireSet;
@@ -310,7 +310,7 @@ void WithWave(dse::WaveBank& model, bool holds_samples, uint32_t wave, const ntd
     const uint8_t format = static_cast<uint8_t>(made.encoding);
     dse::WaveInfo& held = *model.waves[wave];
     const uint32_t was = held.SampleRate();
-    held.bytes[kWaveFormat] = format;
+    SetDseWaveFormat(held, format);
     held.SetLoops(made.loop != 0);
     held.SetSampleRate(rate);
     if (holds_samples || held.SamplePosition() == old_position)
@@ -373,7 +373,7 @@ const dse::WaveInfo& ReplaceableWave(const song::DseSet& set, uint32_t bank, uin
     }
 
     const dse::WaveInfo& info = *holder.waves[wave];
-    if (info.bytes[kWaveFormat] > kImaAdpcm)
+    if (DseWaveFormat(info) > kImaAdpcm)
     {
         throw std::invalid_argument("Square waves and noise have no samples to replace.");
     }
@@ -495,14 +495,9 @@ std::vector<std::string> DseWaveUses(const song::DseSet& set, uint32_t bank, uin
 WaveChanges ChangesOfDseWave(const song::DseSet& set, uint32_t bank, uint32_t wave)
 {
     const dse::WaveInfo& info = ReplaceableWave(set, bank, wave);
-    const uint8_t format = info.bytes[kWaveFormat];
-
-    // The DS's encodings, by the format's byte.
-    constexpr std::array kEncodings = {ntdlib::sar::WaveEncoding::kPcm8, ntdlib::sar::WaveEncoding::kPcm16,
-                                       ntdlib::sar::WaveEncoding::kImaAdpcm};
     const ntdlib::wave::Pcm pcm = song::DseWavePcm(set, bank, wave);
     WaveChanges changes;
-    changes.encoding = kEncodings.at(format);
+    changes.encoding = ntdlib::sar::EncodingOf(static_cast<ntdlib::sdat::WaveEncoding>(DseWaveFormat(info)));
     changes.channels = 1;
     changes.rate = info.SampleRate();
     changes.loop = pcm.loop;

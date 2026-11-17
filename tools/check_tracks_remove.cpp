@@ -112,8 +112,8 @@ bool HasChannelMate(const song::Sequence& sound, int number)
 
 bool KonamiPsgMate(const Archive& archive, int number)
 {
-    return archive.archive.Konami() && ntdlib::konami::RecordHasPan(archive.archive.Konami()->info.revision) &&
-           ntdlib::konami::IsPsgTrack(number);
+    return archive.archive.Konami() && agblib::konami::RecordHasPan(archive.archive.Konami()->info.revision) &&
+           agblib::konami::IsPsgTrack(number);
 }
 
 namespace
@@ -211,6 +211,43 @@ std::map<uint32_t, RareSharer> RareSharers(const Archive& archive, const std::ma
     return sharers;
 }
 
+// The ticks for VoicesDecide of sound `sound` before and after the removal of track `track`. `now` is the sound in
+// `version`, the file with the removals. Each read gets the ticks of the other in its track numbers (NumberAfter). The
+// removed track has none.
+std::vector<VoiceTicks> RemovalVoiceTicks(const Archive& archive, const File& version, uint32_t sound, int track,
+                                          const song::Sequence& before, const song::Sequence& now)
+{
+    const std::set<std::pair<int, uint32_t>> commanded_before = CommandTicks(archive, archive.file, sound, before);
+    const std::set<std::pair<int, uint32_t>> commanded_now = CommandTicks(archive, version, sound, now);
+    std::set<std::pair<int, uint32_t>> for_before;
+    std::set<std::pair<int, uint32_t>> for_now;
+    for (const int number : NumbersOf(before))
+    {
+        if (number == track)
+        {
+            continue;
+        }
+
+        const int after_number = NumberAfter(archive, number, track);
+        for (const auto& [other, tick] : commanded_now)
+        {
+            if (other == after_number)
+            {
+                for_before.emplace(number, tick);
+            }
+        }
+        for (const auto& [other, tick] : commanded_before)
+        {
+            if (other == number)
+            {
+                for_now.emplace(after_number, tick);
+            }
+        }
+    }
+
+    return {{&before, for_before}, {&now, for_now}};
+}
+
 } // namespace
 
 void RemoveTracks(const Archive& archive, const std::vector<uint32_t>& chosen, Totals& totals)
@@ -279,8 +316,9 @@ void RemoveTracks(const Archive& archive, const std::vector<uint32_t>& chosen, T
             continue;
         }
 
-        // The other tracks start their notes as before, up to the earlier end. A track that ran longer than the others
-        // or looped decided where the sound ends or loops. The last notes then last otherwise.
+        // The other tracks play their notes as before, up to the earlier end, with their lengths. A track that ran
+        // longer than the others or looped decided where the sound ends or loops. The notes that reach the earlier end
+        // then last otherwise, and their lengths don't count (PairNotes).
         const song::Sequence before = ComparableRead(archive, archive.file, sound, archive.songs.at(sound));
         const song::Sequence now = ComparableRead(archive, version, sound, read->second);
         std::set<int> numbers;
@@ -318,7 +356,7 @@ void RemoveTracks(const Archive& archive, const std::vector<uint32_t>& chosen, T
             {
                 const int after_number = NumberAfter(archive, number, track);
                 if (number != track && !SameNotes(NotesOf(before, number, end), NotesOf(now, after_number, end), end,
-                                                  false, FrameTicks(before, now)))
+                                                  true, FrameTicks(before, now)))
                 {
                     if (silent_ends && LongerNotes(NotesOf(before, number, end), NotesOf(now, after_number, end)))
                     {
@@ -347,7 +385,9 @@ void RemoveTracks(const Archive& archive, const std::vector<uint32_t>& chosen, T
             ++totals.removed_apart;
             totals.removed_differing += difference ? 1 : 0;
         }
-        else if (difference && NumbersOf(now) == numbers && VoicesDecide([&] { return !other_notes(); }))
+        else if (difference && NumbersOf(now) == numbers &&
+                 VoicesDecide([&] { return !other_notes(); },
+                              [&] { return RemovalVoiceTicks(archive, version, sound, track, before, now); }))
         {
             ++totals.voice_notes;
         }

@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
@@ -85,5 +86,12 @@ struct MixEdited : Edited
 // track before it, and `track` is also the channel.
 MixEdited EditMix(const format::File& file, uint32_t sequence, int track, std::span<const song::Stretch> stretches,
                   const MixEdit& edit, std::span<const song::Stretch> previous = {});
+
+// The message with which EditMix refuses a send on `console`, whose tracks have no such send.
+std::string RefusedSend(const song::Console& console);
+
+// The message with which EditMix refuses to trim `setting`, a volume or a send, from -∞ dB on a track whose value
+// changes as it plays.
+std::string RefusedSilentTrim(song::Mix setting);
 
 } // namespace hokuto::edit

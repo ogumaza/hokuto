@@ -57,7 +57,15 @@ Security and click Open Anyway. On Windows, click More info, then Run anyway.
 
 On the N and KN editions of Windows, install Microsoft's Media Feature Pack first. Hokuto requires Media Foundation.
 
-On Linux, build from source. A Linux build can't play, export or replace the AAC streams that some 3DS games use.
+On Linux, run the Windows build under Wine 10 or later: `wine hokuto.exe`. Of the Linux distributions, only Ubuntu
+26.04 has been tested. Install FFmpeg too, from your distribution's packages. Hokuto needs its `ffmpeg` program for the
+AAC streams that some 3DS games use. Hokuto draws its text with Noto Sans, DejaVu Sans or Liberation Sans, and Japanese
+with Noto Sans CJK. Most desktops install them.
+
+Under Wine, Hokuto opens Wine's file dialogs. Save your work before a long session with many of them: once, after hours,
+a dialog never showed, and Hokuto took no clicks until Wine stopped. Wine's dialogs don't remember the last folder. A
+dialog adds its filter's extension to a name that already has one, so `beach.swdl` becomes `beach.swdl.swd`. In a
+folder export, a typed name such as `samples.sfz` names the folder.
 
 ## Getting started
 
@@ -92,7 +100,9 @@ cmake --build build --config Release
 ctest --test-dir build -C Release
 ```
 
-[docs/development.md](docs/development.md) has more on building, the tests and the check tools.
+On Linux, build the Windows program with clang-cl and run it under Wine, or try the native program, a preview.
+[docs/development.md](docs/development.md) gives the steps for both, and more on building, the tests and the check
+tools.
 
 ## Known limits
 
@@ -116,7 +126,7 @@ ctest --test-dir build -C Release
 Hokuto is released under the MIT licence. See [LICENSE](LICENSE).
 
 The program links in SDL3, under the zlib licence, Dear ImGui, under the MIT licence, and sfizz, under the BSD 2-clause
-licence, with code that they include. The build takes one fix from sfizz's later sources into sfizz 1.2.3. It also
-links in seqlib, xsflib and ntdlib, under the MIT licence. ntdlib includes Teakra, also under the MIT licence, and a
-decoder adapted from puff, under the zlib licence.
+licence, with code that they include. The build takes one fix from sfizz's later sources into sfizz 1.2.3, and
+changes one condition of SDL3's audio code for Wine. It also links in seqlib, xsflib, ntdlib and agblib, under the MIT
+licence. ntdlib includes Teakra, also under the MIT licence, and a decoder adapted from puff, under the zlib licence.
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) lists each component with its licence.

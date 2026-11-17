@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: MIT
 
 // The new items of hokuto_check_replace on archives of the Wii.
+//
+// --new, --banks, --wave-sounds and --new-waves check the Wii's imports through the archive's model
+// (edit::AddWiiSequenceSound, AddWiiBank, AddWiiWaveSounds and WithIncomingWiiWave). Up to 32 sequence sounds serve as
+// models with --new. Each new sound plays its model's file from the model's start, and joins the groups that hold the
+// model's file. It has to hold the model's values and play the model's notes. With --banks, the bank of each of up to 8
+// models goes in again with a copy of its wave data, and a copy of the model plays the new bank. It has to play the
+// model's samples for 10 s on ntdlib's models of NW4R SND and AX. With --wave-sounds, the files of up to 8 wave sounds
+// go in again with their wave data, once with the wave sound as the model and once with the first sequence sound. The
+// new sound in the wave sound's place has to play the wave sound's wave. With --new-waves, the first wave of each wave
+// data goes in again after the waves, from its wave file and from its WAV file. After each import, every other item has
+// to keep its values, every other file its bytes and every group its files, and the file's sequences their numbers. An
+// archive that NW4R's tools didn't lay out takes no new item. Only these eight options take an archive of the Wii.
 
 #include "check_replace.h"
 
@@ -26,6 +38,19 @@ std::vector<uint32_t> WiiModels(const ntdlib::rsar::SoundArchive& archive, ntdli
     }
 
     return chosen;
+}
+
+std::optional<ntdlib::rsar::ArchiveModel> ModelForImports(std::span<const uint8_t> bytes, const std::string& name)
+{
+    try
+    {
+        return ntdlib::rsar::ReadArchiveModel(bytes);
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: takes no new item: %s\n", name.c_str(), error.what());
+        return std::nullopt;
+    }
 }
 
 namespace
@@ -208,35 +233,6 @@ std::string WiiNewSoundProblem(const format::File& file, const ntdlib::rsar::Sou
     }
 
     return {};
-}
-
-// Prints `problem` of `item` in archive `name`, and counts the failure in `totals`.
-void Fail(const std::string& name, const std::string& item, const std::string& problem, WiiImportTotals& totals)
-{
-    std::printf("%s: %s %s\n", name.c_str(), item.c_str(), problem.c_str());
-    totals.failed++;
-}
-
-// Runs `check` of `item` in archive `name`. Prints the problem that it returns or throws (Fail), and counts a refusal
-// of the edit in `totals`.
-template <typename Check>
-void Attempt(const std::string& name, const std::string& item, const Check& check, WiiImportTotals& totals)
-{
-    try
-    {
-        if (const std::string problem = check(); !problem.empty())
-        {
-            Fail(name, item, problem, totals);
-        }
-    }
-    catch (const Refusal& error)
-    {
-        totals.refused[error.what()]++;
-    }
-    catch (const std::exception& error)
-    {
-        Fail(name, item, std::string("fails: ") + error.what(), totals);
-    }
 }
 
 // The source of sound `model` of `built`, or nothing for a model that starts where no command of its file starts or
@@ -496,30 +492,24 @@ void ImportFirstWaves(const format::File& file, const WiiArchive& built, std::sp
 int CheckWiiImports(const format::File& file, const WiiArchive& built, std::span<const uint8_t> built_bytes,
                     const ntdlib::SndBuild& build, const std::string& name, const std::string& mode)
 {
-    // An archive that the tools didn't lay out takes no new item.
-    ntdlib::rsar::ArchiveModel before;
-    try
+    const std::optional<ntdlib::rsar::ArchiveModel> before = ModelForImports(built_bytes, name);
+    if (!before)
     {
-        before = ntdlib::rsar::ReadArchiveModel(built_bytes);
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: takes no new item: %s\n", name.c_str(), error.what());
         return 0;
     }
 
     WiiImportTotals totals;
     if (mode == "--new")
     {
-        ImportNewSounds(file, built, before, build, name, totals);
+        ImportNewSounds(file, built, *before, build, name, totals);
     }
     else if (mode == "--banks")
     {
-        ImportBanks(file, built, before, build, name, totals);
+        ImportBanks(file, built, *before, build, name, totals);
     }
     else if (mode == "--wave-sounds")
     {
-        ImportWaveSoundFiles(file, built, before, name, totals);
+        ImportWaveSoundFiles(file, built, *before, name, totals);
     }
     else
     {

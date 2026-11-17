@@ -27,7 +27,9 @@
 #include "app/app.h"
 #include "app/app_internal.h"
 #include "app/file_dialogs.h"
+#include "app/file_saves.h"
 #include "app/recent_projects.h"
+#include "app/system_ui.h"
 #include "app/theme.h"
 #include "app/widgets.h"
 #include "edit/ds_files.h"
@@ -59,7 +61,8 @@ constexpr char kPreparing[] = "###Preparing";
 
 // Begins the modal window `title` over the middle of the main window, in the style of the Import window, for a window
 // that waits for work. With `open`, the window has a close button. Returns whether the window shows. The value is
-// the one that ImGui::BeginPopupModal returns.
+// the one that ImGui::BeginPopupModal returns. Dear ImGui measures a popup in a hidden frame each time it opens. The
+// window then opens in the middle at its measured size. Its text doesn't change its height, and the user can drag it.
 bool BeginWaitWindow(const std::string& title, bool* open)
 {
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
@@ -74,35 +77,6 @@ bool BeginWaitWindow(const std::string& title, bool* open)
     ImGui::PopStyleVar();
 
     return visible;
-}
-
-// The sequence of `document` that each song of `rom`'s song table is, by the song's number (format::GbaSongSequence),
-// or nothing for a song that the cut leaves among the ROM's bytes.
-std::vector<std::optional<uint32_t>> GbaSongSequences(const format::File& document, const song::GbaRom& rom)
-{
-    std::vector<std::optional<uint32_t>> sequences;
-    for (int song = 0; song < rom.info.song_count; song++)
-    {
-        sequences.push_back(format::GbaSongSequence(document, rom.info.song_table, song));
-    }
-
-    return sequences;
-}
-
-// The sequence of `document` that each sound of `rom`, a ROM with another of the GBA's drivers, plays
-// (song::DriverRom::Sounds), or nothing for a song that the cut leaves among the ROM's bytes. A sound of Konami's
-// driver that plays a song's live version plays the song's sequence.
-std::vector<std::optional<uint32_t>> DriverSongSequences(const format::File& document, const song::DriverRom& rom)
-{
-    std::vector<std::optional<uint32_t>> sequences(rom.SoundCount());
-    const std::vector<uint64_t> starts = format::NativePieceStarts(document);
-    for (const uint32_t sound : rom.Sounds())
-    {
-        const std::optional<uint64_t> place = rom.FieldsOf(sound).sequence;
-        sequences[sound] = place ? format::SequenceNamedAt(document, *place, starts) : std::nullopt;
-    }
-
-    return sequences;
 }
 
 // Whether the file at `path` starts as a MIDI file.
@@ -267,7 +241,7 @@ OpenWork App::OpenedFile(const std::string& name, std::span<const uint8_t> bytes
         if (gba)
         {
             work.played = song::LoadGbaRom(built);
-            work.sequences = GbaSongSequences(*work.document, *work.played.Gba());
+            work.sequences = edit::GbaSongSequences(*work.document, *work.played.Gba());
         }
         else if (ds)
         {
@@ -282,7 +256,7 @@ OpenWork App::OpenedFile(const std::string& name, std::span<const uint8_t> bytes
         else if (driver)
         {
             work.played = song::LoadDriverRom(work.document->native->engine, built);
-            work.sequences = DriverSongSequences(*work.document, *work.played.Driver());
+            work.sequences = edit::DriverSoundSequences(*work.document, *work.played.Driver());
         }
         else if (work.document->native && work.document->native->engine == format::Engine::kWii)
         {
@@ -414,13 +388,13 @@ OpenWork App::ImportedGbaRom(const std::filesystem::path& file, std::vector<uint
         {
             work.document = std::make_shared<const format::File>(driver->Import(bytes));
             work.played = song::LoadDriverRom(driver->Facts().engine, std::move(bytes));
-            work.sequences = DriverSongSequences(*work.document, *work.played.Driver());
+            work.sequences = edit::DriverSoundSequences(*work.document, *work.played.Driver());
             return work;
         }
 
         work.document = std::make_shared<const format::File>(format::ImportGbaRom(bytes));
         work.played = song::LoadGbaRom(std::move(bytes));
-        work.sequences = GbaSongSequences(*work.document, *work.played.Gba());
+        work.sequences = edit::GbaSongSequences(*work.document, *work.played.Gba());
     }
     catch (const std::exception& error)
     {
@@ -590,8 +564,7 @@ void App::OpenChosenFile()
     std::optional<std::pair<Dialog, std::string>> chosen;
     {
         std::lock_guard lock(chosen_mutex_);
-        if (!preparing_ &&
-            (!chosen_ || std::ranges::find(kImports, chosen_->first) == kImports.end() || reading_version_ == nullptr))
+        if (!preparing_ && (!chosen_ || std::ranges::find(kImports, chosen_->first) == kImports.end() || !Settling()))
         {
             chosen = std::exchange(chosen_, std::nullopt);
         }
@@ -605,7 +578,7 @@ void App::OpenChosenFile()
         preparing_frames_ = 0;
         return;
     }
-    if (preparing_ && preparing_frames_ >= kPreparingFrames && reading_version_ == nullptr)
+    if (preparing_ && preparing_frames_ >= kPreparingFrames && !Settling())
     {
         chosen = std::exchange(preparing_, std::nullopt);
     }
@@ -628,6 +601,10 @@ void App::OpenChosenFile()
     else if (chosen && (chosen->first == Dialog::kExport || chosen->first == Dialog::kExportFolder))
     {
         ExportTo(chosen->second);
+    }
+    else if (chosen && chosen->first == Dialog::kMixdownFolder)
+    {
+        SetMixdownFolder(chosen->second);
     }
     else if (chosen && chosen->first == Dialog::kReplace)
     {
@@ -776,9 +753,11 @@ void App::EndLastFileWork()
         transport_.Stop();
     }
     DropExport();
+    DropMixdown();
     replace_.ForgetTargets();
     replace_.Drop();
     reader_.Abandon();
+    item_edit_.Drop();
     StopPlayback();
     CancelCatchUp();
     worker_.Stop();
@@ -835,6 +814,9 @@ void App::SaveTo(const std::string& path)
         return;
     }
 
+    // The file takes an item's edit whose work still runs.
+    TakeItemEdit(true);
+
     // The file's bytes in its form.
     const std::filesystem::path file = xsflib::PathFromUtf8(path);
     const std::string name = xsflib::Utf8(file.filename());
@@ -863,20 +845,17 @@ void App::SaveTo(const std::string& path)
                                                ? std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size())
                                                : std::span<const uint8_t>(binary);
 
-    // The bytes go to a file beside the target first and then replace it. A save that fails partway leaves the last
-    // save whole.
-    std::filesystem::path saving = file;
-    saving += ".saving";
-    const std::optional<std::string> write_error = xsflib::WriteFile(saving, bytes);
-    std::error_code moved;
-    if (!write_error)
+    // A save that fails partway leaves the last save whole (SaveFile). The document's path stays the one that the user
+    // chose, a symbolic link too.
+    const SaveResult saved = SaveFile(file, bytes);
+    if (saved == SaveResult::kReadOnly)
     {
-        std::filesystem::rename(saving, file, moved);
+        ShowMessage("Can't save " + name +
+                    ". The file is read-only. File > Save As… saves the changes to another file.");
+        return;
     }
-    if (write_error || moved)
+    if (saved != SaveResult::kSaved)
     {
-        std::error_code removed;
-        std::filesystem::remove(saving, removed);
         ShowMessage("Can't save " + name + ". The disk may be full, or the file or folder may be read-only.");
         return;
     }
@@ -898,6 +877,9 @@ void App::AfterChanges(std::function<void()> then)
         return;
     }
 
+    // An item's edit whose work still runs counts among the changes.
+    TakeItemEdit(true);
+
     if (!history_ || preview_ || !history_->Modified())
     {
         then();
@@ -912,8 +894,12 @@ void App::AfterChanges(std::function<void()> then)
     }
     else if (choice == SaveChoice::kSave && document_path_.empty())
     {
-        after_save_ = std::move(then);
-        ShowDialog(Dialog::kSaveAs);
+        // Where no Save As dialog opens, nothing would ever clear `after_save_`, and every later request would do
+        // nothing. The request then ends with the document unsaved.
+        if (ShowDialog(Dialog::kSaveAs))
+        {
+            after_save_ = std::move(then);
+        }
     }
     else if (choice == SaveChoice::kSave)
     {
@@ -957,7 +943,7 @@ SaveChoice App::AskToSave()
     box.numbuttons = 3;
     box.buttons = buttons;
     int chosen = 1;
-    if (!SDL_ShowMessageBox(&box, &chosen))
+    if (!ShowSystemBox(box, &chosen))
     {
         SDL_Log("The question about the changes can't be shown: %s", SDL_GetError());
         return SaveChoice::kCancel;

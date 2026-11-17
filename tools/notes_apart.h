@@ -12,9 +12,9 @@ namespace hokuto::tools
 
 // The PSG channel, 1 to 4, that a note of `program` and `key` plays on with the voice group at `voices` of `rom`, or 0
 // for a DirectSound sample.
-int GbaPsgChannel(const ntdlib::agb::Rom& rom, uint32_t voices, uint32_t program, int key);
+int GbaPsgChannel(const agblib::agb::Rom& rom, uint32_t voices, uint32_t program, int key);
 
-// Whether `rom` has no room for a song that outgrows its place. ntdlib::mp2k::Join puts such a song into the free
+// Whether `rom` has no room for a song that outgrows its place. agblib::mp2k::Join puts such a song into the free
 // space: from a multiple of 256 bytes that is 256 bytes or more into the run of 0xFF bytes at the ROM's end, or else
 // from the ROM's end. A ROM that fills the 32 MiB that the GBA maps without such free space refuses every song that
 // grows.
@@ -66,12 +66,12 @@ NotesApart Rd2PsgNotesApart(const song::Rd2Rom& rom, uint32_t sound, const std::
 // or moves therefore decides which track's notes play, and the notes of the other track stay lost. The Eternal Duelist
 // and Captain Tsubasa revisions start a PSG note again only for a new volume. A volume that is inserted or moves
 // therefore joins notes or parts them.
-NotesApart KonamiPsgNotesApart(ntdlib::konami::Revision revision);
+NotesApart KonamiPsgNotesApart(agblib::konami::Revision revision);
 
 // Whether `got`, a sequence of the file that an import of an exported archive of the kind of `archive` makes, contains
 // `want`, the sequence that the export came from. On the GBA, the bytes of `got` start with those of `want`, and zeros
 // follow them. A song that shrank leaves zeros in its place up to its header, and an export aligns the header of a song
-// that moved. The cut treats the zeros as data after the song's items (ntdlib::mp2k::Join). On DSE, the bytes of `got`
+// that moved. The cut treats the zeros as data after the song's items (agblib::mp2k::Join). On DSE, the bytes of `got`
 // are those of `want`: a note that sets its octave comes back as two commands. On the GBA's other drivers, the items of
 // `got` start with those of `want`, whatever bytes their values took. A song that shrank leaves zeros in its place, and
 // the cut treats them as data after the song's items. A song that moved leaves behind the bytes that followed its

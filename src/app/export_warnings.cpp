@@ -29,6 +29,7 @@
 
 #include "app/effect_editor.h"
 #include "app/export_window.h"
+#include "app/item_views.h"
 #include "app/time_text.h"
 #include "format/archive.h"
 #include "format/file.h"
@@ -622,7 +623,7 @@ std::string DsiNote(const std::vector<ntdlib::ntr::StaleHash>& stale, bool key_f
     }
 
     return "The image is DSi-enhanced. The export leaves " +
-           (count == 1 ? std::string("1 hash") : std::to_string(count) + " hashes") +
+           (count == 1 ? std::string("1 hash") : Grouped(count) + " hashes") +
            " of its digest out of date. To update " + (count == 1 ? "it" : "them") +
            (key_failed ? ", choose a DSi digest key file that Hokuto can read in Studio Setup."
                        : ", set the DSi digest key in Studio Setup.");
@@ -660,12 +661,12 @@ std::optional<std::string> SignatureNote(const std::vector<ntdlib::ntr::StaleHas
 
 std::string TheConsole(const std::string& console)
 {
-    return console == "DSE" || console == "Konami" || console.ends_with("'s driver") ? console : "the " + console;
+    return "the " + console;
 }
 
-std::string EngineNote(const std::string& console, const std::string& file_console)
+std::string EngineNote(const std::string& the_engine, const std::string& file_console)
 {
-    return "This sound plays on the " + console + " engine. The exported files contain the conversion that you hear " +
+    return "This sound plays on " + the_engine + ". The exported files contain the conversion that you hear " +
            "in Hokuto. The archive keeps the sound for " + TheConsole(file_console) + ".";
 }
 

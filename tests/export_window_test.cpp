@@ -38,7 +38,7 @@ void TestDsiNote()
                                             {"the digest's block hashes", 0x4080000, 48},
                                             kSignature};
     XSFLIB_CHECK(DsiNote(unkeyed) ==
-                 "The image is DSi-enhanced. The export leaves 13049 hashes of its digest out of "
+                 "The image is DSi-enhanced. The export leaves 13,049 hashes of its digest out of "
                  "date. To update them, set the DSi digest key in Studio Setup.");
     XSFLIB_CHECK(DsiNote({{"the digest's master hash", 0x1B4, 1}}, true) ==
                  "The image is DSi-enhanced. The export leaves 1 hash of its digest out of date. To update it, choose "

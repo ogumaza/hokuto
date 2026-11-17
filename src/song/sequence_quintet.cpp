@@ -2,11 +2,11 @@
 
 // The reader of the songs of Quintet's GBA driver.
 
-#include "ntdlib/quintet/commands.h"
-#include "ntdlib/quintet/song.h"
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/quintet/commands.h"
+#include "agblib/quintet/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/quintet/performance.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/quintet/performance.h"
 
 #include "format/quintet.h"
 #include "song/quintet.h"
@@ -16,8 +16,6 @@ namespace hokuto::song
 {
 namespace
 {
-
-namespace export_ = ntdlib::sequence_export;
 
 using sequence_parts::AddTrack;
 using sequence_parts::ClipToLoop;
@@ -36,7 +34,7 @@ std::map<std::pair<uint32_t, uint32_t>, uint32_t> QuintetInstruments(const ntdli
 {
     using ntdlib::commands::Kind;
     using ntdlib::commands::kOne;
-    namespace quintet = ntdlib::quintet;
+    namespace quintet = agblib::quintet;
     constexpr uint8_t kDutyOpcode = 0x2F;
     const int channel = track.number;
     const uint8_t index = channel == quintet::kWave ? 2 : channel == quintet::kNoise ? 1 : 0;
@@ -82,10 +80,10 @@ struct QuintetItems
 };
 
 // The items of `decoded`, a song of the driver `info` in `rom`.
-QuintetItems ItemsOfSong(const ntdlib::quintet::Rom& rom, const ntdlib::quintet::DriverInfo& info,
-                         const ntdlib::quintet::Decoded& decoded)
+QuintetItems ItemsOfSong(const agblib::quintet::Rom& rom, const agblib::quintet::DriverInfo& info,
+                         const agblib::quintet::Decoded& decoded)
 {
-    namespace quintet = ntdlib::quintet;
+    namespace quintet = agblib::quintet;
     QuintetItems found;
     if (!decoded.opaque)
     {
@@ -98,7 +96,7 @@ QuintetItems ItemsOfSong(const ntdlib::quintet::Rom& rom, const ntdlib::quintet:
 
 // Ends each stretch of `track` where a file of `decoded` ends it. `items` contains the item at each offset, and
 // `offsets` the offset of each item.
-void FoldDots(Track& track, const ntdlib::quintet::Decoded& decoded, const std::map<uint32_t, uint32_t>& items,
+void FoldDots(Track& track, const agblib::quintet::Decoded& decoded, const std::map<uint32_t, uint32_t>& items,
               const std::vector<uint32_t>& offsets)
 {
     // A stretch of ntdlib's performer ends at a note's dot. A file folds the dot into the note before it
@@ -115,7 +113,7 @@ void FoldDots(Track& track, const ntdlib::quintet::Decoded& decoded, const std::
 
 // Sets the instrument of each note of `track` (QuintetInstruments), and the track's program to the program of its first
 // note.
-void SetQuintetPrograms(Track& track, const ntdlib::quintet::Decoded& decoded,
+void SetQuintetPrograms(Track& track, const agblib::quintet::Decoded& decoded,
                         const std::map<uint32_t, uint32_t>& items)
 {
     const std::map<std::pair<uint32_t, uint32_t>, uint32_t> instruments =
@@ -139,7 +137,7 @@ void SetQuintetPrograms(Track& track, const ntdlib::quintet::Decoded& decoded,
 
 Sequence ReadSequence(const QuintetRom& rom, uint32_t sound)
 {
-    namespace quintet = ntdlib::quintet;
+    namespace quintet = agblib::quintet;
     const std::string name = rom.SoundName(sound);
     const auto file = rom.FileOf(static_cast<int>(sound));
     if (!file)
@@ -149,12 +147,12 @@ Sequence ReadSequence(const QuintetRom& rom, uint32_t sound)
 
     // The performer plays one pass of the loop. A song whose header can't be read makes a performance with a warning
     // and no stretches.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     try
     {
-        const export_::quintet::Performance performance =
-            export_::quintet::PerformSong(rom.rom, *file->first, file->second, settings);
+        const agblib::sequence_export::quintet::Performance performance =
+            agblib::sequence_export::quintet::PerformSong(rom.rom, *file->first, file->second, settings);
         if (!performance.warnings.empty() &&
             std::ranges::all_of(performance.stretches, [](const auto& stretches) { return stretches.empty(); }))
         {

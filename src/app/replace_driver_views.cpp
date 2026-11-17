@@ -18,8 +18,8 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
 #include "ntdlib/dse/formats.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sequence_export/dse/sequence_input.h"
 
 #include "app/export_warnings.h"
@@ -147,14 +147,14 @@ void WarnMovedGroup(const song::GbaRom& rom, int song_number, uint32_t from, uin
 constexpr std::size_t kGroupVoices = 128;
 
 // The 128 voices of the voice group at `group`, none where there's no group. Names each voice in `view`.
-std::vector<ntdlib::mp2k::Voice> GbaGroupVoices(const song::GbaRom& rom, std::optional<uint32_t> group,
+std::vector<agblib::mp2k::Voice> GbaGroupVoices(const song::GbaRom& rom, std::optional<uint32_t> group,
                                                 ReplaceView& view)
 {
-    std::vector<ntdlib::mp2k::Voice> group_voices(kGroupVoices);
+    std::vector<agblib::mp2k::Voice> group_voices(kGroupVoices);
     for (std::size_t i = 0; i < group_voices.size(); i++)
     {
         const bool read =
-            group && ntdlib::mp2k::ReadVoice(rom.rom, *group + static_cast<uint32_t>(i) * ntdlib::mp2k::kVoiceSize,
+            group && agblib::mp2k::ReadVoice(rom.rom, *group + static_cast<uint32_t>(i) * agblib::mp2k::kVoiceSize,
                                              group_voices[i]);
         view.gba_voices.push_back("Voice " + std::to_string(i) +
                                   (read ? ": " + song::GbaVoiceKind(group_voices[i]) : ""));
@@ -381,7 +381,7 @@ ReplaceView MakeGbaMidiImportView(const ReplaceSource& source, std::span<const u
 
     // The 128 voices of the song's voice group, by their numbers and kinds.
     const std::optional<uint32_t> group = edit::GbaVoiceGroupOf(*source.file, source.places, number);
-    const std::vector<ntdlib::mp2k::Voice> group_voices = GbaGroupVoices(rom, group, view);
+    const std::vector<agblib::mp2k::Voice> group_voices = GbaGroupVoices(rom, group, view);
 
     // Each instrument gets the chosen voice, or else the proposed one. The import then reads the MIDI file again with
     // the voices.

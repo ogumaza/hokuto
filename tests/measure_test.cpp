@@ -35,15 +35,15 @@
 #include <system_error>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/testing/krawall_cart.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/sequence_export/convert.h"
 #include "ntdlib/testing/dse_song_files.h"
-#include "ntdlib/testing/krawall_cart.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
@@ -70,7 +70,7 @@ namespace
 
 namespace edit = hokuto::edit;
 namespace format = hokuto::format;
-namespace krawall_cart = ntdlib::testing::krawall_cart;
+namespace krawall_cart = agblib::testing::krawall_cart;
 namespace measure = hokuto::measure;
 namespace sar = ntdlib::sar;
 namespace sar_files = ntdlib::testing::sar_files;

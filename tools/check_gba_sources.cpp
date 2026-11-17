@@ -48,9 +48,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/song.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/console.h"
@@ -68,7 +68,7 @@
 namespace
 {
 
-namespace mp2k = ntdlib::mp2k;
+namespace mp2k = agblib::mp2k;
 
 struct Options
 {
@@ -279,7 +279,7 @@ void CheckProjectSample(const hokuto::song::GbaRom& rom, const std::filesystem::
     try
     {
         const std::vector<uint8_t> read = hokuto::song::GbaSampleOfFile(file);
-        const uint8_t* const start = rom.rom.Ptr(ntdlib::agb::kRomBase);
+        const uint8_t* const start = rom.rom.Ptr(agblib::agb::kRomBase);
         const uint8_t* const end = start + rom.rom.Size();
         if (std::search(start, end, read.begin(), read.end()) != end)
         {
@@ -569,7 +569,7 @@ void CheckVoiceGroups(const std::string& name, const hokuto::song::GbaRom& rom, 
         for (const int program : listed)
         {
             mp2k::Voice voice;
-            if (!mp2k::ReadVoice(rom.rom, group.address + 12 * static_cast<uint32_t>(program), voice))
+            if (!mp2k::ReadVoice(rom.rom, group.address + mp2k::kVoiceSize * static_cast<uint32_t>(program), voice))
             {
                 continue;
             }
@@ -654,7 +654,7 @@ void CheckVoiceGroups(const std::string& name, const hokuto::song::GbaRom& rom, 
             {
                 mp2k::Voice before_voice;
                 mp2k::Voice after_voice;
-                const auto at = 12 * static_cast<uint32_t>(program);
+                const auto at = mp2k::kVoiceSize * static_cast<uint32_t>(program);
                 if (!mp2k::ReadVoice(rom.rom, group.address + at, before_voice) ||
                     !mp2k::ReadVoice(after->rom, moved.group + at, after_voice) ||
                     !SameVoice(rom, before_voice, *after, after_voice, true))

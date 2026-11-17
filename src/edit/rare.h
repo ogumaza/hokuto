@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a tune of Rare's GBA driver, by the rules of the driver's bytes (ntdlib/rare/commands.h). A tune's
+// The edits of a tune of Rare's GBA driver, by the rules of the driver's bytes (agblib/rare/commands.h). A tune's
 // header names its tracks, and each track is a run of commands from its start to its end, or to the end of its loop
 // after the start of its loop. Each command that plays names one of 16 MIDI channels. A delay sets the ticks to the
 // next command.

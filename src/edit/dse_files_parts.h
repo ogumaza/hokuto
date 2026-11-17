@@ -31,9 +31,8 @@ std::set<uint32_t> ProgramsOf(const Sequence& tracks);
 // `numbers` in a list for the user: "1, 5, 9".
 std::string NumberList(const std::set<uint32_t>& numbers);
 
-// The place of the format's byte in a wave's parameters (ntdlib::dse::WaveInfo). WaveInfo reads the format as 16 bits
-// at 0x12. Then the formats that hold samples, and the tuning of a doubled rate: 12 semitones in 256ths of a semitone.
-inline constexpr std::size_t kWaveFormat = 0x13;
+// The formats that hold samples (DseWaveFormat), and the tuning of a doubled rate: 12 semitones in 256ths of a
+// semitone.
 inline constexpr uint8_t kPcm8 = 0;
 inline constexpr uint8_t kPcm16 = 1;
 inline constexpr uint8_t kImaAdpcm = 2;

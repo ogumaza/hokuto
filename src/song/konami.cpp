@@ -17,19 +17,20 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/konami/archive_player.h"
+#include "agblib/konami/commands.h"
+#include "agblib/konami/sequencer.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/sf2.h"
+#include "agblib/sequence_export/agb/sfz.h"
+#include "agblib/sequence_export/konami/convert.h"
+#include "agblib/sequence_export/konami/soundfont.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/konami/archive_player.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/konami/sequencer.h"
-#include "ntdlib/sequence_export/agb/settings.h"
-#include "ntdlib/sequence_export/agb/sf2.h"
-#include "ntdlib/sequence_export/agb/sfz.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/konami/convert.h"
-#include "ntdlib/sequence_export/konami/soundfont.h"
 #include "seqlib/pcm.h"
 #include "seqlib/wav.h"
 #include "xsflib/binary.h"
+#include "xsflib/bytes.h"
 
 #include "song/driver_player.h"
 #include "song/gba_bytes.h"
@@ -46,12 +47,12 @@ namespace
 class KonamiRevisionRules final : public DriverRules
 {
 public:
-    explicit KonamiRevisionRules(ntdlib::konami::Revision revision)
+    explicit KonamiRevisionRules(agblib::konami::Revision revision)
         : DriverRules({.engine = format::Engine::kKonami,
                        .revision = static_cast<uint8_t>(revision),
                        .start_volume = 0,
                        // In the revision without a mixer, a track selects its sample.
-                       .notes_name_samples = revision != ntdlib::konami::Revision::kDungeonDiceMonsters,
+                       .notes_name_samples = revision != agblib::konami::Revision::kDungeonDiceMonsters,
                        .mixes_echo = true}),
           revision_(revision)
     {
@@ -59,12 +60,12 @@ public:
 
     std::vector<uint32_t> ItemOffsets(const ntdlib::commands::Sequence& sequence) const override
     {
-        return ntdlib::konami::ItemOffsets(sequence, revision_);
+        return agblib::konami::ItemOffsets(sequence, revision_);
     }
 
     ntdlib::commands::Scale ScaleOf(ntdlib::commands::Kind kind) const override
     {
-        return ntdlib::konami::ScaleOf(kind, revision_);
+        return agblib::konami::ScaleOf(kind, revision_);
     }
 
     int VelocityOf(int volume, bool sample_note) const override
@@ -84,22 +85,22 @@ public:
 
     bool PsgTrack(int track) const override
     {
-        return ntdlib::konami::IsPsgTrack(track);
+        return agblib::konami::IsPsgTrack(track);
     }
 
     // The command of a note contains the driver volume.
     std::optional<NoteVelocities> Velocities() const override
     {
-        const int most = ntdlib::konami::UltimateMasters(revision_) ? 127 : 15;
+        const int most = agblib::konami::UltimateMasters(revision_) ? 127 : 15;
         return NoteVelocities{most, "Note volume must be between 0 and " + std::to_string(most) + "."};
     }
 
 private:
-    ntdlib::konami::Revision revision_;
+    agblib::konami::Revision revision_;
 };
 
-// The model of Konami's driver and the GBA's sound hardware, for one ROM (ntdlib::konami::ArchivePlayer).
-class KonamiPlayer final : public ArchiveDriverPlayer<ntdlib::konami::ArchivePlayer>
+// The model of Konami's driver and the GBA's sound hardware, for one ROM (agblib::konami::ArchivePlayer).
+class KonamiPlayer final : public ArchiveDriverPlayer<agblib::konami::ArchivePlayer>
 {
 public:
     explicit KonamiPlayer(const KonamiRom& rom) : ArchiveDriverPlayer(rom.rom, rom.info), rom_(rom)
@@ -108,7 +109,7 @@ public:
 
     void Start(uint32_t sound, bool enhanced) override
     {
-        ntdlib::konami::ArchivePlayerOptions options;
+        agblib::konami::ArchivePlayerOptions options;
         options.enhanced = enhanced;
         options.live = KonamiSoundIsLive(rom_, sound);
         options.echo = echo_;
@@ -122,7 +123,7 @@ public:
 
     int Tracks() const override
     {
-        return ntdlib::konami::kTracks;
+        return agblib::konami::kTracks;
     }
 
     uint32_t Tick() const override
@@ -132,7 +133,7 @@ public:
 
     bool Finished() const override
     {
-        const ntdlib::konami::Sequencer* song = player_.Driver().Song();
+        const agblib::konami::Sequencer* song = player_.Driver().Song();
         return song == nullptr || song->Stopped() || !song->AnyTrackActive();
     }
 
@@ -141,26 +142,26 @@ private:
     bool echo_ = true;
 };
 
-// What the output stage of ntdlib::konami::Output reads of the records of the sample tracks, frame by frame: the
+// What the output stage of agblib::konami::Output reads of the records of the sample tracks, frame by frame: the
 // samples whose headers the note starts read, and the samples whose headers give a voice's step at a pitch change while
 // the voice plays another sample.
 class StageReads
 {
 public:
-    explicit StageReads(ntdlib::konami::Revision revision)
-        : ultimate_(ntdlib::konami::UltimateMasters(revision)),
-          ring_(ntdlib::konami::EternalDuelistLayout(revision)),
-          any_flag_(revision == ntdlib::konami::Revision::kEternalDuelist),
-          playing_(static_cast<std::size_t>(ntdlib::konami::TrackCount(revision) - ntdlib::konami::kPsgTracks), -1)
+    explicit StageReads(agblib::konami::Revision revision)
+        : ultimate_(agblib::konami::UltimateMasters(revision)),
+          ring_(agblib::konami::EternalDuelistLayout(revision)),
+          any_flag_(revision == agblib::konami::Revision::kEternalDuelist),
+          playing_(static_cast<std::size_t>(agblib::konami::TrackCount(revision) - agblib::konami::kPsgTracks), -1)
     {
     }
 
     // Follows the stage through a frame's records. Adds the samples whose notes start in the frame to `started`, and
     // those whose rates the frame borrows to `borrowed`.
-    void Frame(std::array<ntdlib::konami::TrackOutput, ntdlib::konami::kTracks> records, std::set<int>& started,
+    void Frame(std::array<agblib::konami::TrackOutput, agblib::konami::kTracks> records, std::set<int>& started,
                std::set<int>& borrowed)
     {
-        namespace konami = ntdlib::konami;
+        namespace konami = agblib::konami;
 
         // The stage of the older revisions plays the noise track's left side on the next record's channel while its
         // pan is off the centre. The first voice then reads that record.
@@ -231,7 +232,7 @@ struct HeaderReads
 // Nothing for the revision without a mixer.
 HeaderReads ReadsOf(const KonamiRom& rom, uint32_t sound)
 {
-    namespace konami = ntdlib::konami;
+    namespace konami = agblib::konami;
     HeaderReads reads;
     if (rom.info.revision == konami::Revision::kDungeonDiceMonsters)
     {
@@ -262,20 +263,20 @@ HeaderReads ReadsOf(const KonamiRom& rom, uint32_t sound)
 
 } // namespace
 
-const DriverRules& KonamiRules(ntdlib::konami::Revision revision)
+const DriverRules& KonamiRules(agblib::konami::Revision revision)
 {
     static const std::array<KonamiRevisionRules, 11> rules = {
-        KonamiRevisionRules(ntdlib::konami::Revision::kUltimateMasters),
-        KonamiRevisionRules(ntdlib::konami::Revision{1}),
-        KonamiRevisionRules(ntdlib::konami::Revision{2}),
-        KonamiRevisionRules(ntdlib::konami::Revision{3}),
-        KonamiRevisionRules(ntdlib::konami::Revision{4}),
-        KonamiRevisionRules(ntdlib::konami::Revision{5}),
-        KonamiRevisionRules(ntdlib::konami::Revision{6}),
-        KonamiRevisionRules(ntdlib::konami::Revision{7}),
-        KonamiRevisionRules(ntdlib::konami::Revision{8}),
-        KonamiRevisionRules(ntdlib::konami::Revision{9}),
-        KonamiRevisionRules(ntdlib::konami::Revision::kDungeonDiceMonsters),
+        KonamiRevisionRules(agblib::konami::Revision::kUltimateMasters),
+        KonamiRevisionRules(agblib::konami::Revision{1}),
+        KonamiRevisionRules(agblib::konami::Revision{2}),
+        KonamiRevisionRules(agblib::konami::Revision{3}),
+        KonamiRevisionRules(agblib::konami::Revision{4}),
+        KonamiRevisionRules(agblib::konami::Revision{5}),
+        KonamiRevisionRules(agblib::konami::Revision{6}),
+        KonamiRevisionRules(agblib::konami::Revision{7}),
+        KonamiRevisionRules(agblib::konami::Revision{8}),
+        KonamiRevisionRules(agblib::konami::Revision{9}),
+        KonamiRevisionRules(agblib::konami::Revision::kDungeonDiceMonsters),
     };
     const auto index = static_cast<std::size_t>(revision);
     if (index >= rules.size())
@@ -286,14 +287,14 @@ const DriverRules& KonamiRules(ntdlib::konami::Revision revision)
     return rules[index];
 }
 
-std::optional<ntdlib::konami::Revision> KonamiRevisionOf(const DriverRules* rules)
+std::optional<agblib::konami::Revision> KonamiRevisionOf(const DriverRules* rules)
 {
     if (rules == nullptr || rules->DriverEngine() != format::Engine::kKonami)
     {
         return std::nullopt;
     }
 
-    return static_cast<ntdlib::konami::Revision>(rules->Revision());
+    return static_cast<agblib::konami::Revision>(rules->Revision());
 }
 
 const KonamiRom* KonamiOf(const DriverRom* rom)
@@ -308,7 +309,7 @@ const DriverRules& KonamiRom::Rules() const
 
 std::span<const uint8_t> KonamiRom::Bytes() const
 {
-    return {rom.Ptr(ntdlib::agb::kRomBase), rom.Size()};
+    return {rom.Ptr(agblib::agb::kRomBase), rom.Size()};
 }
 
 std::vector<uint32_t> KonamiRom::Sounds() const
@@ -329,7 +330,7 @@ std::string KonamiRom::SoundName(uint32_t sound) const
 SoundFields KonamiRom::FieldsOf(uint32_t sound) const
 {
     // The entry of a song in the song table contains a field of 32 bits that names the bytes of the song, and a field
-    // of 16 bits for the start of each track (ntdlib::konami::Cut).
+    // of 16 bits for the start of each track (agblib::konami::Cut).
     SoundFields fields;
     const int song = KonamiSongOf(*this, sound);
     if (song < 0 || song >= info.song_count)
@@ -337,10 +338,10 @@ SoundFields KonamiRom::FieldsOf(uint32_t sound) const
         return fields;
     }
 
-    const uint64_t entry = uint64_t{info.song_table} - ntdlib::agb::kRomBase +
-                           ntdlib::konami::SongEntrySize(info.revision) * static_cast<uint64_t>(song);
+    const uint64_t entry = uint64_t{info.song_table} - agblib::agb::kRomBase +
+                           agblib::konami::SongEntrySize(info.revision) * static_cast<uint64_t>(song);
     fields.sequence = entry;
-    for (int track = 0; track < ntdlib::konami::TrackCount(info.revision); track++)
+    for (int track = 0; track < agblib::konami::TrackCount(info.revision); track++)
     {
         fields.tracks.push_back(entry + 4 + 2 * static_cast<uint64_t>(track));
     }
@@ -375,7 +376,7 @@ std::vector<uint8_t> KonamiRom::SampleWav(int sample) const
 
 SampleShape KonamiRom::ShapeOf(int sample) const
 {
-    const ntdlib::konami::SampleInfo shape = info.Sample(rom, sample);
+    const agblib::konami::SampleInfo shape = info.Sample(rom, sample);
     return {static_cast<uint32_t>(shape.length),
             shape.Looped() ? std::optional(static_cast<uint32_t>(shape.loop_start)) : std::nullopt};
 }
@@ -386,7 +387,7 @@ std::vector<int> KonamiRom::SamplesOfSound(uint32_t sound) const
 
     // A live stage's table of samples can replace the samples of the notes, and a song that the decoder keeps as data
     // contains no notes. The note starts of the output stage give their samples.
-    const ntdlib::konami::Decoded decoded = ntdlib::konami::DecodeSong(rom, info, KonamiSongOf(*this, sound));
+    const agblib::konami::Decoded decoded = agblib::konami::DecodeSong(rom, info, KonamiSongOf(*this, sound));
     if (KonamiSoundIsLive(*this, sound) || decoded.opaque)
     {
         const std::set<int> started = ReadsOf(*this, sound).started;
@@ -394,7 +395,7 @@ std::vector<int> KonamiRom::SamplesOfSound(uint32_t sound) const
     }
 
     // A track of the revision without a mixer can select its sample too.
-    const bool dungeon = info.revision == ntdlib::konami::Revision::kDungeonDiceMonsters;
+    const bool dungeon = info.revision == agblib::konami::Revision::kDungeonDiceMonsters;
     std::set<int> played;
     for (const ntdlib::commands::Command& command : decoded.sequence.items)
     {
@@ -414,7 +415,7 @@ std::vector<int> KonamiRom::SamplesOfSound(uint32_t sound) const
 std::vector<uint32_t> KonamiRom::TrackPrograms(int track) const
 {
     // The noise channel selects neither a duty nor a wave.
-    constexpr int kNoiseTrack = ntdlib::konami::kPsgTracks - 1;
+    constexpr int kNoiseTrack = agblib::konami::kPsgTracks - 1;
     return track == kNoiseTrack ? std::vector<uint32_t>() : KonamiTrackPrograms(*this, track);
 }
 
@@ -425,11 +426,11 @@ Sequence KonamiRom::ReadSequence(uint32_t sound) const
 
 ntdlib::sequence_export::Conversion KonamiRom::ConvertToMidi(uint32_t sound, const std::string& program) const
 {
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.program = program;
     settings.version = KonamiSoundIsLive(*this, sound) ? 1 : 0;
-    ntdlib::sequence_export::konami::SongFiles files =
-        ntdlib::sequence_export::konami::ConvertSongFiles(rom, info, KonamiSongOf(*this, sound), settings);
+    agblib::sequence_export::konami::SongFiles files =
+        agblib::sequence_export::konami::ConvertSongFiles(rom, info, KonamiSongOf(*this, sound), settings);
 
     return AgbConversion(KonamiSoundName(*this, sound), std::move(files));
 }
@@ -437,14 +438,14 @@ ntdlib::sequence_export::Conversion KonamiRom::ConvertToMidi(uint32_t sound, con
 ntdlib::sequence_export::BankConversion KonamiRom::ConvertSamples(std::span<const int> samples,
                                                                   const std::string& program) const
 {
-    namespace agb = ntdlib::sequence_export::agb;
-    ntdlib::sequence_export::konami::SoundfontBuilder builder(rom, info);
+    namespace agb = agblib::sequence_export::agb;
+    agblib::sequence_export::konami::SoundfontBuilder builder(rom, info);
     agb::Sf2File& file = builder.File();
     ntdlib::sequence_export::BankConversion conversion;
     for (const int sample : samples)
     {
         const int index = builder.DsSample(sample);
-        const ntdlib::konami::SampleInfo sample_info = info.Sample(rom, sample);
+        const agblib::konami::SampleInfo sample_info = info.Sample(rom, sample);
         if (index < 0 || !sample_info.valid)
         {
             conversion.warnings.push_back(KonamiSampleName(sample) + " is empty.");
@@ -503,7 +504,7 @@ std::shared_ptr<const KonamiRom> LoadKonamiRom(std::vector<uint8_t> bytes)
     auto rom = std::make_shared<KonamiRom>();
     rom->rom.Assign(std::move(bytes));
     std::string error;
-    if (!ntdlib::konami::DetectDriver(rom->rom, {}, rom->info, error))
+    if (!agblib::konami::DetectDriver(rom->rom, {}, rom->info, error))
     {
         throw xsflib::FormatError(error.empty()
                                       ? "the ROM doesn't use Konami's driver"
@@ -522,8 +523,8 @@ std::vector<uint32_t> KonamiSounds(const KonamiRom& rom)
     std::vector<uint32_t> sounds;
     for (int song = 0; song < rom.info.song_count; song++)
     {
-        ntdlib::konami::SongHeader header;
-        if (!ntdlib::konami::ReadSongHeader(rom.rom, rom.info.song_table, song, rom.info.revision, header) ||
+        agblib::konami::SongHeader header;
+        if (!agblib::konami::ReadSongHeader(rom.rom, rom.info.song_table, song, rom.info.revision, header) ||
             !rom.rom.Contains(header.base))
         {
             continue;
@@ -550,15 +551,15 @@ bool KonamiSoundIsLive(const KonamiRom& rom, uint32_t sound)
     return static_cast<int>(sound) >= rom.info.song_count;
 }
 
-ntdlib::konami::Request KonamiRequestOf(const KonamiRom& rom, uint32_t sound)
+agblib::konami::Request KonamiRequestOf(const KonamiRom& rom, uint32_t sound)
 {
-    ntdlib::konami::Request request;
+    agblib::konami::Request request;
     if (!KonamiSoundIsLive(rom, sound))
     {
         return request;
     }
 
-    request.setting = ntdlib::konami::kLiveStageSetting;
+    request.setting = agblib::konami::kLiveStageSetting;
     if (const auto table = rom.info.live_tables.find(KonamiSongOf(rom, sound)); table != rom.info.live_tables.end())
     {
         request.samples = table->second;
@@ -569,18 +570,18 @@ ntdlib::konami::Request KonamiRequestOf(const KonamiRom& rom, uint32_t sound)
 
 std::string KonamiSoundName(const KonamiRom& rom, uint32_t sound)
 {
-    return "Song " + ntdlib::sequence_export::agb::SongNumber(KonamiSongOf(rom, sound), rom.info.song_count) +
+    return "Song " + agblib::sequence_export::agb::SongNumber(KonamiSongOf(rom, sound), rom.info.song_count) +
            (KonamiSoundIsLive(rom, sound) ? " (live)" : "");
 }
 
 int KonamiRate(const KonamiRom& rom)
 {
-    return rom.info.revision == ntdlib::konami::Revision::kDungeonDiceMonsters ? 32768 : 65536;
+    return rom.info.revision == agblib::konami::Revision::kDungeonDiceMonsters ? 32768 : 65536;
 }
 
-int KonamiVelocityOf(int volume, ntdlib::konami::Revision revision, bool sample_note)
+int KonamiVelocityOf(int volume, agblib::konami::Revision revision, bool sample_note)
 {
-    if (sample_note && ntdlib::konami::UltimateMasters(revision))
+    if (sample_note && agblib::konami::UltimateMasters(revision))
     {
         return std::clamp(volume, 0, 127);
     }
@@ -589,14 +590,14 @@ int KonamiVelocityOf(int volume, ntdlib::konami::Revision revision, bool sample_
 }
 
 bool KonamiNoteStartsOn(const ntdlib::commands::Command& command, int holder, int number,
-                        ntdlib::konami::Revision revision)
+                        agblib::konami::Revision revision)
 {
     const bool on_next = command.sample && command.index == 1;
-    return holder == number ? !on_next : on_next || revision != ntdlib::konami::Revision::kDungeonDiceMonsters;
+    return holder == number ? !on_next : on_next || revision != agblib::konami::Revision::kDungeonDiceMonsters;
 }
 
 std::optional<uint32_t> KonamiNoteCommandIn(std::span<const ntdlib::commands::Command> items, uint32_t first,
-                                            uint32_t end, int holder, int number, ntdlib::konami::Revision revision)
+                                            uint32_t end, int holder, int number, agblib::konami::Revision revision)
 {
     for (uint32_t i = std::min<uint32_t>(end, static_cast<uint32_t>(items.size())); i > first; --i)
     {
@@ -612,7 +613,7 @@ std::optional<uint32_t> KonamiNoteCommandIn(std::span<const ntdlib::commands::Co
 
 std::optional<std::pair<std::size_t, uint32_t>> KonamiNoteCommandBefore(
     std::span<const ntdlib::commands::Command> items, std::span<const KonamiRun> runs, std::size_t run, uint32_t item,
-    int holder, int number, ntdlib::konami::Revision revision)
+    int holder, int number, agblib::konami::Revision revision)
 {
     for (std::size_t r = std::min(run + 1, runs.size()); r > 0; --r)
     {
@@ -628,7 +629,7 @@ std::optional<std::pair<std::size_t, uint32_t>> KonamiNoteCommandBefore(
 }
 
 std::vector<KonamiRunStart> KonamiVolumeStartsAlong(std::span<const ntdlib::commands::Command> items,
-                                                    std::span<const KonamiRun> runs, ntdlib::konami::Revision revision)
+                                                    std::span<const KonamiRun> runs, agblib::konami::Revision revision)
 {
     std::vector<KonamiRunStart> starts;
     std::array<std::optional<uint32_t>, 2> last;
@@ -656,9 +657,9 @@ std::vector<KonamiRunStart> KonamiVolumeStartsAlong(std::span<const ntdlib::comm
     return starts;
 }
 
-int KonamiVolumeOf(int velocity, ntdlib::konami::Revision revision, bool sample_note)
+int KonamiVolumeOf(int velocity, agblib::konami::Revision revision, bool sample_note)
 {
-    if (sample_note && ntdlib::konami::UltimateMasters(revision))
+    if (sample_note && agblib::konami::UltimateMasters(revision))
     {
         return std::clamp(velocity, 0, 127);
     }
@@ -670,19 +671,19 @@ int KonamiVolumeOf(int velocity, ntdlib::konami::Revision revision, bool sample_
     return std::clamp(static_cast<int>(std::lround(velocity * 15.0 / 127.0)), 1, 15);
 }
 
-int KonamiMostVolume(ntdlib::konami::Revision revision, int track)
+int KonamiMostVolume(agblib::konami::Revision revision, int track)
 {
-    return ntdlib::konami::UltimateMasters(revision) && !ntdlib::konami::IsPsgTrack(track) ? 127 : 15;
+    return agblib::konami::UltimateMasters(revision) && !agblib::konami::IsPsgTrack(track) ? 127 : 15;
 }
 
 std::vector<int> KonamiSamples(const KonamiRom& rom)
 {
     using ntdlib::commands::Kind;
-    const bool dungeon = rom.info.revision == ntdlib::konami::Revision::kDungeonDiceMonsters;
+    const bool dungeon = rom.info.revision == agblib::konami::Revision::kDungeonDiceMonsters;
     std::set<int> samples;
     for (int song = 0; song < rom.info.song_count; song++)
     {
-        const ntdlib::konami::Decoded decoded = ntdlib::konami::DecodeSong(rom.rom, rom.info, song);
+        const agblib::konami::Decoded decoded = agblib::konami::DecodeSong(rom.rom, rom.info, song);
         if (decoded.opaque)
         {
             continue;
@@ -704,7 +705,7 @@ std::vector<int> KonamiSamples(const KonamiRom& rom)
     std::vector<int> valid;
     for (const int sample : samples)
     {
-        if (const ntdlib::konami::SampleInfo info = rom.info.Sample(rom.rom, sample); info.valid && info.length > 0)
+        if (const agblib::konami::SampleInfo info = rom.info.Sample(rom.rom, sample); info.valid && info.length > 0)
         {
             valid.push_back(sample);
         }
@@ -725,7 +726,7 @@ std::vector<uint32_t> KonamiTrackPrograms(const KonamiRom& rom, int track)
     std::set<uint32_t> programs;
     for (int song = 0; song < rom.info.song_count; song++)
     {
-        const ntdlib::konami::Decoded decoded = ntdlib::konami::DecodeSong(rom.rom, rom.info, song);
+        const agblib::konami::Decoded decoded = agblib::konami::DecodeSong(rom.rom, rom.info, song);
         if (decoded.opaque || static_cast<std::size_t>(track) >= decoded.entries.size())
         {
             continue;
@@ -759,13 +760,13 @@ std::string KonamiSampleName(int sample)
 
 std::vector<uint8_t> KonamiSampleWav(const KonamiRom& rom, int sample)
 {
-    const ntdlib::konami::SampleInfo info = rom.info.Sample(rom.rom, sample);
+    const agblib::konami::SampleInfo info = rom.info.Sample(rom.rom, sample);
     if (!info.valid || info.length <= 0)
     {
         throw std::invalid_argument(KonamiSampleName(sample) + " is empty.");
     }
 
-    const std::vector<int8_t> pcm = ntdlib::konami::SamplePcm(rom.rom, info);
+    const std::vector<int8_t> pcm = agblib::konami::SamplePcm(rom.rom, info);
     seqlib::Pcm out;
     out.channels.emplace_back(pcm.size());
     std::ranges::transform(pcm, out.channels[0].begin(),
@@ -782,7 +783,7 @@ std::vector<uint8_t> KonamiSampleWav(const KonamiRom& rom, int sample)
 
 double KonamiSampleRate(const KonamiRom& rom, int sample)
 {
-    const ntdlib::konami::SampleInfo info = rom.info.Sample(rom.rom, sample);
+    const agblib::konami::SampleInfo info = rom.info.Sample(rom.rom, sample);
     if (!info.valid)
     {
         throw std::invalid_argument("The ROM has no " + KonamiSampleName(sample) + ".");
@@ -795,13 +796,13 @@ DriverAudition KonamiSampleAudition(const KonamiRom& rom, int sample, int key, i
 {
     using namespace ntdlib::commands;
     DriverAudition audition;
-    audition.track = ntdlib::konami::kPsgTracks;
+    audition.track = agblib::konami::kPsgTracks;
     audition.note.kind = Kind::kNote;
     audition.note.sample = static_cast<uint16_t>(sample);
     audition.note.velocity = std::max(KonamiVolumeOf(velocity, rom.info.revision, true), 1) * kOne;
 
     // A note of the revision without a mixer has no semitones.
-    if (rom.info.revision != ntdlib::konami::Revision::kDungeonDiceMonsters)
+    if (rom.info.revision != agblib::konami::Revision::kDungeonDiceMonsters)
     {
         audition.note.key = static_cast<uint8_t>(static_cast<int8_t>(std::clamp(key - 60, -128, 127)));
     }
@@ -821,7 +822,7 @@ std::optional<DriverAudition> KonamiNoteAudition(const KonamiRom& rom, const ntd
     }
 
     // A note's command is the offset of its item.
-    const std::vector<uint32_t> offsets = ntdlib::konami::ItemOffsets(commands, rom.info.revision);
+    const std::vector<uint32_t> offsets = agblib::konami::ItemOffsets(commands, rom.info.revision);
     const auto item_at = [&](uint32_t offset) -> std::optional<uint32_t>
     {
         const auto place = std::ranges::lower_bound(offsets, offset);
@@ -877,7 +878,7 @@ std::optional<DriverAudition> KonamiNoteAudition(const KonamiRom& rom, const ntd
     audition.note.index = 0;
 
     // A DDM sample note has no semitone. Its rate follows the sample.
-    const bool dungeon = rom.info.revision == ntdlib::konami::Revision::kDungeonDiceMonsters;
+    const bool dungeon = rom.info.revision == agblib::konami::Revision::kDungeonDiceMonsters;
     if (!dungeon || !audition.note.sample)
     {
         const int moved = audition.note.sample ? static_cast<int8_t>(audition.note.key) + key - nearest->key
@@ -915,8 +916,8 @@ std::optional<DriverAudition> KonamiNoteAudition(const KonamiRom& rom, const ntd
 std::shared_ptr<const KonamiRom> KonamiAuditionRom(const KonamiRom& rom, const DriverAudition& audition)
 {
     using namespace ntdlib::commands;
-    const ntdlib::konami::Revision revision = rom.info.revision;
-    const int tracks = ntdlib::konami::TrackCount(revision);
+    const agblib::konami::Revision revision = rom.info.revision;
+    const int tracks = agblib::konami::TrackCount(revision);
     const auto wait = [](int64_t ticks)
     {
         return ValueCommand(Kind::kWait, ticks);
@@ -949,21 +950,15 @@ std::shared_ptr<const KonamiRom> KonamiAuditionRom(const KonamiRom& rom, const D
         sequence.items.push_back(Command{.kind = Kind::kEnd});
     }
 
-    const ntdlib::konami::Encoded encoded = ntdlib::konami::EncodeSequence(sequence, entries, revision);
+    const agblib::konami::Encoded encoded = agblib::konami::EncodeSequence(sequence, entries, revision);
 
     std::vector<uint8_t> bytes = PaddedRomCopy(rom.rom);
     const uint32_t base = AppendWordAligned(bytes, encoded.bytes);
     const uint32_t table = EndAddress(bytes);
-    for (int shift = 0; shift < 32; shift += 8)
-    {
-        bytes.push_back(static_cast<uint8_t>(base >> shift));
-    }
-
+    xsflib::AppendLe32(bytes, base);
     for (const uint32_t entry : entries)
     {
-        const uint32_t offset = encoded.offsets[entry];
-        bytes.push_back(static_cast<uint8_t>(offset));
-        bytes.push_back(static_cast<uint8_t>(offset >> 8));
+        xsflib::AppendLe16(bytes, static_cast<uint16_t>(encoded.offsets[entry]));
     }
 
     PadToWord(bytes);

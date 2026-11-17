@@ -7,58 +7,11 @@
 namespace hokuto::tools::other_console
 {
 
-Played Play(const std::shared_ptr<const sar::SoundArchive>& archive, uint32_t sound, double seconds)
+Played PlayDry(const song::Played& source, song::Sequence sequence, double seconds, song::Mixing mixing)
 {
-    const std::atomic<bool> kCancel = false;
-    Played played{std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound)), {}};
-    played.render = song::RenderDry(archive, played.sequence, song::Mixing::kStrict, seconds, kCancel);
-
-    return played;
-}
-
-Played PlayWii(const std::shared_ptr<const ntdlib::rsar::SoundArchive>& archive, uint32_t sound, double seconds,
-               const ntdlib::SndBuild& build)
-{
-    const std::atomic<bool> kCancel = false;
-    Played played{std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound, {}, {}, build)), {}};
-    played.render = song::RenderDry(archive, played.sequence, song::Mixing::kStrict, seconds, kCancel);
-
-    return played;
-}
-
-Played PlayDs(const std::shared_ptr<const song::DsArchive>& archive, uint32_t sound, double seconds,
-              song::Mixing mixing)
-{
-    const std::atomic<bool> kCancel = false;
-    Played played{std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound)), {}};
-    played.render = song::RenderDry(archive, played.sequence, mixing, seconds, kCancel);
-
-    return played;
-}
-
-Played PlayDse(const std::shared_ptr<const song::DseSet>& set, uint32_t sound, double seconds)
-{
-    const std::atomic<bool> kCancel = false;
-    Played played{std::make_shared<const song::Sequence>(song::ReadSequence(*set, sound)), {}};
-    played.render = song::RenderDry(set, played.sequence, song::Mixing::kStrict, seconds, kCancel);
-
-    return played;
-}
-
-Played PlayGba(const std::shared_ptr<const song::GbaRom>& rom, uint32_t number, double seconds)
-{
-    const std::atomic<bool> kCancel = false;
-    Played played{std::make_shared<const song::Sequence>(song::ReadSequence(*rom, static_cast<int>(number))), {}};
-    played.render = song::RenderDry(rom, played.sequence, song::Mixing::kStrict, seconds, kCancel);
-
-    return played;
-}
-
-Played PlayDriver(const std::shared_ptr<const song::DriverRom>& rom, uint32_t sound, double seconds)
-{
-    const std::atomic<bool> kCancel = false;
-    Played played{std::make_shared<const song::Sequence>(rom->ReadSequence(sound)), {}};
-    played.render = song::RenderDry(rom, played.sequence, song::Mixing::kStrict, seconds, kCancel);
+    const std::atomic<bool> never_cancel = false;
+    Played played{std::make_shared<const song::Sequence>(std::move(sequence)), {}};
+    played.render = song::RenderDry(source, played.sequence, mixing, seconds, never_cancel);
 
     return played;
 }

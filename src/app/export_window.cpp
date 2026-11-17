@@ -46,6 +46,13 @@ constexpr char kExportWindow[] = "###Export";
 // The Export window's margin from the top and the bottom of the main window, in points.
 constexpr float kMargin = 32.0f;
 
+// The heights of the Export window's panes of warnings and of the measure, in points. The text of both comes in after
+// the window opens. Panes of fixed height give the window its size when it opens, and it opens in the middle. Longer
+// text scrolls. The measure keeps 120 points in a short main window.
+constexpr float kWarningsHeight = 140.0f;
+constexpr float kMeasuredHeight = 220.0f;
+constexpr float kShortMeasuredHeight = 120.0f;
+
 // The lines of the targets of a sequence to MIDI.
 constexpr char kMidiSoundFontLine[] = "MIDI with SoundFont 2 (one file for all instruments)";
 constexpr char kMidiSfzLine[] = "MIDI with SFZ (one file per instrument)";
@@ -153,6 +160,13 @@ std::optional<ntdlib::sar::Flavor> ConsoleOf(ExportTarget target)
     }
 
     return std::nullopt;
+}
+
+bool Measures(const ExportView& view)
+{
+    const ExportTarget target = view.targets.at(view.chosen);
+    const bool midi = target == ExportTarget::kMidiSoundFont || target == ExportTarget::kMidiSfz;
+    return (midi || SongEngineOf(target).has_value()) && view.refused.empty();
 }
 
 std::optional<format::Engine> SongEngineOf(ExportTarget target)
@@ -612,12 +626,11 @@ void DrawExportWarnings(ImDrawList* draw, const std::vector<std::string>* warnin
 {
     ImGui::Spacing();
     DrawDialogHeading(draw, refused ? "Can't export" : "Warnings");
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, Px(280.0f)));
     if (appearing)
     {
         ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
     }
-    ImGui::BeginChild("##warnings", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AutoResizeY);
+    ImGui::BeginChild("##warnings", ImVec2(0.0f, Px(kWarningsHeight)));
     ImGui::PushTextWrapPos(0.0f);
     if (refused)
     {
@@ -636,8 +649,9 @@ void DrawExportWarnings(ImDrawList* draw, const std::vector<std::string>* warnin
     ImGui::EndChild();
 }
 
-// The measure of the export, with Play buttons under each place that it names. A press sets `choice`.
-void DrawExportMeasured(ImDrawList* draw, ExportView& view, const MeasuredView& measured, bool measure_came,
+// The measure of the export, with Play buttons under each place that it names. A press sets `choice`. Before the
+// warnings are in, the export has no `measured` yet.
+void DrawExportMeasured(ImDrawList* draw, ExportView& view, const MeasuredView* measured, bool measure_came,
                         ExportChoice& choice)
 {
     ImGui::Spacing();
@@ -645,27 +659,33 @@ void DrawExportMeasured(ImDrawList* draw, ExportView& view, const MeasuredView& 
     // Below the measure: the spacing before the buttons, the buttons and the window's padding.
     const float below = ImGui::GetStyle().ItemSpacing.y * 3.0f + ImGui::GetFrameHeight() + Px(theme::kDialogPadding.y);
     const float room = ImGui::GetMainViewport()->WorkSize.y - Px(kMargin) * 2.0f - ImGui::GetCursorPosY() - below;
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(Px(120.0f), room)));
     if (measure_came)
     {
         ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
     }
-    ImGui::BeginChild("##measured", ImVec2(0.0f, 0.0f), ImGuiChildFlags_AutoResizeY);
-    ImGui::PushTextWrapPos(0.0f);
-    if (!measured.status.empty())
+    ImGui::BeginChild("##measured",
+                      ImVec2(0.0f, std::max(Px(kShortMeasuredHeight), std::min(Px(kMeasuredHeight), room))));
+    if (measured == nullptr)
     {
-        MutedText(measured.status.c_str());
+        MutedText("Checking…");
+        ImGui::EndChild();
+        return;
     }
-    for (const std::string& line : measured.lines)
+    ImGui::PushTextWrapPos(0.0f);
+    if (!measured->status.empty())
+    {
+        MutedText(measured->status.c_str());
+    }
+    for (const std::string& line : measured->lines)
     {
         ImGui::Bullet();
         TextWrappedAtSpaces(line);
     }
-    for (std::size_t i = 0; i < measured.places.size(); i++)
+    for (std::size_t i = 0; i < measured->places.size(); i++)
     {
         ImGui::PushID(static_cast<int>(i));
         ImGui::Bullet();
-        TextWrappedAtSpaces(measured.places[i].line);
+        TextWrappedAtSpaces(measured->places[i].line);
         // The buttons start where the line's text starts, after the bullet.
         const float indent = ImGui::GetTreeNodeToLabelSpacing();
         ImGui::Indent(indent);
@@ -685,10 +705,10 @@ void DrawExportMeasured(ImDrawList* draw, ExportView& view, const MeasuredView& 
         ImGui::Unindent(indent);
         ImGui::PopID();
     }
-    if (!measured.closing.empty())
+    if (!measured->closing.empty())
     {
         ImGui::Bullet();
-        TextWrappedAtSpaces(measured.closing);
+        TextWrappedAtSpaces(measured->closing);
     }
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
@@ -758,9 +778,11 @@ ExportChoice DrawExportWindow(ExportView& view, std::optional<ImVec2>& place, co
 
     // A window over the middle of the main window, in the style of Studio Setup. It keeps the clicks from the windows
     // under it while it's open. The user can drag it by its title bar. It then opens where the drag left it until
-    // Hokuto quits: `place` keeps its centre. The warnings and the measure make the window taller after it opens. The
-    // window keeps its top and grows down. It moves up only to stay inside the main window. The controls under the
-    // mouse then stay where they were. While the drag goes on, the drag places the window.
+    // Hokuto quits: `place` keeps its centre. The warnings and the measure come in after the window opens, in panes of
+    // fixed height. The window's size is then known when it opens, and it opens in the middle. A choice of another
+    // target can change its height. The window keeps its top and grows or shrinks at the bottom. It moves up only to
+    // stay inside the main window. The controls under the mouse then stay where they were. While the drag goes on, the
+    // drag places the window.
     const std::string title = view.title + kExportWindow;
     const DialogPlace placed = PlaceDialog(title, place, view.top, Px(kMargin));
     // The window takes the width of its longest target where that passes 520 points, up to the main window's width. The
@@ -794,18 +816,18 @@ ExportChoice DrawExportWindow(ExportView& view, std::optional<ImVec2>& place, co
     ExportChoice choice = ExportChoice::kNone;
     DrawExportTarget(draw, view, warnings, choice);
 
-    // The warnings scroll once they fill the window's height. A child window wraps its text by itself. A refused target
-    // gives its reason there instead.
+    // The warnings scroll in their pane of 140 points. A child window wraps its text by itself. A refused target gives
+    // its reason there instead.
     const bool refused = !view.refused.empty();
     DrawExportWarnings(draw, warnings, view.refused, refused, appearing);
 
-    // The measure of an export to MIDI comes in after the warnings. Each place that it names has Play buttons under its
-    // line: the export's render there, and Hokuto's playback. The measure takes the height that the main window has
-    // left, less the buttons and the margin. Its places then show without a scroll where they fit. In a short main
-    // window, the measure keeps 120 points.
-    if (measured != nullptr)
+    // The measure of an export to MIDI or to another console comes in after the warnings. Each place that it names has
+    // Play buttons under its line: the export's render there, and Hokuto's playback. The pane takes 220 points, or the
+    // height that the main window has left, less the buttons and the margin. In a short main window, it keeps 120
+    // points.
+    if (Measures(view))
     {
-        DrawExportMeasured(draw, view, *measured, measure_came, choice);
+        DrawExportMeasured(draw, view, measured, measure_came, choice);
     }
     ImGui::PopTextWrapPos();
 

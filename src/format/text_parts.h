@@ -25,14 +25,15 @@
 #include <variant>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/commands.h"
-#include "ntdlib/mp2k/commands.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/units.h"
+#include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/layout.h"
 #include "xsflib/binary.h"
 #include "xsflib/text.h"
@@ -59,7 +60,7 @@ using ntdlib::commands::Source;
 constexpr std::size_t kBase64Bytes = 57; // the bytes of a line of base64: 76 characters
 
 // A bank slot that holds no bank.
-constexpr uint32_t kNoBank = 0xFFFFFFFF;
+constexpr uint32_t kNoBank = ntdlib::sar::kNoItem;
 
 // The values of a sound that take a byte, by name, in the order of a sound's line.
 constexpr std::array<std::pair<std::string_view, uint8_t NativeSound::*>, 6> kSoundBytes = {{

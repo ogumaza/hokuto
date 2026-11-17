@@ -299,15 +299,8 @@ std::vector<int16_t> Play(const std::shared_ptr<const sar::SoundArchive>& archiv
 {
     const auto sequence = std::make_shared<const hokuto::song::Sequence>(hokuto::song::ReadSequence(*archive, sound));
     hokuto::song::SequenceModel model(archive, sequence);
-    const auto samples = static_cast<std::size_t>(kLevelSeconds * model.SampleRate()) * 2;
-    std::vector<int16_t> output;
-    for (bool more = model.SeekFrame(0); more && output.size() < samples; more = model.RunFrame())
-    {
-        const std::span<const int16_t> frame = model.Output();
-        output.insert(output.end(), frame.begin(), frame.end());
-    }
 
-    return output;
+    return PlayModel(model);
 }
 
 // The root mean square of `samples`.
@@ -348,6 +341,85 @@ bool FollowsBelowLimit(uint32_t sound, uint32_t volume, double level, const Volu
 }
 
 } // namespace
+
+std::vector<Change> CandidatesOf(const NativeTables& tables, const Round& round)
+{
+    std::vector<Change> candidates;
+    for (uint32_t sound = 0; sound < tables.sounds.size(); ++sound)
+    {
+        if (const std::optional<SoundChange> change = ChangeOf(tables, tables.sounds[sound], round))
+        {
+            candidates.emplace_back(sound, *change);
+        }
+    }
+
+    return candidates;
+}
+
+Edits MakeEdits(const std::string& name, const File& file, const NativeTables& tables,
+                const std::vector<Change>& changes, const std::string& what, Totals& totals)
+{
+    Edits edits{file, tables.sounds, {}};
+    for (const auto& [sound, change] : changes)
+    {
+        try
+        {
+            edits.edited = hokuto::edit::ChangeSound(edits.edited, sound, change);
+        }
+        catch (const std::invalid_argument& error)
+        {
+            std::printf("%s: %s: the edit of the %s fails: %s\n", name.c_str(), tables.sounds[sound].name.c_str(),
+                        what.c_str(), error.what());
+            ++totals.failures;
+            continue;
+        }
+
+        ++totals.edits;
+        edits.expected[sound] = Changed(edits.expected[sound], change);
+        edits.made.emplace_back(sound, change);
+    }
+
+    return edits;
+}
+
+void CheckEditsBack(const std::string& name, const std::vector<uint8_t>& bytes, const NativeTables& tables,
+                    const File& edited, const std::vector<Change>& made, const std::string& what, Totals& totals)
+{
+    File back = edited;
+    try
+    {
+        for (auto it = made.rbegin(); it != made.rend(); ++it)
+        {
+            const auto& [sound, change] = *it;
+            const uint32_t old = hokuto::edit::ValueOf(tables.sounds[sound], change.value, change.slot);
+            back = hokuto::edit::ChangeSound(back, sound, {change.value, change.slot, old});
+        }
+        if (hokuto::format::ExportArchive(back) != bytes)
+        {
+            std::printf("%s: the old values don't give the archive back after the round of the %s.\n", name.c_str(),
+                        what.c_str());
+            ++totals.round_trips;
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: the edits back of the round of the %s fail: %s\n", name.c_str(), what.c_str(), error.what());
+        ++totals.failures;
+    }
+}
+
+std::vector<int16_t> PlayModel(hokuto::song::SequenceModel& model)
+{
+    const auto samples = static_cast<std::size_t>(kLevelSeconds * model.SampleRate()) * 2;
+    std::vector<int16_t> output;
+    for (bool more = model.SeekFrame(0); more && output.size() < samples; more = model.RunFrame())
+    {
+        const std::span<const int16_t> frame = model.Output();
+        output.insert(output.end(), frame.begin(), frame.end());
+    }
+
+    return output;
+}
 
 void CheckLevels(const std::string& name, const File& file, const Player& before, const Player& after,
                  const VolumePlayer& at_volume, const std::vector<std::pair<uint32_t, SoundChange>>& changes,
@@ -472,41 +544,16 @@ void CheckRound(const Original& original, const Layout& layout, const Round& rou
     const std::string& name = original.name;
     const std::string what = hokuto::edit::NameOf(round.value);
     const NativeTables& tables = *original.file.native->tables;
-    std::vector<std::pair<uint32_t, SoundChange>> candidates;
-    for (uint32_t sound = 0; sound < tables.sounds.size(); ++sound)
+    for (const NativeSound& sound : tables.sounds)
     {
-        const bool list = round.value == SoundValue::kBank && tables.sounds[sound].kind == sar::SoundType::kSequence &&
-                          !ListComesBack(tables.sounds[sound].banks);
+        const bool list =
+            round.value == SoundValue::kBank && sound.kind == sar::SoundType::kSequence && !ListComesBack(sound.banks);
         totals.lists_apart += list && round.slot == 0 ? 1 : 0;
-        if (const std::optional<SoundChange> change = ChangeOf(tables, tables.sounds[sound], round))
-        {
-            candidates.emplace_back(sound, *change);
-        }
     }
-    const std::vector<std::pair<uint32_t, SoundChange>> changes = Spread(candidates, index);
+    const std::vector<Change> changes = Spread(CandidatesOf(tables, round), index);
 
     // The edits, and the values that the tool works out.
-    File edited = original.file;
-    std::vector<NativeSound> expected = tables.sounds;
-    std::vector<std::pair<uint32_t, SoundChange>> made;
-    for (const auto& [sound, change] : changes)
-    {
-        try
-        {
-            edited = hokuto::edit::ChangeSound(edited, sound, change);
-        }
-        catch (const std::invalid_argument& error)
-        {
-            std::printf("%s: %s: the edit of the %s fails: %s\n", name.c_str(), tables.sounds[sound].name.c_str(),
-                        what.c_str(), error.what());
-            ++totals.failures;
-            continue;
-        }
-
-        ++totals.edits;
-        expected[sound] = Changed(expected[sound], change);
-        made.emplace_back(sound, change);
-    }
+    const auto [edited, expected, made] = MakeEdits(name, original.file, tables, changes, what, totals);
 
     // The values that the archive holds after the edits, and the places of its files and starts.
     std::vector<uint8_t> exported;
@@ -532,27 +579,7 @@ void CheckRound(const Original& original, const Layout& layout, const Round& rou
     }
 
     // The old values give the archive back.
-    File back = edited;
-    try
-    {
-        for (auto it = made.rbegin(); it != made.rend(); ++it)
-        {
-            const auto& [sound, change] = *it;
-            const uint32_t old = hokuto::edit::ValueOf(tables.sounds[sound], change.value, change.slot);
-            back = hokuto::edit::ChangeSound(back, sound, {change.value, change.slot, old});
-        }
-        if (hokuto::format::ExportArchive(back) != original.bytes)
-        {
-            std::printf("%s: the old values don't give the archive back after the round of the %s.\n", name.c_str(),
-                        what.c_str());
-            ++totals.round_trips;
-        }
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: the edits back of the round of the %s fail: %s\n", name.c_str(), what.c_str(), error.what());
-        ++totals.failures;
-    }
+    CheckEditsBack(name, original.bytes, tables, edited, made, what, totals);
 
     if (after)
     {
@@ -736,34 +763,37 @@ void CheckBackWithoutOption(const File& edited, const std::vector<uint8_t>& bare
     }
 }
 
-// Makes round `round` of places on up to kRoundSounds sounds of `original` whose entries hold the round's option. The
-// option leaves their entries, and the sounds take values through the edits. Checks the archive that the edits export,
-// and the archive that the edits back export. `index` turns the choice of sounds from round to round.
-void CheckPlaceRound(const Original& original, const PlaceRound& round, std::size_t index, Totals& totals)
+// What the strip of a round's option gives: `bare`, the archive without the option for the chosen sounds, what
+// ntdlib reads of it by the strict rules, the file that it makes, the values that the file's sounds have to hold, and
+// the sequences and starts' fields of the file.
+struct Stripped
 {
-    // The sounds whose entries hold the option, and a choice of them spread over the table.
+    std::vector<uint8_t> bare;
+    std::optional<sar::SoundArchive> bare_read;
+    File file;
+    Layout layout;
+    std::vector<NativeSound> expected;
+};
+
+// Takes the option of `round` out of the entries of the `chosen` sounds of `original`, and imports the archive without
+// it. The file's sounds have to hold the reader's values without the option, and the file has to build the archive.
+// Nothing comes back when the strip fails. `what` names the round.
+std::optional<Stripped> StripOption(const Original& original, const PlaceRound& round,
+                                    const std::vector<uint32_t>& chosen, const std::string& what, Totals& totals)
+{
     const std::string& name = original.name;
-    const std::string what = std::string("places of the ") + round.name;
     const sar::Flavor flavor = FlavorOf(*original.file.native);
     const NativeTables& tables = *original.file.native->tables;
-    const std::vector<uint32_t> chosen = ChosenSounds(original, round, index);
-    if (chosen.empty())
-    {
-        return;
-    }
-
-    // The archive without the option makes a file. Its sounds hold the reader's values without the option, and the file
-    // builds the archive.
     std::map<uint32_t, sar::ValuePlaces> stripped;
     for (const uint32_t sound : chosen)
     {
         stripped[sound] = round.option;
     }
-    std::vector<uint8_t> bare;
-    std::optional<sar::SoundArchive> bare_read;
-    File file;
-    std::vector<NativeSound> expected = tables.sounds;
-    Layout layout;
+    Stripped strip;
+    std::vector<uint8_t>& bare = strip.bare;
+    File& file = strip.file;
+    std::vector<NativeSound>& expected = strip.expected;
+    expected = tables.sounds;
     try
     {
         bare = ntdlib::testing::sar_tools::WithoutValuePlaces(original.bytes, flavor, stripped);
@@ -802,17 +832,43 @@ void CheckPlaceRound(const Original& original, const PlaceRound& round, std::siz
             std::printf("%s: the file without the %s doesn't hold the reader's values, or doesn't build its archive.\n",
                         name.c_str(), what.c_str());
             ++totals.failures;
-            return;
+            return std::nullopt;
         }
-        bare_read.emplace(Strictly(bare, flavor));
-        layout = LayoutOf(file, bare, *bare_read);
+        strip.bare_read.emplace(Strictly(bare, flavor));
+        strip.layout = LayoutOf(file, bare, *strip.bare_read);
     }
     catch (const std::exception& error)
     {
         std::printf("%s: the strip of the %s fails: %s\n", name.c_str(), what.c_str(), error.what());
         ++totals.failures;
+        return std::nullopt;
+    }
+
+    return strip;
+}
+
+// Makes round `round` of places on up to kRoundSounds sounds of `original` whose entries hold the round's option. The
+// option leaves their entries, and the sounds take values through the edits. Checks the archive that the edits export,
+// and the archive that the edits back export. `index` turns the choice of sounds from round to round.
+void CheckPlaceRound(const Original& original, const PlaceRound& round, std::size_t index, Totals& totals)
+{
+    // The sounds whose entries hold the option, and a choice of them spread over the table.
+    const std::string& name = original.name;
+    const std::string what = std::string("places of the ") + round.name;
+    const NativeTables& tables = *original.file.native->tables;
+    const std::vector<uint32_t> chosen = ChosenSounds(original, round, index);
+    if (chosen.empty())
+    {
         return;
     }
+
+    // The archive without the option makes a file (StripOption).
+    std::optional<Stripped> strip = StripOption(original, round, chosen, what, totals);
+    if (!strip)
+    {
+        return;
+    }
+    auto& [bare, bare_read, file, layout, expected] = *strip;
 
     // The edits. A sound takes its old values, or the next ones where the old ones are the reader's values without the
     // option.

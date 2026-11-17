@@ -194,6 +194,101 @@ void CheckWiiItemFiles(WiiItemsRun& run)
     }
 }
 
+// The programs of `bank_file` that play, or none when ntdlib can't read it. Sets `unread` then, and prints a line under
+// the bank's `label`.
+std::vector<uint32_t> PlayedPrograms(const WiiItemsRun& run, std::span<const uint8_t> bank_file,
+                                     const std::string& label, bool& unread)
+{
+    std::vector<uint32_t> programs;
+    try
+    {
+        const rsar::Bank parsed = rsar::Bank::Parse(bank_file);
+        for (uint32_t program = 0; program < parsed.InstrumentCount(); program++)
+        {
+            if (parsed.Plays(program))
+            {
+                programs.push_back(program);
+            }
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: %s can't be read: %s\n", run.name.c_str(), label.c_str(), error.what());
+        unread = true;
+    }
+
+    return programs;
+}
+
+// Checks the export of bank `bank`'s `programs` as SoundFont 2 and SFZ files against ntdlib's converter, on `build` of
+// NW4R SND (BankProblem), and counts its warnings. `label` names the bank.
+void CheckWiiBankConversion(WiiItemsRun& run, uint32_t bank, const std::vector<uint32_t>& programs,
+                            const std::optional<ntdlib::SndBuild>& build, const std::string& label)
+{
+    // The pan mode of the first sequence sound that plays the bank, or balance mode.
+    uint8_t pan_mode = 1;
+    for (const rsar::SoundInfo& sound : run.opened->Sounds())
+    {
+        if (sound.type == rsar::SoundType::kSequence && sound.bank == bank)
+        {
+            pan_mode = sound.pan_mode;
+            break;
+        }
+    }
+    const export_::BankConversion ours = song::ConvertBank(*run.built, bank, "Hokuto", build);
+    const export_::BankConversion theirs =
+        export_::ConvertBank(*run.opened, bank, pan_mode, song::SettingsOf(*run.opened, build), "Hokuto");
+    const std::string problem = BankProblem(ours, theirs, programs);
+    if (!problem.empty())
+    {
+        std::printf("%s: %s %s\n", run.name.c_str(), label.c_str(), problem.c_str());
+        run.totals.differ++;
+    }
+
+    for (const std::string& warning : ours.warnings)
+    {
+        if (warning.starts_with("region volume exceeds 127"))
+        {
+            run.totals.louder_banks++;
+            continue;
+        }
+
+        std::printf("%s: %s: %s\n", run.name.c_str(), label.c_str(), warning.c_str());
+        run.totals.bank_warnings++;
+    }
+
+    run.totals.banks++;
+    run.totals.instruments += programs.size();
+    if (ours.sound_fonts.size() > 1)
+    {
+        run.totals.split_banks++;
+    }
+}
+
+// Checks a note of each of `programs` of bank `bank` as the browser plays it (NotePlays). `label` names the bank.
+void CheckWiiProgramNotes(WiiItemsRun& run, uint32_t bank, const std::vector<uint32_t>& programs,
+                          const std::optional<ntdlib::SndBuild>& build, const std::string& label)
+{
+    for (const uint32_t program : programs)
+    {
+        try
+        {
+            if (!NotePlays(run.built, *run.opened, bank, program,
+                           build.value_or(export_::BuildOfRsarVersion(run.opened->Version())), run.totals))
+            {
+                std::printf("%s: %s's note of program %u plays otherwise\n", run.name.c_str(), label.c_str(), program);
+                run.totals.differ++;
+            }
+        }
+        catch (const std::exception& error)
+        {
+            std::printf("%s: %s's note of program %u fails: %s\n", run.name.c_str(), label.c_str(), program,
+                        error.what());
+            run.totals.differ++;
+        }
+    }
+}
+
 // Each bank's instruments as SoundFont 2 and SFZ files (BankProblem). A bank that ntdlib can't read, or one without
 // instruments, has to stop Hokuto's export. A bank whose file the archive lacks counts above.
 void CheckWiiBankExports(WiiItemsRun& run, const std::optional<ntdlib::SndBuild>& build)
@@ -208,24 +303,8 @@ void CheckWiiBankExports(WiiItemsRun& run, const std::optional<ntdlib::SndBuild>
             continue;
         }
 
-        std::vector<uint32_t> programs;
         bool unread = false;
-        try
-        {
-            const rsar::Bank parsed = rsar::Bank::Parse(bank_file);
-            for (uint32_t program = 0; program < parsed.InstrumentCount(); program++)
-            {
-                if (parsed.Plays(program))
-                {
-                    programs.push_back(program);
-                }
-            }
-        }
-        catch (const std::exception& error)
-        {
-            std::printf("%s: %s can't be read: %s\n", run.name.c_str(), label.c_str(), error.what());
-            unread = true;
-        }
+        const std::vector<uint32_t> programs = PlayedPrograms(run, bank_file, label, unread);
         try
         {
             if (programs.empty())
@@ -240,44 +319,7 @@ void CheckWiiBankExports(WiiItemsRun& run, const std::optional<ntdlib::SndBuild>
                 continue;
             }
 
-            // The pan mode of the first sequence sound that plays the bank, or balance mode.
-            uint8_t pan_mode = 1;
-            for (const rsar::SoundInfo& sound : run.opened->Sounds())
-            {
-                if (sound.type == rsar::SoundType::kSequence && sound.bank == bank)
-                {
-                    pan_mode = sound.pan_mode;
-                    break;
-                }
-            }
-            const export_::BankConversion ours = song::ConvertBank(*run.built, bank, "Hokuto", build);
-            const export_::BankConversion theirs =
-                export_::ConvertBank(*run.opened, i, pan_mode, song::SettingsOf(*run.opened, build), "Hokuto");
-            const std::string problem = BankProblem(ours, theirs, programs);
-            if (!problem.empty())
-            {
-                std::printf("%s: %s %s\n", run.name.c_str(), label.c_str(), problem.c_str());
-                run.totals.differ++;
-            }
-
-            for (const std::string& warning : ours.warnings)
-            {
-                if (warning.starts_with("region volume exceeds 127"))
-                {
-                    run.totals.louder_banks++;
-                    continue;
-                }
-
-                std::printf("%s: %s: %s\n", run.name.c_str(), label.c_str(), warning.c_str());
-                run.totals.bank_warnings++;
-            }
-
-            run.totals.banks++;
-            run.totals.instruments += programs.size();
-            if (ours.sound_fonts.size() > 1)
-            {
-                run.totals.split_banks++;
-            }
+            CheckWiiBankConversion(run, bank, programs, build, label);
         }
         catch (const std::exception& error)
         {
@@ -286,25 +328,7 @@ void CheckWiiBankExports(WiiItemsRun& run, const std::optional<ntdlib::SndBuild>
         }
 
         // A note of each program as the browser plays it.
-        for (const uint32_t program : programs)
-        {
-            try
-            {
-                if (!NotePlays(run.built, *run.opened, bank, program,
-                               build.value_or(export_::BuildOfRsarVersion(run.opened->Version())), run.totals))
-                {
-                    std::printf("%s: %s's note of program %u plays otherwise\n", run.name.c_str(), label.c_str(),
-                                program);
-                    run.totals.differ++;
-                }
-            }
-            catch (const std::exception& error)
-            {
-                std::printf("%s: %s's note of program %u fails: %s\n", run.name.c_str(), label.c_str(), program,
-                            error.what());
-                run.totals.differ++;
-            }
-        }
+        CheckWiiProgramNotes(run, bank, programs, build, label);
     }
 }
 
@@ -315,6 +339,127 @@ struct WaveArchiveCounts
     std::size_t rwars = 0;
     std::size_t blocks = 0;
 };
+
+// The waves of a wave archive: the RWAV files of an RWAR, or the waves that its bank or wave sound file describes in
+// its WAVE block. `read` is false when ntdlib can't read them.
+struct WiiWaves
+{
+    std::vector<std::span<const uint8_t>> rwavs;
+    std::vector<rsar::Wave> waves;
+    bool read = false;
+};
+
+// The waves of `wave_archive` in the opened archive. Checks an RWAR's file too (CheckWiiItemFile). Prints a line when
+// ntdlib can't read the waves.
+WiiWaves ReadWiiWaves(WiiItemsRun& run, const song::WiiWaveArchive& wave_archive)
+{
+    const uint32_t file_id = wave_archive.file_id;
+    const std::span<const uint8_t> wave_data = run.opened->WaveData(file_id);
+    WiiWaves read;
+    try
+    {
+        if (wave_archive.rwar)
+        {
+            CheckWiiItemFile(run, {song::ItemKind::kWaveArchive, file_id, 0}, wave_data, 0);
+            read.rwavs = rsar::WaveArchive::Parse(wave_data).waves;
+        }
+        else if (const std::span<const uint8_t> file = run.opened->FileData(file_id);
+                 file.size() >= 4 && std::string(file.begin(), file.begin() + 4) == "RWSD")
+        {
+            read.waves = rsar::WaveSoundFile::Parse(file, wave_data).Waves();
+        }
+        else
+        {
+            read.waves = rsar::Bank::Parse(file, wave_data).Waves();
+        }
+        read.read = true;
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: the waves of %s can't be read: %s\n", run.name.c_str(), wave_archive.name.c_str(),
+                    error.what());
+        run.totals.differ++;
+    }
+
+    return read;
+}
+
+// Exports the wave data of `wave_archive`, which a WAVE block of `count` waves describes, as an RWAR (song::ItemBytes)
+// into `block_rwar`, and its RWAV files into `block_rwavs`. Returns whether the export gave an RWAR.
+bool ExportBlockRwar(WiiItemsRun& run, const song::WiiWaveArchive& wave_archive, std::size_t count,
+                     std::vector<uint8_t>& block_rwar, std::vector<std::span<const uint8_t>>& block_rwavs)
+{
+    const song::Item item{song::ItemKind::kWaveArchive, wave_archive.file_id, 0};
+    bool exported = false;
+    try
+    {
+        block_rwar = song::ItemBytes(*run.built, item);
+        block_rwavs = rsar::WaveArchive::Parse(block_rwar).waves;
+        run.totals.items++;
+        exported = true;
+        if (block_rwavs.size() != count)
+        {
+            std::printf("%s: %s's RWAR holds %zu waves, and its WAVE block %zu\n", run.name.c_str(),
+                        wave_archive.name.c_str(), block_rwavs.size(), count);
+            run.totals.differ++;
+        }
+        if (!run.names.insert(xsflib::AsciiLower(song::ItemFileName(*run.built, item, 0))).second)
+        {
+            run.totals.clashes++;
+        }
+    }
+    catch (const std::exception& error)
+    {
+        std::printf("%s: %s can't be exported: %s\n", run.name.c_str(), wave_archive.name.c_str(), error.what());
+        run.totals.differ++;
+    }
+
+    return exported;
+}
+
+// Checks the WAV file of wave `wave` of the wave archive in file `file_id`, read back, against the wave that ntdlib
+// decodes from `read`, the archive's waves in the opened archive: from an RWAV file with `rwar`. A wave that ntdlib
+// can't decode has to fail on Hokuto's side too. `label` names the wave.
+void CheckWiiWav(WiiItemsRun& run, uint32_t file_id, uint32_t wave, const WiiWaves& read, bool rwar,
+                 const std::string& label)
+{
+    run.totals.waves++;
+    std::optional<rsar::Pcm> decoded;
+    try
+    {
+        decoded = rsar::DecodeWave(rwar ? rsar::Wave::ParseFile(read.rwavs[wave]) : read.waves[wave]);
+    }
+    catch (const std::exception&)
+    {
+        // Hokuto's side has to fail too.
+    }
+    try
+    {
+        const std::vector<uint8_t> wav = song::WaveAsWav(*run.built, file_id, wave);
+        const std::optional<WavRead> read = ReadWav(wav);
+        if (!decoded || !read || !Holds(*read, *decoded))
+        {
+            std::printf("%s: %s's WAV file differs\n", run.name.c_str(), label.c_str());
+            run.totals.differ++;
+        }
+        if (song::WaveChannels(*run.built, file_id, wave) > 2)
+        {
+            run.totals.wide++;
+        }
+    }
+    catch (const std::exception& error)
+    {
+        if (decoded)
+        {
+            std::printf("%s: %s's WAV file fails: %s\n", run.name.c_str(), label.c_str(), error.what());
+            run.totals.differ++;
+        }
+        else
+        {
+            run.totals.undecoded++;
+        }
+    }
+}
 
 // Each wave archive, then each of its waves: an RWAR's file and its RWAV files, and each wave's WAV file against
 // ntdlib's decoding.
@@ -335,63 +480,17 @@ WaveArchiveCounts CheckWiiWaveArchives(WiiItemsRun& run)
     for (const song::WiiWaveArchive& wave_archive : wave_archives)
     {
         const uint32_t file_id = wave_archive.file_id;
-        const std::span<const uint8_t> wave_data = run.opened->WaveData(file_id);
-        std::vector<std::span<const uint8_t>> rwavs;
-        std::vector<rsar::Wave> waves;
-        try
-        {
-            if (wave_archive.rwar)
-            {
-                CheckWiiItemFile(run, {song::ItemKind::kWaveArchive, file_id, 0}, wave_data, 0);
-                rwavs = rsar::WaveArchive::Parse(wave_data).waves;
-                rwars++;
-            }
-            else if (const std::span<const uint8_t> file = run.opened->FileData(file_id);
-                     file.size() >= 4 && std::string(file.begin(), file.begin() + 4) == "RWSD")
-            {
-                waves = rsar::WaveSoundFile::Parse(file, wave_data).Waves();
-            }
-            else
-            {
-                waves = rsar::Bank::Parse(file, wave_data).Waves();
-            }
-        }
-        catch (const std::exception& error)
-        {
-            std::printf("%s: the waves of %s can't be read: %s\n", run.name.c_str(), wave_archive.name.c_str(),
-                        error.what());
-            run.totals.differ++;
-        }
+        const WiiWaves read = ReadWiiWaves(run, wave_archive);
+        const std::vector<std::span<const uint8_t>>& rwavs = read.rwavs;
+        const std::vector<rsar::Wave>& waves = read.waves;
+        rwars += wave_archive.rwar && read.read ? 1 : 0;
 
         // Wave data that a WAVE block describes goes out as an RWAR of its waves (song::ItemBytes).
         std::vector<uint8_t> block_rwar;
         std::vector<std::span<const uint8_t>> block_rwavs;
         if (!wave_archive.rwar && !waves.empty())
         {
-            const song::Item item{song::ItemKind::kWaveArchive, file_id, 0};
-            try
-            {
-                block_rwar = song::ItemBytes(*run.built, item);
-                block_rwavs = rsar::WaveArchive::Parse(block_rwar).waves;
-                run.totals.items++;
-                blocks++;
-                if (block_rwavs.size() != waves.size())
-                {
-                    std::printf("%s: %s's RWAR holds %zu waves, and its WAVE block %zu\n", run.name.c_str(),
-                                wave_archive.name.c_str(), block_rwavs.size(), waves.size());
-                    run.totals.differ++;
-                }
-                if (!run.names.insert(xsflib::AsciiLower(song::ItemFileName(*run.built, item, 0))).second)
-                {
-                    run.totals.clashes++;
-                }
-            }
-            catch (const std::exception& error)
-            {
-                std::printf("%s: %s can't be exported: %s\n", run.name.c_str(), wave_archive.name.c_str(),
-                            error.what());
-                run.totals.differ++;
-            }
+            blocks += ExportBlockRwar(run, wave_archive, waves.size(), block_rwar, block_rwavs) ? 1 : 0;
         }
         const std::size_t count = wave_archive.rwar ? rwavs.size() : waves.size();
         for (uint32_t wave = 0; wave < count; wave++)
@@ -419,42 +518,7 @@ WaveArchiveCounts CheckWiiWaveArchives(WiiItemsRun& run)
             }
 
             // The WAV file, read back, against the wave that ntdlib decodes from the opened archive.
-            run.totals.waves++;
-            std::optional<rsar::Pcm> decoded;
-            try
-            {
-                decoded = rsar::DecodeWave(wave_archive.rwar ? rsar::Wave::ParseFile(rwavs[wave]) : waves[wave]);
-            }
-            catch (const std::exception&)
-            {
-                // Hokuto's side has to fail too.
-            }
-            try
-            {
-                const std::vector<uint8_t> wav = song::WaveAsWav(*run.built, file_id, wave);
-                const std::optional<WavRead> read = ReadWav(wav);
-                if (!decoded || !read || !Holds(*read, *decoded))
-                {
-                    std::printf("%s: %s's WAV file differs\n", run.name.c_str(), label.c_str());
-                    run.totals.differ++;
-                }
-                if (song::WaveChannels(*run.built, file_id, wave) > 2)
-                {
-                    run.totals.wide++;
-                }
-            }
-            catch (const std::exception& error)
-            {
-                if (decoded)
-                {
-                    std::printf("%s: %s's WAV file fails: %s\n", run.name.c_str(), label.c_str(), error.what());
-                    run.totals.differ++;
-                }
-                else
-                {
-                    run.totals.undecoded++;
-                }
-            }
+            CheckWiiWav(run, file_id, wave, read, wave_archive.rwar, label);
         }
     }
 

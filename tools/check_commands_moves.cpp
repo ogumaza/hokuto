@@ -70,8 +70,8 @@ std::optional<int> KrawallField(const Command& command)
     case Kind::kVolume:
         return 1;
     case Kind::kOther:
-        if (command.encoding.opcode >= ntdlib::krawall::kEffectOpcode &&
-            command.encoding.opcode < ntdlib::krawall::kEffectOpcode + 0x100)
+        if (command.encoding.opcode >= agblib::krawall::kEffectOpcode &&
+            command.encoding.opcode < agblib::krawall::kEffectOpcode + 0x100)
         {
             return 2;
         }
@@ -215,7 +215,7 @@ bool ChangesNotes(const Command& command, bool voices, bool dungeon, bool vibrat
 
 // On Krawall, whether a move of `command` can change the notes or the rows' ticks: an effect that sets the speed or the
 // tempo, or sends the rows elsewhere, or one that starts a note again, delays it, cuts it or slides to it in place of
-// starting it. The numbers are those of ntdlib's player (ntdlib/src/krawall/player.cpp).
+// starting it. The numbers are those of agblib's player (agblib/src/krawall/player.cpp).
 bool KrawallChangesNotes(const Command& command)
 {
     if (KrawallField(command) != 2)
@@ -223,7 +223,7 @@ bool KrawallChangesNotes(const Command& command)
         return false;
     }
 
-    switch (command.encoding.opcode - ntdlib::krawall::kEffectOpcode)
+    switch (command.encoding.opcode - agblib::krawall::kEffectOpcode)
     {
     case 1:  // the speed
     case 2:  // the tempo
@@ -293,9 +293,9 @@ std::vector<hokuto::edit::SettingMove> MovesOf(const File& file, uint32_t sequen
     const std::vector<uint32_t> offsets = hokuto::edit::Offsets(commands, hokuto::edit::ConsoleOf(file));
     const bool gba = hokuto::edit::ConsoleOf(file).engine == hokuto::format::Engine::kGba;
     const bool dungeon =
-        hokuto::edit::KonamiOf(hokuto::edit::ConsoleOf(file)) == ntdlib::konami::Revision::kDungeonDiceMonsters;
+        hokuto::edit::KonamiOf(hokuto::edit::ConsoleOf(file)) == agblib::konami::Revision::kDungeonDiceMonsters;
     const bool vibrato =
-        dungeon || hokuto::edit::KonamiOf(hokuto::edit::ConsoleOf(file)) == ntdlib::konami::Revision::kEternalDuelist;
+        dungeon || hokuto::edit::KonamiOf(hokuto::edit::ConsoleOf(file)) == agblib::konami::Revision::kEternalDuelist;
     const bool voices = gba || hokuto::edit::Rd2Of(hokuto::edit::ConsoleOf(file)).has_value();
     const bool krawall = hokuto::edit::IsKrawall(hokuto::edit::ConsoleOf(file));
     std::vector<hokuto::edit::SettingMove> moves;

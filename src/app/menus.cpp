@@ -18,7 +18,8 @@ std::span<const Menu> Menus()
     // the selected part in the Key Editor, and closes the editor. Open takes Ctrl+O, Save Ctrl+S and Save As
     // Ctrl+Shift+S. Open List Editor has no key. Preferences is at the end of the Edit menu. On the Mac, it's in the
     // application menu with Command-Comma. Open and Save are for Hokuto's files. Sound archives come in through File >
-    // Import, and go out through File > Export with MIDI and its instruments. A sequence file comes in through File >
+    // Import, and go out through File > Export with MIDI and its instruments. Audio Mixdown (Ctrl+B) renders songs to
+    // WAV files. A sequence file comes in through File >
     // Import as a new sound of the open archive, a bank file or a wave archive file as a new bank or wave archive, and
     // a wave sound file as new wave sounds. A wave file or a WAV file (Audio File…) comes in as a new wave of a wave
     // archive. A stream file or a WAV file comes in through Stream… as a new stream sound. The Project menu holds Add
@@ -51,7 +52,8 @@ std::span<const Menu> Menus()
               .items = {{"Sound Archive…", Command::kExportSoundArchive},
                         {"MIDI and SoundFont…", Command::kExportMidiSoundFont},
                         {"MIDI and SFZ…", Command::kExportMidiSfz},
-                        {"Another Console…", Command::kExportOtherConsole}}},
+                        {"Another Console…", Command::kExportOtherConsole},
+                        {"Audio Mixdown…", Command::kExportAudioMixdown, ImGuiMod_Ctrl | ImGuiKey_B}}},
              {},
              {.name = "Recent Projects", .command = Command::kRecentProjects, .none = "No Recent Projects"},
 #ifndef __APPLE__

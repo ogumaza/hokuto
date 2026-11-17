@@ -13,11 +13,11 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/song.h"
 
 #include "edit/engine_edits.h"
 #include "format/file.h"
@@ -39,7 +39,7 @@ constexpr uint32_t kMostExtra = 127;
 // The length of the longest code up to `ticks`.
 uint32_t LongestCodeUpTo(uint32_t ticks)
 {
-    return static_cast<uint32_t>(ntdlib::mp2k::ClockLength(ntdlib::mp2k::UsualLengthCode(ticks)));
+    return static_cast<uint32_t>(agblib::mp2k::ClockLength(agblib::mp2k::UsualLengthCode(ticks)));
 }
 
 // The waits whose lengths add up to `ticks`, each a code's length, the longest first. The codes hold every length up to
@@ -77,7 +77,7 @@ int ArgumentsOf(const Command& note)
     const std::optional<uint32_t> ticks = WholeTicks(note.value);
     const std::optional<uint8_t> code = note.encoding.length_code;
     const bool extra =
-        ticks && *ticks != (code ? static_cast<uint32_t>(ntdlib::mp2k::ClockLength(*code)) : LongestCodeUpTo(*ticks));
+        ticks && *ticks != (code ? static_cast<uint32_t>(agblib::mp2k::ClockLength(*code)) : LongestCodeUpTo(*ticks));
     return note.encoding.arguments.value_or(extra ? 3 : 2);
 }
 
@@ -102,7 +102,7 @@ bool ReadsAlone(const Command& command, int note_arguments)
     alone.items = {command, Command{.kind = Kind::kEnd}};
     try
     {
-        ntdlib::mp2k::EncodeSequence(alone, ntdlib::agb::kRomBase, note_arguments);
+        agblib::mp2k::EncodeSequence(alone, agblib::agb::kRomBase, note_arguments);
         return true;
     }
     catch (const std::invalid_argument&)
@@ -121,7 +121,7 @@ struct Misreading
 
 // The items of `sequence` that the bytes of `encoded` play otherwise than they say. `decoded` reads the bytes with
 // notes of up to `note_arguments` bytes. A target counts by the place that it names. A data item counts as read.
-Misreading Misread(const Sequence& sequence, const ntdlib::mp2k::Encoded& encoded, const ntdlib::mp2k::Decoded& decoded,
+Misreading Misread(const Sequence& sequence, const agblib::mp2k::Encoded& encoded, const agblib::mp2k::Decoded& decoded,
                    int note_arguments)
 {
     Misreading misread;
@@ -136,7 +136,7 @@ Misreading Misread(const Sequence& sequence, const ntdlib::mp2k::Encoded& encode
     }
 
     const std::vector<uint32_t> read_offsets =
-        ntdlib::mp2k::EncodeSequence(decoded.sequence, ntdlib::agb::kRomBase, note_arguments).offsets;
+        agblib::mp2k::EncodeSequence(decoded.sequence, agblib::agb::kRomBase, note_arguments).offsets;
     std::map<uint32_t, uint32_t> read_at;
     for (uint32_t item = 0; item < decoded.sequence.items.size(); item++)
     {
@@ -217,16 +217,16 @@ void KeepStates(Sequence& sequence, const std::vector<uint32_t>& entries, int no
     // first.
     for (;;)
     {
-        const ntdlib::mp2k::Encoded encoded =
-            ntdlib::mp2k::EncodeSequence(sequence, ntdlib::agb::kRomBase, note_arguments);
+        const agblib::mp2k::Encoded encoded =
+            agblib::mp2k::EncodeSequence(sequence, agblib::agb::kRomBase, note_arguments);
         std::vector<uint32_t> addresses;
         for (const uint32_t entry : entries)
         {
-            addresses.push_back(ntdlib::agb::kRomBase + encoded.offsets.at(entry));
+            addresses.push_back(agblib::agb::kRomBase + encoded.offsets.at(entry));
         }
 
-        const ntdlib::mp2k::Decoded decoded =
-            ntdlib::mp2k::DecodeSequence(encoded.bytes, ntdlib::agb::kRomBase, addresses, note_arguments);
+        const agblib::mp2k::Decoded decoded =
+            agblib::mp2k::DecodeSequence(encoded.bytes, agblib::agb::kRomBase, addresses, note_arguments);
 
         bool written = false;
         bool reached = false;
@@ -301,7 +301,7 @@ Edited Mp2kWritable(Edited edited, uint32_t sequence)
             }
 
             const std::optional<uint8_t> code = command.encoding.length_code;
-            const auto code_length = static_cast<uint32_t>(code ? ntdlib::mp2k::ClockLength(*code) : 0);
+            const auto code_length = static_cast<uint32_t>(code ? agblib::mp2k::ClockLength(*code) : 0);
             if (code && (code_length > *ticks || *ticks - code_length > (note_arguments < 3 ? 0 : kMostExtra)))
             {
                 command.encoding.length_code.reset();

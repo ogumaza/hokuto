@@ -1,6 +1,30 @@
 // SPDX-License-Identifier: MIT
 
 // The joins of groups and the new groups of hokuto_check_replace.
+//
+// Where the windows propose groups for a new or replaced item, the item joins them through the windows' edit
+// (src/edit/groups.h). Up to 8 items of each archive join groups in each of the checks of the sequences, the files of
+// banks, wave archives and wave sounds, --new and --wave-sounds. The first join of each check also takes a group that
+// the windows don't propose: one beside the archive where the Hokuto file holds one. A group that would take a file
+// that Hokuto can't read is unavailable, and the tool counts it. The edit refuses such a group that the windows don't
+// propose, and a group that links to the archive's files and would take a file that only groups hold. The window shows
+// the refusal, and the tool counts it. Each chosen group has to hold each file that the items require, but for the
+// files of the old item or the model where it loads them. It has to take no other file. It has to take copies where it
+// held copies. A group without files has to take copies when a link can't reach one of the files, and links otherwise.
+// A link can't reach a file that the FILE block doesn't hold at a place of the file table. The group has to keep its
+// files and items first, and to list each item whose file it didn't hold and that it didn't list, once. The load flags
+// have to name every part exactly when the group holds every file that the item requires. The other groups and group
+// files, the other files' bytes and the items' tables have to stay. Each file's list of groups has to gain the groups
+// that took a copy of the file or a link to it, but for a link to a wave archive's file. The 3DS's file table holds no
+// lists. The file has to save and open again in both forms, and the same join again has to change nothing.
+//
+// The first item of each of those checks also joins a new group, in every archive, through the windows' edit
+// (edit::AddGroups). The archive with the new group has to hold the other groups, files, group files and names as
+// before. The new group has to follow them, with an empty group's file at the end of the file table. The game's sizes
+// have to give it a size of 0, and the file has to save and open again in both forms. The new group then has to take
+// the items as a group without files does. On the 3DS, its file has to take the highest version of the groups' files
+// inside the archive. The edit refuses a new group that would take a file that Hokuto can't read, and a new group in an
+// archive without names. The window shows the refusal, and the tool counts it.
 
 #include "check_replace.h"
 
@@ -8,7 +32,7 @@ namespace hokuto::tools::replace
 {
 
 Choice ChosenGroups(const format::File& file, const sar::SoundArchive& built, std::span<const edit::Group> groups,
-                    std::span<const uint32_t> before, std::span<const uint32_t> after, bool extra, Totals& totals)
+                    std::span<const uint32_t> before, std::span<const uint32_t> after, bool extra, JoinTotals& totals)
 {
     const auto beside = [&file](uint32_t group)
     {
@@ -87,7 +111,7 @@ struct JoinedGroups
 std::string ListedItemsProblem(const sar::GroupContents& old, const sar::GroupContents& contents, bool listing,
                                std::span<const uint32_t> items, const std::vector<std::vector<uint32_t>>& required,
                                std::span<const uint32_t> held, std::span<const uint32_t> held_before,
-                               const std::string& group_name, Totals& totals)
+                               const std::string& group_name, JoinTotals& totals)
 {
     // The group lists each item whose file it didn't hold and that it didn't list, once. The load flags name every
     // part exactly when the group holds every file that the item requires. A group's file without INFX lists none.
@@ -130,7 +154,7 @@ std::string ListedItemsProblem(const sar::GroupContents& old, const sar::GroupCo
 std::string JoinedGroupProblem(const StrictRead& was, const StrictRead& now, uint32_t g, const std::string& group_name,
                                std::span<const uint32_t> items, std::span<const uint32_t> before,
                                const std::vector<std::vector<uint32_t>>& required, const std::set<uint32_t>& unplaced,
-                               const std::set<uint32_t>& wave_archives, JoinedGroups& joined_groups, Totals& totals)
+                               const std::set<uint32_t>& wave_archives, JoinedGroups& joined_groups, JoinTotals& totals)
 {
     if (!was.groups[g] || !now.groups[g])
     {
@@ -311,7 +335,7 @@ std::string TablesProblem(const StrictRead& was, const StrictRead& now, const fo
 // nothing. `before` lists the files that the old item or the model required. Counts the groups, files and items that
 // joined in `totals`.
 std::string JoinProblem(const format::File& added, const format::File& joined, std::span<const uint32_t> chosen,
-                        std::span<const uint32_t> items, std::span<const uint32_t> before, Totals& totals)
+                        std::span<const uint32_t> items, std::span<const uint32_t> before, JoinTotals& totals)
 {
     const sar::Flavor flavor = FlavorOf(*added.native);
     const StrictRead was = ReadStrictly(added);
@@ -389,7 +413,7 @@ std::string JoinProblem(const format::File& added, const format::File& joined, s
 } // namespace
 
 std::string JoinCheck(const format::File& added, const Choice& choice, std::span<const uint32_t> items,
-                      std::span<const uint32_t> before, Totals& totals)
+                      std::span<const uint32_t> before, JoinTotals& totals)
 {
     const std::span<const uint32_t> chosen = choice.groups;
     format::File joined;
@@ -538,7 +562,7 @@ std::string NewGroupProblem(const format::File& added, const format::File& with_
 } // namespace
 
 std::string NewGroupCheck(const format::File& added, const sar::SoundArchive& archive, std::span<const uint32_t> items,
-                          std::span<const uint32_t> before, Totals& totals)
+                          std::span<const uint32_t> before, JoinTotals& totals)
 {
     const std::vector<std::string> names = {NewGroupName(archive)};
     format::File joined;
@@ -565,7 +589,7 @@ std::string NewGroupCheck(const format::File& added, const sar::SoundArchive& ar
     std::string problem = NewGroupProblem(added, with_group, names.front());
     if (problem.empty())
     {
-        Totals joins;
+        JoinTotals joins;
         const auto group = static_cast<uint32_t>(added.native->tables->groups.size());
         problem = JoinProblem(with_group, joined, std::span(&group, 1), items, before, joins);
         totals.made_copies += joins.join_copies;
@@ -589,7 +613,7 @@ bool JoinsGroups(const Joins& joins, std::span<const edit::Group> edit_groups)
 std::string JoinAndNewGroupCheck(const format::File& file, const sar::SoundArchive& built,
                                  std::span<const edit::Group> edit_groups, std::span<const uint32_t> items,
                                  std::span<const uint32_t> before, const std::function<std::vector<uint32_t>()>& after,
-                                 const std::function<const format::File&()>& added, Joins& joins, Totals& totals)
+                                 const std::function<const format::File&()>& added, Joins& joins, JoinTotals& totals)
 {
     const bool joining = !edit_groups.empty() && joins.count < kJoins;
     const Choice chosen = joining ? ChosenGroups(file, built, edit_groups, before,
@@ -616,7 +640,7 @@ std::string JoinAndNewGroupCheck(const format::File& file, const sar::SoundArchi
     return problem;
 }
 
-void PrintJoins(const std::string& name, const Totals& totals, bool groups)
+void PrintJoins(const std::string& name, const JoinTotals& totals, bool groups)
 {
     if (groups)
     {

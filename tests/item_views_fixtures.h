@@ -18,7 +18,8 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/rsar/archive_model.h"
 #include "ntdlib/rsar/bank_file.h"
 #include "ntdlib/rsar/formats.h"
@@ -35,7 +36,6 @@
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/sound_build.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "ntdlib/wave/encode.h"
@@ -95,8 +95,8 @@ struct GbaCart
 
 inline GbaCart MakeGbaCart(bool strays = true)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    namespace mp2k = ntdlib::mp2k;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    namespace mp2k = agblib::mp2k;
     using mp2k_cart::Cart;
     using enum mp2k::Command;
 
@@ -137,7 +137,7 @@ inline GbaCart MakeGbaCart(bool strays = true)
     track.Fine();
     made.header = cart.Song({track}, made.voices);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     made.bytes = hokuto::testing::RomBytes(rom);
     return made;
 }

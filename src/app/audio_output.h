@@ -14,6 +14,12 @@
 // SDL3 opens a device at the rate that the first opening asks for, and at 44.1 kHz at least. The rings' rate can be the
 // 3DS's 32,728 Hz or the Wii's 32 kHz. The device would then open at 44.1 kHz, and the system would resample SDL3's
 // output again. Every opening after the first therefore asks for the rate and the buffer size of the first.
+//
+// On Windows, the buffer is the longest period of WASAPI's shared mode: 10 ms as a rule. Under Wine, it is SDL3's own
+// 1,024 frames at 48 kHz. With periods of 10 ms, Wine's stream ran dry every few seconds on a busy processor in a
+// virtual machine, and each time PipeWire played 21 ms of silence. Without a virtual machine, it ran dry under load
+// too. The build changes SDL3's WASAPI driver for that
+// (cmake/sdl3_wine_period.cmake).
 
 #pragma once
 

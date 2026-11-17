@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 
 #include "app/app.h"
 #include "app/app_browser_parts.h"
@@ -196,9 +196,9 @@ const std::vector<song::GbaVoiceGroup>& App::GbaGroups()
 
 std::vector<SlotView> App::GbaSlotsOf(uint32_t song)
 {
-    ntdlib::mp2k::SongHeader header;
+    agblib::mp2k::SongHeader header;
     if (!played_.Gba() ||
-        !ntdlib::mp2k::ReadSong(played_.Gba()->rom, played_.Gba()->info, static_cast<int>(song), header))
+        !agblib::mp2k::ReadSong(played_.Gba()->rom, played_.Gba()->info, static_cast<int>(song), header))
     {
         return {};
     }

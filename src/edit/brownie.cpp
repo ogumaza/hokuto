@@ -17,9 +17,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/brownie/commands.h"
-#include "ntdlib/brownie/driver.h"
+#include "agblib/agb/rom.h"
+#include "agblib/brownie/commands.h"
+#include "agblib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
 
 #include "edit/brownie_parts.h"
@@ -39,7 +39,7 @@ namespace hokuto::edit
 namespace
 {
 
-namespace brownie = ntdlib::brownie;
+namespace brownie = agblib::brownie;
 using brownie_parts::Barrier;
 using brownie_parts::BlockAt;
 using brownie_parts::BlockOf;
@@ -735,7 +735,7 @@ std::shared_ptr<const Tables> TablesOf(const format::File& file)
         }
     }
 
-    ntdlib::agb::Rom rom;
+    agblib::agb::Rom rom;
     rom.Assign(format::ExportArchive(file));
     brownie::DriverInfo info;
     std::string error;

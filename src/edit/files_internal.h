@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
+#include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/sequence_file.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/wave_file.h"
@@ -106,6 +107,10 @@ inline constexpr std::size_t kWiiHeaderSize = 0x10;
 
 // The version of a Wii archive from which a stream sound's entry counts its channels. Before, it holds a bit for each.
 inline constexpr uint16_t kWiiChannelCountVersion = 0x0104;
+
+// The Wii's encoding of `encoding` (ntdlib::rsar::EncodingOf). Throws std::invalid_argument with a message for the user
+// for IMA-ADPCM, which the Wii doesn't play.
+ntdlib::rsar::WaveEncoding WiiEncoding(ntdlib::sar::WaveEncoding encoding);
 
 // `bytes` read as a WAV file, for a new wave or stream. Throws std::invalid_argument with a message for the user for a
 // file that seqlib can't read.

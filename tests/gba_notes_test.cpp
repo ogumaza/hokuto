@@ -17,8 +17,8 @@ namespace
 // Fusion's sequencer. The notes of that sequencer read a key and a velocity and no third byte.
 std::vector<uint8_t> GbaRom(bool fusion = false)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     if (fusion)
@@ -37,7 +37,7 @@ std::vector<uint8_t> GbaRom(bool fusion = false)
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -111,7 +111,7 @@ void TestGbaNotes()
     {
         for (int code = 0; code < 49; code++)
         {
-            if (ntdlib::mp2k::ClockLength(code) == ticks)
+            if (agblib::mp2k::ClockLength(code) == ticks)
             {
                 return true;
             }
@@ -170,8 +170,8 @@ void TestGbaRefusals()
 // velocity. The bytes from 0x38000 on are 0xFF: the ROM's free space.
 std::vector<uint8_t> GbaThirdByteRom(bool fusion)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     if (fusion)
@@ -185,7 +185,7 @@ std::vector<uint8_t> GbaThirdByteRom(bool fusion)
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -194,8 +194,8 @@ std::vector<uint8_t> GbaTrackBytes(const File& file, std::size_t size)
 {
     const std::shared_ptr<const hokuto::song::GbaRom> rom =
         hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(file));
-    ntdlib::mp2k::SongHeader header;
-    if (!ntdlib::mp2k::ReadSong(rom->rom, rom->info, 0, header) || header.tracks.empty())
+    agblib::mp2k::SongHeader header;
+    if (!agblib::mp2k::ReadSong(rom->rom, rom->info, 0, header) || header.tracks.empty())
     {
         return {};
     }
@@ -206,9 +206,9 @@ std::vector<uint8_t> GbaTrackBytes(const File& file, std::size_t size)
 
 // A cartridge whose song 0 plays `track` with a saw wave's voice. The bytes from 0x38000 on are 0xFF: the ROM's free
 // space.
-std::vector<uint8_t> GbaTrackRom(const ntdlib::testing::mp2k_cart::Track& track)
+std::vector<uint8_t> GbaTrackRom(const agblib::testing::mp2k_cart::Track& track)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
@@ -218,7 +218,7 @@ std::vector<uint8_t> GbaTrackRom(const ntdlib::testing::mp2k_cart::Track& track)
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -249,8 +249,8 @@ NoteEdit EditOfKey(const Sequence& sequence, int key)
 // A note that ends before the end of its track isn't cut.
 void TestGbaNoteOverTheEnd()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
     const std::string kEndRefusal =
         "The track ends before this note does. Moving the end could change other notes too. To move it anyway, "
         "lengthen the wait before the End in the List Editor.";
@@ -341,8 +341,8 @@ void TestGbaNoteOverTheEnd()
 // can't tell, and the end cuts the longer note as before.
 void TestGbaNoteOverALaterEnd()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     for (const uint32_t rest : {0u, 6u})
     {
@@ -403,7 +403,7 @@ void TestGbaNoteOverALaterEnd()
 // of 47 ticks there. A plain cart accepts it with the extra length.
 void TestGbaFusionNotes()
 {
-    using enum ntdlib::mp2k::Command;
+    using enum agblib::mp2k::Command;
     const File fusion = hokuto::format::ImportGbaRom(GbaThirdByteRom(true));
     const File plain = hokuto::format::ImportGbaRom(GbaThirdByteRom(false));
     const GbaSong two = GbaSongOf(fusion);
@@ -452,8 +452,8 @@ void TestGbaFusionNotes()
 // same priority, and never starts. The bytes from 0x38000 on are 0xFF: the ROM's free space.
 std::vector<uint8_t> GbaUnstartedRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(2, 2, 60, {0, 0, 15, 0})}});
@@ -468,7 +468,7 @@ std::vector<uint8_t> GbaUnstartedRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 

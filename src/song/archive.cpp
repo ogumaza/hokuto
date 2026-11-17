@@ -15,10 +15,10 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
-#include "ntdlib/mp2k/commands.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/console.h"
 #include "ntdlib/sequence_export/archive_converter.h"
@@ -327,7 +327,7 @@ bool Runs(const Console& console, ntdlib::commands::Kind kind, uint8_t index)
         {
             if (console.engine == format::Engine::kGba)
             {
-                ntdlib::mp2k::EncodeSequence(command, ntdlib::agb::kRomBase, console.note_arguments);
+                agblib::mp2k::EncodeSequence(command, agblib::agb::kRomBase, console.note_arguments);
             }
             else if (console.engine == format::Engine::kDse)
             {

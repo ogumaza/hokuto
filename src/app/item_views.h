@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/sar/bank_file.h"
 #include "ntdlib/sar/formats.h"
@@ -71,7 +71,7 @@ enum class GbaVoiceType
 };
 
 // The kind of `voice`, by the same rules as song::GbaVoiceKind.
-GbaVoiceType GbaVoiceTypeOf(const ntdlib::mp2k::Voice& voice);
+GbaVoiceType GbaVoiceTypeOf(const agblib::mp2k::Voice& voice);
 
 // A voice of a GBA voice group as the Bank Editor shows it: the keys that play it, its values, and its kind
 // (song::GbaVoiceKind). `shared` names the other places of the ROM's voice groups that play the voice's bytes: a
@@ -80,7 +80,7 @@ struct GbaVoiceRow
 {
     int first_key = 0;
     int last_key = 127;
-    ntdlib::mp2k::Voice voice;
+    agblib::mp2k::Voice voice;
     std::string kind;
     std::vector<std::string> shared;
 };

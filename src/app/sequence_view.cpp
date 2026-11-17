@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/mp2k/sequencer.h"
+#include "agblib/agb/gba.h"
+#include "agblib/mp2k/sequencer.h"
 
 #include "app/key_edits.h"
 #include "app/list_edits.h"
@@ -56,8 +56,8 @@ void SetSongTiming(SongView& view, const song::Sequence& sequence)
     // kFrameRate. The GBA's other drivers count their tempos the same way (song::DriverRules::StartTempoBpm).
     const std::optional<double> driver_start =
         sequence.driver ? sequence.driver->StartTempoBpm() : std::optional<double>();
-    view.starting_tempo = sequence.gba   ? ntdlib::mp2k::kDefaultTempo * ntdlib::agb::kFrameRate / 60.0
-                          : driver_start ? *driver_start * ntdlib::agb::kFrameRate / 60.0
+    view.starting_tempo = sequence.gba   ? agblib::mp2k::kDefaultTempo * agblib::agb::kFrameRate / 60.0
+                          : driver_start ? *driver_start * agblib::agb::kFrameRate / 60.0
                                          : view.starting_tempo;
     view.beats_per_bar = kBeatsPerBar;
     view.length = static_cast<int32_t>(std::min<uint32_t>(sequence.length, std::numeric_limits<int32_t>::max()));

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The waits of a sequence of Ubisoft Milan's driver in a Hokuto file. ntdlib's decoder sets each wait to the driver's
-// countdown (ntdlib/ubimilan/commands.h). A file stores the length of each wait in ticks instead. A file of another
+// countdown (agblib/ubimilan/commands.h). A file stores the length of each wait in ticks instead. A file of another
 // driver stores its waits in ticks too. The first wait of a sequence, before the first command, runs that command as
 // many frames into a piece as the countdown says. Every other countdown of n runs the next command n + 1 frames later,
 // and a countdown of 0 runs it in the same frame. No countdown therefore stores a wait of one tick after a command. The
@@ -14,10 +14,10 @@
 #include <cstdint>
 #include <vector>
 
+#include "agblib/ubimilan/commands.h"
+#include "agblib/ubimilan/driver.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/ubimilan/commands.h"
-#include "ntdlib/ubimilan/driver.h"
 
 namespace hokuto::format
 {

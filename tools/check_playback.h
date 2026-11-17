@@ -34,6 +34,7 @@
 #include "ntdlib/ctr/snd/sar_options.h"
 #include "ntdlib/ctr_fx/effects.h"
 #include "ntdlib/nwsnd/channel.h"
+#include "ntdlib/nx/atk/effect.h"
 #include "ntdlib/nx/atk/engine.h"
 #include "ntdlib/nx/audio/i3dl2.h"
 #include "ntdlib/rsar/formats.h"
@@ -81,7 +82,7 @@ const sar::Options kStrict{sar::Flavor::kNx, {}, false, sar::Rules::kStopAtFirst
 
 // The level, in dB below full scale, under which a difference passes whatever its ratio. A quiet passage can lie only a
 // few steps of the 16-bit output above silence. An integer delay line's tail can then hold steps of ±1 that the lead
-// doesn't settle, such as in a Wii U game's countdown with a delay on bus A (2026-10-24).
+// doesn't settle, such as in a Wii U game's countdown with a delay on bus A.
 constexpr double kFloorDb = -80.0;
 
 // How close an output lies to the model's: the ratio of the model's output to the difference, in dB, and the
@@ -108,11 +109,53 @@ struct NoteStart
     bool legato = false;
 };
 
+// The notes that a frame of a model started, from the channels in `channels` that the tracks of `player` list. A
+// channel plays a new note when it's new in its place, or when its keys change. `previous` holds each place's keys
+// after the frame before, and takes them after this frame. The Switch's and the 3DS's models share the shape.
+template <class Player, class Channels>
+std::vector<NoteStart> NotesStarted(Player& player, const Channels& channels,
+                                    std::map<int, std::pair<int, int>>& previous)
+{
+    // Each channel's track, from the tracks' lists of channels.
+    std::map<int, int> track_of;
+    for (int t = 0; t < kTracks; t++)
+    {
+        const auto* track = player.Track(t);
+        for (int place = track != nullptr ? track->ChannelList() : ntdlib::nwsnd::kNoChannel;
+             place != ntdlib::nwsnd::kNoChannel; place = channels.At(place).next_in_track)
+        {
+            track_of[place] = t;
+        }
+    }
+
+    std::map<int, std::pair<int, int>> current;
+    std::vector<NoteStart> started;
+    for (const int place : channels.InUse())
+    {
+        const auto& channel = channels.At(place);
+        const std::pair<int, int> keys = {channel.key, channel.original_key};
+        current[place] = keys;
+        const auto old = previous.find(place);
+        if (old == previous.end() || old->second != keys)
+        {
+            const auto track = track_of.find(place);
+            started.push_back({track != track_of.end() ? track->second : -1, channel.key, old != previous.end()});
+        }
+    }
+    previous = std::move(current);
+
+    return started;
+}
+
 // The model's output, the sequence player's tick count before and after each frame, the position before and after each
 // frame, whether a sound still played or a channel still sounded before each frame, and the notes that each frame
-// started. The position is the tick count until the sequence ends. It then goes on at the tempo at the end.
+// started. The position is the tick count until the sequence ends. It then goes on at the tempo at the end. With one of
+// nn::atk's effects, `ring_frames` gives the frames that the effects may ring for after the output last had sound, and
+// a frame within ±`silence` counts as silent (song::SwitchRingingFrames). Otherwise only a frame of zeros does.
 struct ModelRun
 {
+    int ring_frames = 0;
+    int silence = 0;
     std::vector<int16_t> samples;
     std::vector<float> floats; // the enhanced mode's output in floating point, or none
     std::vector<uint64_t> before;
@@ -195,13 +238,13 @@ std::string ValuesText(const song::StartValues& values);
 std::string ChangesText(const song::Changes& changes);
 
 // Totals over the archive. With --variables or --changes, `sequences` counts the runs of each choice. `affected` counts
-// the runs whose model output the changes alter. `quiet_tails` counts the sequences of the Wii U and the 3DS whose
-// output ended while the effect still gave samples of ±8 at most. `sent` counts the runs of the 3DS that sent sound to
-// bus A. `tickless` counts the 3DS sequences in which archive mode runs no tick. `switches` counts the switches
-// halfway, and `exact` those whose output matched the model's after the frame that crossfades. `lowest` gives the
-// lowest ratio after a switch. The stretches that pass by the floor (kFloorDb) don't count. `floored` counts the
-// switches with such a stretch, and `loudest` gives the loudest difference among them. The fields that end in `_seek`
-// or `_seeks` give the same for the seeks that the ratio measures.
+// the runs whose model output the changes alter. `quiet_tails` counts the sequences of the Wii U, the 3DS and the
+// Switch's effects of nn::atk whose output ended while the effect still gave samples of ±8 at most. `sent` counts the
+// runs of the 3DS that sent sound to bus A. `tickless` counts the 3DS sequences in which archive mode runs no tick.
+// `switches` counts the switches halfway, and `exact` those whose output matched the model's after the frame that
+// crossfades. `lowest` gives the lowest ratio after a switch. The stretches that pass by the floor (kFloorDb) don't
+// count. `floored` counts the switches with such a stretch, and `loudest` gives the loudest difference among them. The
+// fields that end in `_seek` or `_seeks` give the same for the seeks that the ratio measures.
 struct Totals
 {
     std::size_t sequences = 0;
@@ -273,12 +316,25 @@ void ForEachChoice(const std::vector<song::Variable>& read, bool changes, uint32
     }
 }
 
-// Checks sequence sound `sound` with `effects` on the aux buses, the variables' starting values `values` and the game's
-// `changes`, and prints a line when it differs. `options` give the model the same effects and mixing mode.
+// The effects of nn::atk that the model run directly puts on each of the aux buses A to C, after the I3DL2 reverb of
+// atk::EngineOptions: classes of ntdlib's that haven't been added. Each run appends copies of them.
+using RendererEffects = std::array<std::vector<std::shared_ptr<const atk::EffectBase>>, song::kAuxBuses>;
+
+// The effects of a Switch archive's check: the I3DL2 reverbs and the mixing mode in `options` and nn::atk's effects in
+// `renderer` for the model run directly, and the same effects in `effects` for Hokuto's player.
+struct SwitchEffects
+{
+    atk::EngineOptions options;
+    RendererEffects renderer;
+    song::AuxEffects effects;
+};
+
+// Checks sequence sound `sound` with `effects`, the variables' starting values `values` and the game's `changes`, and
+// prints a line when it differs. With one of nn::atk's effects, the model's output after the player's end has to stay
+// within ±8, and `totals.quiet_tails` counts the runs whose output ended while it gave samples of ±8 at most.
 void CheckSequence(const sar::SoundArchive& strict, const std::shared_ptr<const sar::SoundArchive>& archive,
-                   uint32_t sound, std::size_t frames, const atk::EngineOptions& options,
-                   const song::AuxEffects& effects, const song::StartValues& values, const song::Changes& changes,
-                   Totals& totals);
+                   uint32_t sound, std::size_t frames, const SwitchEffects& effects, const song::StartValues& values,
+                   const song::Changes& changes, Totals& totals);
 
 // The Wii U's frames, and the strict rules for its archives.
 constexpr std::size_t kWiiUFrameSamples = cafe::ArchiveModel::kFrameSamples;
@@ -315,26 +371,22 @@ bool EndsEarly(std::size_t first, std::size_t heard, std::size_t frames, std::si
 // `after`'s frames when none does. The player ends a looped sequence's output with that frame.
 std::size_t LoopEndFrames(std::span<const uint64_t> after, uint64_t loop_end);
 
-// The frames of `samples` from frame `from` on that differ from `expected`'s frames from `first` on, up to the end of
-// either. A frame of `samples` matches when each of its samples is the expected one at full scale. In enhanced mixing,
-// floats have to match the expected floats.
-template <class Sample>
-std::size_t WiiUDifferences(std::span<const Sample> samples, std::size_t from, const WiiURun& expected,
-                            std::size_t first, float scale, std::size_t* first_difference = nullptr)
+// The frames of `samples` from frame `from` on that differ from the frames of `expected` from frame `first` + `from`
+// on, up to the end of either. Each frame holds `frame_floats` samples. A frame matches when each of its samples is the
+// expected one times `scale`. `first_difference`, if given, takes the first frame that differs.
+template <class Sample, class Expected>
+std::size_t FrameDifferences(std::span<const Sample> samples, std::size_t from, std::span<const Expected> expected,
+                             std::size_t frame_floats, std::size_t first, float scale,
+                             std::size_t* first_difference = nullptr)
 {
-    const bool floats_expected = std::is_same_v<Sample, float> && !expected.floats.empty();
     std::size_t differences = 0;
-    const std::size_t kFloats = kWiiUFrameSamples * 2;
     for (std::size_t frame = from;
-         (frame + 1) * kFloats <= samples.size() && (first + frame + 1) * kFloats <= expected.samples.size(); frame++)
+         (frame + 1) * frame_floats <= samples.size() && (first + frame + 1) * frame_floats <= expected.size(); frame++)
     {
-        const std::size_t at = (first + frame) * kFloats;
-        for (std::size_t i = 0; i < kFloats; i++)
+        const std::size_t at = (first + frame) * frame_floats;
+        for (std::size_t i = 0; i < frame_floats; i++)
         {
-            const float sample = static_cast<float>(samples[frame * kFloats + i]);
-            const float wanted =
-                floats_expected ? expected.floats[at + i] : static_cast<float>(expected.samples[at + i]) * scale;
-            if (sample != wanted)
+            if (static_cast<float>(samples[frame * frame_floats + i]) != static_cast<float>(expected[at + i]) * scale)
             {
                 if (differences == 0 && first_difference != nullptr)
                 {
@@ -347,6 +399,26 @@ std::size_t WiiUDifferences(std::span<const Sample> samples, std::size_t from, c
     }
 
     return differences;
+}
+
+// The frames of `samples` that differ from a run of the Wii U or the Wii, with `frame_floats` samples a frame (see
+// FrameDifferences). In enhanced mixing, the player's floats have to match the run's floats.
+template <class Sample>
+std::size_t RunDifferences(std::span<const Sample> samples, std::size_t from, const WiiURun& expected,
+                           std::size_t frame_floats, std::size_t first, float scale,
+                           std::size_t* first_difference = nullptr)
+{
+    if constexpr (std::is_same_v<Sample, float>)
+    {
+        if (!expected.floats.empty())
+        {
+            return FrameDifferences(samples, from, std::span<const float>(expected.floats), frame_floats, first, 1.0f,
+                                    first_difference);
+        }
+    }
+
+    return FrameDifferences(samples, from, std::span<const int16_t>(expected.samples), frame_floats, first, scale,
+                            first_difference);
 }
 
 // The effects of the Wii U by the names that a Hokuto file gives them.
@@ -363,11 +435,6 @@ struct WiiUEffects
     std::vector<cafe::EffectSetup> setups;
     song::AuxEffects effects;
 };
-
-// The player's output, rendered in blocks up to `frames` frames of `frame_samples` stereo samples in all. Returns false
-// once the output has ended.
-bool RenderFrames(song::SequencePlayer& player, std::size_t frames, std::size_t frame_samples,
-                  std::vector<float>& output);
 
 // Checks Hokuto's playback of sequence sound `sound` of a Wii U archive against the model run directly: the frames of a
 // run from the start, the frames after seeks back and forth, and the player's output after its first frame. That frame

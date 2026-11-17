@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: MIT
 
 // The mode --new of hokuto_check_replace: new sequence sounds.
+//
+// With --new, the tool checks only the new sounds of File > Import > Sequence… (src/edit/new_items.h). Up to 32
+// sequence sounds, spread through the sound table, each serve as a model. Each model's new sound takes the model's
+// sequence file, from the model's start, through the edit that the Import window makes. The new sound has to hold the
+// model's values and play the model's notes. A model whose commands open tracks that it doesn't allocate counts apart:
+// its new sound allocates those tracks. Every other item has to keep its values, and every file its bytes. The program
+// has to find the new sound's sequence, and the file has to save and open again in both forms. The model's file for
+// each other console has to give the same archive. A file that decodes otherwise from another console counts apart. So
+// does a file whose biquad filters come back with other types or values, and a file that reaches a command that the 3DS
+// lacks. The second model's new sound also goes in after the first model's.
 
 #include "check_replace.h"
 
@@ -12,6 +22,9 @@ namespace
 
 // The most sequence sounds that --new copies in an archive.
 constexpr std::size_t kNewModels = 32;
+
+// The name of a new sound, with underscores after it while an item holds the name.
+const std::string kNewSoundName = "HOKUTO_NEW_SOUND";
 
 } // namespace
 
@@ -34,25 +47,6 @@ std::vector<uint32_t> NewModels(std::span<const std::optional<edit::SoundPlace>>
 
     return models;
 }
-
-namespace
-{
-
-// A name that no item of the archive in `bytes` holds: HOKUTO_NEW_SOUND, with underscores after it while an item holds
-// the name.
-std::string FreeName(std::span<const uint8_t> bytes, sar::Flavor flavor)
-{
-    std::string name = "HOKUTO_NEW_SOUND";
-    const std::optional<std::span<const uint8_t>> strings = sar::TablesOf(bytes, flavor).strings;
-    while (strings && sar::FindItem(*strings, flavor, name))
-    {
-        name += "_";
-    }
-
-    return name;
-}
-
-} // namespace
 
 bool SameValues(const sar::SoundInfo& a, const sar::SoundInfo& b)
 {
@@ -147,7 +141,7 @@ std::string NewProblem(const format::File& base, const sar::SoundArchive& built,
 // start.
 std::string OtherConsolesProblem(const format::File& file, const sar::SoundArchive& built, uint32_t model,
                                  const std::string& new_name, const Source& source, const format::File& added,
-                                 Totals& totals)
+                                 NewSoundTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
     const sar::SoundInfo& info = built.Sounds()[model];
@@ -196,7 +190,7 @@ std::string OtherConsolesProblem(const format::File& file, const sar::SoundArchi
 
 void CheckNewSounds(const format::File& file, const sar::SoundArchive& built, std::span<const uint8_t> bytes,
                     std::span<const edit::Group> edit_groups, std::span<const std::optional<edit::SoundPlace>> places,
-                    const std::string& name, Totals& totals)
+                    const std::string& name, NewSoundTotals& totals, JoinTotals& joined)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
     const std::vector<uint32_t> models = NewModels(places);
@@ -219,7 +213,7 @@ void CheckNewSounds(const format::File& file, const sar::SoundArchive& built, st
             totals.new_untracked += untracked ? 1 : 0;
 
             // The copy with the model's file. The Import window makes the same edit.
-            const std::string new_name = FreeName(bytes, flavor);
+            const std::string new_name = FreeName(bytes, flavor, kNewSoundName).value_or(kNewSoundName);
             const auto start = std::chrono::steady_clock::now();
             const format::File added =
                 edit::AddSequenceSound(file, model, new_name, source.incoming.sequence, *source.start, {});
@@ -245,7 +239,7 @@ void CheckNewSounds(const format::File& file, const sar::SoundArchive& built, st
                     return added;
                 };
                 problem = JoinAndNewGroupCheck(file, built, edit_groups, std::span(&id, 1), files_before, {}, with_copy,
-                                               joins, totals);
+                                               joins, joined);
             }
 
             // The second model's copy after the first model's.
@@ -258,7 +252,7 @@ void CheckNewSounds(const format::File& file, const sar::SoundArchive& built, st
                 const std::vector<uint8_t> first_bytes = format::ExportArchive(*first);
                 const Archive first_built =
                     song::LoadArchive(first_bytes, "first.bfsar", format::ExportGroupFiles(*first));
-                const std::string second_name = FreeName(first_bytes, flavor);
+                const std::string second_name = FreeName(first_bytes, flavor, kNewSoundName).value_or(kNewSoundName);
                 const format::File twice =
                     edit::AddSequenceSound(*first, model, second_name, source.incoming.sequence, *source.start, {});
                 problem = NewProblem(*first, *first_built, twice, model, second_name, source, untracked);

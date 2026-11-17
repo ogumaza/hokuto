@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The bytes of the commands of Brownie Brown's GBA driver in the form that the encoder of ntdlib writes
-// (ntdlib/brownie/commands.h): the place of each item of a sequence, and whether the bytes of the revision hold a
+// (agblib/brownie/commands.h): the place of each item of a sequence, and whether the bytes of the revision hold a
 // command. The format layer, the song layer and the edit layer share these rules.
 //
 // A note, a hold (FE), a rest (EC or ED) and a release (E0) wait for the length of the channel. The last length byte
@@ -17,9 +17,9 @@
 #include <set>
 #include <vector>
 
-#include "ntdlib/brownie/commands.h"
-#include "ntdlib/brownie/driver.h"
-#include "ntdlib/brownie/song.h"
+#include "agblib/brownie/commands.h"
+#include "agblib/brownie/driver.h"
+#include "agblib/brownie/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 
@@ -35,7 +35,7 @@ bool BrownieIsWord(const ntdlib::commands::Command& item);
 // layout of the ROM: the first word requires no zeros before it. Throws std::invalid_argument with the reason for a
 // command that the revision's bytes can't hold (CheckBrownieCommand).
 std::vector<uint32_t> BrownieItemOffsets(const ntdlib::commands::Sequence& sequence,
-                                         ntdlib::brownie::Revision revision);
+                                         agblib::brownie::Revision revision);
 
 // Whether `item` waits for the length of its channel: a note, a hold, a rest or a release.
 bool BrownieWaits(const ntdlib::commands::Command& item);
@@ -44,7 +44,7 @@ bool BrownieWaits(const ntdlib::commands::Command& item);
 std::optional<uint8_t> BrownieLengthByte(const ntdlib::commands::Command& item);
 
 // The length set that `item` chooses in `revision` (EE), or nothing for another command. Revision 1's EE does nothing.
-std::optional<int> BrownieLengthSet(const ntdlib::commands::Command& item, ntdlib::brownie::Revision revision);
+std::optional<int> BrownieLengthSet(const ntdlib::commands::Command& item, agblib::brownie::Revision revision);
 
 // The frames that `item`, a command that waits, waits in a Hokuto file: a release's time, or the others' value. 0 where
 // the file stores none.
@@ -67,12 +67,12 @@ struct BrownieReadings
 // Follows every channel of `sequence` from the entries of each list. The driver reads the channels the same way: a
 // channel starts with a length of 256 frames and length set 0, and its loops, calls, returns and jumps take it on. A
 // loop's end leads both back and on. `length` returns the frames of each length byte.
-BrownieReadings ReadBrownieLengths(const ntdlib::commands::Sequence& sequence, ntdlib::brownie::Revision revision,
+BrownieReadings ReadBrownieLengths(const ntdlib::commands::Sequence& sequence, agblib::brownie::Revision revision,
                                    const BrownieLength& length);
 
 // Sets each command of `sequence` that waits to the frames that every channel waits there (BrownieWaitOf), or to none
 // where the channels wait for other lengths, or no channel reaches it.
-void FillBrownieWaits(ntdlib::commands::Sequence& sequence, ntdlib::brownie::Revision revision,
+void FillBrownieWaits(ntdlib::commands::Sequence& sequence, agblib::brownie::Revision revision,
                       const BrownieLength& length);
 
 } // namespace hokuto::format

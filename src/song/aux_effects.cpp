@@ -87,11 +87,66 @@ double EchoSeconds(double delay, double feedback)
     return gain > 0.0 ? delay * 3.0 / -std::log10(gain) : delay;
 }
 
+// The places of the times of nn::atk's effects in their parameters (format/codes.cpp), and the delay's feedback gain.
+constexpr std::size_t kDelayTimeMax = 0;
+constexpr std::size_t kDelayTime = 1;
+constexpr std::size_t kDelayFeedback = 3;
+constexpr std::size_t kLookAheadTimeMax = 0;
+constexpr std::size_t kReleaseTime = 2;
+constexpr std::size_t kLookAheadTime = 3;
+constexpr std::size_t kPredelayTime = 2;
+constexpr std::size_t kDecayTime = 5;
+
+// Parameter `index` of `effect`, or 0 where it has none.
+double AtkParameter(const AtkEffect& effect, std::size_t index)
+{
+    return index < effect.parameters.size() ? static_cast<double>(effect.parameters[index]) : 0.0;
+}
+
+// The seconds that the delay or the look-ahead of `effect` lasts as nn::atk plays it: held to the longest time, and
+// the reverb's pre-delay held to 300 ms. 0 for another time.
+double AtkInputDelaySeconds(const AtkEffect& effect)
+{
+    constexpr double kMicroseconds = 1'000'000.0;
+    switch (effect.type)
+    {
+    case AtkEffect::Type::kDelay:
+        return std::clamp(AtkParameter(effect, kDelayTime), 0.0, AtkParameter(effect, kDelayTimeMax)) / kMicroseconds;
+    case AtkEffect::Type::kLightLimiter:
+        return std::clamp(AtkParameter(effect, kLookAheadTime), 0.0, AtkParameter(effect, kLookAheadTimeMax)) /
+               kMicroseconds;
+    case AtkEffect::Type::kReverb:
+        return std::clamp(AtkParameter(effect, kPredelayTime), 0.0, 300'000.0) / kMicroseconds;
+    }
+
+    return 0.0;
+}
+
+// The seconds in which the tail of one of nn::atk's effects falls by 60 dB. A delay's echoes fall by its feedback gain,
+// held to 0 to 1. A reverb's tail lasts its pre-delay and its decay time, held to 0.1 s to 20 s. A limiter's envelope
+// falls by 60 dB in 6.9 release times after its look-ahead. The effects take no margin.
+double AtkTailSeconds(const AtkEffect& effect)
+{
+    constexpr double kMicroseconds = 1'000'000.0;
+    const double input_delay = AtkInputDelaySeconds(effect);
+    switch (effect.type)
+    {
+    case AtkEffect::Type::kDelay:
+        return EchoSeconds(input_delay, std::clamp(AtkParameter(effect, kDelayFeedback), 0.0, 1.0));
+    case AtkEffect::Type::kLightLimiter:
+        return input_delay + 7.0 * std::max(AtkParameter(effect, kReleaseTime), 0.0) / kMicroseconds;
+    case AtkEffect::Type::kReverb:
+        return input_delay + std::clamp(AtkParameter(effect, kDecayTime) / kMicroseconds, 0.1, 20.0);
+    }
+
+    return 0.0;
+}
+
 // The seconds in which the tail of `effect` falls by 60 dB: a reverb's decay time after its delays, or the time in
 // which a delay line's echoes fall. A chorus gives 0. The Wii U's combs and delay lines store more than one pass of
 // what comes in. Their tails therefore start above the input's level. Their decays count a quarter longer: 15 dB more.
-// Without that margin, seeks in the standard reverb's tail lay only 57 dB below the signal (2026-10-24). The 3DS's
-// combs and delay lines take the same margin.
+// Without that margin, seeks in the standard reverb's tail stayed audibly above the floor of the playback check. The
+// 3DS's combs and delay lines take the same margin.
 double TailSeconds(const AuxEffect& effect)
 {
     constexpr double kMargin = 1.25;
@@ -111,6 +166,11 @@ double TailSeconds(const AuxEffect& effect)
     if (const auto* delay = std::get_if<CtrDelay>(&effect))
     {
         return EchoSeconds(delay->param.delay_time / 1000.0, delay->param.feedback) * kMargin;
+    }
+
+    if (const auto* atk = std::get_if<AtkEffect>(&effect))
+    {
+        return AtkTailSeconds(*atk);
     }
 
     // The words of the parameter structures (ntdlib::cafe::snd::EffectType and ntdlib::rvl::snd::EffectType): a
@@ -327,9 +387,7 @@ uint16_t WiiReturnVolume(float volume)
 namespace
 {
 
-// A second of the frames of 3 ms that AX runs on the Wii U and on the Wii, and the longest time that the effects'
-// delays count for: a minute.
-constexpr int kRingingSecond = 334;
+// The longest time that the effects' delays count for: a minute.
 constexpr double kLongestDelayMs = 60'000.0;
 
 // The first word of an effect's parameters as a float, or 0 for a value that isn't a time.
@@ -384,10 +442,22 @@ double InputDelayMs(const WiiEffect& effect)
     return 0.0;
 }
 
-// The frames that the effects of `Effect`'s console among `effects` may ring for (WiiURingingFrames). A bus's effects
-// process its samples one after another, and their delays add up.
+double InputDelayMs(const AtkEffect& effect)
+{
+    return AtkInputDelaySeconds(effect) * 1000.0;
+}
+
+// A console's frames: the length of one, and the frames of a second.
+struct Frames
+{
+    double ms;
+    int second;
+};
+
+// The frames of `frames` that the effects of `Effect`'s console among `effects` may ring for (WiiURingingFrames). A
+// bus's effects process its samples one after another, and their delays add up.
 template <class Effect>
-int RingingFramesOf(const AuxEffects& effects)
+int RingingFramesOf(const AuxEffects& effects, Frames frames)
 {
     bool any = false;
     double longest = 0.0;
@@ -410,20 +480,28 @@ int RingingFramesOf(const AuxEffects& effects)
         return 0;
     }
 
-    constexpr double kFrameMs = 3.0;
-    return kRingingSecond + static_cast<int>(std::ceil(std::min(longest, kLongestDelayMs) / kFrameMs));
+    return frames.second + static_cast<int>(std::ceil(std::min(longest, kLongestDelayMs) / frames.ms));
 }
+
+// The frames of 3 ms that AX runs on the Wii U and on the Wii, and the frames of 5 ms of the Switch's renderer.
+constexpr Frames kAxFrames = {3.0, 334};
+constexpr Frames kRendererFrames = {5.0, 200};
 
 } // namespace
 
 int WiiURingingFrames(const AuxEffects& effects)
 {
-    return RingingFramesOf<WiiUEffect>(effects);
+    return RingingFramesOf<WiiUEffect>(effects, kAxFrames);
 }
 
 int WiiRingingFrames(const AuxEffects& effects)
 {
-    return RingingFramesOf<WiiEffect>(effects);
+    return RingingFramesOf<WiiEffect>(effects, kAxFrames);
+}
+
+int SwitchRingingFrames(const AuxEffects& effects)
+{
+    return RingingFramesOf<AtkEffect>(effects, kRendererFrames);
 }
 
 } // namespace hokuto::song

@@ -264,7 +264,8 @@ std::optional<SoundChange> Menu(Control control, SoundValue value, std::span<con
     ImGui::SetNextWindowSizeConstraints(ImVec2(Px(kListWidth), 0.0f), ImVec2(FLT_MAX, Px(kListHeight)));
     ImGui::PushID(static_cast<int>(value));
     std::optional<SoundChange> change;
-    if (ImGui::BeginCombo("##menu", current < names.size() ? names[current] : ""))
+    const std::string preview = ComboPreview(current < names.size() ? names[current] : "");
+    if (ImGui::BeginCombo("##menu", preview.c_str()))
     {
         for (std::size_t i = 0; i < names.size(); i++)
         {

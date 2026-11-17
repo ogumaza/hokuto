@@ -101,6 +101,10 @@ struct ExportView
     bool play_hokuto = false;
 };
 
+// Whether the export to the chosen target of `view` measures what the export sounds like: an export to MIDI or to
+// another console that Hokuto can write. The window shows the measure's pane from the start.
+bool Measures(const ExportView& view);
+
 // A place that the measure of an export names: its line, and clips of both renders around it, interleaved stereo at
 // `rate`. The window's Play buttons play them.
 struct MeasuredPlace

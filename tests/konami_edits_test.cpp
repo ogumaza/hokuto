@@ -2,7 +2,7 @@
 
 // Tests the note and track edits of Konami's driver (src/edit/konami_notes.cpp and konami_tracks.cpp).
 
-#include "ntdlib/konami/sequencer.h"
+#include "agblib/konami/sequencer.h"
 
 #include "konami_fixtures.h"
 
@@ -1816,9 +1816,9 @@ void TestMix()
                      edit::EditMix(later_file, 0, 4, TrackOf(later_song, 4)->stretches, raised).file) == expected);
 }
 
-// On the first revision, a track of the wave channel selects a wave by the duty's command, with a byte of 4 plus the
-// wave. A later revision has a command for a wave. A new selection takes the command of the revision. A track whose
-// commands start no note has no volume to change.
+// On the first revision and its later builds, a track of the wave channel selects a wave by the duty's command, with a
+// byte of 4 plus the wave. A later revision has a command for a wave. A new selection takes the command of the
+// revision. A track whose commands start no note has no volume to change.
 void TestEmptyTracks()
 {
     using ntdlib::commands::Kind;
@@ -1847,6 +1847,16 @@ void TestEmptyTracks()
     };
     wave_commands(format::ImportKonamiRom(FirstCart()), 0);
     wave_commands(format::ImportKonamiRom(LaterCart()), 1);
+
+    // The later builds of the first revision have no wave command either: Live Start and The Prince of Tennis 2004.
+    for (const konami::Revision revision : {konami::Revision::kUltimateMasters, konami::Revision::kLiveStart,
+                                            konami::Revision::kPrinceOfTennis, konami::Revision::kWct2004})
+    {
+        const song::Console console{.engine = hokuto::format::Engine::kKonami, .driver = &song::KonamiRules(revision)};
+        const uint8_t index = revision == konami::Revision::kWct2004 ? 1 : 0;
+        XSFLIB_CHECK(edit::KonamiEdits().ProgramIndex(console, 2) == index);
+        XSFLIB_CHECK(edit::KonamiEdits().ProgramIndex(console, 1) == 0);
+    }
 
     const File file = format::ImportKonamiRom(FirstCart());
     const Sequence song0 = ReadOf(file, 0);

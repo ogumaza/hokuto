@@ -4,7 +4,9 @@
 // builds them with AppKit. On Windows, system_ui_windows.cpp leaves the menus to the program and colours the title bar
 // through the Desktop Window Manager. On other systems, system_ui_other.cpp leaves the menus to the program and the
 // title bar to the system. The Mac also requires a way to end a wait for events at a quit signal. Times of day follow
-// the system's format, and the paths of the system's dialogs one form.
+// the system's format, and the paths of the system's dialogs one form. While a message box of macOS or Windows is open,
+// the window still replies to the system's pings. On other systems, system_ui_other.cpp pumps the window's events
+// during a box.
 
 #pragma once
 
@@ -43,5 +45,13 @@ std::string TimeOfDay(std::chrono::system_clock::time_point time);
 // file. The program then gets the long names, with the prefix only where the path requires it. Other systems give one
 // form, and the path stays as it is.
 std::string SystemPath(const std::string& path);
+
+// Shows a message box of the system and waits for its answer, as SDL_ShowMessageBox does. `chosen` receives the number
+// of the chosen button, and keeps its value when the box closes without one. It can be null. Returns false when no box
+// can be shown. On macOS and Windows, SDL3 shows the box. On other systems, SDL_ShowMessageBox runs zenity and pumps no
+// events of the window until zenity ends. The window then misses the desktop's pings, and GNOME offers to force the
+// program to quit. There, this function runs zenity and pumps the window's events during the box. No frame is drawn
+// and no other code of the program runs before the answer, as on the other systems.
+bool ShowSystemBox(const SDL_MessageBoxData& box, int* chosen);
 
 } // namespace hokuto::app

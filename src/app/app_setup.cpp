@@ -23,7 +23,6 @@
 #include "app/widgets.h"
 #include "edit/other_console.h"
 #include "format/archive.h"
-#include "format/drivers.h"
 #include "format/engines.h"
 #include "format/file.h"
 
@@ -66,17 +65,13 @@ std::string WiiBuildText(const format::NativeArchive& native)
            " build (from main.dol)";
 }
 
-// The sound driver that a file of the DS or the GBA plays by, for Project Setup, or nothing on another console. On the
-// DS, the build in the image's ARM7 binary sets the level of a volume of 0.
-std::optional<std::string> SoundDriverText(const format::File& document)
+// The sound library or driver that `document` plays by, for Project Setup. On the DS, NITRO-Composer's build in the
+// image's ARM7 binary sets the level of a volume of 0. Project Setup gives the build of NW4R SND in WiiBuildText.
+std::string SoundDriverText(const format::File& document)
 {
-    if (document.engine == format::Engine::kGba)
-    {
-        return "MusicPlayer2000";
-    }
     if (document.engine != format::Engine::kDs)
     {
-        return std::nullopt;
+        return DriverName(document.engine);
     }
     if (!document.native || !document.native->cartridge)
     {
@@ -102,11 +97,11 @@ bool BeginSetupWindow(const char* title, bool* open)
     return visible;
 }
 
-// The rows of Project Setup that name the engine of `document`, and its sound library or sound driver.
+// The rows of Project Setup that name the console of `document`, and its sound library or sound driver.
 void DrawEngineRows(const format::File& document)
 {
-    SettingLabel("Engine");
-    ImGui::TextUnformatted(EngineName(document.engine));
+    SettingLabel("Console");
+    ImGui::TextUnformatted(ConsoleName(document.engine));
     if (document.native && document.native->engine == format::Engine::kWii)
     {
         // An import reads the game's build from its main.dol on the extracted disc. A new file, or an import without
@@ -123,11 +118,11 @@ void DrawEngineRows(const format::File& document)
     }
     else
     {
-        if (const std::optional<std::string> driver = SoundDriverText(document))
-        {
-            SettingLabel("Sound driver");
-            TextWrappedAtSpaces(*driver);
-        }
+        // NintendoWare's consoles play by a sound library, and the GBA and the DS by a sound driver.
+        const format::Family family = format::FactsOf(document.engine).family;
+        SettingLabel(family == format::Family::kNintendoWare || family == format::Family::kNw4r ? "Sound library"
+                                                                                                : "Sound driver");
+        TextWrappedAtSpaces(SoundDriverText(document));
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(1);
         ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(theme::kTextMuted));
@@ -443,7 +438,7 @@ void App::DrawProjectSetup()
 
 void App::DrawNewProjectEngine()
 {
-    // The console whose rules the new file plays by. Project Setup shows it as the engine.
+    // The console whose rules the new file plays by. Project Setup shows it as the console.
     DrawCaps(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), theme::kTextMuted, "Project");
     ImGui::Dummy(CapsSize("Project"));
     ImGui::Spacing();
@@ -451,15 +446,16 @@ void App::DrawNewProjectEngine()
     {
         ImGui::TableSetupColumn("##label", ImGuiTableColumnFlags_WidthFixed, Px(120.0f));
         ImGui::TableSetupColumn("##value", ImGuiTableColumnFlags_WidthStretch);
-        SettingLabel("Engine");
+        SettingLabel("Console");
         ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::BeginCombo("##engine", EngineName(new_project_engine_)))
+        if (ImGui::BeginCombo("##engine", ConsoleName(new_project_engine_)))
         {
             // The consoles of a new file: the engines that format::NewFile makes a file of. A file of the GBA comes
             // from a game's ROM.
             for (const format::EngineFacts& facts : format::kEngineFacts)
             {
-                if (facts.creatable && ImGui::Selectable(EngineName(facts.engine), facts.engine == new_project_engine_))
+                if (facts.creatable &&
+                    ImGui::Selectable(ConsoleName(facts.engine), facts.engine == new_project_engine_))
                 {
                     new_project_engine_ = facts.engine;
                 }

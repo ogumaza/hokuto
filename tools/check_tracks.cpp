@@ -67,7 +67,7 @@
 // model builds has to be the game's. Each file that the edits make then has to save in both forms and open again as it
 // was (tools/checked_archive.h).
 //
-// A GBA song's header lists its tracks (ntdlib/mp2k/layout.h). Songs that share a header play the same tracks, and one
+// A GBA song's header lists its tracks (agblib/mp2k/layout.h). Songs that share a header play the same tracks, and one
 // of them takes part. The others have to play as the edited song plays. A new track, a copy and a paste take the
 // header's next place. A removal can delete any track, and the tracks after it move up a number. The sound's other
 // tracks then have to play as their old numbers played. A pasted track comes from a song of the same voice group: a GBA
@@ -164,7 +164,7 @@ song::Sequence ComparableRead(const Archive& archive, const File& file, uint32_t
 
     const ntdlib::commands::Sequence& commands = *file.sequences[archive.places[number]->sequence];
     const std::vector<uint32_t> offsets = edit::Offsets(commands, edit::ConsoleOf(file));
-    const bool dungeon = archive.archive.Konami()->info.revision == ntdlib::konami::Revision::kDungeonDiceMonsters;
+    const bool dungeon = archive.archive.Konami()->info.revision == agblib::konami::Revision::kDungeonDiceMonsters;
     for (song::Track& track : kept.tracks)
     {
         const auto elsewhere = [dungeon, &track](const song::Note& note)
@@ -219,6 +219,12 @@ std::map<uint32_t, song::Sequence> ReadAll(const Archive& archive, const File& v
     }
 
     return songs;
+}
+
+std::set<std::pair<int, uint32_t>> CommandTicks(const Archive& archive, const File& file, uint32_t number,
+                                                const song::Sequence& read)
+{
+    return NoteCommandTicks(file, archive.places[number]->sequence, read);
 }
 
 } // namespace hokuto::tools::tracks

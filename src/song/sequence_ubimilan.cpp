@@ -2,11 +2,11 @@
 
 // The reader of the songs of Ubisoft Milan's GBA driver.
 
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/ubimilan/performance.h"
+#include "agblib/sequence_export/ubimilan/soundfont.h"
+#include "agblib/ubimilan/commands.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/ubimilan/performance.h"
-#include "ntdlib/sequence_export/ubimilan/soundfont.h"
-#include "ntdlib/ubimilan/commands.h"
 
 #include "song/sequence_parts.h"
 #include "song/ubimilan.h"
@@ -32,7 +32,7 @@ struct UbiMilanTracks
 {
     std::array<std::string, 16> track_names;
     std::vector<export_::NoteCommand> note_commands;
-    decltype(export_::ubimilan::Performance::loop) loop;
+    decltype(agblib::sequence_export::ubimilan::Performance::loop) loop;
     uint32_t end_tick = 0;
     std::vector<std::vector<export_::Stretch>> stretches;
     std::vector<std::vector<export_::MixChange>> mix;
@@ -40,7 +40,7 @@ struct UbiMilanTracks
 
 // The performance as ReadTrack reads it, with the stretches through the piece's first sequence, `commands` of resource
 // `first`.
-UbiMilanTracks UbiMilanTracksOf(const export_::ubimilan::Performance& performance,
+UbiMilanTracks UbiMilanTracksOf(const agblib::sequence_export::ubimilan::Performance& performance,
                                 const ntdlib::commands::Sequence& commands, int first)
 {
     UbiMilanTracks tracks;
@@ -78,7 +78,7 @@ UbiMilanTracks UbiMilanTracksOf(const export_::ubimilan::Performance& performanc
 class UbiMilanNoteCommands
 {
 public:
-    UbiMilanNoteCommands(const UbiMilanRom& rom, const export_::ubimilan::Performance& performance)
+    UbiMilanNoteCommands(const UbiMilanRom& rom, const agblib::sequence_export::ubimilan::Performance& performance)
         : rom_(rom), performance_(performance)
     {
     }
@@ -108,8 +108,8 @@ public:
             {
                 // The waits of the decoder contain the countdowns of the driver, and ntdlib's encoder returns the
                 // offsets of its items. The file's offsets (DriverRules::ItemOffsets) use waits in ticks instead.
-                found->second.first = ntdlib::ubimilan::DecodeResource(rom_.rom, rom_.info, resource).sequence;
-                const std::vector<uint32_t> offsets = ntdlib::ubimilan::EncodeSequence(found->second.first).offsets;
+                found->second.first = agblib::ubimilan::DecodeResource(rom_.rom, rom_.info, resource).sequence;
+                const std::vector<uint32_t> offsets = agblib::ubimilan::EncodeSequence(found->second.first).offsets;
                 for (std::size_t item = 0; item < offsets.size(); item++)
                 {
                     found->second.second.emplace(offsets[item], item);
@@ -133,7 +133,7 @@ public:
 
 private:
     const UbiMilanRom& rom_;
-    const export_::ubimilan::Performance& performance_;
+    const agblib::sequence_export::ubimilan::Performance& performance_;
     std::map<int, std::pair<ntdlib::commands::Sequence, std::map<uint32_t, std::size_t>>> decoded_;
 };
 
@@ -222,7 +222,7 @@ void SetUbiMilanMidiKeys(Track& track, bool noise_on_kit)
     for (Note& note : track.notes)
     {
         // A note of the noise keeps the drum's key as its MIDI key.
-        if (!(noise_on_kit && note.key <= ntdlib::ubimilan::kLastNoiseKey))
+        if (!(noise_on_kit && note.key <= agblib::ubimilan::kLastNoiseKey))
         {
             note.midi_key = note.key;
         }
@@ -231,8 +231,9 @@ void SetUbiMilanMidiKeys(Track& track, bool noise_on_kit)
 
 // Adds to `sequence` the tracks of `performance`, a performance of a piece of `rom` whose stretches `tracks` contains.
 // A channel of `named` shows without notes too.
-void AddUbiMilanTracks(Sequence& sequence, const UbiMilanRom& rom, const export_::ubimilan::Performance& performance,
-                       const UbiMilanTracks& tracks, const std::set<int>& named)
+void AddUbiMilanTracks(Sequence& sequence, const UbiMilanRom& rom,
+                       const agblib::sequence_export::ubimilan::Performance& performance, const UbiMilanTracks& tracks,
+                       const std::set<int>& named)
 {
     const auto bank_name = [](uint32_t)
     {
@@ -250,7 +251,7 @@ void AddUbiMilanTracks(Sequence& sequence, const UbiMilanRom& rom, const export_
     std::vector<std::vector<TrackEvent>> events(performance.tracks.begin(), performance.tracks.end());
     for (std::size_t i = 0; i < events.size(); i++)
     {
-        if (i >= static_cast<std::size_t>(ntdlib::ubimilan::kPsgChannels) && !(noise && i == kNoiseTrack))
+        if (i >= static_cast<std::size_t>(agblib::ubimilan::kPsgChannels) && !(noise && i == kNoiseTrack))
         {
             continue;
         }
@@ -276,7 +277,7 @@ void AddUbiMilanTracks(Sequence& sequence, const UbiMilanRom& rom, const export_
         }
 
         Track track = ReadTrack(static_cast<int>(i), events[i], tracks, UbiMilanPreset, bank_name);
-        const bool kit = i == static_cast<std::size_t>(ntdlib::ubimilan::kKitChannel);
+        const bool kit = i == static_cast<std::size_t>(agblib::ubimilan::kKitChannel);
         if (kit && !noise_notes.empty())
         {
             AddNoiseNotes(track, noise_notes);
@@ -288,9 +289,9 @@ void AddUbiMilanTracks(Sequence& sequence, const UbiMilanRom& rom, const export_
         }
 
         // Only channels 0 to 2 and channel 9 sound. ChannelName names only those.
-        if (i < static_cast<std::size_t>(ntdlib::ubimilan::kPsgChannels) || i == ntdlib::ubimilan::kKitChannel)
+        if (i < static_cast<std::size_t>(agblib::ubimilan::kPsgChannels) || i == agblib::ubimilan::kKitChannel)
         {
-            track.bank = export_::ubimilan::ChannelName(static_cast<int>(i));
+            track.bank = agblib::sequence_export::ubimilan::ChannelName(static_cast<int>(i));
         }
 
         ClipToLoop(sequence, track);
@@ -304,19 +305,19 @@ void AddUbiMilanTracks(Sequence& sequence, const UbiMilanRom& rom, const export_
 Sequence ReadSequence(const UbiMilanRom& rom, uint32_t sound)
 {
     const std::string name = rom.SoundName(sound);
-    ntdlib::ubimilan::MusicPiece piece;
-    if (!ntdlib::ubimilan::ReadMusic(rom.rom, rom.info, static_cast<int>(sound), piece) || piece.sequences.empty())
+    agblib::ubimilan::MusicPiece piece;
+    if (!agblib::ubimilan::ReadMusic(rom.rom, rom.info, static_cast<int>(sound), piece) || piece.sequences.empty())
     {
         throw std::runtime_error("The ROM has no piece " + std::to_string(sound) + ".");
     }
 
     // The performer plays one pass of the loop.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     try
     {
-        const export_::ubimilan::Performance performance =
-            export_::ubimilan::PerformSong(rom.rom, rom.info, static_cast<int>(sound), settings);
+        const agblib::sequence_export::ubimilan::Performance performance =
+            agblib::sequence_export::ubimilan::PerformSong(rom.rom, rom.info, static_cast<int>(sound), settings);
         if (performance.sequences.empty())
         {
             throw std::invalid_argument(performance.warnings.empty() ? "its list of sequences can't be read"
@@ -333,7 +334,7 @@ Sequence ReadSequence(const UbiMilanRom& rom, uint32_t sound)
         // command a frame later still. The stretch then starts a tick after the frame where the track started the
         // sequence.
         const int first = performance.sequences.front().resource;
-        const ntdlib::commands::Sequence commands = ntdlib::ubimilan::DecodeResource(rom.rom, rom.info, first).sequence;
+        const ntdlib::commands::Sequence commands = agblib::ubimilan::DecodeResource(rom.rom, rom.info, first).sequence;
         const UbiMilanTracks tracks = UbiMilanTracksOf(performance, commands, first);
 
         // The channels that the first sequence's commands name show without notes too.

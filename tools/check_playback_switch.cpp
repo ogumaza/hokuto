@@ -14,13 +14,20 @@ static_assert(kFrameMs.denominator == 1);
 
 constexpr double kFramesPerMinute = 60.0 * kFramesPerSecond;
 
-// Runs `frames` frames of sequence sound `sound` on the model with `options`, with the variables' starting values
+// Runs `frames` frames of sequence sound `sound` on the model with `effects`, with the variables' starting values
 // `variables` and the game's `changes`. A channel plays a new note when it's new in its place, or when its keys change.
 ModelRun RunModel(const sar::SoundArchive& archive, uint32_t sound, std::size_t frames,
-                  const atk::EngineOptions& options, const song::StartValues& variables, const song::Changes& changes)
+                  const SwitchEffects& effects, const song::StartValues& variables, const song::Changes& changes)
 {
     ModelRun run;
-    atk::ArchiveModel model(archive, options);
+    atk::ArchiveModel model(archive, effects.options);
+    for (std::size_t bus = 0; bus < effects.renderer.size(); bus++)
+    {
+        for (const std::shared_ptr<const atk::EffectBase>& effect : effects.renderer[bus])
+        {
+            model.engine->AppendEffect(static_cast<int>(bus), effect->Clone());
+        }
+    }
     auto* player = model.engine->StartSequence(sound);
     if (player == nullptr)
     {
@@ -57,36 +64,7 @@ ModelRun RunModel(const sar::SoundArchive& archive, uint32_t sound, std::size_t 
         run.samples.insert(run.samples.end(), output.begin(), output.end());
         const std::span<const float> floats = model.renderer.DeviceOutputFloat();
         run.floats.insert(run.floats.end(), floats.begin(), floats.end());
-
-        // Each channel's track, from the tracks' lists of channels.
-        const auto& channels = model.engine->Channels();
-        std::map<int, int> track_of;
-        for (int t = 0; t < kTracks; t++)
-        {
-            const auto* track = player->Track(t);
-            for (int place = track != nullptr ? track->ChannelList() : ntdlib::nwsnd::kNoChannel;
-                 place != ntdlib::nwsnd::kNoChannel; place = channels.At(place).next_in_track)
-            {
-                track_of[place] = t;
-            }
-        }
-
-        std::map<int, std::pair<int, int>> current;
-        std::vector<NoteStart> started;
-        for (const int place : channels.InUse())
-        {
-            const auto& channel = channels.At(place);
-            const std::pair<int, int> keys = {channel.key, channel.original_key};
-            current[place] = keys;
-            const auto old = previous.find(place);
-            if (old == previous.end() || old->second != keys)
-            {
-                const auto track = track_of.find(place);
-                started.push_back({track != track_of.end() ? track->second : -1, channel.key, old != previous.end()});
-            }
-        }
-        run.notes.push_back(std::move(started));
-        previous = std::move(current);
+        run.notes.push_back(NotesStarted(*player, model.engine->Channels(), previous));
     }
 
     return run;
@@ -104,25 +82,32 @@ std::size_t FirstFrameAfter(const ModelRun& run, uint64_t tick)
     return frame;
 }
 
-// Whether frame `frame` of `run` came out silent.
+// Whether frame `frame` of `run` came out silent: within ±`run.silence`.
 bool Silent(const ModelRun& run, std::size_t frame)
 {
     const std::span<const int16_t> samples =
         std::span<const int16_t>(run.samples).subspan(frame * kFrameSamples * 2, kFrameSamples * 2);
-    return std::all_of(samples.begin(), samples.end(), [](int16_t sample) { return sample == 0; });
+    return std::all_of(samples.begin(), samples.end(),
+                       [&run](int16_t sample) { return std::abs(static_cast<int>(sample)) <= run.silence; });
 }
 
-// The first frame of `run` before which nothing played or sounded and after a frame that came out silent, or the number
-// of frames. From there on, the model's output is silent.
+// The first frame of `run` before which nothing played or sounded, after a frame that came out silent, or the number
+// of frames. With effects that ring, the frames of their ring before it came out silent too. From there on, the
+// model's output is silent.
 std::size_t FadedFrame(const ModelRun& run)
 {
-    std::size_t frame = 0;
-    while (frame < run.busy.size() && (run.busy[frame] || (frame > 0 && !Silent(run, frame - 1))))
+    const auto quiet_frames = static_cast<std::size_t>(std::max(run.ring_frames, 1));
+    std::size_t quiet = 0;
+    for (std::size_t frame = 0; frame < run.busy.size(); frame++)
     {
-        frame++;
+        if (!run.busy[frame] && (frame == 0 || quiet >= quiet_frames))
+        {
+            return frame;
+        }
+        quiet = Silent(run, frame) ? quiet + 1 : 0;
     }
 
-    return frame;
+    return run.busy.size();
 }
 
 // A clock for the playback of `sequence`. A looped sequence goes round its loop. The game plays it that way.
@@ -141,21 +126,20 @@ std::shared_ptr<song::PlaybackClock> ClockFor(const song::Sequence& sequence)
 
 void Render(song::SequencePlayer& player, const song::PlaybackClock& clock, std::size_t frames, PlayerRun& run)
 {
-    const std::size_t total = run.samples.size() / 2 + frames * kFrameSamples;
-    std::size_t done = run.samples.size() / 2;
-    run.samples.resize(total * 2);
-    while (done < total && !run.ended)
+    if (run.ended)
     {
-        const std::size_t block = std::min(kBlock, total - done);
-        const std::size_t rendered = player.Render(run.samples.data() + done * 2, block);
-        done += rendered;
-        run.ended = rendered < block;
-        while (run.marks.size() * kFrameSamples < done)
+        return;
+    }
+
+    // The clock's position at the start of each frame that a block has reached.
+    const auto mark = [&clock, &run]()
+    {
+        while (run.marks.size() * kFrameSamples < run.samples.size() / 2)
         {
             run.marks.push_back(clock.PositionAt(run.marks.size() * kFrameSamples));
         }
-    }
-    run.samples.resize(done * 2);
+    };
+    run.ended = !playback_steps::Render(player, frames, kFrameSamples, run.samples, mark);
 }
 
 namespace
@@ -183,16 +167,9 @@ PlayerRun RunSwitch(const std::shared_ptr<const sar::SoundArchive>& archive,
     song::SequencePlayer player(std::make_shared<song::SequenceModel>(archive, sequence), 0, clock);
     PlayerRun run;
     Render(player, *clock, before, run);
-
-    song::ModelCatchUp catch_up;
-    catch_up.Start(std::make_shared<song::SequenceModel>(archive, sequence,
-                                                         song::ModelOptions{.effects = effects, .mixing = mixing}),
-                   clock);
-    while (!catch_up.Finished())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    clock->Offer(catch_up.Take());
+    playback_steps::CatchUp(std::make_shared<song::SequenceModel>(
+                                archive, sequence, song::ModelOptions{.effects = effects, .mixing = mixing}),
+                            clock);
     Render(player, *clock, frames - before, run);
 
     return run;
@@ -301,7 +278,7 @@ std::size_t WrongMarks(const PlayerRun& run, const ModelRun& model, std::size_t 
 // The problems of `shared_model`'s output from the start, against `model`, the model's run from frame `first`, for
 // `frames` frames.
 std::string CheckFromStart(const std::shared_ptr<song::SequenceModel>& shared_model, const ModelRun& model,
-                           const song::Sequence& sequence, std::size_t first, std::size_t frames)
+                           const song::Sequence& sequence, std::size_t first, std::size_t frames, Totals& totals)
 {
     std::string problems;
     const PlayerRun run = RunPlayer(shared_model, 0, frames);
@@ -326,6 +303,26 @@ std::string CheckFromStart(const std::shared_ptr<song::SequenceModel>& shared_mo
     if (run.ended && first + run.samples.size() / (kFrameSamples * 2) < FadedFrame(model))
     {
         problems += " the output ended before the model's faded.";
+    }
+
+    // With effects that ring, the model's output after the player's end stays within ±8. A delay can leave samples of
+    // ±1 for ever.
+    const std::size_t end = (first + run.samples.size() / (kFrameSamples * 2)) * kFrameSamples * 2;
+    if (run.ended && model.ring_frames > 0 && end < model.samples.size())
+    {
+        const auto louder_than = [&](int level)
+        {
+            return std::any_of(model.samples.begin() + static_cast<std::ptrdiff_t>(end), model.samples.end(),
+                               [level](int16_t sample) { return std::abs(static_cast<int>(sample)) > level; });
+        };
+        if (louder_than(model.silence))
+        {
+            problems += " the model's output after the end is louder than ±" + std::to_string(model.silence) + ".";
+        }
+        else if (louder_than(0))
+        {
+            totals.quiet_tails++;
+        }
     }
 
     return problems;
@@ -413,10 +410,11 @@ std::string CheckSwitch(const std::shared_ptr<const sar::SoundArchive>& archive,
 } // namespace
 
 void CheckSequence(const sar::SoundArchive& strict, const std::shared_ptr<const sar::SoundArchive>& archive,
-                   uint32_t sound, std::size_t frames, const atk::EngineOptions& options,
-                   const song::AuxEffects& effects, const song::StartValues& values, const song::Changes& changes,
-                   Totals& totals)
+                   uint32_t sound, std::size_t frames, const SwitchEffects& switch_effects,
+                   const song::StartValues& values, const song::Changes& changes, Totals& totals)
 {
+    const atk::EngineOptions& options = switch_effects.options;
+    const song::AuxEffects& effects = switch_effects.effects;
     const song::Mixing mixing = options.enhanced ? song::Mixing::kEnhanced : song::Mixing::kStrict;
     const std::string name = strict.Sounds()[sound].name + ValuesText(values) + ChangesText(changes);
     std::shared_ptr<const song::Sequence> sequence;
@@ -433,12 +431,14 @@ void CheckSequence(const sar::SoundArchive& strict, const std::shared_ptr<const 
 
     std::string problems;
     const std::size_t model_frames = frames + 2 * kFramesPerSecond;
-    const ModelRun model = RunModel(strict, sound, model_frames, options, values, changes);
+    ModelRun model = RunModel(strict, sound, model_frames, switch_effects, values, changes);
+    model.ring_frames = song::SwitchRingingFrames(effects);
+    model.silence = model.ring_frames > 0 ? xsflib::rip::kSilenceLevel : 0;
     if (model.after.empty())
     {
         problems += " the model doesn't start it.";
     }
-    if (!changes.empty() && RunModel(strict, sound, model_frames, options, values, {}).samples != model.samples)
+    if (!changes.empty() && RunModel(strict, sound, model_frames, switch_effects, values, {}).samples != model.samples)
     {
         totals.affected++;
     }
@@ -452,7 +452,7 @@ void CheckSequence(const sar::SoundArchive& strict, const std::shared_ptr<const 
     const std::size_t first = FirstFrameAfter(model, 0);
     if (!model.after.empty())
     {
-        problems += CheckFromStart(shared_model, model, *sequence, first, frames);
+        problems += CheckFromStart(shared_model, model, *sequence, first, frames, totals);
     }
 
     // From a seek. The comparison stops at the end of the model's run. Nothing plays from a seek past the point where

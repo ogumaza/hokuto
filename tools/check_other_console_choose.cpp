@@ -104,60 +104,19 @@ std::vector<uint32_t> Chosen(const format::File& file, std::size_t most, const s
     return Spread(sequences, most, !names.empty());
 }
 
-std::vector<uint32_t> GbaChosen(const song::GbaRom& rom, std::size_t most, const std::set<std::string>& names)
+std::vector<uint32_t> Chosen(const std::vector<uint32_t>& sounds, const std::function<std::string(uint32_t)>& name_of,
+                             std::size_t most, const std::set<std::string>& names)
 {
-    std::vector<uint32_t> songs;
-    for (const int song : song::GbaSongs(rom))
+    std::vector<uint32_t> named;
+    for (const uint32_t sound : sounds)
     {
-        if (names.empty() || names.contains(song::GbaSongName(rom, song)))
+        if (names.empty() || names.contains(name_of(sound)))
         {
-            songs.push_back(static_cast<uint32_t>(song));
+            named.push_back(sound);
         }
     }
 
-    return Spread(songs, most, !names.empty());
-}
-
-std::vector<uint32_t> DriverChosen(const song::DriverRom& rom, std::size_t most, const std::set<std::string>& names)
-{
-    std::vector<uint32_t> sounds;
-    for (const uint32_t sound : rom.Sounds())
-    {
-        if (names.empty() || names.contains(rom.SoundName(sound)))
-        {
-            sounds.push_back(sound);
-        }
-    }
-
-    return Spread(sounds, most, !names.empty());
-}
-
-std::vector<uint32_t> DsChosen(const song::DsArchive& archive, std::size_t most, const std::set<std::string>& names)
-{
-    std::vector<uint32_t> sounds;
-    for (const uint32_t sound : song::DsSounds(archive))
-    {
-        if (names.empty() || names.contains(song::DsSoundName(archive, sound)))
-        {
-            sounds.push_back(sound);
-        }
-    }
-
-    return Spread(sounds, most, !names.empty());
-}
-
-std::vector<uint32_t> DseChosen(const song::DseSet& set, std::size_t most, const std::set<std::string>& names)
-{
-    std::vector<uint32_t> sounds;
-    for (const uint32_t sound : song::DseSounds(set))
-    {
-        if (names.empty() || names.contains(song::DseSoundName(set, sound)))
-        {
-            sounds.push_back(sound);
-        }
-    }
-
-    return Spread(sounds, most, !names.empty());
+    return Spread(named, most, !names.empty());
 }
 
 } // namespace hokuto::tools::other_console

@@ -2,6 +2,8 @@
 
 // hokuto_check_instruments: the commands that an edit changes, and the tracks that take them.
 
+#include "ntdlib/dse/formats.h"
+
 #include "check_instruments.h"
 
 namespace hokuto::tools::instruments
@@ -169,7 +171,7 @@ std::set<uint32_t> ChangedItems(const ntdlib::commands::Sequence& before, const 
 }
 
 std::string OtherChange(const ntdlib::commands::Sequence& before, const ntdlib::commands::Sequence& after,
-                        const edit::Edited& edited, const edit::Program& to)
+                        const edit::Edited& edited, const edit::Program& to, bool dse)
 {
     using ntdlib::commands::Kind;
     std::vector<bool> kept(after.items.size(), false);
@@ -219,7 +221,11 @@ std::string OtherChange(const ntdlib::commands::Sequence& before, const ntdlib::
         const ntdlib::commands::Command& command = after.items[item];
         const bool setter = (command.kind == Kind::kProgram || command.kind == Kind::kBankSelect) &&
                             command.value.value == value_of(command.kind);
-        if (!kept[item] && !setter && command.kind != Kind::kJump)
+        // A DSE track selects a bank by its id, with a command that the common form has no kind for. The edit puts
+        // one in before the notes, and one after them back to their old bank.
+        const bool dse_bank = dse && command.kind == Kind::kOther && command.encoding.opcode == ntdlib::dse::kBank &&
+                              command.bytes.size() == 2;
+        if (!kept[item] && !setter && !dse_bank && command.kind != Kind::kJump)
         {
             return "item " + std::to_string(item) + " is new and neither sets the instrument nor jumps";
         }

@@ -21,10 +21,10 @@
 #include <variant>
 #include <vector>
 
+#include "agblib/mp2k/commands.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/commands.h"
-#include "ntdlib/mp2k/commands.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/nwsnd/commands.h"
 #include "ntdlib/nwsnd/units.h"

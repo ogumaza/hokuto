@@ -2,7 +2,7 @@
 
 // Tests Hokuto's path for the GBA driver of Rare: the import and the round trip, the tunes that the arrangement shows,
 // playback, the edits of notes, the mix, the refused edits of tracks, and the exports. ntdlib's test cartridge of the
-// driver (ntdlib/testing/rare_cart.h) contains no game data. It contains the code patterns that ntdlib's detection
+// driver (agblib/testing/rare_cart.h) contains no game data. It contains the code patterns that ntdlib's detection
 // reads, the driver's tables, a sample, a program map and the tunes below.
 //
 // The expected ticks, keys, velocities and bytes come from the tracks' bytes below, worked out by hand. In the format
@@ -10,7 +10,7 @@
 // command, the channel, the key and a byte that the driver ignores. A delay of 1 to 3 bytes follows its command. A note
 // sounds from its note-on to the next note-off of its key on its channel.
 //
-// ntdlib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
+// agblib's ArchivePlayer, run directly, makes the reference output. The model's output has to match it sample for
 // sample, from the start and after a seek, in both mixing modes. So does the output with a muted track. The MIDI file
 // and the SoundFont have to equal those of ntdlib's converter, run directly.
 
@@ -27,13 +27,13 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/rare/archive_player.h"
-#include "ntdlib/rare/song.h"
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/agb/gba.h"
+#include "agblib/rare/archive_player.h"
+#include "agblib/rare/song.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/rare/convert.h"
+#include "agblib/testing/rare_cart.h"
 #include "ntdlib/sequence_export/convert.h"
-#include "ntdlib/sequence_export/rare/convert.h"
-#include "ntdlib/testing/rare_cart.h"
 #include "xsflib/testing/check.h"
 
 #include "driver_test_support.h"
@@ -55,8 +55,8 @@ namespace
 namespace format = hokuto::format;
 namespace song = hokuto::song;
 namespace edit = hokuto::edit;
-namespace rare = ntdlib::rare;
-namespace cart = ntdlib::testing::rare_cart;
+namespace rare = agblib::rare;
+namespace cart = agblib::testing::rare_cart;
 using format::File;
 using hokuto::testing::ClockDrift;
 using hokuto::testing::ClockRun;
@@ -165,7 +165,7 @@ void TestImport()
     }
 
     cart::Cart without(rare::Format::kChannelByte, 6, false);
-    const ntdlib::agb::Rom empty = without.ToRom();
+    const agblib::agb::Rom empty = without.ToRom();
     XSFLIB_CHECK(format::DriverOfRom(RomBytes(empty)) == nullptr);
 
     // A delay of 240 ticks in 2 bytes, where 1 would hold it, keeps its bytes in both forms.
@@ -488,10 +488,10 @@ void TestExports()
     const std::shared_ptr<const RareRom> rom = song::LoadRareRom(Cart());
     for (const uint32_t sound : {0u, 1u})
     {
-        ntdlib::sequence_export::agb::ConvertSettings settings;
+        agblib::sequence_export::agb::ConvertSettings settings;
         settings.program = "Hokuto";
-        const ntdlib::sequence_export::rare::SongFiles expected =
-            ntdlib::sequence_export::rare::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
+        const agblib::sequence_export::rare::SongFiles expected =
+            agblib::sequence_export::rare::ConvertSongFiles(rom->rom, rom->info, static_cast<int>(sound), settings);
         const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
         XSFLIB_CHECK(expected.report.ok);
         XSFLIB_CHECK(conversion.midi == expected.midi);

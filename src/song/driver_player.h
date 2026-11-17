@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The part of a GBA driver's player (DriverPlayer) that passes straight to ntdlib's ArchivePlayer of the driver. Each
+// The part of a GBA driver's player (DriverPlayer) that passes straight to agblib's ArchivePlayer of the driver. Each
 // driver's player derives from it and adds how a sound starts, the tracks, the tick and the end.
 
 #pragma once
@@ -16,7 +16,7 @@
 namespace hokuto::song
 {
 
-// A DriverPlayer around `Player`, one of ntdlib's ArchivePlayer classes.
+// A DriverPlayer around `Player`, one of agblib's ArchivePlayer classes.
 template <typename Player>
 class ArchiveDriverPlayer : public DriverPlayer
 {

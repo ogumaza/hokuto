@@ -181,4 +181,9 @@ std::string SystemPath(const std::string& path)
     return Narrowed(full.size() >= MAX_PATH ? Prefixed(full) : full);
 }
 
+bool ShowSystemBox(const SDL_MessageBoxData& box, int* chosen)
+{
+    return SDL_ShowMessageBox(&box, chosen);
+}
+
 } // namespace hokuto::app

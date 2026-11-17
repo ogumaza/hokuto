@@ -228,7 +228,8 @@ namespace
 {
 
 // `expected`, the bytes of the set, with `values` for wave `wave` of the bank whose file is `bank`, by the format's
-// rules. Each table gets the rate and the loop, and each split of the wave in that file moves its tuning.
+// rules. Each table with samples in the slot gets the rate and the loop, and each split of the wave in that file moves
+// its tuning.
 void WriteWave(const Game& game, uint32_t main_bank, uint32_t wave, const edit::DseWaveValues& values,
                const edit::DseWaveValues& old, std::vector<uint8_t>& expected)
 {
@@ -250,7 +251,13 @@ void WriteWave(const Game& game, uint32_t main_bank, uint32_t wave, const edit::
             continue;
         }
 
+        // A square wave or noise in the slot of a bank that shares the main bank stays as it is.
         const std::span<const uint8_t> info = file.subspan(found->second);
+        if (info[kWaveFormat] > kImaAdpcm)
+        {
+            continue;
+        }
+
         const std::span<uint8_t> out = std::span(expected).subspan(at + found->second);
         const uint32_t rate = Get32(info, kWaveRate);
         if (values.rate != old.rate)

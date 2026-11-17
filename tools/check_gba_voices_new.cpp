@@ -90,7 +90,8 @@ void NewKinds(const Game& game, const std::map<uint32_t, Place>& places, Totals&
         mp2k::SongHeader header;
         mp2k::Voice entry;
         if (mp2k::ReadSong(game.rom->rom, game.rom->info, place.song, header) &&
-            mp2k::ReadVoice(game.rom->rom, header.voices + 12 * place.program, entry) && entry.IsSplit() &&
+            mp2k::ReadVoice(game.rom->rom, header.voices + mp2k::kVoiceSize * place.program, entry) &&
+            entry.IsSplit() &&
             mp2k::SplitVoice(game.rom->rom, entry, place.key) != mp2k::SplitVoice(rom->rom, entry, place.key))
         {
             totals.kinds_other_rows++;
@@ -237,7 +238,8 @@ void CheckMadeSamples(const Game& game, const std::vector<Made>& made,
         mp2k::SongHeader header;
         mp2k::Voice entry;
         if (mp2k::ReadSong(game.rom->rom, game.rom->info, one.place->song, header) &&
-            mp2k::ReadVoice(game.rom->rom, header.voices + 12 * one.place->program, entry) && entry.IsSplit() &&
+            mp2k::ReadVoice(game.rom->rom, header.voices + mp2k::kVoiceSize * one.place->program, entry) &&
+            entry.IsSplit() &&
             mp2k::SplitVoice(game.rom->rom, entry, one.place->key) !=
                 mp2k::SplitVoice(built.rom, entry, one.place->key))
         {
@@ -541,13 +543,13 @@ void CheckExportedBytes(const Game& game, const hokuto::song::GbaVoiceGroup& gro
     }
     for (std::size_t i = 0; i < std::min(exported.size(), game.bytes.size()); i++)
     {
-        const auto address = static_cast<uint32_t>(i + ntdlib::agb::kRomBase);
+        const auto address = static_cast<uint32_t>(i + agblib::agb::kRomBase);
         const bool in_table = address >= version.group && address < version.group + 128 * 12 + 4;
         if (exported[i] != game.bytes[i] && !in_table && !fields.contains(address))
         {
             NewVoicesFail(game, name, totals,
-                          "the byte at " + ntdlib::agb::Hex(address) + " differs. The table is at " +
-                              ntdlib::agb::Hex(version.group) + ".");
+                          "the byte at " + agblib::agb::Hex(address) + " differs. The table is at " +
+                              agblib::agb::Hex(version.group) + ".");
             break;
         }
     }
@@ -620,8 +622,8 @@ void CheckListedAndDeleted(const Game& game, const std::string& name, const hoku
             NewVoicesFail(game, name, totals, "the Bank Editor doesn't list program " + std::to_string(program));
         }
     }
-    const std::shared_ptr<const hokuto::song::GbaRom> cleared = hokuto::song::LoadGbaRom(
-        hokuto::format::ExportArchive(hokuto::edit::WithoutGbaVoice(version.file, version.group + 12 * free[0])));
+    const std::shared_ptr<const hokuto::song::GbaRom> cleared = hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(
+        hokuto::edit::WithoutGbaVoice(version.file, version.group + mp2k::kVoiceSize * free[0])));
     const hokuto::app::GbaBankView after = hokuto::app::MakeGbaBankView(*cleared, version.group);
     if (std::ranges::find(after.free_programs, free[0]) == after.free_programs.end())
     {
@@ -662,7 +664,8 @@ void NewVoices(const Game& game, const std::vector<uint32_t>& samples, Totals& t
         }
         mp2k::Voice source;
         const int source_program = group.programs.front();
-        if (!mp2k::ReadVoice(game.rom->rom, group.address + 12 * static_cast<uint32_t>(source_program), source))
+        if (!mp2k::ReadVoice(game.rom->rom, group.address + mp2k::kVoiceSize * static_cast<uint32_t>(source_program),
+                             source))
         {
             continue;
         }

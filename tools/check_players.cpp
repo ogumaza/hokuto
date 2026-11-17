@@ -304,12 +304,8 @@ WaveSoundFacts FactsOf(const rsar::SoundArchive& archive, uint32_t sound)
     return facts;
 }
 
-// Plays a wave sound of `facts` that plays `pcm` at `volume`, and compares the output with the wave. `run_for` runs the
-// console's model with the sound for the seconds that it takes. The model's output runs at `rate`. `archive` names the
-// archive in the lines that the check prints. With `detail`, the comparison prints the ratios in each half second.
-template <class RunFor>
-void CheckWaveSound(const std::string& archive, const WaveSoundFacts& facts, const sar::Pcm& pcm, uint8_t volume,
-                    double rate, const RunFor& run_for, bool detail, WaveSoundTotals& totals)
+// Counts what `facts` says of a wave sound in `totals`.
+void CountFacts(const WaveSoundFacts& facts, WaveSoundTotals& totals)
 {
     totals.export_wave += facts.export_wave ? 1 : 0;
     totals.export_pitch += !facts.export_wave && facts.export_pitch ? 1 : 0;
@@ -319,6 +315,41 @@ void CheckWaveSound(const std::string& archive, const WaveSoundFacts& facts, con
     totals.shaped += facts.shaped ? 1 : 0;
     totals.panned += facts.panned ? 1 : 0;
     totals.sent += facts.sent ? 1 : 0;
+}
+
+// Adds the gains of `comparison` over a wave sound's `volume` to `totals`: of a mono wave at the centre, and of each
+// channel of a stereo wave, from `channels` of `pcm`. Either pan mode keeps a stereo wave's channels on their sides
+// there.
+void AddWaveGains(const Comparison& comparison, const sar::Pcm& pcm, const std::vector<std::size_t>& channels,
+                  uint8_t volume, WaveSoundTotals& totals)
+{
+    const double share = volume / 127.0;
+    if (comparison.low_share < kLeastLowShare || (comparison.gains.size() == 2 && Alike(pcm, channels[0], channels[1])))
+    {
+        totals.without_gains++;
+    }
+    else if (comparison.gains.size() == 1)
+    {
+        totals.mono.Add(comparison.gains[0][0] / share);
+        totals.mono.Add(comparison.gains[0][1] / share);
+    }
+    else
+    {
+        totals.stereo_direct.Add(comparison.gains[0][0] / share);
+        totals.stereo_direct.Add(comparison.gains[1][1] / share);
+        totals.stereo_cross.Add(comparison.gains[0][1] / share);
+        totals.stereo_cross.Add(comparison.gains[1][0] / share);
+    }
+}
+
+// Plays a wave sound of `facts` that plays `pcm` at `volume`, and compares the output with the wave. `run_for` runs the
+// console's model with the sound for the seconds that it takes. The model's output runs at `rate`. `archive` names the
+// archive in the lines that the check prints. With `detail`, the comparison prints the ratios in each half second.
+template <class RunFor>
+void CheckWaveSound(const std::string& archive, const WaveSoundFacts& facts, const sar::Pcm& pcm, uint8_t volume,
+                    double rate, const RunFor& run_for, bool detail, WaveSoundTotals& totals)
+{
+    CountFacts(facts, totals);
 
     // The console reads the wave at its rate times the sound's pitch.
     const double step = static_cast<double>(pcm.sample_rate) * static_cast<double>(facts.pitch) / rate;
@@ -400,28 +431,10 @@ void CheckWaveSound(const std::string& archive, const WaveSoundFacts& facts, con
         totals.failed += counted_apart ? 0 : 1;
     }
 
-    // The gains over the sound's volume, with the default pan curve: of a mono wave at the centre, and of each channel
-    // of a stereo wave. Either pan mode keeps a stereo wave's channels on their sides there.
+    // The gains over the sound's volume, with the default pan curve.
     if (!facts.panned && !facts.sent && !counted_apart && volume > 0)
     {
-        const double share = volume / 127.0;
-        if (comparison.low_share < kLeastLowShare ||
-            (comparison.gains.size() == 2 && Alike(pcm, channels[0], channels[1])))
-        {
-            totals.without_gains++;
-        }
-        else if (comparison.gains.size() == 1)
-        {
-            totals.mono.Add(comparison.gains[0][0] / share);
-            totals.mono.Add(comparison.gains[0][1] / share);
-        }
-        else
-        {
-            totals.stereo_direct.Add(comparison.gains[0][0] / share);
-            totals.stereo_direct.Add(comparison.gains[1][1] / share);
-            totals.stereo_cross.Add(comparison.gains[0][1] / share);
-            totals.stereo_cross.Add(comparison.gains[1][0] / share);
-        }
+        AddWaveGains(comparison, pcm, channels, volume, totals);
     }
 }
 
@@ -642,6 +655,33 @@ void CheckWiiStreamSound(const std::shared_ptr<const rsar::SoundArchive>& archiv
                      true, kRate, run_for, !only.empty(), stream_totals);
 }
 
+// Checks wave sound `sound` of `archive`, with the entry `info`, against the decoding of its wave. `run_model` runs the
+// console's model. The model mixes at `rate`. `name` is the archive's name, and `only` the sound that the run checks,
+// if it checks one. Counts the sound in `waves`.
+template <class Archive, class Info, class RunModelFn>
+void CheckWave(const Archive& archive, uint32_t sound, const Info& info, const std::string& name,
+               const std::string& only, double rate, const RunModelFn& run_model, WaveSoundTotals& waves)
+{
+    waves.wave_sounds++;
+    WaveSoundFacts facts;
+    sar::Pcm pcm;
+    try
+    {
+        facts = FactsOf(archive, sound);
+        pcm = hokuto::song::DecodeItemWave(archive, facts.wave_archive, facts.wave);
+    }
+    catch (const std::exception&)
+    {
+        waves.missing++;
+        return;
+    }
+    const auto run_for = [&](double seconds)
+    {
+        return run_model(seconds, [sound](auto& engine) { return engine.StartWaveSound(sound) != nullptr; });
+    };
+    CheckWaveSound(name, facts, pcm, info.volume, rate, run_for, !only.empty(), waves);
+}
+
 // Checks the wave sounds and the stream sounds of the Wii's archive at `path`, in `bytes`, or only the sound `only`
 // (see the top of the file).
 int CheckWii(const std::filesystem::path& path, std::vector<uint8_t> bytes, const std::string& only)
@@ -664,6 +704,13 @@ int CheckWii(const std::filesystem::path& path, std::vector<uint8_t> bytes, cons
         return 2;
     }
 
+    // Runs the model for `seconds` at most with the sound that `start` starts.
+    const auto run_model = [&](double seconds, const auto& start)
+    {
+        const auto limit = static_cast<std::size_t>(seconds * kRate / kAxFrameSamples) + 8;
+        return RunWiiModel(*archive, build, limit, start);
+    };
+
     WaveSoundTotals totals;
     StreamTotals stream_totals;
     for (uint32_t sound = 0; sound < archive->Sounds().size(); sound++)
@@ -678,31 +725,10 @@ int CheckWii(const std::filesystem::path& path, std::vector<uint8_t> bytes, cons
             CheckWiiStreamSound(archive, build, streams, sound, info, name, only, stream_totals);
             continue;
         }
-        if (info.type != rsar::SoundType::kWaveSound)
+        if (info.type == rsar::SoundType::kWaveSound)
         {
-            continue;
+            CheckWave(*archive, sound, info, name, only, kRate, run_model, totals);
         }
-
-        totals.wave_sounds++;
-        WaveSoundFacts facts;
-        sar::Pcm pcm;
-        try
-        {
-            facts = FactsOf(*archive, sound);
-            pcm = hokuto::song::DecodeItemWave(*archive, facts.wave_archive, facts.wave);
-        }
-        catch (const std::exception&)
-        {
-            totals.missing++;
-            continue;
-        }
-        const auto run_for = [&](double seconds)
-        {
-            const auto limit = static_cast<std::size_t>(seconds * kRate / kAxFrameSamples) + 8;
-            return RunWiiModel(*archive, build, limit,
-                               [sound](rvl::Engine& engine) { return engine.StartWaveSound(sound) != nullptr; });
-        };
-        CheckWaveSound(name, facts, pcm, info.volume, kRate, run_for, !only.empty(), totals);
     }
 
     const std::string build_text = BuildText(read);
@@ -727,7 +753,7 @@ namespace rvl = ntdlib::rvl::snd;
 namespace sar = ntdlib::sar;
 using hokuto::tools::IsWiiArchive;
 using hokuto::tools::players::CheckStreamSound;
-using hokuto::tools::players::CheckWaveSound;
+using hokuto::tools::players::CheckWave;
 using hokuto::tools::players::CheckWii;
 using hokuto::tools::players::FactsOf;
 using hokuto::tools::players::PlayedTrack;
@@ -811,33 +837,6 @@ void CheckStream(const std::shared_ptr<const sar::SoundArchive>& archive,
     CheckStreamSound(name, info.name, pcm, stream.sample_rate, info.volume,
                      ctr ? 1.0 : static_cast<double>(info.stream.pitch), played, most_channels,
                      ctr || info.pan_curve == 0, rate, run_for, !only.empty(), stream_totals);
-}
-
-// Checks wave sound `sound` of `archive`, with the entry `info`, against the decoding of its wave. `run_model` runs the
-// console's model. The model mixes at `rate`. `name` is the archive's name, and `only` the sound that the run checks, if it
-// checks one. Counts the sound in `waves`.
-template <class RunModelFn>
-void CheckWave(const sar::SoundArchive& archive, uint32_t sound, const sar::SoundInfo& info, const std::string& name,
-               const std::string& only, double rate, const RunModelFn& run_model, WaveSoundTotals& waves)
-{
-    waves.wave_sounds++;
-    WaveSoundFacts facts;
-    sar::Pcm pcm;
-    try
-    {
-        facts = FactsOf(archive, sound);
-        pcm = hokuto::song::DecodeItemWave(archive, facts.wave_archive, facts.wave);
-    }
-    catch (const std::exception&)
-    {
-        waves.missing++;
-        return;
-    }
-    const auto run_for = [&](double seconds)
-    {
-        return run_model(seconds, [sound](auto& engine) { return engine.StartWaveSound(sound) != nullptr; });
-    };
-    CheckWaveSound(name, facts, pcm, info.volume, rate, run_for, !only.empty(), waves);
 }
 
 } // namespace

@@ -18,8 +18,8 @@
 #include <thread>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
 
 #include "cart_bytes.h"
 #include "edit/bytecode.h"
@@ -172,7 +172,7 @@ ClockRun ClockDrift(const std::shared_ptr<const Rom>& rom, uint32_t sound, int f
         played++;
     }
 
-    const double frame_ms = ntdlib::agb::FrameSeconds(1.0) * 1000.0;
+    const double frame_ms = agblib::agb::FrameSeconds(1.0) * 1000.0;
     return {.drift = song::MsOfTick(sequence, player->Tick()) / frame_ms - played, .played = played};
 }
 
@@ -204,13 +204,7 @@ inline bool LoopsOver(const song::Sequence& sequence, uint32_t start, uint32_t e
 inline std::vector<std::optional<edit::SoundPlace>> PlacesOf(const format::File& file)
 {
     const std::shared_ptr<const song::DriverRom> rom = song::LoadDriverRom(file.engine, format::ExportArchive(file));
-    std::vector<std::optional<uint32_t>> sequences(rom->SoundCount());
-    for (const uint32_t sound : rom->Sounds())
-    {
-        sequences[sound] = format::SequenceNamedAt(file, *rom->FieldsOf(sound).sequence);
-    }
-
-    return edit::DriverSoundPlaces(file, *rom, sequences);
+    return edit::DriverSoundPlaces(file, *rom, edit::DriverSoundSequences(file, *rom));
 }
 
 // The sequence that sound `sound` plays, from the places of a file's sounds. Throws std::logic_error for a sound

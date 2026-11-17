@@ -14,8 +14,8 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
 
 #include "app/item_views.h"
 #include "app/item_views_parts.h"
@@ -48,17 +48,17 @@ public:
     {
         constexpr uint32_t kKeyTableBytes = 128;
         constexpr uint32_t kSongBytes = 8;
-        std::vector<ntdlib::mp2k::Voice> splits;
+        std::vector<agblib::mp2k::Voice> splits;
         for (const song::GbaVoiceGroup& group : groups)
         {
             for (const int program : group.programs)
             {
-                const uint32_t address = group.address + ntdlib::mp2k::kVoiceSize * static_cast<uint32_t>(program);
-                ntdlib::mp2k::Voice voice;
-                if (ntdlib::mp2k::ReadVoice(rom.rom, address, voice))
+                const uint32_t address = group.address + agblib::mp2k::kVoiceSize * static_cast<uint32_t>(program);
+                agblib::mp2k::Voice voice;
+                if (agblib::mp2k::ReadVoice(rom.rom, address, voice))
                 {
                     voices_.insert(address);
-                    if ((voice.type & ntdlib::mp2k::kVoiceKeySplit) != 0)
+                    if ((voice.type & agblib::mp2k::kVoiceKeySplit) != 0)
                     {
                         spans_.emplace_back(voice.key_table, voice.key_table + kKeyTableBytes);
                     }
@@ -75,20 +75,20 @@ public:
 
         // The patterns of the wave voices that the keys play. A key whose voice overlaps the other bytes names no
         // pattern.
-        std::vector<ntdlib::mp2k::Voice> keys;
-        for (const ntdlib::mp2k::Voice& split : splits)
+        std::vector<agblib::mp2k::Voice> keys;
+        for (const agblib::mp2k::Voice& split : splits)
         {
             for (int key = 0; key <= kHighest; key++)
             {
-                const uint32_t address = ntdlib::mp2k::SplitVoice(rom.rom, split, key);
-                ntdlib::mp2k::Voice voice;
-                if (address != 0 && !Across(address) && ntdlib::mp2k::ReadVoice(rom.rom, address, voice))
+                const uint32_t address = agblib::mp2k::SplitVoice(rom.rom, split, key);
+                agblib::mp2k::Voice voice;
+                if (address != 0 && !Across(address) && agblib::mp2k::ReadVoice(rom.rom, address, voice))
                 {
                     keys.push_back(voice);
                 }
             }
         }
-        for (const ntdlib::mp2k::Voice& voice : keys)
+        for (const agblib::mp2k::Voice& voice : keys)
         {
             AddPattern(voice);
         }
@@ -97,9 +97,9 @@ public:
     // Whether the voice at `address` overlaps those bytes.
     bool Across(uint32_t address) const
     {
-        const uint32_t end = address + ntdlib::mp2k::kVoiceSize;
+        const uint32_t end = address + agblib::mp2k::kVoiceSize;
         const auto program =
-            voices_.lower_bound(address < ntdlib::mp2k::kVoiceSize ? 0 : address - ntdlib::mp2k::kVoiceSize + 1);
+            voices_.lower_bound(address < agblib::mp2k::kVoiceSize ? 0 : address - agblib::mp2k::kVoiceSize + 1);
         for (auto it = program; it != voices_.end() && *it < end; ++it)
         {
             if (*it != address)
@@ -114,7 +114,7 @@ public:
 private:
     static constexpr uint32_t kPatternBytes = 16;
 
-    void AddPattern(const ntdlib::mp2k::Voice& voice)
+    void AddPattern(const agblib::mp2k::Voice& voice)
     {
         if (voice.PsgChannel() == 3)
         {
@@ -128,22 +128,22 @@ private:
 
 // The rows of `split`, a key split or a drum kit: each run of keys of a key split that plays one voice, or each key of
 // a drum kit. Each row has a voice that plays something. A voice that overlaps `others` stays out.
-std::vector<GbaVoiceRow> GbaRowsOf(const song::GbaRom& rom, const ntdlib::mp2k::Voice& split, const GbaOthers& others)
+std::vector<GbaVoiceRow> GbaRowsOf(const song::GbaRom& rom, const agblib::mp2k::Voice& split, const GbaOthers& others)
 {
     std::vector<GbaVoiceRow> rows;
-    const bool drums = (split.type & ntdlib::mp2k::kVoiceDrumKit) != 0;
+    const bool drums = (split.type & agblib::mp2k::kVoiceDrumKit) != 0;
     int key = 0;
     while (key <= kHighest)
     {
-        const uint32_t address = ntdlib::mp2k::SplitVoice(rom.rom, split, key);
+        const uint32_t address = agblib::mp2k::SplitVoice(rom.rom, split, key);
         int last = key;
-        while (!drums && last < kHighest && ntdlib::mp2k::SplitVoice(rom.rom, split, last + 1) == address)
+        while (!drums && last < kHighest && agblib::mp2k::SplitVoice(rom.rom, split, last + 1) == address)
         {
             last++;
         }
 
-        ntdlib::mp2k::Voice voice;
-        if (address != 0 && !others.Across(address) && ntdlib::mp2k::ReadVoice(rom.rom, address, voice) &&
+        agblib::mp2k::Voice voice;
+        if (address != 0 && !others.Across(address) && agblib::mp2k::ReadVoice(rom.rom, address, voice) &&
             !voice.IsSplit() && song::GbaVoiceSounds(rom, voice))
         {
             rows.push_back({key, last, voice, song::GbaVoiceKind(voice), {}});
@@ -174,7 +174,7 @@ void CollectGbaPlaces(const song::GbaRom& rom, const std::vector<song::GbaVoiceG
 {
     const GbaOthers stray(rom, groups);
     // The word of a key split or a drum kit names its table, not a sample.
-    const auto note = [&](const ntdlib::mp2k::Voice& voice, const std::string& place)
+    const auto note = [&](const agblib::mp2k::Voice& voice, const std::string& place)
     {
         places[voice.address].push_back(place);
         if (voice.IsSplit())
@@ -185,8 +185,8 @@ void CollectGbaPlaces(const song::GbaRom& rom, const std::vector<song::GbaVoiceG
         {
             view.pattern_places[voice.wave].push_back(place);
         }
-        ntdlib::mp2k::Wave wave;
-        if (voice.PsgChannel() == 0 && ntdlib::mp2k::ReadWave(rom.rom, voice.wave, wave) && wave.size > 0)
+        agblib::mp2k::Wave wave;
+        if (voice.PsgChannel() == 0 && agblib::mp2k::ReadWave(rom.rom, voice.wave, wave) && wave.size > 0)
         {
             samples.insert(voice.wave);
         }
@@ -198,8 +198,8 @@ void CollectGbaPlaces(const song::GbaRom& rom, const std::vector<song::GbaVoiceG
         {
             const auto program = static_cast<uint32_t>(number);
             GbaProgram shown{program, {}, {}};
-            ntdlib::mp2k::Voice voice;
-            if (!ntdlib::mp2k::ReadVoice(rom.rom, group.address + ntdlib::mp2k::kVoiceSize * program, voice))
+            agblib::mp2k::Voice voice;
+            if (!agblib::mp2k::ReadVoice(rom.rom, group.address + agblib::mp2k::kVoiceSize * program, voice))
             {
                 continue;
             }
@@ -225,7 +225,7 @@ void CollectGbaPlaces(const song::GbaRom& rom, const std::vector<song::GbaVoiceG
 void FillGbaShared(const song::GbaRom& rom, uint32_t address, GbaPlaces& places, GbaBankView& view)
 {
     // A voice's other places, and the patterns of the group's wave voices.
-    const auto others = [&places](const ntdlib::mp2k::Voice& voice, const std::string& place)
+    const auto others = [&places](const agblib::mp2k::Voice& voice, const std::string& place)
     {
         std::vector<std::string> shared;
         for (const std::string& other : places[voice.address])
@@ -268,8 +268,8 @@ void AddGbaSamples(const song::GbaRom& rom, const std::set<uint32_t>& samples, G
 {
     for (const uint32_t sample : samples)
     {
-        ntdlib::mp2k::Wave wave;
-        ntdlib::mp2k::ReadWave(rom.rom, sample, wave);
+        agblib::mp2k::Wave wave;
+        agblib::mp2k::ReadWave(rom.rom, sample, wave);
         view.samples.push_back({sample, wave.frequency / 1024.0, wave.loops, wave.size});
         view.sample_names.push_back(GbaSampleName(sample));
     }
@@ -279,16 +279,16 @@ void AddGbaSamples(const song::GbaRom& rom, const std::set<uint32_t>& samples, G
 
 std::string GbaSampleName(uint32_t address)
 {
-    return "Sample " + ntdlib::agb::Hex(address);
+    return "Sample " + agblib::agb::Hex(address);
 }
 
-GbaVoiceType GbaVoiceTypeOf(const ntdlib::mp2k::Voice& voice)
+GbaVoiceType GbaVoiceTypeOf(const agblib::mp2k::Voice& voice)
 {
-    if ((voice.type & ntdlib::mp2k::kVoiceDrumKit) != 0)
+    if ((voice.type & agblib::mp2k::kVoiceDrumKit) != 0)
     {
         return GbaVoiceType::kDrumKit;
     }
-    if ((voice.type & ntdlib::mp2k::kVoiceKeySplit) != 0)
+    if ((voice.type & agblib::mp2k::kVoiceKeySplit) != 0)
     {
         return GbaVoiceType::kKeySplit;
     }
@@ -296,7 +296,7 @@ GbaVoiceType GbaVoiceTypeOf(const ntdlib::mp2k::Voice& voice)
     switch (voice.PsgChannel())
     {
     case 0:
-        return (voice.type & ntdlib::mp2k::kVoiceFixed) != 0 ? GbaVoiceType::kFixedSample : GbaVoiceType::kSample;
+        return (voice.type & agblib::mp2k::kVoiceFixed) != 0 ? GbaVoiceType::kFixedSample : GbaVoiceType::kSample;
     case 1:
         return GbaVoiceType::kSquare1;
     case 2:

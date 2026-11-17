@@ -16,8 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/konami/seqformat.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/konami/seqformat.h"
 #include "ntdlib/sequence_export/performance.h"
 
 #include "edit/bytecode.h"
@@ -62,7 +62,7 @@ void Rewrite(const Code& code, const std::vector<Command>& items, uint32_t begin
 
 // The byte in `note`, a note command of Konami's driver, that plays `key`: the semitones from the pitch of its sample,
 // or the note of the driver. Throws std::invalid_argument with a message for the user where the byte can't hold it.
-uint8_t KonamiKey(const Command& note, int key, ntdlib::konami::Revision revision);
+uint8_t KonamiKey(const Command& note, int key, agblib::konami::Revision revision);
 
 // How far a note of a timeline can move past the end of a track that ends there.
 inline constexpr uint32_t kFarLater = 1u << 24;
@@ -152,7 +152,7 @@ private:
 };
 
 // The tick where a track of `code` that ran `stretches`, in order, ends (TrackEndOf). On the GBA, a stretch that would
-// start in the song's last tick belongs to the next pass, and the stretches leave it out (ntdlib's mp2k::StretchesOf).
+// start in the song's last tick belongs to the next pass, and the stretches leave it out (agblib's mp2k::StretchesOf).
 // A track whose last stretch returns from a call to commands that end the track in the same tick (EndsAt) then ends at
 // the return's tick. The calls and returns at the ends of the stretches before give the command after the call.
 std::optional<uint32_t> TrackEndIn(const Code& code, std::span<const song::Stretch> stretches);

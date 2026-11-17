@@ -111,9 +111,7 @@ sar::ReplacedPieces ReplacedPiecesOf(const format::File& file, uint32_t file_id,
         if (reason.find("isn't a piece of its own") != std::string::npos)
         {
             throw std::invalid_argument(
-                "The old file is mixed in with other data in the archive. Can't replace it there. A .hok file saved "
-                "before 2026-10-17 stores every bank, wave archive and wave sound file this way. Import the game "
-                "archive again to separate them.");
+                "The old file is mixed in with other data in the archive. Can't replace it there.");
         }
         if (reason.find("holds no file") != std::string::npos)
         {

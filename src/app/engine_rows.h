@@ -2,10 +2,11 @@
 
 #pragma once
 
-// The facts of each engine that the program's windows show, in one table: the mixer's switch, the FX channels, the
-// effects that an insert offers, the Export window's targets and the filters of the dialog that saves an archive or a
-// ROM. format/engines.h has the facts that the other layers use, such as each engine's title (EngineName) and whether
-// New Project offers it (EngineFacts::creatable). A new engine adds one row here.
+// The facts of each engine that the program's windows show, in one table: the driver that Project Setup and the
+// mixer's menus name, the mixer's tooltips, the FX channels, the effects that an insert offers, the Export window's
+// targets and the filters of the dialog that saves an archive or a ROM. format/engines.h has the facts that the other
+// layers use, such as each engine's console (ConsoleName) and whether New Project offers it (EngineFacts::creatable).
+// A new engine adds one row here.
 
 #include <array>
 #include <cstddef>
@@ -32,12 +33,14 @@ enum class ArchiveFilters : uint8_t
     kDsImage, // a DS image
 };
 
-// The kinds that each console's inserts offer. The Switch has nn::audio's I3DL2 reverb, and the Wii U the effects of
-// nw::snd's four classes. The Wii has the effects of the SDK's AXFX library. NW4R SND's four classes set them up.
-// Before 2008, the reverbs take the older parameters. From 2008, they are AXFX's Exp reverbs, with the parameters of
-// the Wii U's reverbs. The 3DS has the reverbs and delays of nw::snd and nn::snd. Games of 2011 link nn::snd's older
-// reverb. edit::EffectName gives each kind's name.
-inline constexpr std::array<format::EffectKind, 1> kSwitchKinds = {format::EffectKind::kI3dl2Reverb};
+// The kinds that each console's inserts offer. The Switch has nn::audio's I3DL2 reverb and nn::atk's delay, light
+// limiter and reverb, and the Wii U the effects of nw::snd's four classes. The Wii has the effects of the SDK's AXFX
+// library. NW4R SND's four classes set them up. Before 2008, the reverbs take the older parameters. From 2008, they are
+// AXFX's Exp reverbs, with the parameters of the Wii U's reverbs. The 3DS has the reverbs and delays of nw::snd and
+// nn::snd. Games of 2011 link nn::snd's older reverb. edit::EffectName gives each kind's name.
+inline constexpr std::array<format::EffectKind, 4> kSwitchKinds = {
+    format::EffectKind::kI3dl2Reverb, format::EffectKind::kSwitchDelay, format::EffectKind::kSwitchLightLimiter,
+    format::EffectKind::kSwitchReverb};
 inline constexpr std::array<format::EffectKind, 4> kWiiUKinds = {
     format::EffectKind::kReverbHi, format::EffectKind::kReverbStd, format::EffectKind::kChorus,
     format::EffectKind::kDelay};
@@ -55,7 +58,7 @@ inline constexpr std::array<format::EffectKind, 5> kCtrKinds = {
 struct EngineRow
 {
     format::Engine engine;
-    const char* label;                         // the engine's name on the mixer's switch
+    const char* driver;                        // the sound library or driver, for Project Setup and the mixer's menus
     const char* library;                       // the library and the hardware whose rules the engine follows
     std::size_t fx_channels;                   // the FX channels, one for each aux bus of the engine's console
     std::span<const format::EffectKind> kinds; // the kinds that an insert offers (KindsOf in effect_editor.cpp)
@@ -69,7 +72,7 @@ struct EngineRow
 inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     {
         .engine = format::Engine::kSwitch,
-        .label = "Switch",
+        .driver = "nn::atk",
         .library = "nn::atk on the audio renderer",
         .fx_channels = kFxChannels,
         .kinds = kSwitchKinds,
@@ -79,7 +82,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kWiiU,
-        .label = "Wii U",
+        .driver = "nw::snd",
         .library = "nw::snd on AX",
         .fx_channels = kFxChannels,
         .kinds = kWiiUKinds,
@@ -89,7 +92,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::k3ds,
-        .label = "3DS",
+        .driver = "nw::snd",
         .library = "nn::snd on the DSP",
         .fx_channels = 2,
         .kinds = kCtrKinds,
@@ -99,7 +102,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kWii,
-        .label = "Wii",
+        .driver = "NW4R SND",
         .library = "NW4R SND on AX",
         .fx_channels = kFxChannels,
         .kinds = kWii2008Kinds,
@@ -109,7 +112,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kGba,
-        .label = "GBA",
+        .driver = "MusicPlayer2000",
         .library = "MusicPlayer2000 on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // MusicPlayer2000's reverb is a setting of the song
@@ -119,7 +122,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kDs,
-        .label = "DS",
+        .driver = "NITRO-Composer",
         .library = "NITRO-Composer on the DS sound unit",
         .fx_channels = 0,
         .kinds = {}, // the SDK's reverb runs on the DS's capture units, without an aux bus
@@ -129,7 +132,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kDse,
-        .label = "DSE",
+        .driver = "DSE",
         .library = "DSE on the DS sound unit",
         .fx_channels = 0,
         .kinds = {},                 // DSE's driver has no effects
@@ -139,7 +142,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kKonami,
-        .label = "Konami",
+        .driver = "Konami's driver",
         .library = "Konami's driver on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // Konami's echo is a setting of the song
@@ -149,7 +152,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kRd2,
-        .label = "R&D2",
+        .driver = "Nintendo R&D2's driver",
         .library = "Nintendo R&D2's driver on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // the echo of Nintendo R&D2's driver is a send of each track, without an aux bus
@@ -159,7 +162,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kBrownie,
-        .label = "Brownie",
+        .driver = "Brownie Brown's driver",
         .library = "Brownie Brown's driver on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // Brownie Brown's driver has no effects
@@ -169,7 +172,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kUbiMilan,
-        .label = "Ubisoft Milan",
+        .driver = "Ubisoft Milan's driver",
         .library = "Ubisoft Milan's driver on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // Ubisoft Milan's driver has no effects
@@ -179,7 +182,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kRare,
-        .label = "Rare",
+        .driver = "Rare's driver",
         .library = "Rare's driver on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // Rare's driver has no effects
@@ -189,7 +192,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kQuintet,
-        .label = "Quintet",
+        .driver = "Quintet's driver",
         .library = "Quintet's driver on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // Quintet's driver has no effects
@@ -199,7 +202,7 @@ inline constexpr std::array<EngineRow, format::kEngineCount> kEngineRows = {{
     },
     {
         .engine = format::Engine::kKrawall,
-        .label = "Krawall",
+        .driver = "Krawall",
         .library = "Krawall on the GBA sound hardware",
         .fx_channels = 0,
         .kinds = {},                 // Krawall has no effects on a bus
@@ -218,14 +221,14 @@ constexpr const EngineRow& RowOf(format::Engine engine)
 namespace engine_rows_detail
 {
 
-// Whether kEngineRows has one row for each engine, in the order of the enum, with a label and a library. std::array
+// Whether kEngineRows has one row for each engine, in the order of the enum, with a driver and a library. std::array
 // fills a missing row with zeros without a warning.
 constexpr bool RowsAgree()
 {
     for (std::size_t i = 0; i < kEngineRows.size(); ++i)
     {
         const EngineRow& row = kEngineRows[i];
-        if (row.engine != static_cast<format::Engine>(i) || row.label == nullptr || row.library == nullptr)
+        if (row.engine != static_cast<format::Engine>(i) || row.driver == nullptr || row.library == nullptr)
         {
             return false;
         }

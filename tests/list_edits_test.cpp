@@ -16,13 +16,13 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/formats.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/sar/formats.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
@@ -682,11 +682,14 @@ void TestSkipped()
     XSFLIB_CHECK(Skipped(ctr, ctr.rows[kLfo]) && SkippingEngine(ctr, ctr.rows[kLfo]) == "3DS");
     XSFLIB_CHECK(!Skipped(ctr, ctr.rows[kVolume]));
 
-    // Like the rest of the program, the tooltip names a console with its article. A driver follows "by".
+    // Like the rest of the program, the tooltip names a console with its article. A driver other than the console's
+    // first follows the console in brackets (app::EngineName).
     XSFLIB_CHECK(IgnoredOn("GBA") == " on the GBA" && IgnoredOn("3DS") == " on the 3DS");
     XSFLIB_CHECK(IgnoredOn("Wii U") == " on the Wii U" && IgnoredOn("DS") == " on the DS");
-    XSFLIB_CHECK(IgnoredOn("DSE") == " by DSE" && IgnoredOn("Konami's driver") == " by Konami's driver");
-    XSFLIB_CHECK(IgnoredOn("Krawall") == " by Krawall" && IgnoredOn("Rare's driver") == " by Rare's driver");
+    XSFLIB_CHECK(IgnoredOn("DS (DSE)") == " on the DS (DSE)" &&
+                 IgnoredOn("GBA (Konami's driver)") == " on the GBA (Konami's driver)");
+    XSFLIB_CHECK(IgnoredOn("GBA (Krawall)") == " on the GBA (Krawall)" &&
+                 IgnoredOn("GBA (Rare's driver)") == " on the GBA (Rare's driver)");
 }
 
 // On DSE, a command of kOther is any code that the common form has no kind for. The driver runs the bank selects, the
@@ -706,7 +709,7 @@ void TestSkippedOnDse()
 
     ListTrack track;
     track.console = hokuto::song::Console{.engine = hokuto::format::Engine::kDse};
-    track.file_engine_name = "DSE";
+    track.file_engine_name = "DS (DSE)";
     for (const ListRow& row : {other(dse::kBank, {0, 1}), other(dse::kBankHigh, {0}), other(dse::kBankLow, {1}),
                                other(dse::kLoopPoint, {}), other(dse::kKeyBend, {0, 0x10}), other(dse::kOctave, {4})})
     {
@@ -715,7 +718,7 @@ void TestSkippedOnDse()
     for (const ListRow& row :
          {other(dse::kSkipByte, {0}), other(dse::kSkipTwo, {0, 0}), other(dse::kSkipTwoAgain, {0, 0})})
     {
-        XSFLIB_CHECK(Skipped(track, row) && SkippingEngine(track, row) == "DSE");
+        XSFLIB_CHECK(Skipped(track, row) && SkippingEngine(track, row) == "DS (DSE)");
     }
 
     ListRow volume;
@@ -770,8 +773,8 @@ void TestSubroutineNames()
 // The pattern plays key 67 and returns. The ROM has free space for a song that grows.
 std::vector<uint8_t> GbaPatternRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     // The pattern's place is known once the track before it is.
     const auto track = [](std::size_t pattern)
@@ -792,7 +795,7 @@ std::vector<uint8_t> GbaPatternRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 

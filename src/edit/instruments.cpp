@@ -3,7 +3,10 @@
 #include "edit/instruments.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <cstdio>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -206,11 +209,14 @@ DseOpeningBank DseBankOfOpening(const format::File& file, uint32_t sequence, con
     return found;
 }
 
-// The commands that set the bank slot and the program of each note of a track, by the commands that set them.
+// The commands that set the bank slot and the program of each note of a track, by the commands that set them. Each
+// note's item gives the instruments that it played, and on DSE the id of the bank that its track had selected last.
 struct Walk
 {
     Uses slots;
     Uses programs;
+    std::map<uint32_t, std::set<std::optional<Program>>> notes;
+    std::map<uint32_t, uint16_t> dse_banks;
 };
 
 // The commands of `commands` that set the instrument of each note of a track of `console` that ran `stretches`, in the
@@ -295,6 +301,9 @@ Walk WalkTrack(const ntdlib::commands::Sequence& commands, const std::vector<uin
                 {
                     walk.programs[setter].insert(played);
                 }
+
+                walk.notes[i].insert(played);
+                walk.dse_banks[i] = dse_bank;
             }
         }
     }
@@ -318,15 +327,26 @@ std::set<Setter> SettersOf(const Uses& uses, const Program& instrument)
 }
 
 // Throws std::invalid_argument with a message for the user where `to` is outside the bank slots and programs of
-// `console`, or where it changes the slot from `from_slot` on a console whose tracks can't select a bank.
-void CheckInstrument(const song::Console& console, int from_slot, Program to)
+// `console`, or where it changes the slot from `from_slot` on a console whose tracks can't select a bank. A DSE sound
+// has a slot for each bank that it loads, `dse_banks` of them. A DSE track selects one with DSE's bank selects, which
+// the common form has no kind for.
+void CheckInstrument(const song::Console& console, int from_slot, Program to, std::size_t dse_banks = 0)
 {
+    if (console.engine == format::Engine::kDse && to.slot >= 0 && to.number >= 0)
+    {
+        if (to.slot != from_slot && static_cast<std::size_t>(to.slot) >= dse_banks)
+        {
+            throw std::invalid_argument("This sound has no bank in slot " + std::to_string(to.slot) + ".");
+        }
+        return;
+    }
+
     if (to.slot < 0 || to.slot >= kBankSlots || to.number < 0)
     {
         throw std::invalid_argument("Bank slots are 0–3, and program numbers start at 0.");
     }
 
-    if (to.slot != from_slot && !song::Runs(console, Kind::kBankSelect, 0))
+    if (to.slot != from_slot && !TracksSelectBanks(console))
     {
         const DriverEdits* edits = DriverEditsOf(console);
         const std::optional<std::string> refused = edits != nullptr ? edits->RefusedBankSelect() : std::nullopt;
@@ -336,8 +356,6 @@ void CheckInstrument(const song::Console& console, int from_slot, Program to)
             : console.engine == format::Engine::kDs
                 ? "A DS sequence uses the single bank set in its archive entry. Its tracks can't select "
                   "another."
-            : console.engine == format::Engine::kDse
-                ? "Can't change the bank that a DSE track selects."
                 : refused.value_or("A Wii sound uses only one bank. Its sequences can't select another bank "
                                    "slot."));
     }
@@ -348,11 +366,11 @@ void CheckInstrument(const song::Console& console, int from_slot, Program to)
     }
 }
 
-// The command at a DSE track's opening that selects the bank of slot `slot`. A channel starts without one of the
-// sound's banks, and a program selected then stays at 0. A sequence that no sound plays has no banks to select.
-std::vector<Command> DseOpeningSelect(const format::File& file, uint32_t sequence, int slot)
+// The command at a DSE track's opening that selects the bank of slot `slot`, of the banks with the ids `banks`. A
+// channel starts without one of the sound's banks, and a program selected then stays at 0. A sequence that no sound
+// plays has no banks to select.
+std::vector<Command> DseOpeningSelect(std::span<const uint16_t> banks, int slot)
 {
-    const std::vector<uint16_t> banks = DseBankIds(file, sequence);
     if (static_cast<std::size_t>(slot) >= banks.size())
     {
         return {};
@@ -472,6 +490,11 @@ void CheckAlone(const Uses& uses, const std::set<Setter>& setters, const char* o
 
 } // namespace
 
+bool TracksSelectBanks(const song::Console& console)
+{
+    return console.engine == format::Engine::kDse || song::Runs(console, Kind::kBankSelect, 0);
+}
+
 Command DseBankSelect(uint16_t id)
 {
     Command select;
@@ -546,9 +569,7 @@ void RefuseUnplayed(const Uses& program_uses, const song::Console& console)
     const DriverEdits* edits = DriverEditsOf(console);
     if (decided && edits != nullptr && edits->NotesPlayOnNextTrack())
     {
-        throw std::invalid_argument(
-            "This track starts no notes with that instrument. Another track can play notes on this channel "
-            "through its pan setting. Change the instrument on that track.");
+        throw std::invalid_argument(std::string(kNoNotesInstrumentRefusal));
     }
 
     throw std::invalid_argument(decided ? "No notes on this track use that instrument." : kDecided);
@@ -627,6 +648,420 @@ void SetSamples(Edited& result, uint32_t sequence, std::span<const uint32_t> sam
     CheckKonamiSamples(*result.file.sequences[sequence], console);
 }
 
+// A DSE bank select that goes in before item `item` of a sequence. With `entered`, code that entered the sequence at
+// the item runs the new command first.
+struct DseInsertion
+{
+    uint32_t item = 0;
+    Command command;
+    bool entered = false;
+    bool back = false; // the select back to the bank of a run
+};
+
+// Whether `command`, a DSE command, selects a bank, or a part of its id (DseBankAfter).
+bool SelectsDseBank(const Command& command)
+{
+    const uint16_t opcode = command.encoding.opcode;
+    return command.kind == Kind::kOther && (opcode == kDseBank || opcode == kDseBankHigh || opcode == kDseBankLow);
+}
+
+// Whether `command`, a DSE command, changes where its track goes on: the loop's point (0x99), a repeat's start, end or
+// exit (0x9C to 0x9E), or the track's end.
+bool MovesDseTrack(const Command& command)
+{
+    const uint16_t opcode = command.encoding.opcode;
+    return command.kind == Kind::kLoopStart || command.kind == Kind::kLoopEnd || command.kind == Kind::kEnd ||
+           (command.kind == Kind::kOther && (opcode == ntdlib::dse::kLoopPoint || opcode == ntdlib::dse::kRepeatExit));
+}
+
+// Whether `command`, a DSE command, sets a part of its channel that a selection of a program resets: the bend range,
+// an LFO or the envelope (ntdlib's Driver::State::SelectProgram).
+bool SetsDseVoice(const Command& command)
+{
+    if (command.kind == Kind::kBendRange)
+    {
+        return true;
+    }
+    if (command.kind != Kind::kOther)
+    {
+        return false;
+    }
+
+    switch (command.encoding.opcode)
+    {
+    case ntdlib::dse::kEnvelopeDefaults:
+    case ntdlib::dse::kAttackBegin:
+    case ntdlib::dse::kAttackTime:
+    case ntdlib::dse::kHoldTime:
+    case ntdlib::dse::kDecayAndSustain:
+    case ntdlib::dse::kSustainTime:
+    case ntdlib::dse::kReleaseTime:
+    case ntdlib::dse::kBendLfo:
+    case ntdlib::dse::kBendLfoEnvelope:
+    case ntdlib::dse::kBendLfoSwitch:
+    case ntdlib::dse::kVolumeLfo:
+    case ntdlib::dse::kVolumeLfoEnvelope:
+    case ntdlib::dse::kVolumeLfoSwitch:
+    case ntdlib::dse::kPanLfo:
+    case ntdlib::dse::kPanLfoEnvelope:
+    case ntdlib::dse::kPanLfoSwitch:
+    case ntdlib::dse::kLfo:
+    case ntdlib::dse::kLfoEnvelope:
+    case ntdlib::dse::kLfoParameter:
+    case ntdlib::dse::kLfoSwitch:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Whether `command`, a DSE command, selects a program or a bank. The driver then selects the channel's program again.
+bool SelectsDseInstrument(const Command& command)
+{
+    return command.kind == Kind::kProgram || SelectsDseBank(command);
+}
+
+// Throws std::invalid_argument with a message for the user where a new bank select on a DSE track would reset settings
+// that the track's commands from item `begin` to item `end` of `commands` made. The message names those commands as the
+// List Editor shows them. Where they are all bend ranges, it says to remove them first: the List Editor can add them
+// again. It can't add an LFO or envelope command.
+[[noreturn]] void RefuseDseResets(const ntdlib::commands::Sequence& commands, uint32_t begin, uint32_t end)
+{
+    std::vector<std::string> names;
+    for (uint32_t item = begin; item <= end; item++)
+    {
+        const Command& command = commands.items[item];
+        if (!SetsDseVoice(command))
+        {
+            continue;
+        }
+
+        std::array<char, 24> name{};
+        if (command.kind == Kind::kBendRange)
+        {
+            std::snprintf(name.data(), name.size(), "Bend Range");
+        }
+        else
+        {
+            std::snprintf(name.data(), name.size(), "Opcode 0x%X", command.encoding.opcode);
+        }
+        if (std::ranges::find(names, std::string(name.data())) == names.end())
+        {
+            names.emplace_back(name.data());
+        }
+    }
+
+    std::string list;
+    for (const std::string& name : names)
+    {
+        list += (list.empty() ? "" : ", ") + name;
+    }
+
+    // The List Editor inserts a bend range again after the new select, but no LFO or envelope command.
+    if (std::ranges::all_of(names, [](const std::string& name) { return name == "Bend Range"; }))
+    {
+        throw std::invalid_argument(
+            "Can't change the bank. A new bank select would reset this track's bend range, "
+            "LFOs and envelope. Remove these commands in the List Editor first: " +
+            list + ".");
+    }
+
+    throw std::invalid_argument(
+        "Can't change the bank. A new bank select would reset this track's bend range, LFOs "
+        "and envelope. These commands set them: " +
+        list + ".");
+}
+
+// The bank and the program that a DSE track has selected before item `stop` of `commands`, running on from item
+// `begin` with the bank `bank`. The program is missing where a variable, a random number or a comparison gives it.
+std::pair<uint16_t, std::optional<int64_t>> DseInstrumentBefore(const ntdlib::commands::Sequence& commands,
+                                                                uint32_t begin, uint32_t stop, uint16_t bank)
+{
+    std::optional<int64_t> program = 0;
+    for (uint32_t item = begin; item < stop; item++)
+    {
+        const Command& command = commands.items[item];
+        bank = DseBankAfter(bank, command);
+        if (command.kind == Kind::kProgram)
+        {
+            const bool fixed = command.value.source == Source::kValue && !command.conditional;
+            program = fixed ? std::optional<int64_t>(command.value.value / kOne) : std::nullopt;
+        }
+    }
+
+    return {bank, program};
+}
+
+// The bank selects that give the notes of `from` on a DSE track the bank with the id `to` (EditInstrument). The track
+// ran `stretches` of `commands`, whose items start at `offsets`, and `walk` contains what its notes played. `banks`
+// contains the ids of the sound's banks. The notes of `from` form runs. A run ends at a note of another instrument, a
+// program change, a bank select, an item where the track entered the sequence, and a command that changes where the
+// track goes. Each run gets a select of `to` before it, and a select after it of the bank that its notes played before
+// the edit.
+//
+// A bank select selects the channel's program again, and that resets the channel's bend range, LFOs and envelope
+// (ntdlib's Driver::State::SelectBank and SelectProgram). The new selects therefore go where the driver resets them
+// anyway. The select of `to` goes just before the program change, or just after the bank select, that comes before the
+// run with no note between. The select back goes just before the next program change or bank select, and stays out
+// where that is a select of a whole id. Neither is needed where nothing runs between the two. A select back also stays
+// out at the track's end where the track has no loop. A run that goes on to the end of a looped track needs no select
+// back where no note comes between the loop's point and its select of `to`: every later pass then plays the new bank.
+// The scan for the place of that select may then cross the loop's point. Elsewhere a new select goes beside the run's
+// notes, just before the item where the scan for its place stopped, and only in a track without commands that set
+// those parts of the channel. The loop's point is the track's last 0x99: the driver goes back to the last one that it
+// ran.
+//
+// Throws std::invalid_argument with a message for the user where a note of `from` plays another instrument on another
+// pass, where a new select would reset such settings, where a new select after the loop's point would run on later
+// passes with another instrument than on the first, and for a sequence whose commands can't move.
+std::vector<DseInsertion> DseRunSelects(const format::File& file, const ntdlib::commands::Sequence& commands,
+                                        const std::vector<uint32_t>& offsets, std::span<const song::Stretch> stretches,
+                                        const Walk& walk, Program from, std::span<const uint16_t> banks, uint16_t to)
+{
+    if (KeepsPlaces(file, commands))
+    {
+        throw std::invalid_argument("Can't add a command. Commands in this sequence must keep their positions.");
+    }
+
+    // The items where the track entered the sequence, and the first and last items that it ran.
+    std::set<uint32_t> entries;
+    uint32_t begin = std::numeric_limits<uint32_t>::max();
+    uint32_t end = 0;
+    for (const song::Stretch& stretch : stretches)
+    {
+        const uint32_t first = *ItemAtOffset(offsets, stretch.first);
+        entries.insert(first);
+        begin = std::min(begin, first);
+        end = std::max(end, *ItemAtOffset(offsets, stretch.last));
+    }
+
+    // The loop's last point, and whether the track sets a part of its channel that a bank select resets.
+    std::optional<uint32_t> loop_point;
+    bool sets_voice = false;
+    for (uint32_t item = begin; item <= end; item++)
+    {
+        const Command& command = commands.items[item];
+        if (command.kind == Kind::kOther && command.encoding.opcode == ntdlib::dse::kLoopPoint)
+        {
+            loop_point = item;
+        }
+        sets_voice = sets_voice || SetsDseVoice(command);
+    }
+
+    // The notes of `from`, and whether one of them plays another instrument on another pass. The edit refuses those
+    // after the loop's guard below: a later pass of the loop gives them the other instrument.
+    std::vector<uint32_t> notes;
+    bool mixed = false;
+    for (const auto& [item, played] : walk.notes)
+    {
+        if (!played.contains(from))
+        {
+            continue;
+        }
+        mixed = mixed || played.size() > 1;
+        notes.push_back(item);
+    }
+
+    // Where a scan for a place of a new select stops: a note, a command that changes where the track goes, and an item
+    // where the track entered. A scan that may cross the loop's point stops at neither the point nor the entry after
+    // it.
+    const auto stops = [&](uint32_t item, bool across_loop = false)
+    {
+        const Command& command = commands.items[item];
+        if (across_loop && (item == loop_point || (loop_point && item == *loop_point + 1)))
+        {
+            return false;
+        }
+        return entries.contains(item) || command.kind == Kind::kNote || MovesDseTrack(command);
+    };
+
+    std::vector<DseInsertion> insertions;
+    std::size_t next = 0;
+    while (next < notes.size())
+    {
+        const uint32_t first = notes[next++];
+        uint32_t last = first;
+        for (uint32_t item = first + 1; item <= end; item++)
+        {
+            if (next < notes.size() && notes[next] == item && !entries.contains(item))
+            {
+                last = notes[next++];
+            }
+            else if (stops(item) || SelectsDseInstrument(commands.items[item]))
+            {
+                break;
+            }
+        }
+
+        // The select back: just before the next program change or bank select after the run.
+        bool needed = true;
+        std::optional<uint32_t> back;
+        uint32_t item = last + 1;
+        for (; item <= end; item++)
+        {
+            const Command& command = commands.items[item];
+            if (SelectsDseInstrument(command))
+            {
+                needed = command.kind != Kind::kOther || command.encoding.opcode != kDseBank;
+                back = item;
+                break;
+            }
+            if (command.kind == Kind::kEnd && !loop_point)
+            {
+                needed = false;
+                break;
+            }
+            if (stops(item))
+            {
+                break;
+            }
+        }
+        needed = needed && item <= end;
+
+        // A run that goes on to the end of a looped track can take its select before the loop's point.
+        const bool to_loop_end = needed && !back && loop_point && commands.items[item].kind == Kind::kEnd;
+
+        // The select of `to`: just before the program change or just after the bank select before the run.
+        std::optional<DseInsertion> select;
+        for (uint32_t at = first; (to_loop_end || !entries.contains(first)) && at-- > begin;)
+        {
+            const Command& command = commands.items[at];
+            if (command.kind == Kind::kProgram)
+            {
+                select = DseInsertion{at, DseBankSelect(to), entries.contains(at)};
+            }
+            else if (SelectsDseBank(command))
+            {
+                select = DseInsertion{at + 1, DseBankSelect(to), false};
+            }
+            if (select || stops(at, to_loop_end))
+            {
+                break;
+            }
+        }
+
+        // Every later pass then reaches the new select with the new bank, and plays no note before it.
+        const auto notes_before_select = [&]
+        {
+            for (uint32_t at = *loop_point + 1; at < select->item; at++)
+            {
+                if (commands.items[at].kind == Kind::kNote)
+                {
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (to_loop_end && select && !notes_before_select())
+        {
+            needed = false;
+        }
+        else if (!select && sets_voice)
+        {
+            RefuseDseResets(commands, begin, end);
+        }
+        else if (!select)
+        {
+            select = DseInsertion{first, DseBankSelect(to), entries.contains(first)};
+        }
+
+        insertions.push_back(*select);
+        if (needed && !back && sets_voice)
+        {
+            RefuseDseResets(commands, begin, end);
+        }
+        if (needed)
+        {
+            insertions.push_back({back.value_or(item), DseBankSelect(walk.dse_banks.at(last)), false, true});
+        }
+    }
+
+    // A later pass of the loop starts with the instrument that the track ends with. A new select after the loop's
+    // point runs there too. The edit holds only where the first pass starts the loop with the same instrument.
+    if (loop_point && std::ranges::any_of(insertions, [&](const DseInsertion& at) { return at.item > *loop_point; }))
+    {
+        const uint16_t start = banks.empty() ? 0 : banks.front();
+        const auto at_point = DseInstrumentBefore(commands, begin, *loop_point, start);
+        const auto at_end = DseInstrumentBefore(commands, begin, end + 1, start);
+        if (at_point.first != at_end.first || !at_point.second || at_point.second != at_end.second)
+        {
+            throw std::invalid_argument(
+                "Can't change the bank. This track's loop starts with another instrument than "
+                "the track ends with.");
+        }
+    }
+    if (mixed)
+    {
+        throw std::invalid_argument(
+            "Can't change the bank. Some notes of this instrument play another instrument on another pass of the "
+            "track.");
+    }
+
+    // A select back and the next run's select of `to` at the same item cancel out: nothing runs between them.
+    std::vector<DseInsertion> kept;
+    for (DseInsertion& insertion : insertions)
+    {
+        if (!kept.empty() && kept.back().back && !insertion.back && kept.back().item == insertion.item &&
+            !insertion.entered)
+        {
+            kept.pop_back();
+            continue;
+        }
+        kept.push_back(std::move(insertion));
+    }
+
+    return kept;
+}
+
+// `edited` after `insertions` go into sequence `sequence`. Their items name the items before the edit of `edited`.
+// `Edited::added` gains the new commands.
+void InsertDseSelects(Edited& edited, uint32_t sequence, std::vector<DseInsertion> insertions)
+{
+    if (insertions.empty())
+    {
+        return;
+    }
+
+    for (DseInsertion& insertion : insertions)
+    {
+        insertion.item = *edited.items.at(insertion.item);
+    }
+    std::ranges::stable_sort(insertions, {}, &DseInsertion::item);
+
+    const ntdlib::commands::Sequence& before = *edited.file.sequences[sequence];
+    ntdlib::commands::Sequence after = before;
+    after.items.clear();
+    std::vector<uint32_t> firsts(before.items.size() + 1);
+    std::vector<uint32_t> places(before.items.size() + 1);
+    std::vector<uint32_t> added;
+    auto insertion = insertions.begin();
+    for (uint32_t item = 0; item <= before.items.size(); item++)
+    {
+        std::optional<uint32_t> entered;
+        for (; insertion != insertions.end() && insertion->item == item; ++insertion)
+        {
+            const auto at = static_cast<uint32_t>(after.items.size());
+            if (insertion->entered && !entered)
+            {
+                entered = at;
+            }
+            added.push_back(at);
+            after.items.push_back(insertion->command);
+        }
+
+        places[item] = static_cast<uint32_t>(after.items.size());
+        firsts[item] = entered.value_or(places[item]);
+        if (item < before.items.size())
+        {
+            after.items.push_back(before.items[item]);
+        }
+    }
+
+    RenumberItems(after, edited, sequence, firsts, places);
+    edited.file.sequences[sequence] = std::move(after);
+    edited.added.insert(edited.added.end(), added.begin(), added.end());
+}
+
 } // namespace
 
 Edited EditInstrument(const format::File& file, uint32_t sequence, int track, std::span<const song::Stretch> stretches,
@@ -639,7 +1074,9 @@ Edited EditInstrument(const format::File& file, uint32_t sequence, int track, st
         edits->CheckInstruments();
     }
 
-    CheckInstrument(console, from.slot, to);
+    const std::vector<uint16_t> dse_banks =
+        console.engine == format::Engine::kDse ? DseBankIds(file, sequence) : std::vector<uint16_t>();
+    CheckInstrument(console, from.slot, to, dse_banks.size());
     if (edits != nullptr)
     {
         edits->CheckTrackInstrument(console, track);
@@ -648,9 +1085,7 @@ Edited EditInstrument(const format::File& file, uint32_t sequence, int track, st
     // The track's commands in the order that they ran. Each note plays the instrument that its track has selected.
     const ntdlib::commands::Sequence& commands = SequenceToEdit(file, sequence);
     const std::vector<uint32_t> offsets = Offsets(commands, console);
-    Walk walk =
-        WalkTrack(commands, offsets, stretches, console, track,
-                  console.engine == format::Engine::kDse ? DseBankIds(file, sequence) : std::vector<uint16_t>());
+    Walk walk = WalkTrack(commands, offsets, stretches, console, track, dse_banks);
     AddNotesFromBefore(walk, commands, offsets, previous);
     const Uses& slot_uses = walk.slots;
     const Uses& program_uses = walk.programs;
@@ -663,7 +1098,10 @@ Edited EditInstrument(const format::File& file, uint32_t sequence, int track, st
 
     // The commands that set the instrument of the notes that play `from`. Each has to set it for them alone.
     const std::set<Setter> programs = to.number != from.number ? SettersOf(program_uses, from) : std::set<Setter>();
-    const std::set<Setter> slots = to.slot != from.slot ? SettersOf(slot_uses, from) : std::set<Setter>();
+    // A DSE track's notes take another bank from new bank selects around them (DseRunSelects).
+    const std::set<Setter> slots = to.slot != from.slot && console.engine != format::Engine::kDse
+                                       ? SettersOf(slot_uses, from)
+                                       : std::set<Setter>();
     // On some drivers, such as Rare's driver, the program belongs to the channel, and every track on the channel plays
     // it.
     const std::optional<uint8_t> channel = edits != nullptr && edits->ChannelsHoldPrograms() && !programs.empty()
@@ -673,6 +1111,11 @@ Edited EditInstrument(const format::File& file, uint32_t sequence, int track, st
                "Notes from another bank slot use the same program change as the notes of this instrument.");
     CheckAlone(slot_uses, slots, "Notes of another program use the same bank select as the notes of this instrument.");
     RefuseBankSelects(commands, programs);
+    const std::vector<DseInsertion> dse_selects =
+        console.engine == format::Engine::kDse && to.slot != from.slot
+            ? DseRunSelects(file, commands, offsets, stretches, walk, from, dse_banks,
+                            dse_banks.at(static_cast<std::size_t>(to.slot)))
+            : std::vector<DseInsertion>();
 
     // The commands take the new values, and keep their items.
     std::vector<CommandPlace> places;
@@ -699,6 +1142,7 @@ Edited EditInstrument(const format::File& file, uint32_t sequence, int track, st
     {
         AddOpening(result, sequence, OpeningItem(file, commands, offsets, stretches), track, std::move(opening));
     }
+    InsertDseSelects(result, sequence, dse_selects);
 
     return Writable(file, std::move(result), sequence);
 }
@@ -757,9 +1201,10 @@ Edited EditOpeningInstrument(const format::File& file, uint32_t sequence, const 
         edits->CheckInstruments();
     }
 
-    const DseOpeningBank dse_bank =
-        console.engine == format::Engine::kDse ? DseBankOfOpening(file, sequence, track) : DseOpeningBank();
-    CheckInstrument(console, dse_bank.slot, to);
+    const bool dse = console.engine == format::Engine::kDse;
+    const std::vector<uint16_t> dse_banks = dse ? DseBankIds(file, sequence) : std::vector<uint16_t>();
+    const DseOpeningBank dse_bank = dse ? DseBankOfOpening(file, sequence, track) : DseOpeningBank();
+    CheckInstrument(console, dse_bank.slot, to, dse_banks.size());
     if (edits != nullptr)
     {
         edits->CheckOpeningInstrument(console, track.number);
@@ -816,10 +1261,11 @@ Edited EditOpeningInstrument(const format::File& file, uint32_t sequence, const 
     change(slot, to.slot);
     Edited result = ChangeCommands(file, sequence, places, changed);
 
-    std::vector<Command> opening = console.engine == format::Engine::kDse && !dse_bank.selected
-                                       ? DseOpeningSelect(file, sequence, to.slot)
+    // On DSE, a new bank select goes in after those of the opening (InsertAtOpening).
+    std::vector<Command> opening = dse && (!dse_bank.selected || dse_bank.slot != to.slot)
+                                       ? DseOpeningSelect(dse_banks, to.slot)
                                        : std::vector<Command>();
-    if (console.engine != format::Engine::kDse && !slot && to.slot != 0)
+    if (!dse && !slot && to.slot != 0)
     {
         opening.push_back(SlotCommand(to.slot));
     }
@@ -853,9 +1299,10 @@ Edited EditNotesWithInstrument(const format::File& file, uint32_t sequence, cons
         edits->CheckInstruments();
     }
 
-    const DseOpeningBank dse_bank =
-        console.engine == format::Engine::kDse ? DseBankOfOpening(file, sequence, track) : DseOpeningBank();
-    CheckInstrument(console, dse_bank.slot, to);
+    const bool dse = console.engine == format::Engine::kDse;
+    const std::vector<uint16_t> dse_banks = dse ? DseBankIds(file, sequence) : std::vector<uint16_t>();
+    const DseOpeningBank dse_bank = dse ? DseBankOfOpening(file, sequence, track) : DseOpeningBank();
+    CheckInstrument(console, dse_bank.slot, to, dse_banks.size());
     const ntdlib::commands::Sequence& commands = SequenceToEdit(file, sequence);
     const std::vector<uint32_t> offsets = Offsets(commands, console);
     const uint32_t first = OpeningItem(file, commands, offsets, track.stretches);
@@ -863,18 +1310,17 @@ Edited EditNotesWithInstrument(const format::File& file, uint32_t sequence, cons
     // The notes go in at or after the track's first command. That command keeps its item. The new commands go before
     // it.
     Edited result = EditNotes(file, sequence, {}, notes);
-    std::vector<Command> opening = console.engine == format::Engine::kDse && !dse_bank.selected
-                                       ? DseOpeningSelect(file, sequence, to.slot)
+    std::vector<Command> opening = dse && (!dse_bank.selected || dse_bank.slot != to.slot)
+                                       ? DseOpeningSelect(dse_banks, to.slot)
                                        : std::vector<Command>();
-    if (console.engine != format::Engine::kDse && to.slot != 0)
+    if (!dse && to.slot != 0)
     {
         opening.push_back(SlotCommand(to.slot));
     }
 
     // A DSE track's opening can select a program without a bank. That program change gets the new program, after the
     // new bank select.
-    const std::optional<uint32_t> held =
-        console.engine == format::Engine::kDse ? DseOpeningProgram(file, sequence, track) : std::nullopt;
+    const std::optional<uint32_t> held = dse ? DseOpeningProgram(file, sequence, track) : std::nullopt;
     const std::optional<uint32_t> item = held ? ItemAtOffset(offsets, *held) : std::nullopt;
     const std::optional<uint32_t> moved = item ? result.items.at(*item) : std::nullopt;
     if (moved)

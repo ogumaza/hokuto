@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 // The edits of the samples of Konami's GBA driver, where the sample table of the driver lists them
-// (ntdlib::konami::SampleInfo). An entry of the table names a sample's header: its step at semitone 0, its length and
+// (agblib::konami::SampleInfo). An entry of the table names a sample's header: its step at semitone 0, its length and
 // its loop start, then its PCM. The note start reads the header, and the mixer plays the PCM at the step, without
 // interpolation. In the Dungeon Dice Monsters revision, an entry names the PCM, and contains the length and the timer
 // period of the sample rate. That revision plays no loop, and the later builds of the Ultimate Masters revision play no

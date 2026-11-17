@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
 // A GBA ROM whose music Krawall plays: Sebastian Kienzl's player of XM and S3M modules. ntdlib finds the player's build
-// and tables and the game's modules in the ROM (ntdlib::krawall::DetectDriver). A sound is a piece that the conversion
+// and tables and the game's modules in the ROM (agblib::krawall::DetectDriver). A sound is a piece that the conversion
 // numbers: a module, or one of the songs that its orders separate (DriverInfo::songs). A piece has no name in the ROM:
 // Hokuto names it by its number. ntdlib's performer plays a piece on its model of the player for the arrangement
-// (ntdlib::sequence_export::krawall::PerformSong), and ntdlib's ArchivePlayer plays it on its models of the player and
+// (agblib::sequence_export::krawall::PerformSong), and agblib's ArchivePlayer plays it on its models of the player and
 // the GBA's sound hardware (song/sequence_model.h).
 //
 // A sequence contains the patterns of a module, and each of the module's first 16 channels is a track. A note names its
@@ -21,16 +21,16 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/krawall/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/krawall/driver.h"
 
 #include "song/driver.h"
 
 namespace hokuto::song
 {
 
-// A GBA ROM, and what ntdlib found of Krawall in it.
+// A GBA ROM, and what agblib found of Krawall in it.
 struct KrawallRom final : DriverRom
 {
     const DriverRules& Rules() const override;
@@ -52,7 +52,7 @@ struct KrawallRom final : DriverRom
                                                            const std::string& program) const override;
     std::unique_ptr<DriverPlayer> MakePlayer() const override;
 
-    // An audition plays a note of an instrument of the module of a piece through ntdlib's ArchivePlayer::StartNote. The
+    // An audition plays a note of an instrument of the module of a piece through agblib's ArchivePlayer::StartNote. The
     // setup's first command names the piece, and its second the instrument. The Key Editor's key 60 plays C-4: note 49.
     DriverAudition SampleAudition(int sample, int key, int velocity) const override;
     std::optional<DriverAudition> NoteAudition(const ntdlib::commands::Sequence& commands, const Sequence& sequence,
@@ -62,7 +62,7 @@ struct KrawallRom final : DriverRom
     // The ROM that contains the modules: the unpacked copy in the modified build, or else the ROM. ntdlib's readers of
     // the modules, their instruments and samples, and its performer and converter take it in place of the ROM. In the
     // modified build, the modules are past the end of the ROM.
-    const ntdlib::agb::Rom& ModulesRom() const;
+    const agblib::agb::Rom& ModulesRom() const;
 
     // The sample of the game's table that `instrument` (from 1) plays at note `note` (from 1 for C-0) in the module of
     // piece `sound`, or nothing.
@@ -76,8 +76,8 @@ struct KrawallRom final : DriverRom
         uint8_t note = 49;
     };
 
-    ntdlib::agb::Rom rom;
-    ntdlib::krawall::DriverInfo info;
+    agblib::agb::Rom rom;
+    agblib::krawall::DriverInfo info;
     std::vector<int> samples;             // the samples of the game's table that the modules play, in order
     std::optional<AuditionNote> audition; // where the ROM's one sound plays an audition
 };

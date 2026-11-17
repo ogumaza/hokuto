@@ -16,10 +16,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/rare/commands.h"
+#include "agblib/rare/sequencer.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/rare/commands.h"
-#include "ntdlib/rare/sequencer.h"
 
 #include "edit/bytecode.h"
 #include "edit/drivers.h"
@@ -50,7 +50,7 @@ using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
 
 // The channels of a tune, and the highest key and velocity of a note.
-constexpr int kChannels = ntdlib::rare::kChannels;
+constexpr int kChannels = agblib::rare::kChannels;
 constexpr int kHighestKey = 127;
 constexpr int kMostVelocity = 127;
 
@@ -77,7 +77,7 @@ bool NamesChannel(const Command& command)
     case Kind::kMonophonic:
         return true;
     case Kind::kOther:
-        return command.encoding.opcode != ntdlib::rare::kCmdNop;
+        return command.encoding.opcode != agblib::rare::kCmdNop;
     default:
         return false;
     }
@@ -224,10 +224,10 @@ std::optional<std::size_t> NoteOffOf(const std::vector<Event>& events, std::size
 // with a message for the user for an edit that the bytes can't hold, or that the driver would read otherwise.
 Edited RareWritable(const format::File&, Edited edited, uint32_t sequence)
 {
-    const ntdlib::rare::Traits traits = format::RareTraits(edited.file.native->driver->revision);
+    const agblib::rare::Traits traits = format::RareTraits(edited.file.native->driver->revision);
     const auto encode = [&]
     {
-        ntdlib::rare::EncodeSequence(*edited.file.sequences[sequence], EntriesOf(edited.file, sequence), traits);
+        agblib::rare::EncodeSequence(*edited.file.sequences[sequence], EntriesOf(edited.file, sequence), traits);
     };
     CheckEncodes("Rare's driver can't hold this edit: ", encode);
 

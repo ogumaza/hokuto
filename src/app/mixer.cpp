@@ -13,20 +13,22 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "app/arrangement.h"
 #include "app/channel_strip.h"
+#include "app/engine_names.h"
 #include "app/engine_rows.h"
 #include "app/export_warnings.h"
+#include "app/icons.h"
 #include "app/song_view.h"
 #include "app/theme.h"
 #include "app/views.h"
 #include "app/widgets.h"
 #include "app/zone_parts.h"
-#include "format/drivers.h"
 #include "format/engine.h"
 #include "format/engines.h"
 #include "format/kinds.h"
@@ -265,54 +267,64 @@ void DrawMixingSwitch(ImVec2 header, SongView& song, bool busy)
     }
 }
 
-// The engines that the switch of the mixer offers: those of the later consoles and of the DS, and the engine of the
-// file for a file of a GBA driver or of DSE. No other sound plays on those engines.
-std::vector<int> SwitchEngines(const SongView& song)
+// A segment of the mixer's engine switch: a console, and the engines of the console that can play the shown sound. A
+// segment with more than one engine opens a menu of their drivers.
+struct EngineSegment
 {
+    format::Platform console;
     std::vector<int> engines;
+};
+
+// The segments of the mixer's engine switch, in the order of format::Platform: the consoles whose engines play the
+// sounds of other consoles, and the console of the file. A segment holds those engines of its console, and the file's
+// engine first. A file of DSE gives the DS's segment DSE and NITRO-Composer. A file of another driver of the GBA gives
+// the GBA's segment that driver alone. No other sound plays on DSE or on those drivers.
+std::vector<EngineSegment> SwitchSegments(const SongView& song)
+{
+    std::vector<EngineSegment> segments;
     for (const format::EngineFacts& facts : format::kEngineFacts)
     {
-        if (facts.hosts_other_consoles && facts.engine != format::Engine::kDs)
+        const int engine = static_cast<int>(facts.engine);
+        if (!facts.hosts_other_consoles && engine != song.file_engine)
         {
-            engines.push_back(static_cast<int>(facts.engine));
+            continue;
         }
+        auto segment = std::ranges::find(segments, facts.platform, &EngineSegment::console);
+        if (segment == segments.end())
+        {
+            segment = segments.insert(segments.end(), EngineSegment{.console = facts.platform, .engines = {}});
+        }
+        segment->engines.insert(engine == song.file_engine ? segment->engines.begin() : segment->engines.end(), engine);
     }
+    std::ranges::sort(segments, {}, &EngineSegment::console);
 
-    // The DS engine comes last, after the engine of the file.
-    if (!format::FactsOf(static_cast<format::Engine>(song.file_engine)).hosts_other_consoles)
-    {
-        engines.push_back(song.file_engine);
-    }
-    engines.push_back(static_cast<int>(format::Engine::kDs));
-
-    return engines;
+    return segments;
 }
 
 // What the tooltip of engine `engine` of the mixer's switch says.
 std::string EngineTip(const SongView& song, int engine)
 {
     const auto index = static_cast<std::size_t>(engine);
-    const EngineRow& row = RowOf(static_cast<format::Engine>(engine));
-    const std::string console = row.label;
-    const std::string file = RowOf(static_cast<format::Engine>(song.file_engine)).label;
-    const format::Driver* file_driver = format::DriverOf(static_cast<format::Engine>(song.file_engine));
+    const auto shown = static_cast<format::Engine>(engine);
+    const auto file = static_cast<format::Engine>(song.file_engine);
+    const std::string library = RowOf(shown).library;
     if (!song.engine_refused[index].empty())
     {
         return song.engine_refused[index];
     }
     if (engine == song.file_engine)
     {
-        return "Play the sound on its original engine: " + std::string(row.library) + ". It plays as in the game.";
+        return "Play the sound on its original engine: " + library + ". It plays as in the game.";
     }
 
-    std::string tip = "Play the sound on the " + console + " engine: " + row.library +
+    std::string tip = "Play the sound on " + TheEngine(shown) + ": " + library +
                       ". Hokuto plays the conversion that File > Export > Another Console… writes. The file keeps the "
                       "sound for " +
-                      (file_driver != nullptr ? std::string(file_driver->Facts().title) : TheConsole(file)) + ".";
+                      TheConsole(EngineName(file)) + ".";
     if (engine == song.failed_engine && !song.engine_error.empty())
     {
-        tip += "\n\nCan't convert the sound. " + format::AsSentence(song.engine_error) + " It plays on the " + file +
-               " engine.";
+        tip += "\n\nCan't convert the sound. " + format::AsSentence(song.engine_error) + " It plays on " +
+               TheEngine(file) + ".";
     }
     else if (engine == song.engine && !song.engine_notes.empty())
     {
@@ -325,48 +337,136 @@ std::string EngineTip(const SongView& song, int engine)
     return tip;
 }
 
-// Draws the switch between the engines that can play the shown sound in the mixer's header at `header`, after the
-// switch of the mixing modes. A click on another engine sets the song's `engine_request`. Each engine's tooltip says
-// how it plays the sound, or why it can't. The cursor stays where it was.
+// What the tooltip of segment `segment` of the mixer's switch says. A segment of one engine gives the engine's tooltip.
+// A segment with a menu says what the menu chooses, and gives the tooltip of its engine that plays the sound.
+std::string SegmentTip(const SongView& song, const EngineSegment& segment)
+{
+    if (segment.engines.size() == 1)
+    {
+        return EngineTip(song, segment.engines.front());
+    }
+
+    std::string tip = std::string("Choose the driver that plays the sound on the ") +
+                      ConsoleName(static_cast<format::Engine>(segment.engines.front())) + ".";
+    if (std::ranges::find(segment.engines, song.engine) != segment.engines.end())
+    {
+        tip += "\n\n" + EngineTip(song, song.engine);
+    }
+
+    return tip;
+}
+
+// The menu of the drivers of segment `segment`. It opens under the segment's switch at `below`. A choice of another
+// engine that can play the sound sets the song's `engine_request`. Each driver's tooltip says how it plays the sound,
+// or why it can't.
+void DrawDriverMenu(SongView& song, const EngineSegment& segment, ImVec2 below, bool busy)
+{
+    ImGui::SetNextWindowPos(below, ImGuiCond_Appearing);
+    if (!ImGui::BeginPopup("##drivers"))
+    {
+        return;
+    }
+
+    PushMenuSpacing();
+    for (const int engine : segment.engines)
+    {
+        const bool refused = !song.engine_refused[static_cast<std::size_t>(engine)].empty();
+        if (ImGui::MenuItem(DriverName(static_cast<format::Engine>(engine)), nullptr, engine == song.engine,
+                            !refused) &&
+            !busy && engine != song.engine)
+        {
+            song.engine_request = engine;
+        }
+        ItemTooltip(EngineTip(song, engine));
+    }
+    ImGui::PopStyleVar();
+    ImGui::EndPopup();
+}
+
+// Draws the switch between the consoles whose engines can play the shown sound in the mixer's header at `header`,
+// after the switch of the mixing modes. A click on a console of one engine sets the song's `engine_request`. A console
+// of several engines shows a chevron, and a click opens the menu of its drivers. Each segment's tooltip says how its
+// engine plays the sound, or why it can't. The cursor stays where it was.
 void DrawEngineSwitch(ImVec2 header, SongView& song, bool busy)
 {
-    const std::vector<int> engines = SwitchEngines(song);
+    const std::vector<EngineSegment> segments = SwitchSegments(song);
     std::vector<std::string> labels;
     std::vector<uint8_t> lit;
     std::vector<uint8_t> disabled;
-    for (const int engine : engines)
+    for (const EngineSegment& segment : segments)
     {
-        const auto index = static_cast<std::size_t>(engine);
-        labels.emplace_back(RowOf(static_cast<format::Engine>(engine)).label);
-        lit.push_back(engine == song.engine ? 1 : 0);
-        disabled.push_back(song.engine_refused[index].empty() ? 0 : 1);
+        labels.emplace_back(ConsoleName(static_cast<format::Engine>(segment.engines.front())));
+        lit.push_back(std::ranges::find(segment.engines, song.engine) != segment.engines.end() ? 1 : 0);
+        disabled.push_back(
+            std::ranges::all_of(segment.engines, [&song](int engine)
+                                { return !song.engine_refused[static_cast<std::size_t>(engine)].empty(); })
+                ? 1
+                : 0);
     }
     const float title = TextSize(theme::GetFonts().strong, theme::kTextSize, "Mixer").x;
-    const float width = kEngineSwitchWidth * static_cast<float>(engines.size()) / 4.0f;
+    const float width = kEngineSwitchWidth * static_cast<float>(segments.size()) / 4.0f;
     const ImVec2 size(Px(width), Px(kMixingSwitchHeight));
     const ImVec2 pos(
         std::floor(header.x + Px(14.0f) + title + Px(kMixingSwitchGap) + Px(kMixingSwitchWidth) + Px(kMixingSwitchGap)),
         std::floor(header.y + (Px(kHeaderHeight) - size.y) * 0.5f));
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
     ImGui::SetCursorScreenPos(pos);
-    const int segment = SegmentedSwitch("##engine", labels, lit, size, disabled);
-    const int clicked = segment >= 0 ? engines[static_cast<std::size_t>(segment)] : -1;
+    const int clicked = SegmentedSwitch("##engine", labels, lit, size, disabled);
     ImGui::SetCursorScreenPos(cursor);
 
-    // The engine under the mouse says how it plays the sound, or why it can't.
+    // A segment with a menu shows a chevron at its right, like a menu's button. SegmentedSwitch divides the strip
+    // inside its 2-point inset evenly.
+    const float inset = Px(2.0f);
+    const float segment_width = (size.x - inset * 2.0f) / static_cast<float>(segments.size());
+    const float chevron = Px(8.0f);
+    for (std::size_t i = 0; i < segments.size(); i++)
+    {
+        if (segments[i].engines.size() > 1)
+        {
+            const float right = std::floor(pos.x + inset + segment_width * static_cast<float>(i + 1));
+            DrawIcon(ImGui::GetWindowDrawList(), Icon::kChevronDown,
+                     ImVec2(right - Px(6.0f) - chevron * 0.5f, pos.y + size.y * 0.5f), chevron,
+                     disabled[i] != 0 ? theme::kTextDim : theme::kTextMuted);
+        }
+    }
+
+    // The segment under the mouse says how its engine plays the sound, or why it can't.
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool over = ImGui::IsWindowHovered() && mouse.y >= pos.y && mouse.y < pos.y + size.y && mouse.x >= pos.x &&
                       mouse.x < pos.x + size.x;
-    if (over && !ImGui::IsAnyMouseDown())
+    if (over && !ImGui::IsAnyMouseDown() && !ImGui::IsPopupOpen("##drivers"))
     {
-        const auto under = static_cast<int>((mouse.x - pos.x) / size.x * static_cast<float>(labels.size()));
-        const int place = std::clamp(under, 0, static_cast<int>(labels.size()) - 1);
-        WrappedTooltip(EngineTip(song, engines[static_cast<std::size_t>(place)]));
+        const auto under = static_cast<int>((mouse.x - pos.x) / size.x * static_cast<float>(segments.size()));
+        const int place = std::clamp(under, 0, static_cast<int>(segments.size()) - 1);
+        WrappedTooltip(SegmentTip(song, segments[static_cast<std::size_t>(place)]));
     }
-    if (!busy && clicked >= 0 && clicked != song.engine &&
-        song.engine_refused[static_cast<std::size_t>(clicked)].empty())
+
+    // The window's storage keeps the console whose menu is open. Another file can show other segments. A console that
+    // no longer has a menu draws none.
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    const ImGuiID menu_console = ImGui::GetID("##drivers console");
+    if (clicked >= 0)
     {
-        song.engine_request = clicked;
+        const EngineSegment& segment = segments[static_cast<std::size_t>(clicked)];
+        if (segment.engines.size() > 1)
+        {
+            storage->SetInt(menu_console, static_cast<int>(segment.console));
+            ImGui::OpenPopup("##drivers");
+        }
+        else if (!busy && segment.engines.front() != song.engine &&
+                 song.engine_refused[static_cast<std::size_t>(segment.engines.front())].empty())
+        {
+            song.engine_request = segment.engines.front();
+        }
+    }
+    const auto open =
+        std::ranges::find_if(segments, [&](const EngineSegment& segment)
+                             { return static_cast<int>(segment.console) == storage->GetInt(menu_console, -1); });
+    if (open != segments.end() && open->engines.size() > 1)
+    {
+        const float left =
+            std::floor(pos.x + inset + segment_width * static_cast<float>(std::distance(segments.begin(), open)));
+        DrawDriverMenu(song, *open, ImVec2(left, pos.y + size.y + Px(2.0f)), busy);
     }
 }
 

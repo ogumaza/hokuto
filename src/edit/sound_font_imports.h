@@ -21,6 +21,9 @@
 namespace hokuto::edit
 {
 
+// The message with which an import refuses a SoundFont without presets.
+inline constexpr std::string_view kSoundFontWithoutPresets = "The SoundFont has no presets.";
+
 // Whether `bytes` start as a SoundFont 2 file does: a RIFF file of the form sfbk.
 bool IsSoundFont(std::span<const uint8_t> bytes);
 

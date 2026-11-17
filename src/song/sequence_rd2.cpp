@@ -2,9 +2,9 @@
 
 // The reader of the songs of R&D2's GBA driver.
 
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/agb/settings.h"
+#include "agblib/sequence_export/rd2/performance.h"
 #include "ntdlib/sequence_export/instruments.h"
-#include "ntdlib/sequence_export/rd2/performance.h"
 
 #include "song/rd2.h"
 #include "song/sequence_parts.h"
@@ -28,18 +28,19 @@ Sequence ReadSequence(const Rd2Rom& rom, uint32_t sound)
 {
     const std::string name = rom.SoundName(sound);
     const int song = rom.SongOf(sound);
-    if (song < 0 || song >= ntdlib::rd2::SongCount(rom.info))
+    if (song < 0 || song >= agblib::rd2::SongCount(rom.info))
     {
         throw std::runtime_error("The ROM has no song " + std::to_string(sound) + ".");
     }
 
     // The performer plays one pass of the loop.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     settings.version = rom.VersionOf(sound);
     try
     {
-        const export_::rd2::Performance performance = export_::rd2::PerformSong(rom.rom, rom.info, song, settings);
+        const agblib::sequence_export::rd2::Performance performance =
+            agblib::sequence_export::rd2::PerformSong(rom.rom, rom.info, song, settings);
 
         Sequence sequence = SequenceHead(performance, name, sound);
         sequence.driver = &rom.Rules();

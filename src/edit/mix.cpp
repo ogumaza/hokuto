@@ -259,14 +259,13 @@ void CheckMixable(const song::Console& console, int track, Mix setting)
 
     if (!song::Runs(console, KindOf(setting), BusOf(setting).value_or(0)))
     {
+        const bool driver_setting = console.engine != format::Engine::kGba &&
+                                    console.engine != format::Engine::kDse && console.driver;
         throw std::invalid_argument(
-            console.engine == format::Engine::kGba   ? "GBA tracks have no effect sends."
-            : console.engine == format::Engine::kDse ? "DSE tracks have no effect sends."
-            : console.driver && setting == Mix::kVolume
+            driver_setting && setting == Mix::kVolume
                 ? "Tracks of " + std::string(console.driver->Title()) + " have no volume."
-            : console.driver && setting == Mix::kPan ? EditsOf(*console.driver).RefusedPan(*console.driver)
-            : console.driver ? "Tracks of " + std::string(console.driver->Title()) + " have no effect sends."
-                             : "3DS tracks send only to FX A and FX B.");
+            : driver_setting && setting == Mix::kPan ? EditsOf(*console.driver).RefusedPan(*console.driver)
+                                                     : RefusedSend(console));
     }
 }
 
@@ -480,9 +479,7 @@ MixEdited EditMix(const format::File& file, uint32_t sequence, int track, std::s
     const bool level = edit.setting != Mix::kPan;
     if (trim && level && edit.from <= 0)
     {
-        throw std::invalid_argument(name +
-                                    " is at -∞ dB at this point and changes as the track plays. Change it at a "
-                                    "point where it's above -∞ dB.");
+        throw std::invalid_argument(RefusedSilentTrim(edit.setting));
     }
 
     const MixScale scale{edit, trim, level, lowest, highest};
@@ -509,6 +506,20 @@ MixEdited EditMix(const format::File& file, uint32_t sequence, int track, std::s
     }
 
     return MixEdited{Writable(file, std::move(result), sequence), stopped};
+}
+
+std::string RefusedSend(const song::Console& console)
+{
+    return console.engine == format::Engine::kGba   ? "GBA tracks have no effect sends."
+           : console.engine == format::Engine::kDse ? "DSE tracks have no effect sends."
+           : console.driver ? "Tracks of " + std::string(console.driver->Title()) + " have no effect sends."
+                            : "3DS tracks send only to FX A and FX B.";
+}
+
+std::string RefusedSilentTrim(Mix setting)
+{
+    return NameOf(setting) +
+           " is at -∞ dB at this point and changes as the track plays. Change it at a point where it's above -∞ dB.";
 }
 
 } // namespace hokuto::edit

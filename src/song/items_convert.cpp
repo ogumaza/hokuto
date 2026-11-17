@@ -20,6 +20,7 @@
 #include "ntdlib/sar/byte_order.h"
 #include "ntdlib/sar/sequence_file.h"
 #include "ntdlib/sar/wave_file.h"
+#include "xsflib/bytes.h"
 
 #include "song/archive.h"
 #include "song/items.h"
@@ -125,14 +126,7 @@ std::optional<uint32_t> HeaderVersion(std::span<const uint8_t> file)
         return std::nullopt;
     }
 
-    uint32_t version = 0;
-    for (std::size_t i = 0; i < 4; i++)
-    {
-        const uint32_t byte = file[kVersion + (*big ? i : 3 - i)];
-        version = version << 8 | byte;
-    }
-
-    return version;
+    return *big ? xsflib::LoadBe32(&file[kVersion]) : xsflib::LoadLe32(&file[kVersion]);
 }
 
 sar::Flavor OtherConsole(sar::Flavor flavor)

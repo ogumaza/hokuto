@@ -2,14 +2,14 @@
 
 // The revision and the ticks of Quintet's GBA driver in a Hokuto file (format/quintet.h).
 
-#include "format/quintet.h"
-
 #include <stdexcept>
+
+#include "format/quintet.h"
 
 namespace hokuto::format
 {
 
-std::optional<uint8_t> QuintetRevision(const ntdlib::quintet::Traits& traits)
+std::optional<uint8_t> QuintetRevision(const agblib::quintet::Traits& traits)
 {
     if (traits.byte_notes)
     {
@@ -32,7 +32,7 @@ bool QuintetTimed(ntdlib::commands::Kind kind)
 ntdlib::commands::Scale QuintetScale(ntdlib::commands::Kind kind)
 {
     return QuintetTimed(kind) ? ntdlib::commands::Scale{kQuintetSongTicks * ntdlib::commands::kOne, 0}
-                              : ntdlib::quintet::ScaleOf(kind);
+                              : agblib::quintet::ScaleOf(kind);
 }
 
 bool QuintetFoldsDot(const ntdlib::commands::Sequence& sequence, std::size_t item)
@@ -164,9 +164,9 @@ std::vector<uint32_t> QuintetFoldedOffsets(const ntdlib::commands::Sequence& seq
     return folded;
 }
 
-ntdlib::quintet::Traits QuintetTraits(uint8_t revision)
+agblib::quintet::Traits QuintetTraits(uint8_t revision)
 {
-    ntdlib::quintet::Traits traits;
+    agblib::quintet::Traits traits;
     traits.byte_notes = revision == 1;
     if (!traits.byte_notes)
     {

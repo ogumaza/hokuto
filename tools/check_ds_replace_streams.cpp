@@ -100,18 +100,11 @@ void CheckOtherFilesStay(const Game& game, const sdat::Archive& after, uint32_t 
     }
 }
 
-// The message with which edit::WithDsFile (src/edit/ds_files.cpp) refuses an edit that changes the size of an archive
-// that shares its file in the image with other data. No constant contains it. This copy has to follow that one, and a
-// change of the refusal fails the check.
-constexpr std::string_view kSharedFileRefusal =
-    "Can't change the size of the sound archive. It shares its file in the image with other data, and Hokuto can't "
-    "move that data.";
-
 // Whether `error`, from an edit that changes the size of the game's archive, is the refusal of a new size that the
 // archive makes when it shares its file in the image.
 bool RefusesNewSize(const Game& game, const std::exception& error)
 {
-    return game.shares_file && std::string_view(error.what()) == kSharedFileRefusal;
+    return game.shares_file && std::string_view(error.what()) == hokuto::edit::kDsSharedFileRefusal;
 }
 
 constexpr double kFloorDb = 15.0;

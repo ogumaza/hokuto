@@ -70,6 +70,11 @@ void SetDseTuning(DseSplit& split, int tuning);
 int DseSplitWave(const DseSplit& split);
 void SetDseSplitWave(DseSplit& split, int wave);
 
+// The format of wave `info`: 0 for PCM8, 1 for PCM16, 2 for IMA-ADPCM, and higher for a square wave or noise. The
+// driver reads the high byte of WaveInfo::Format. The setter keeps the low byte.
+uint8_t DseWaveFormat(const ntdlib::dse::WaveInfo& info);
+void SetDseWaveFormat(ntdlib::dse::WaveInfo& info, uint8_t format);
+
 // A split of a DSE bank: the index of the bank among the banks of the set, the program, and the index of the split
 // among the splits of the program.
 struct DseSplitPlace

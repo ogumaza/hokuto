@@ -60,9 +60,9 @@ std::set<int> GbaChannelsOf(const Archive& archive, uint32_t song, const song::T
                             const edit::Program& to, uint32_t& voices)
 {
     std::set<int> channels;
-    ntdlib::mp2k::SongHeader header;
+    agblib::mp2k::SongHeader header;
     if (!archive.archive.gba ||
-        !ntdlib::mp2k::ReadSong(archive.archive.gba->rom, archive.archive.gba->info, static_cast<int>(song), header))
+        !agblib::mp2k::ReadSong(archive.archive.gba->rom, archive.archive.gba->info, static_cast<int>(song), header))
     {
         return channels;
     }

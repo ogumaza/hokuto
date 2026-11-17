@@ -245,11 +245,6 @@ Source SourceOf(std::span<const uint8_t> bytes, uint32_t start_offset, const std
     return source;
 }
 
-bool Untracked(const Source& source, const sar::SoundInfo& info)
-{
-    return (edit::TracksOpened(source.incoming.sequence, *source.start) & ~info.allocate_track_flags) != 0;
-}
-
 song::Sequence Placeless(song::Sequence played)
 {
     played.name.clear();
@@ -272,18 +267,6 @@ song::Sequence Placeless(song::Sequence played)
 song::Sequence Played(const sar::SoundArchive& archive, uint32_t sound, const song::StartValues& values)
 {
     return Placeless(song::ReadSequence(archive, sound, values));
-}
-
-bool StartsAtLabel(const sar::SoundArchive& archive, uint32_t sound)
-{
-    const sar::SoundInfo& info = archive.Sounds()[sound];
-    const std::vector<sar::Sequence::Label> labels = sar::SequenceFile::Read(archive.FileData(info.file_id)).labels;
-    const auto at_start = [&info](const sar::Sequence::Label& label)
-    {
-        return label.offset == info.start_offset;
-    };
-
-    return std::ranges::any_of(labels, at_start);
 }
 
 bool SameUpToLoop(const song::Sequence& before, const song::Sequence& after)
@@ -394,12 +377,9 @@ std::string ReplacedProblem(const sar::SoundArchive& built, std::span<const Grou
             return "changes file " + std::to_string(id);
         }
     }
-    for (std::size_t i = 0; i < built.Sounds().size(); i++)
+    if (std::string problem = MovedStartProblem(built, *after); !problem.empty())
     {
-        if (after->Sounds()[i].start_offset != built.Sounds()[i].start_offset)
-        {
-            return "moves the start of " + built.Sounds()[i].name;
-        }
+        return problem;
     }
 
     // Each copy of the file in the group files beside the archive holds the new bytes, with the old copy's places where

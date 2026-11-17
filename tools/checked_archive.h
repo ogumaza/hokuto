@@ -33,25 +33,27 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/brownie/commands.h"
-#include "ntdlib/brownie/driver.h"
+#include "agblib/agb/gba.h"
+#include "agblib/agb/rom.h"
+#include "agblib/brownie/commands.h"
+#include "agblib/brownie/driver.h"
+#include "agblib/konami/commands.h"
+#include "agblib/konami/seqformat.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/driver.h"
+#include "agblib/mp2k/layout.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/rd2/sequencer.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/layout.h"
-#include "ntdlib/konami/commands.h"
-#include "ntdlib/konami/seqformat.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/driver.h"
-#include "ntdlib/mp2k/layout.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/rd2/sequencer.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/string_block.h"
+#include "ntdlib/sar/tables.h"
 #include "ntdlib/sound_build.h"
 #include "xsflib/files.h"
 
@@ -268,6 +270,11 @@ ntdlib::ntr::snd::Build DsBuildOfChecked(const format::File& file);
 
 // Whether `bytes` hold an archive of the Wii.
 bool IsWiiArchive(std::span<const uint8_t> bytes);
+
+// A name that no item of `archive`, an archive of `flavor`, holds: `stem`, with underscores after it while an item
+// holds the name. Nothing for an archive without names: it has no STRG block.
+std::optional<std::string> FreeName(std::span<const uint8_t> archive, ntdlib::sar::Flavor flavor,
+                                    const std::string& stem);
 
 // The game's build of NW4R SND for the Wii archive at `path`, as the program's import reads it: from sys/main.dol of
 // the extracted disc that holds the archive (song::FindMainDol and song::ReadWiiBuild). Nothing when there's no such

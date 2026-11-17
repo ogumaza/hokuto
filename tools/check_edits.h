@@ -6,6 +6,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -14,7 +15,9 @@
 #include <filesystem>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -23,9 +26,11 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/konami/seqformat.h"
+#include "agblib/konami/sequencer.h"
+#include "agblib/quintet/song.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/quintet/song.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
@@ -46,6 +51,7 @@
 #include "loop_passes.h"
 #include "notes_apart.h"
 #include "song/archive.h"
+#include "song/konami.h"
 #include "song/sequence.h"
 #include "song/ubimilan.h"
 
@@ -209,10 +215,24 @@ bool StartedAgain(const Sequence& read, const Played& note);
 bool StartedElsewhere(const File& file, uint32_t sequence, const Sequence& read, const Played& note,
                       std::map<int, std::set<std::pair<uint32_t, uint32_t>>>& rows);
 
-// Whether `read`, a song of Konami's driver, plays `note` on a PSG track of the Eternal Duelist or Captain Tsubasa
-// revision inside a longer note. Those revisions start a PSG note again only for a new volume. Otherwise the note that
-// sounds takes the new pitch. An edit of a volume, or a note's removal, can therefore join two notes or part them.
-bool JoinsPsgNote(const Sequence& read, const Played& note, const hokuto::song::Console& console);
+// The places where a PSG note command of sound `sound` of `rom`, a ROM with Konami's driver, moves the pitch of the note
+// that sounds and starts no new note, by track and tick, up to tick `end`. The Eternal Duelist revision starts a PSG
+// note again only for a new volume (agblib's konami::Wct2004Sequencer, Op::kPsgNote). The places come from agblib's
+// sequencer: in the frame of the tick, the track runs a PSG note command, and the track's output doesn't start its
+// channel. The other revisions start a PSG note at each command, and have no such place.
+std::set<std::pair<int, uint32_t>> PsgPitchMoves(const hokuto::song::KonamiRom& rom, uint32_t sound, uint32_t end);
+
+// Whether `read`, a song of Konami's driver, plays `note` inside a longer note of its track, where `pitch_moves`
+// (PsgPitchMoves) holds the note's track and tick. The note that sounds there takes the new pitch, and no note starts.
+// An edit of a volume, or a note's removal, can therefore join two notes or part them.
+bool JoinsPsgNote(const std::set<std::pair<int, uint32_t>>& pitch_moves, const Sequence& read, const Played& note);
+
+// Whether `read`, a song of Konami's driver, plays `note` at its track, tick and key with a note command of the track
+// before. A volume command can start a PSG channel again in a frame where the track before runs a note command.
+// ntdlib's performer then names that command for the note: the track before can play on the channel. A move of that
+// command into the frame changes the command that the note names, and its velocity and length with it. The channel
+// plays the same.
+bool NamedByTrackBefore(const Sequence& read, const Played& note);
 
 // Whether `note` of `read`, a song of Konami's driver, comes from the track before it. In the revisions whose records
 // hold a pan, a PSG track off centre plays its left side on the next channel, in place of the next track. The note then

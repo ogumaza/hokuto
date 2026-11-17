@@ -14,10 +14,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/krawall/commands.h"
+#include "agblib/krawall/instruments.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/krawall/instruments.h"
 
 #include "edit/bytecode.h"
 #include "edit/commands.h"
@@ -64,7 +64,7 @@ void MakeNoteOff(Command& command, bool keep_instrument)
     }
 }
 
-// The effects of Krawall that the edits look for, by the numbers of ntdlib's player (ntdlib/src/krawall/player.cpp).
+// The effects of Krawall that the edits look for, by the numbers of agblib's player (agblib/src/krawall/player.cpp).
 constexpr uint8_t kPortaNote = 19;
 constexpr uint8_t kVolumeSlidePorta = 24;
 constexpr uint8_t kOffset = 27;
@@ -120,7 +120,7 @@ std::vector<uint32_t> EchoesOf(const Sequence& commands, uint32_t from, bool ins
     for (uint32_t i = from + 1; i < commands.items.size(); i++)
     {
         const Command& command = commands.items[i];
-        if ((command.kind == Kind::kOther && command.encoding.opcode == ntdlib::krawall::kPatternOpcode) ||
+        if ((command.kind == Kind::kOther && command.encoding.opcode == agblib::krawall::kPatternOpcode) ||
             (command.kind == Kind::kNote && command.index == channel && !SlidesOnly(commands, i)))
         {
             break;
@@ -166,7 +166,7 @@ Edited WithoutItems(const format::File& file, uint32_t sequence, Sequence after,
             wait = item;
             kept = false;
         }
-        else if (command.kind == Kind::kOther && command.encoding.opcode == ntdlib::krawall::kPatternOpcode)
+        else if (command.kind == Kind::kOther && command.encoding.opcode == agblib::krawall::kPatternOpcode)
         {
             wait.reset();
             kept = false;
@@ -420,7 +420,7 @@ void EditKrawallNote(const Sequence& before, const std::vector<uint32_t>& offset
     if (edit.transpose != 0)
     {
         const int key = note.key + edit.transpose;
-        if (key < 1 || key > ntdlib::krawall::kInstrumentNotes)
+        if (key < 1 || key > agblib::krawall::kInstrumentNotes)
         {
             throw std::invalid_argument("Krawall's notes run from C-0 to B-7. Transpose this note by less.");
         }

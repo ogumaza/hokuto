@@ -266,25 +266,6 @@ uint16_t FirstSequenceVersion(const rsar::ArchiveModel& archive)
     return 0x0100;
 }
 
-// A new sound with the values of `copied` that a new wave or stream sound inherits from its model: the player, the
-// volume, the player priority, the remote filter, the user parameters, the pan mode and curve, the actor player and the
-// 3D settings (AddWiiWaveSounds and AddWiiStreamSound).
-rsar::SoundModel CopiedSoundValues(const rsar::SoundModel& copied)
-{
-    rsar::SoundModel sound;
-    sound.player_id = copied.player_id;
-    sound.volume = copied.volume;
-    sound.player_priority = copied.player_priority;
-    sound.remote_filter = copied.remote_filter;
-    sound.user_params = copied.user_params;
-    sound.pan_mode = copied.pan_mode;
-    sound.pan_curve = copied.pan_curve;
-    sound.actor_player_id = copied.actor_player_id;
-    sound.settings_3d = copied.settings_3d;
-
-    return sound;
-}
-
 } // namespace
 
 format::File AddWiiSequenceSound(const format::File& file, std::optional<uint32_t> model, const std::string& name,
@@ -427,19 +408,12 @@ format::File AddWiiWaveSounds(const format::File& file, uint32_t model, const st
     const auto id = static_cast<uint32_t>(archive.files.size());
     archive.files.push_back({.bytes = Padded(bytes), .wave_data = Padded(wave_data)});
     const std::vector<uint32_t> model_files = WiiFilesOfSound(archive, model);
-    const rsar::SoundModel& copied = archive.sounds[model];
-    rsar::SoundModel sound = CopiedSoundValues(copied);
-    sound.channel_priority = copied.channel_priority;
-    sound.release_priority_fix = copied.release_priority_fix;
-    sound.allocate_track_count = copied.type == rsar::SoundType::kWaveSound ? copied.allocate_track_count : 1;
-    sound.type = rsar::SoundType::kWaveSound;
-    sound.file_id = id;
+    std::vector<rsar::NewWaveSound> sounds;
     for (std::size_t i = 0; i < count; ++i)
     {
-        sound.name = names[i];
-        sound.wave_sound_index = static_cast<int32_t>(i);
-        archive.sounds.push_back(sound);
+        sounds.push_back({.model = model, .name = names[i], .file_id = id, .index = static_cast<int32_t>(i)});
     }
+    archive = rsar::WithNewWaveSounds(std::move(archive), sounds);
 
     JoinWiiGroups(archive, groups, std::span(&id, 1), model_files);
 
@@ -604,13 +578,12 @@ format::File AddWiiStreamSound(const format::File& file, uint32_t model, const s
     // The new file beside the archive, and the sound. Its entry names every channel and track of the stream.
     const auto id = static_cast<uint32_t>(archive.files.size());
     archive.files.push_back({.path = stream.path, .path_size = static_cast<uint32_t>(stream.bytes.size())});
-    const rsar::SoundModel& copied = archive.sounds[model];
-    rsar::SoundModel sound = CopiedSoundValues(copied);
-    sound.name = name;
-    sound.type = rsar::SoundType::kStream;
-    sound.file_id = id;
-    std::tie(sound.allocate_channel_count, sound.stream_track_flags) = WiiStreamAllocations(archive.version, read);
-    archive.sounds.push_back(std::move(sound));
+    const std::pair<uint16_t, uint16_t> allocations = WiiStreamAllocations(archive.version, read);
+    archive = rsar::WithNewStreamSound(std::move(archive), {.model = model,
+                                                            .name = name,
+                                                            .file_id = id,
+                                                            .allocate_channel_count = allocations.first,
+                                                            .stream_track_flags = allocations.second});
 
     // The file keeps the stream as Hokuto's. The archive's other streams stay.
     const auto keep_stream = [id, &stream](format::NativeArchive& native)

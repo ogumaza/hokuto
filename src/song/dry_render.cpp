@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
 
 #include "audio/resampler.h"
 #include "song/gba.h"
@@ -54,12 +54,12 @@ std::shared_ptr<const GbaRom> WithoutReverb(const GbaRom& rom, uint32_t sound)
 {
     auto dry = std::make_shared<GbaRom>(rom);
     dry->info.reverb = 0;
-    ntdlib::mp2k::SongHeader header;
-    if (ntdlib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(sound), header))
+    agblib::mp2k::SongHeader header;
+    if (agblib::mp2k::ReadSong(rom.rom, rom.info, static_cast<int>(sound), header))
     {
-        const uint8_t* start = rom.rom.Ptr(ntdlib::agb::kRomBase);
+        const uint8_t* start = rom.rom.Ptr(agblib::agb::kRomBase);
         std::vector<uint8_t> image(start, start + rom.rom.Size());
-        image[header.address + 3 - ntdlib::agb::kRomBase] = 0x80;
+        image[header.address + 3 - agblib::agb::kRomBase] = 0x80;
         dry->rom.Assign(std::move(image));
     }
 

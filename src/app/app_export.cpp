@@ -374,6 +374,9 @@ bool Converts(const format::File& file, uint32_t sound)
 
 void App::StartExport(ExportTarget target)
 {
+    // The export takes an item's edit whose work still runs.
+    TakeItemEdit(true);
+
     const format::File* document = Document();
     const bool from_sequence = target != ExportTarget::kSoundArchive;
     const bool midi = target == ExportTarget::kMidiSoundFont || target == ExportTarget::kMidiSfz;
@@ -652,7 +655,7 @@ void App::DrawExport()
     // An export to MIDI or to the other console measures what it would sound like, once its files are made
     // (StartMeasure). Export… doesn't wait for the measure.
     const bool midi = export_->Target() == ExportTarget::kMidiSoundFont || export_->Target() == ExportTarget::kMidiSfz;
-    const bool measures = (midi || SongEngineOf(export_->Target()).has_value()) && export_->view.refused.empty();
+    const bool measures = Measures(export_->view);
     if (measures && export_->done && (!midi || export_->done->conversion) && !export_->measure.valid() &&
         !export_->measured)
     {

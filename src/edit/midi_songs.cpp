@@ -364,29 +364,12 @@ bool Holds(uint8_t status, uint8_t data, uint8_t value, const MidiOptions& optio
     }
 }
 
-void PlaceNoteOn(MidiTrack& track, uint64_t tick, uint8_t channel, uint8_t data, uint8_t value,
-                 const MidiOptions& options)
+void PlaceNoteOn(MidiTrack& track, uint64_t tick, uint8_t data, uint8_t value)
 {
     Command note;
     note.kind = Kind::kNote;
     note.key = data;
     note.velocity = int64_t{value} * kOne;
-    if (channel == kDrumChannel && options.drum_notes != nullptr && !options.drum_notes->empty())
-    {
-        // A pairing sets the program and the key of the note. The program stays selected for the next note. A note
-        // without a pairing selects the file's program again.
-        const auto paired = options.drum_notes->find(data);
-        const bool found_pair = paired != options.drum_notes->end();
-        const int program = found_pair ? paired->second.program : track.file_program;
-        if (program != track.played_program)
-        {
-            track.Add(tick, Setting(Kind::kProgram, int64_t{program} * kOne));
-            track.played_program = program;
-        }
-
-        note.key = found_pair ? static_cast<uint8_t>(paired->second.key) : data;
-    }
-
     track.sounding[data].push_back(track.placed.size());
     track.Add(tick, note);
 }
@@ -485,8 +468,6 @@ void PlaceControlChange(MidiTrack& track, uint64_t tick, uint8_t status, uint8_t
 void PlaceProgramChange(MidiTrack& track, uint64_t tick, uint8_t data)
 {
     track.Add(tick, Setting(Kind::kProgram, (int64_t{track.bank} * kBankPrograms + data) * kOne));
-    track.file_program = track.bank * kBankPrograms + data;
-    track.played_program = track.file_program;
 }
 
 void PlacePitchBend(MidiTrack& track, uint64_t tick, uint8_t data, uint8_t value)

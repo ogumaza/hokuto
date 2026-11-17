@@ -14,9 +14,9 @@
 #include <variant>
 #include <vector>
 
+#include "agblib/krawall/commands.h"
+#include "agblib/krawall/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/krawall/commands.h"
-#include "ntdlib/krawall/driver.h"
 #include "ntdlib/sar/layout.h"
 
 #include "edit/bytecode.h"
@@ -30,7 +30,7 @@ namespace
 
 using ntdlib::commands::Kind;
 
-// The effects that send the rows elsewhere, by the numbers of ntdlib's player (ntdlib/src/krawall/player.cpp).
+// The effects that send the rows elsewhere, by the numbers of agblib's player (agblib/src/krawall/player.cpp).
 constexpr uint8_t kPatternJump = 4;
 constexpr uint8_t kPatternBreak = 5;
 constexpr uint8_t kPatternLoop = 43;
@@ -51,7 +51,7 @@ std::set<uint32_t> PatternsAtOrder(const ModuleHeader& module, uint32_t order)
     std::set<uint32_t> patterns;
     const auto add = [&](uint32_t at)
     {
-        while (at < module.order_count && module.orders[at] == ntdlib::krawall::kOrderSkip)
+        while (at < module.order_count && module.orders[at] == agblib::krawall::kOrderSkip)
         {
             at++;
         }
@@ -62,7 +62,7 @@ std::set<uint32_t> PatternsAtOrder(const ModuleHeader& module, uint32_t order)
     };
 
     bool marker = false;
-    while (order < module.order_count && module.orders[order] == ntdlib::krawall::kOrderSkip)
+    while (order < module.order_count && module.orders[order] == agblib::krawall::kOrderSkip)
     {
         order++;
         marker = true;
@@ -315,13 +315,13 @@ private:
 std::optional<uint8_t> EffectOf(const Command& command)
 {
     const uint16_t opcode = command.encoding.opcode;
-    if (command.kind != Kind::kOther || opcode < ntdlib::krawall::kEffectOpcode ||
-        opcode >= ntdlib::krawall::kEffectOpcode + 0x100)
+    if (command.kind != Kind::kOther || opcode < agblib::krawall::kEffectOpcode ||
+        opcode >= agblib::krawall::kEffectOpcode + 0x100)
     {
         return std::nullopt;
     }
 
-    return static_cast<uint8_t>(opcode - ntdlib::krawall::kEffectOpcode);
+    return static_cast<uint8_t>(opcode - agblib::krawall::kEffectOpcode);
 }
 
 uint8_t OperandOf(const Command& command)
@@ -336,7 +336,7 @@ std::optional<ModuleHeader> HeaderOf(const format::File& file, uint32_t sequence
         return std::nullopt;
     }
 
-    namespace krawall = ntdlib::krawall;
+    namespace krawall = agblib::krawall;
     const format::NativeArchive& native = *file.native;
     const std::vector<uint8_t>* run = nullptr;
     uint32_t piece = 0;

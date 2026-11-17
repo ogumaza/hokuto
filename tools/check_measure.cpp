@@ -37,12 +37,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <exception>
+#include <functional>
 #include <future>
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/rsar/formats.h"
@@ -51,12 +52,14 @@
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "checked_archive.h"
 #include "edit/commands.h"
 #include "edit/ds_files.h"
 #include "format/archive.h"
 #include "format/drivers.h"
 #include "format/file.h"
 #include "measure/measure.h"
+#include "render_measures.h"
 #include "song/archive.h"
 #include "song/audibility.h"
 #include "song/driver.h"
@@ -105,23 +108,16 @@ struct Result
     bool random = false;
 };
 
-// The measure of sound `sound` of `opened`'s archive, with `instruments`, against the model in `mixing`.
-Result MeasureSound(const Opened& opened, uint32_t sound, measure::Instruments instruments, song::Mixing mixing)
+// The measure of the sound `name` that `measure_sound` fills in, and the time that the measure took. An exception from
+// `measure_sound` gives the measure's error.
+Result Timed(std::string name, const std::function<void(Result&)>& measure_sound)
 {
-    const std::shared_ptr<const sar::SoundArchive>& archive = opened.archive;
     Result result;
-    result.name = archive->Sounds()[sound].name;
+    result.name = std::move(name);
     const auto start = std::chrono::steady_clock::now();
     try
     {
-        const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound));
-        const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, sound, {}, {}, "Hokuto");
-        const std::atomic<bool> kCancel{false};
-        const measure::Measure found =
-            measure::MeasureExport(conversion, instruments, song::DryOf(archive, sequence, mixing), kCancel);
-        result.comparison = found.comparison;
-        result.seconds = found.seconds;
-        result.random = Random(opened, archive->Sounds()[sound].file_id, *sequence);
+        measure_sound(result);
     }
     catch (const std::exception& error)
     {
@@ -130,6 +126,39 @@ Result MeasureSound(const Opened& opened, uint32_t sound, measure::Instruments i
     result.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 
     return result;
+}
+
+// Measures the export `conversion` with `instruments` against `dry`, and copies the comparison and the seconds that it
+// compared to `result`.
+void MeasureInto(Result& result, const ntdlib::sequence_export::Conversion& conversion,
+                 measure::Instruments instruments, const song::DrySource& dry)
+{
+    const std::atomic<bool> never_cancel{false};
+    const measure::Measure found = measure::MeasureExport(conversion, instruments, dry, never_cancel);
+    result.comparison = found.comparison;
+    result.seconds = found.seconds;
+}
+
+// Whether `sequence` plays a note. A song that plays no notes counts as silent. Its MIDI file would be empty, and the
+// program refuses it.
+bool PlaysNotes(const song::Sequence& sequence)
+{
+    return std::ranges::any_of(sequence.tracks, [](const song::Track& track) { return !track.notes.empty(); });
+}
+
+// The measure of sound `sound` of `opened`'s archive, with `instruments`, against the model in `mixing`.
+Result MeasureSound(const Opened& opened, uint32_t sound, measure::Instruments instruments, song::Mixing mixing)
+{
+    const std::shared_ptr<const sar::SoundArchive>& archive = opened.archive;
+    const auto measure_sound = [&](Result& result)
+    {
+        const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound));
+        const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, sound, {}, {}, "Hokuto");
+        MeasureInto(result, conversion, instruments, song::DryOf(archive, sequence, mixing));
+        result.random = Random(opened, archive->Sounds()[sound].file_id, *sequence);
+    };
+
+    return Timed(archive->Sounds()[sound].name, measure_sound);
 }
 
 // The measure of sound `sound` of the Wii's `archive`. `opened` holds the Hokuto file that the archive makes, and the
@@ -137,56 +166,31 @@ Result MeasureSound(const Opened& opened, uint32_t sound, measure::Instruments i
 Result MeasureWiiSound(const std::shared_ptr<const ntdlib::rsar::SoundArchive>& archive, const Opened& opened,
                        uint32_t sound, measure::Instruments instruments)
 {
-    Result result;
-    result.name = archive->Sounds()[sound].name;
-    const auto start = std::chrono::steady_clock::now();
-    try
+    const auto measure_sound = [&](Result& result)
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound));
         const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, sound, {}, {}, "Hokuto");
-        const std::atomic<bool> kCancel{false};
-        const measure::Measure found =
-            measure::MeasureExport(conversion, instruments, song::DryOf(archive, sequence), kCancel);
-        result.comparison = found.comparison;
-        result.seconds = found.seconds;
+        MeasureInto(result, conversion, instruments, song::DryOf(archive, sequence));
         result.random = Random(opened, archive->Sounds()[sound].file_id, *sequence);
-    }
-    catch (const std::exception& error)
-    {
-        result.error = error.what();
-    }
-    result.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    };
 
-    return result;
+    return Timed(archive->Sounds()[sound].name, measure_sound);
 }
 
 // The measure of song `number` of the GBA's `rom`, with the export's files, against the model in `mixing`.
 Result MeasureGbaSong(const std::shared_ptr<const song::GbaRom>& rom, int number, song::Mixing mixing)
 {
-    Result result;
-    result.name = song::GbaSongName(*rom, number);
-    const auto start = std::chrono::steady_clock::now();
-    try
+    const auto measure_sound = [&](Result& result)
     {
-        // A song that plays no notes counts as silent. Its MIDI file would be empty, and the program refuses it.
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*rom, number));
-        if (std::ranges::any_of(sequence->tracks, [](const song::Track& track) { return !track.notes.empty(); }))
+        if (PlaysNotes(*sequence))
         {
             const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*rom, number, "Hokuto");
-            const std::atomic<bool> kCancel{false};
-            const measure::Measure found = measure::MeasureExport(conversion, measure::Instruments::kSoundFont,
-                                                                  song::DryOf(rom, sequence, mixing), kCancel);
-            result.comparison = found.comparison;
-            result.seconds = found.seconds;
+            MeasureInto(result, conversion, measure::Instruments::kSoundFont, song::DryOf(rom, sequence, mixing));
         }
-    }
-    catch (const std::exception& error)
-    {
-        result.error = error.what();
-    }
-    result.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    };
 
-    return result;
+    return Timed(song::GbaSongName(*rom, number), measure_sound);
 }
 
 // The measure of sound `sound` of the GBA's `rom` with another of the GBA's drivers, with the export's MIDI file and
@@ -194,56 +198,31 @@ Result MeasureGbaSong(const std::shared_ptr<const song::GbaRom>& rom, int number
 Result MeasureDriverSound(const std::shared_ptr<const song::DriverRom>& rom, uint32_t sound,
                           measure::Instruments instruments, song::Mixing mixing)
 {
-    Result result;
-    result.name = rom->SoundName(sound);
-    const auto start = std::chrono::steady_clock::now();
-    try
+    const auto measure_sound = [&](Result& result)
     {
-        // A song that plays no notes counts as silent. Its MIDI file would be empty, and the program refuses it.
         const auto sequence = std::make_shared<const song::Sequence>(rom->ReadSequence(sound));
-        if (std::ranges::any_of(sequence->tracks, [](const song::Track& track) { return !track.notes.empty(); }))
+        if (PlaysNotes(*sequence))
         {
             const ntdlib::sequence_export::Conversion conversion = rom->ConvertToMidi(sound, "Hokuto");
-            const std::atomic<bool> kCancel{false};
-            const measure::Measure found =
-                measure::MeasureExport(conversion, instruments, song::DryOf(rom, sequence, mixing), kCancel);
-            result.comparison = found.comparison;
-            result.seconds = found.seconds;
+            MeasureInto(result, conversion, instruments, song::DryOf(rom, sequence, mixing));
         }
-    }
-    catch (const std::exception& error)
-    {
-        result.error = error.what();
-    }
-    result.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    };
 
-    return result;
+    return Timed(rom->SoundName(sound), measure_sound);
 }
 
 // The measure of sound `sound` of the DS's `archive`, with `instruments`, against the model in `mixing`.
 Result MeasureDsSound(const std::shared_ptr<const song::DsArchive>& archive, uint32_t sound,
                       measure::Instruments instruments, song::Mixing mixing)
 {
-    Result result;
-    result.name = song::DsSoundName(*archive, sound);
-    const auto start = std::chrono::steady_clock::now();
-    try
+    const auto measure_sound = [&](Result& result)
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound));
         const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, sound, {}, "Hokuto");
-        const std::atomic<bool> kCancel{false};
-        const measure::Measure found =
-            measure::MeasureExport(conversion, instruments, song::DryOf(archive, sequence, mixing), kCancel);
-        result.comparison = found.comparison;
-        result.seconds = found.seconds;
-    }
-    catch (const std::exception& error)
-    {
-        result.error = error.what();
-    }
-    result.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        MeasureInto(result, conversion, instruments, song::DryOf(archive, sequence, mixing));
+    };
 
-    return result;
+    return Timed(song::DsSoundName(*archive, sound), measure_sound);
 }
 
 // The measure of sound `sound` of `set`, the DSE sounds of a DS image, with `instruments`, against the model in
@@ -251,42 +230,14 @@ Result MeasureDsSound(const std::shared_ptr<const song::DsArchive>& archive, uin
 Result MeasureDseSound(const std::shared_ptr<const song::DseSet>& set, uint32_t sound, measure::Instruments instruments,
                        song::Mixing mixing)
 {
-    Result result;
-    result.name = song::DseSoundName(*set, sound);
-    const auto start = std::chrono::steady_clock::now();
-    try
+    const auto measure_sound = [&](Result& result)
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*set, sound));
         const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*set, sound, "Hokuto");
-        const std::atomic<bool> kCancel{false};
-        const measure::Measure found =
-            measure::MeasureExport(conversion, instruments, song::DryOf(set, sequence, mixing), kCancel);
-        result.comparison = found.comparison;
-        result.seconds = found.seconds;
-    }
-    catch (const std::exception& error)
-    {
-        result.error = error.what();
-    }
-    result.elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        MeasureInto(result, conversion, instruments, song::DryOf(set, sequence, mixing));
+    };
 
-    return result;
-}
-
-// The level of `frames` frames of `samples`, interleaved stereo, from frame `from`, in dB below full scale.
-double Level(const std::vector<float>& samples, int64_t from, std::size_t frames)
-{
-    double sum = 0.0;
-    for (std::size_t i = 0; i < frames * 2; i++)
-    {
-        const int64_t at = from * 2 + static_cast<int64_t>(i);
-        if (at >= 0 && at < static_cast<int64_t>(samples.size()))
-        {
-            sum += static_cast<double>(samples[static_cast<std::size_t>(at)]) * samples[static_cast<std::size_t>(at)];
-        }
-    }
-
-    return sum > 0.0 ? 10.0 * std::log10(sum / static_cast<double>(frames * 2)) : -200.0;
+    return Timed(song::DseSoundName(*set, sound), measure_sound);
 }
 
 // Prints the measure of `renders` of sound `name`: its places, and the level of both renders in each half second.
@@ -316,9 +267,36 @@ void PrintRenders(const std::string& name, const measure::Renders& renders, bool
     for (std::size_t from = 0; from < frames; from += half)
     {
         std::fprintf(kOut, "%6.1f s: Hokuto %6.1f dBFS, the export %6.1f dBFS\n",
-                     static_cast<double>(from) / renders.rate, Level(renders.hokuto, static_cast<int64_t>(from), half),
-                     Level(renders.exported, static_cast<int64_t>(from) + lag, half));
+                     static_cast<double>(from) / renders.rate,
+                     hokuto::tools::WindowDb(renders.hokuto, static_cast<int64_t>(from), half),
+                     hokuto::tools::WindowDb(renders.exported, static_cast<int64_t>(from) + lag, half));
     }
+}
+
+// Renders the export `conversion` with `instruments` and `dry`, the model's render, and prints their measure as
+// PrintRenders does. `random` tells whether the sound draws random numbers.
+void PrintExport(const std::string& name, const ntdlib::sequence_export::Conversion& conversion,
+                 measure::Instruments instruments, const song::DrySource& dry, bool random)
+{
+    const std::atomic<bool> never_cancel{false};
+    PrintRenders(name, measure::RenderExport(conversion, instruments, dry, never_cancel), random);
+}
+
+// Runs `print`. `print` measures sound `name` alone and prints the measure. Returns 0, or 1 after a line with the error
+// that `print` throws.
+int PrintedAlone(const std::string& name, const std::function<void()>& print)
+{
+    try
+    {
+        print();
+    }
+    catch (const std::exception& error)
+    {
+        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
+        return 1;
+    }
+
+    return 0;
 }
 
 // Measures song `name` of the GBA's `rom` alone as MeasureOne does.
@@ -332,23 +310,14 @@ int MeasureOneGba(const std::shared_ptr<const song::GbaRom>& rom, const std::str
         return 2;
     }
 
-    try
+    const auto print = [&]()
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*rom, *found));
-        const std::atomic<bool> kCancel{false};
-        PrintRenders(
-            name,
-            measure::RenderExport(song::ConvertToMidi(*rom, *found, "Hokuto"), measure::Instruments::kSoundFont,
-                                  song::DryOf(rom, sequence, mixing), kCancel),
-            false);
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 1;
-    }
+        PrintExport(name, song::ConvertToMidi(*rom, *found, "Hokuto"), measure::Instruments::kSoundFont,
+                    song::DryOf(rom, sequence, mixing), false);
+    };
 
-    return 0;
+    return PrintedAlone(name, print);
 }
 
 // Measures sound `name` of the GBA's `rom` with another of the GBA's drivers alone as MeasureOne does.
@@ -363,22 +332,13 @@ int MeasureOneDriver(const std::shared_ptr<const song::DriverRom>& rom, const st
         return 2;
     }
 
-    try
+    const auto print = [&]()
     {
         const auto sequence = std::make_shared<const song::Sequence>(rom->ReadSequence(*found));
-        const std::atomic<bool> kCancel{false};
-        PrintRenders(name,
-                     measure::RenderExport(rom->ConvertToMidi(*found, "Hokuto"), instruments,
-                                           song::DryOf(rom, sequence, mixing), kCancel),
-                     false);
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 1;
-    }
+        PrintExport(name, rom->ConvertToMidi(*found, "Hokuto"), instruments, song::DryOf(rom, sequence, mixing), false);
+    };
 
-    return 0;
+    return PrintedAlone(name, print);
 }
 
 // Measures sound `name` of the DS's `archive` alone as MeasureOne does.
@@ -394,22 +354,14 @@ int MeasureOneDs(const std::shared_ptr<const song::DsArchive>& archive, const st
         return 2;
     }
 
-    try
+    const auto print = [&]()
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, *found));
-        const std::atomic<bool> kCancel{false};
-        PrintRenders(name,
-                     measure::RenderExport(song::ConvertToMidi(*archive, *found, {}, "Hokuto"), instruments,
-                                           song::DryOf(archive, sequence, mixing), kCancel),
-                     false);
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 1;
-    }
+        PrintExport(name, song::ConvertToMidi(*archive, *found, {}, "Hokuto"), instruments,
+                    song::DryOf(archive, sequence, mixing), false);
+    };
 
-    return 0;
+    return PrintedAlone(name, print);
 }
 
 // Measures sound `name` of `set`, the DSE sounds of a DS image, alone as MeasureOne does.
@@ -425,22 +377,14 @@ int MeasureOneDse(const std::shared_ptr<const song::DseSet>& set, const std::str
         return 2;
     }
 
-    try
+    const auto print = [&]()
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*set, *found));
-        const std::atomic<bool> kCancel{false};
-        PrintRenders(name,
-                     measure::RenderExport(song::ConvertToMidi(*set, *found, "Hokuto"), instruments,
-                                           song::DryOf(set, sequence, mixing), kCancel),
-                     false);
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 1;
-    }
+        PrintExport(name, song::ConvertToMidi(*set, *found, "Hokuto"), instruments, song::DryOf(set, sequence, mixing),
+                    false);
+    };
 
-    return 0;
+    return PrintedAlone(name, print);
 }
 
 // Measures sound `name` alone, and prints its places and the level of both renders in each half second.
@@ -457,28 +401,34 @@ int MeasureOne(const Opened& opened, const std::string& name, measure::Instrumen
     }
 
     const auto sound = static_cast<uint32_t>(found - sounds.begin());
-    try
+    const auto print = [&]()
     {
         const auto sequence = std::make_shared<const song::Sequence>(song::ReadSequence(*archive, sound));
         const ntdlib::sequence_export::Conversion conversion = song::ConvertToMidi(*archive, sound, {}, {}, "Hokuto");
-        const std::atomic<bool> kCancel{false};
-        PrintRenders(name,
-                     measure::RenderExport(conversion, instruments, song::DryOf(archive, sequence, mixing), kCancel),
-                     Random(opened, found->file_id, *sequence));
-    }
-    catch (const std::exception& error)
-    {
-        std::fprintf(stderr, "%s: %s\n", name.c_str(), error.what());
-        return 1;
-    }
+        PrintExport(name, conversion, instruments, song::DryOf(archive, sequence, mixing),
+                    Random(opened, found->file_id, *sequence));
+    };
 
-    return 0;
+    return PrintedAlone(name, print);
 }
 
 // Whether a place is audible: a run, or a span more than 3 dB off.
 bool Audible(const song::LevelPlace& place)
 {
     return place.run || std::abs(place.db) > 3.0;
+}
+
+// Appends the sounds of `from` to `sounds` while it holds fewer than `most`.
+template <class Sounds>
+void AppendUpTo(std::vector<uint32_t>& sounds, const Sounds& from, std::size_t most)
+{
+    for (const auto sound : from)
+    {
+        if (sounds.size() < most)
+        {
+            sounds.push_back(static_cast<uint32_t>(sound));
+        }
+    }
 }
 
 // The sequence sounds to measure, in order, up to `most` of them: those of the ROM, image or archive that is open.
@@ -492,46 +442,19 @@ std::vector<uint32_t> SoundsToMeasure(const Opened& opened,
     std::vector<uint32_t> sounds;
     if (gba)
     {
-        for (const int number : song::GbaSongs(*gba))
-        {
-            if (sounds.size() < most)
-            {
-                sounds.push_back(static_cast<uint32_t>(number));
-            }
-        }
+        AppendUpTo(sounds, song::GbaSongs(*gba), most);
     }
-
     if (driver)
     {
-        for (const uint32_t sound : driver->Sounds())
-        {
-            if (sounds.size() < most)
-            {
-                sounds.push_back(sound);
-            }
-        }
+        AppendUpTo(sounds, driver->Sounds(), most);
     }
-
     if (ds)
     {
-        for (const uint32_t sound : song::DsSounds(*ds))
-        {
-            if (sounds.size() < most)
-            {
-                sounds.push_back(sound);
-            }
-        }
+        AppendUpTo(sounds, song::DsSounds(*ds), most);
     }
-
     if (dse)
     {
-        for (const uint32_t sound : song::DseSounds(*dse))
-        {
-            if (sounds.size() < most)
-            {
-                sounds.push_back(sound);
-            }
-        }
+        AppendUpTo(sounds, song::DseSounds(*dse), most);
     }
 
     const std::size_t count = gba || driver || ds || dse ? 0
@@ -730,7 +653,7 @@ MeasureFile OpenMeasureFile(const std::string& path)
     {
         m.ds = song::LoadDsArchive(format::ExportArchive(format::ImportDsArchive(bytes)));
     }
-    else if (bytes.size() >= 4 && std::memcmp(bytes.data(), "RSAR", 4) == 0)
+    else if (hokuto::tools::IsWiiArchive(bytes))
     {
         m.wii = song::LoadWiiArchive(bytes, xsflib::Utf8(xsflib::PathFromUtf8(path).filename()),
                                      ntdlib::rvl::snd::kRsarOptions);

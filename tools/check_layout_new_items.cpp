@@ -29,7 +29,7 @@ void CheckNewNames(const std::filesystem::path& path, const std::vector<uint8_t>
     {
         Problem(path, "a string index of the archive with " + what + " names another item", totals);
     }
-    if (const std::optional<std::span<const uint8_t>> names = StringBlockOf(after, flavor))
+    if (const std::optional<std::span<const uint8_t>> names = sar::TablesOf(after, flavor).strings)
     {
         for (const sar::ItemName& item : sar::StringBlock::Read(*names, flavor).names)
         {
@@ -48,7 +48,7 @@ void AddWaveSound(const sar::SoundArchive& before, const std::vector<uint8_t>& o
                   uint32_t file, uint32_t model, uint32_t index, std::vector<sar::NewWaveSound>& added,
                   std::vector<sar::SoundInfo>& expected)
 {
-    std::string name = FreeName(original, flavor, "HOKUTO_NEW_WAVE_SOUND");
+    std::string name = FreeName(original, flavor, "HOKUTO_NEW_WAVE_SOUND").value_or("");
     name += name.empty() ? "" : std::to_string(added.size());
     added.push_back({.model = model, .name = name, .file = file, .index = index});
     sar::SoundInfo& sound = expected.emplace_back(before.Sounds()[model]);
@@ -65,12 +65,36 @@ void AddWaveSound(const sar::SoundArchive& before, const std::vector<uint8_t>& o
     }
 }
 
+// The name that the reader gives a copy of sequence sound `model` of `before`, an archive without names. The copy plays
+// a copy of the model's file from the model's start. The reader names a sequence sound by the labels of its file, or
+// else SEQ_ and its index. The copy takes the label that names the model. Nothing where no label names the model and
+// other sequence sounds play its file: the copy plays its file alone, and can take the file's first label.
+std::optional<std::string> UnnamedCopyName(const sar::SoundArchive& before, uint32_t model)
+{
+    const sar::SoundInfo& sound = before.Sounds()[model];
+    if (sound.name != "SEQ_" + std::to_string(model))
+    {
+        return sound.name;
+    }
+
+    const auto plays_file = [&sound](const sar::SoundInfo& other)
+    {
+        return other.type == sar::SoundType::kSequence && other.file_id == sound.file_id;
+    };
+    if (std::ranges::count_if(before.Sounds(), plays_file) > 1)
+    {
+        return std::nullopt;
+    }
+
+    return "SEQ_" + std::to_string(before.Sounds().size());
+}
+
 } // namespace
 
 void CheckNewItems(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                   const sar::Options& options, Totals& totals)
+                   const sar::Options& options, Readings& readings, Totals& totals)
 {
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     std::optional<uint32_t> model;
     for (uint32_t i = 0; i < before.Sounds().size() && !model; ++i)
     {
@@ -102,15 +126,19 @@ void CheckNewItems(const std::filesystem::path& path, const std::vector<uint8_t>
     }
 
     // The new sound, with a name that the archive lacks.
-    const std::string name = FreeName(original, options.flavor, "HOKUTO_NEW_SOUND");
+    const std::string name = FreeName(original, options.flavor, "HOKUTO_NEW_SOUND").value_or("");
     const sar::NewSequenceSound added{
         .model = *model, .name = name, .file = with.file, .start = sound.start_offset, .banks = sound.banks};
     const std::vector<uint8_t> after = sar::WithNewSequenceSound(with.archive, options.flavor, added);
     const sar::SoundArchive read = sar::SoundArchive::Load(after, options);
+    const bool extends = Extends(with_file, read, {.sounds = 1});
     sar::SoundInfo expected = sound;
-    expected.name = name.empty() ? "SEQ_" + std::to_string(before.Sounds().size()) : name;
+    if (extends)
+    {
+        expected.name = !name.empty() ? name : UnnamedCopyName(before, *model).value_or(read.Sounds().back().name);
+    }
     expected.file_id = with.file;
-    if (!Extends(with_file, read, {.sounds = 1}) || !SameSound(read.Sounds().back(), expected))
+    if (!extends || !SameSound(read.Sounds().back(), expected))
     {
         Problem(path, "the reader reads the archive with a new sound otherwise", totals);
         return;
@@ -143,10 +171,10 @@ void CheckNewItems(const std::filesystem::path& path, const std::vector<uint8_t>
 }
 
 void CheckNewWaveSounds(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                        const sar::Layout& layout, const sar::Options& options, Totals& totals)
+                        const sar::Layout& layout, const sar::Options& options, Readings& readings, Totals& totals)
 {
     // The models: the wave sounds of the file, and the sequence sound.
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     std::optional<uint32_t> file;
     std::vector<uint32_t> models;
     std::optional<uint32_t> sequence;
@@ -296,9 +324,9 @@ std::vector<uint8_t> WithoutStreamExtras(std::span<const uint8_t> entry, sar::Fl
 } // namespace
 
 void CheckNewStreams(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                     const sar::Options& options, Totals& totals)
+                     const sar::Options& options, Readings& readings, Totals& totals)
 {
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     if (before.Truncated())
     {
         return;
@@ -339,7 +367,7 @@ void CheckNewStreams(const std::filesystem::path& path, const std::vector<uint8_
     }
     const auto other = std::ranges::find_if(
         before.Sounds(), [](const sar::SoundInfo& sound) { return sound.type != sar::SoundType::kStream; });
-    const std::string name = FreeName(original, options.flavor, "HOKUTO_NEW_STREAM_SOUND");
+    const std::string name = FreeName(original, options.flavor, "HOKUTO_NEW_STREAM_SOUND").value_or("");
     const uint32_t version = xsflib::Reader(original, big_endian).U32(8);
     const bool ctr = options.flavor == sar::Flavor::kCtr;
     const bool laid_out =
@@ -493,7 +521,7 @@ WaveArchiveCopies CopyWaveArchives(const sar::SoundArchive& before, const std::v
     {
         const sar::WaveArchiveInfo& old = before.WaveArchives()[id & 0x00FFFFFF];
         const sar::ArchiveWithFile with = sar::WithNewFile(archive, flavor, before.FileData(old.file_id));
-        names.push_back(FreeName(with.archive, flavor, "HOKUTO_NEW_WARC"));
+        names.push_back(FreeName(with.archive, flavor, "HOKUTO_NEW_WARC").value_or(""));
         archive = sar::WithNewWaveArchive(with.archive, flavor, {.name = names.back(), .file = with.file});
         map[id] = sar::ItemId(sar::kWaveArchiveItem, static_cast<uint32_t>(before.WaveArchives().size() + map.size()));
     }
@@ -526,9 +554,9 @@ std::vector<uint32_t> LastBankList(const std::vector<uint8_t>& after, sar::Flavo
 } // namespace
 
 void CheckNewBank(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                  const sar::Options& options, Totals& totals)
+                  const sar::Options& options, Readings& readings, Totals& totals)
 {
-    const sar::SoundArchive before = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& before = readings.Default();
     if (before.Truncated())
     {
         return;
@@ -558,7 +586,7 @@ void CheckNewBank(const std::filesystem::path& path, const std::vector<uint8_t>&
     const std::span<const uint8_t> file = before.FileData(before.Banks()[model].file_id);
     const std::vector<uint8_t> bytes = sar::WithWaveArchives(file, options.flavor, map);
     const sar::ArchiveWithFile with = sar::WithNewFile(archive, options.flavor, bytes);
-    const std::string name = FreeName(with.archive, options.flavor, "HOKUTO_NEW_BANK");
+    const std::string name = FreeName(with.archive, options.flavor, "HOKUTO_NEW_BANK").value_or("");
     const std::vector<uint8_t> after =
         sar::WithNewBank(with.archive, options.flavor, {.name = name, .file = with.file, .wave_archives = listed});
 

@@ -14,19 +14,23 @@
 //
 // A sound of the Wii plays one bank, in slot 0. A track of the Wii takes another program only. A GBA song plays one
 // voice group, its programs 0 to 127. A GBA track starts with no program: MusicPlayer2000 plays a square wave of its
-// own until a program change selects a voice (ntdlib's MP2K sequencer, StartTrack). A DS sequence plays the bank that
-// its entry in the archive names, in slot 0. A DS track starts at program 0. A DSE track starts at program 0 of the
-// song's bank. Hokuto accepts another program there, and leaves the track's commands of banks as they are. A note of a
-// sample of Konami's driver names its sample, and that sample is its program. The edit sets the new sample in each such
-// note. A PSG track of that driver selects a duty or a wave, its program, with its commands. Those start at 0. A bank
-// select of Nintendo R&D2's driver also selects program 0 of its bank. The edit refuses another program for notes that
-// play program 0 from a bank select: a program change after the bank select would have to go in.
+// own until a program change selects a voice (agblib's MP2K sequencer, StartTrack). A DS sequence plays the bank that
+// its entry in the archive names, in slot 0. A DS track starts at program 0. A DSE sound has a slot for each bank that
+// it loads, and a DSE track selects a bank by its id. The edit gives the notes another bank with new bank selects: one
+// before each run of the notes, and one after it back to the old bank. A bank select resets the channel's bend range,
+// LFOs and envelope. The new selects therefore go beside the program changes and bank selects that reset them anyway.
+// The edit refuses where a new select would reset a setting that the track made. A note of a sample of Konami's driver
+// names its sample, and that sample is its program. The edit sets the new sample in each such note. A PSG track of that
+// driver selects a duty or a wave, its program, with its commands. Those start at 0. A bank select of Nintendo R&D2's
+// driver also selects program 0 of its bank. The edit refuses another program for notes that play program 0 from a bank
+// select: a program change after the bank select would have to go in.
 
 #pragma once
 
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ntdlib/commands/sequence.h"
@@ -39,6 +43,12 @@
 
 namespace hokuto::edit
 {
+
+// The message with which the inspector refuses an instrument that the track's commands start no note with, where
+// another track plays notes on its channel through its pan setting.
+inline constexpr std::string_view kNoNotesInstrumentRefusal =
+    "This track starts no notes with that instrument. Another track can play notes on this channel through its pan "
+    "setting. Change the instrument on that track.";
 
 // The program changes and bank selects of `commands` that set the instrument of the notes that play `instrument`, on a
 // track of `console` that ran `stretches` (song::Track::stretches). `offsets` gives the offset of each item (Offsets).
@@ -53,13 +63,18 @@ Setters InstrumentSetters(const ntdlib::commands::Sequence& commands, const std:
 // The file after the notes of track `track` of sequence `sequence` of `file` that play `from` play `to` in its place,
 // and the new index of each of the sequence's items. The track's commands ran in `stretches` (song::Track::stretches).
 // Throws std::invalid_argument with a message for the user for an instrument that no note of the track plays, a slot
-// outside 0 to 3, another slot on the Wii or the GBA, a program past 127 on the GBA, a command that sets the instrument
-// of other notes too, a program or a slot from a variable, a random number or a comparison, and a new command in a
-// sequence whose commands can't move. On Konami's driver, `previous` contains the stretches of the track before it: a
-// note there can play on this track. On Brownie Brown's driver, the command that the track's notes take their program
-// from changes (song::BrownieProgramIndex), and the edit refuses a noise channel: its notes give the noise's settings.
+// outside 0 to 3, or on DSE outside the sound's banks, another slot on the Wii or the GBA, a program past 127 on the
+// GBA, a command that sets the instrument of other notes too, a program or a slot from a variable, a random number or a
+// comparison, and a new command in a sequence whose commands can't move. On Konami's driver, `previous` contains the
+// stretches of the track before it: a note there can play on this track. On Brownie Brown's driver, the command that
+// the track's notes take their program from changes (song::BrownieProgramIndex), and the edit refuses a noise channel:
+// its notes give the noise's settings.
 Edited EditInstrument(const format::File& file, uint32_t sequence, int track, std::span<const song::Stretch> stretches,
                       Program from, Program to, std::span<const song::Stretch> previous = {});
+
+// Whether a track of `console` can select another bank than the one that it starts with: its player runs a bank select
+// (song::Runs), or it plays DSE. DSE's bank selects have no kind in the common form.
+bool TracksSelectBanks(const song::Console& console);
 
 // The DSE command that selects the bank with id `id`.
 ntdlib::commands::Command DseBankSelect(uint16_t id);

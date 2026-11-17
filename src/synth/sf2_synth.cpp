@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "seqlib/midi/controllers.h"
+#include "seqlib/midi/performance.h"
 #include "seqlib/midi/reader.h"
 #include "seqlib/sf2/presets.h"
 #include "seqlib/sf2/soundfont.h"
@@ -57,7 +58,7 @@ constexpr double kCentsBaseHz = 8.176;
 constexpr double kLongestTail = 10.0;
 
 // MIDI channel 10, the General MIDI channel of the drums. It plays bank sf2::kChannel10Bank.
-constexpr int kDrumChannel = 9;
+constexpr int kDrumChannel = seqlib::midi::kDrumChannel;
 
 // A data entry of the null RPN changes nothing.
 constexpr int kNullRpn = 0x3FFF;
@@ -1211,25 +1212,28 @@ TimedMidi TimedMessages(const seqlib::midi::File& file, int rate)
     const int frames = -static_cast<int8_t>(file.division >> 8);
     const double smpte_tick = smpte ? 1.0 / std::max(1, frames * (file.division & 0xFF)) : 0.0;
     const double division = std::max<uint16_t>(1, file.division);
+    // A tempo change takes effect after the events at its tick.
+    const std::vector<seqlib::midi::Tempo> tempos = seqlib::midi::Tempos(file);
+    std::size_t next_tempo = 0;
     double seconds = 0.0;
     uint64_t tick = 0;
-    double tempo = 500000.0; // microseconds a quarter note
+    double tempo = seqlib::midi::kDefaultMicrosPerQuarter;
     TimedMidi timed;
     for (const Placed& placed : order)
     {
-        const seqlib::midi::Event& event = file.tracks[placed.track].events[placed.index];
+        for (; next_tempo < tempos.size() && tempos[next_tempo].tick <= tick; ++next_tempo)
+        {
+            tempo = tempos[next_tempo].micros_per_quarter;
+        }
+
         const double ticks = static_cast<double>(placed.tick - tick);
         seconds += smpte ? ticks * smpte_tick : ticks * tempo / 1e6 / division;
         tick = placed.tick;
         const int64_t sample = std::llround(seconds * rate);
         timed.last = std::max(timed.last, sample);
 
-        const std::vector<uint8_t>& bytes = event.bytes;
-        if (bytes.size() >= 6 && bytes[0] == 0xFF && bytes[1] == 0x51 && bytes[2] == 3)
-        {
-            tempo = bytes[3] << 16 | bytes[4] << 8 | bytes[5];
-        }
-        else if (!bytes.empty() && bytes[0] >= 0x80 && bytes[0] < 0xF0)
+        const std::vector<uint8_t>& bytes = file.tracks[placed.track].events[placed.index].bytes;
+        if (!bytes.empty() && bytes[0] >= 0x80 && bytes[0] < 0xF0)
         {
             timed.messages.push_back({sample, bytes});
         }

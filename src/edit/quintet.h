@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The edits of a song of Quintet's GBA driver, by the rules of the driver's bytes (ntdlib/quintet/commands.h). A song
+// The edits of a song of Quintet's GBA driver, by the rules of the driver's bytes (agblib/quintet/commands.h). A song
 // has 6 channels, and each channel is a track: a run of commands from the channel's start to its end (FF). A note and a
 // rest each give a note value, and the channel waits for it. A dot after a note or a rest adds half its length again: a
 // file folds it into the item of the note or the rest (format/quintet.h). A tie (D4) joins each note of the same pitch

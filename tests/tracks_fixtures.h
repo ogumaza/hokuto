@@ -13,9 +13,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/song.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rsar/sequence_file.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
@@ -23,7 +24,6 @@
 #include "ntdlib/sar/sequence_file.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/testing/dse_song_files.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"

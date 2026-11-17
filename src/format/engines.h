@@ -49,7 +49,7 @@ struct EngineFacts
     uint8_t code;                              // the engine's code in a .hok file, and the code of its native archive
     std::string_view name;                     // the engine's name in text, and the name of its native archive
     std::optional<ntdlib::sar::Flavor> flavor; // the flavor of a NintendoWare console's archive
-    std::string_view title;                    // the engine's name in the program's messages
+    std::string_view title;                    // the engine in the messages of the format, song and edit layers
     bool creatable;                            // NewFile makes a new file of the engine
     bool strict_only;                          // the engine plays in strict mixing only
     bool hosts_other_consoles;                 // sounds of other consoles may play on the engine

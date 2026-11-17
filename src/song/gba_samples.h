@@ -13,7 +13,7 @@
 #include <span>
 #include <vector>
 
-#include "ntdlib/mp2k/song.h"
+#include "agblib/mp2k/song.h"
 
 #include "song/gba.h"
 
@@ -34,7 +34,7 @@ std::vector<uint8_t> GbaSampleWav(const GbaRom& rom, uint32_t address);
 
 // The address of the sample that `voice` plays, where the two forms can store it: not a PSG voice, a key split or a
 // drum kit, not a compressed sample, and not a header without samples.
-std::optional<uint32_t> GbaVoiceSample(const GbaRom& rom, const ntdlib::mp2k::Voice& voice);
+std::optional<uint32_t> GbaVoiceSample(const GbaRom& rom, const agblib::mp2k::Voice& voice);
 
 // The samples that the listed programs of the voice groups of `rom` play, through key splits and drum kits too, where
 // the two forms can hold them (GbaVoiceSample), in the order of their addresses.

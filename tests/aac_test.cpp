@@ -328,6 +328,16 @@ int main()
     return xsflib::testing::RunTest("aac",
                                     []
                                     {
+                                        // A system without an AAC codec, such as Linux without FFmpeg, skips the
+                                        // test.
+                                        if (!hokuto::song::HasAacCodec())
+                                        {
+                                            std::printf(
+                                                "No AAC codec: the test is skipped. Install FFmpeg to run "
+                                                "it.\n");
+                                            return;
+                                        }
+
                                         TestDecoding();
                                         TestStreams();
                                         TestEncoding();

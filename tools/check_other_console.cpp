@@ -317,8 +317,8 @@ std::optional<Options> ParseOptions(const std::vector<std::string>& arguments)
         at += 2;
     }
 
-    o.to_wii = o.console == format::kWiiArchiveName;
-    o.to_ds = o.console == format::kDsArchiveName;
+    o.to_wii = o.console == format::NameOf(format::Engine::kWii);
+    o.to_ds = o.console == format::NameOf(format::Engine::kDs);
     o.named = o.console.empty() ? std::nullopt : format::FlavorNamed(o.console);
     if (arguments.size() < at + 1 || arguments.size() > at + 3 || !o.part || !o.mono ||
         (!o.console.empty() && !o.named && !o.to_wii && !o.to_ds) ||
@@ -386,14 +386,10 @@ OpenedArchive OpenArchive(const Options& o, const std::string& name)
                                    edit::DsGameOfFile(a.file));
         a.to = o.named.value_or(sar::Flavor::kCafe);
     }
-    else if (bytes.size() >= 4 && std::string_view(reinterpret_cast<const char*>(bytes.data()), 4) == "RSAR")
+    else if (IsWiiArchive(bytes))
     {
-        std::vector<uint8_t> dol;
-        const std::optional<std::filesystem::path> found = song::FindMainDol(o.path);
-        const std::optional<ntdlib::SndBuild> read =
-            found && xsflib::ReadFile(*found, dol) ? song::ReadWiiBuild(dol) : std::nullopt;
         a.wii = song::LoadWiiArchive(bytes, name, ntdlib::rvl::snd::kRsarOptions);
-        a.file = format::ImportWiiArchive(bytes, read);
+        a.file = format::ImportWiiArchive(bytes, GameBuildOf(o.path));
         a.build = format::BuildOfWiiArchive(*a.file.native);
         a.sound_places = edit::SoundPlaces(*a.wii, format::SequencesOfFiles(a.file, bytes, *a.wii),
                                            format::StartFieldsOfSounds(a.file, bytes));
@@ -456,15 +452,33 @@ std::string SoundNameOf(const OpenedArchive& a, uint32_t sound)
                     : a.file.native->tables->sounds[sound].name;
 }
 
+// The sounds of the archive `a`, a GBA ROM, a DS archive or DSE's set, that the tool may check: the songs that play,
+// the sounds of another of the GBA's drivers, the DS's sequences or DSE's sounds.
+std::vector<uint32_t> DriverSounds(const OpenedArchive& a)
+{
+    if (!a.gba)
+    {
+        return a.driver ? a.driver->Sounds() : a.ds ? song::DsSounds(*a.ds) : song::DseSounds(*a.dse);
+    }
+
+    std::vector<uint32_t> songs;
+    for (const int number : song::GbaSongs(*a.gba))
+    {
+        songs.push_back(static_cast<uint32_t>(number));
+    }
+
+    return songs;
+}
+
 // Plays sound `sound` of the archive `a` for `seconds` seconds, as the program plays the game's sound.
 Played PlaySource(const OpenedArchive& a, uint32_t sound, double seconds)
 {
-    return a.driver ? PlayDriver(a.driver, sound, seconds)
-           : a.gba  ? PlayGba(a.gba, sound, seconds)
-           : a.ds   ? PlayDs(a.ds, sound, seconds)
-           : a.dse  ? PlayDse(a.dse, sound, seconds)
-           : a.wii  ? PlayWii(a.wii, sound, seconds, a.build)
-                    : Play(a.game, sound, seconds);
+    return a.driver ? PlayDry(a.driver, a.driver->ReadSequence(sound), seconds)
+           : a.gba  ? PlayDry(a.gba, song::ReadSequence(*a.gba, static_cast<int>(sound)), seconds)
+           : a.ds   ? PlayDry(a.ds, song::ReadSequence(*a.ds, sound), seconds)
+           : a.dse  ? PlayDry(a.dse, song::ReadSequence(*a.dse, sound), seconds)
+           : a.wii  ? PlayDry(a.wii, song::ReadSequence(*a.wii, sound, {}, {}, a.build), seconds)
+                    : PlayDry(a.game, song::ReadSequence(*a.game, sound), seconds);
 }
 
 // Counts each kind of warning among `warnings` once in `warned`.
@@ -575,12 +589,14 @@ std::optional<std::vector<uint32_t>> ChooseSounds(const Options& o, const Opened
             return false;
         }
     };
+    const auto name_of = [&a](uint32_t sound)
+    {
+        return SoundNameOf(a, sound);
+    };
     const std::vector<uint32_t> all =
-        a.driver ? DriverChosen(*a.driver, o.most, o.names)
-        : a.gba  ? GbaChosen(*a.gba, o.most, o.names)
-        : a.ds   ? DsChosen(*a.ds, o.most, o.names)
-        : a.dse  ? DseChosen(*a.dse, o.most, o.names)
-                 : Chosen(a.file, o.most, o.names, o.biquads ? std::function<bool(uint32_t)>(sets_biquads) : nullptr);
+        a.driver || a.gba || a.ds || a.dse
+            ? Chosen(DriverSounds(a), name_of, o.most, o.names)
+            : Chosen(a.file, o.most, o.names, o.biquads ? std::function<bool(uint32_t)>(sets_biquads) : nullptr);
     if (unread > 0)
     {
         std::fprintf(kOut, "%s: the tool can't read the commands of %zu sequence sounds, and leaves them out.\n",
@@ -700,8 +716,7 @@ void CheckSentSound(const Options& o, const OpenedArchive& a, const std::string&
                     uint32_t sound, const std::string& sound_name, const Sent& sent, Tallies& tallies)
 {
     CountWarningKinds(sent.other.warnings, tallies.warned);
-    if (!(format::Read(format::Write(sent.other.file)) == sent.other.file) ||
-        !(format::ReadText(format::WriteText(sent.other.file)) == sent.other.file))
+    if (!RoundTrips(sent.other.file))
     {
         std::fprintf(kOut, "%s: %s's new file doesn't come back from both forms.\n", name.c_str(), sound_name.c_str());
         tallies.lost++;
@@ -711,9 +726,12 @@ void CheckSentSound(const Options& o, const OpenedArchive& a, const std::string&
     // The renders and their levels, at the higher of the two rates.
     const Played played_before = PlaySource(a, sound, o.seconds);
     const Played played_after =
-        o.to_ds    ? PlayDs(sent.built_ds, 0, o.seconds, o.ds_mixing)
-        : o.to_wii ? PlayWii(sent.built_wii, 0, o.seconds, format::BuildOfWiiArchive(*sent.other.file.native))
-                   : Play(sent.built, 0, o.seconds);
+        o.to_ds    ? PlayDry(sent.built_ds, song::ReadSequence(*sent.built_ds, 0), o.seconds, o.ds_mixing)
+        : o.to_wii ? PlayDry(sent.built_wii,
+                             song::ReadSequence(*sent.built_wii, 0, {}, {},
+                                                format::BuildOfWiiArchive(*sent.other.file.native)),
+                             o.seconds)
+                   : PlayDry(sent.built, song::ReadSequence(*sent.built, 0), o.seconds);
     const int rate = std::max(played_before.render.rate, played_after.render.rate);
     const song::DryRender before = song::AtRate(played_before.render, rate);
     const song::DryRender after = song::AtRate(played_after.render, rate);

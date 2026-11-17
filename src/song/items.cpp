@@ -16,6 +16,7 @@
 #include <system_error>
 #include <utility>
 
+#include "ntdlib/sar/archive_model.h"
 #include "ntdlib/sar/decode.h"
 #include "ntdlib/sar/info_block.h"
 #include "ntdlib/sar/tables.h"
@@ -345,18 +346,38 @@ std::map<uint32_t, std::string> GroupsBeside(const sar::SoundArchive& archive, c
     return beside;
 }
 
+// Whether only groups hold the file of `entry`, an entry of the file table of an archive of `flavor`. An entry cut
+// short counts as a file in the archive.
+bool OnlyGroupsHold(std::span<const uint8_t> entry, sar::Flavor flavor)
+{
+    try
+    {
+        return sar::PlaceOfFile(entry, flavor) == sar::FilePlace::kGroupsOnly;
+    }
+    catch (const xsflib::FormatError&)
+    {
+        return false;
+    }
+}
+
+// The groups that `entry`, an entry of the file table of an archive of `flavor`, lists. Nothing for an entry without a
+// list, and for a list cut short.
+std::optional<std::vector<uint32_t>> ListedGroups(std::span<const uint8_t> entry, sar::Flavor flavor)
+{
+    try
+    {
+        return sar::GroupsOfFile(entry, flavor);
+    }
+    catch (const xsflib::FormatError&)
+    {
+        return std::nullopt;
+    }
+}
+
 } // namespace
 
 std::map<uint32_t, std::vector<std::string>> FilesInMissingGroups(const sar::SoundArchive& archive)
 {
-    // A file entry of the INFO block: a reference to the file's location, with its type at 0 and its offset from the
-    // entry's start at 4. A file in the archive has type 0x220C. Its location holds the file's offset from the FILE
-    // block's body at 4, or 0xFFFFFFFF where only groups hold the file. A reference to the list of the file's groups
-    // follows at 12, with its type at 12 and its offset from the location at 16. The list holds a count, then the
-    // groups' item IDs. The 3DS's entries hold no list.
-    constexpr uint16_t kInternalFile = 0x220C;
-    constexpr uint32_t kNoPlace = 0xFFFFFFFF;
-    constexpr uint16_t kListType = 0x0100;
     std::map<uint32_t, std::vector<std::string>> missing;
     const sar::Flavor flavor = archive.ReadOptions().flavor;
     std::optional<sar::InfoBlock> info;
@@ -380,27 +401,24 @@ std::map<uint32_t, std::vector<std::string>> FilesInMissingGroups(const sar::Sou
     for (uint32_t id = 0; id < info->files.size(); ++id)
     {
         const std::vector<uint8_t>& entry = info->files[id];
-        const xsflib::Reader r(entry, big_endian);
-        const std::size_t location = entry.size() >= 8 ? r.U32(4) : entry.size();
-        if (!archive.FileData(id).empty() || r.U16(0) != kInternalFile || location + 8 > entry.size() ||
-            r.U32(location + 4) != kNoPlace)
+        if (!archive.FileData(id).empty() || !OnlyGroupsHold(entry, flavor))
         {
             continue;
         }
 
         // Without a list, the file comes without names. A list that names no group beside the archive leaves the file
         // out: no group file holds it.
-        if (location + 20 > entry.size() || r.U16(location + 12) != kListType)
+        const std::optional<std::vector<uint32_t>> listed = ListedGroups(entry, flavor);
+        if (!listed)
         {
             missing[id];
             continue;
         }
 
         std::vector<std::string> groups;
-        const std::size_t list = location + r.U32(location + 16);
-        for (std::size_t k = 0; list + 4 <= entry.size() && k < r.U32(list) && list + 8 + 4 * k <= entry.size(); ++k)
+        for (const uint32_t listed_group : *listed)
         {
-            const auto group = beside.find(sar::ItemNumber(r.U32(list + 4 + 4 * k)));
+            const auto group = beside.find(sar::ItemNumber(listed_group));
             if (group != beside.end())
             {
                 groups.push_back(group->second);

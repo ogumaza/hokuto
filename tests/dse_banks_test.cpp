@@ -35,17 +35,24 @@ using hokuto::format::File;
 using hokuto::song::DseSet;
 using xsflib::testing::Check;
 
-// Three songs of one note on program 0 of their banks. The banks of bgm0001 and bgm0002 contain the same bytes. The
-// bank of bgm0003 has a volume of 0x50 in program 0. Each uses the waves of the main bank.
-File TestFile()
+// The bank of bgm0003 in TestFile: the song's bank with a volume of 0x50 in program 0.
+ntdlib::dse::WaveBank OtherBank()
+{
+    ntdlib::dse::WaveBank other = ntdlib::dse::WaveBank::Parse(dse_files::BankFile());
+    other.instruments->programs[0]->splits[0][edit::kDseVolume] = 0x50;
+
+    return other;
+}
+
+// Three songs of one note on program 0 of their banks. The banks of bgm0001 and bgm0002 contain the same bytes, and
+// `other` is the bank of bgm0003. Each uses the waves of the main bank.
+File TestFile(const ntdlib::dse::WaveBank& other)
 {
     const Bytes conductor = {0, 0, 0, 0, 0xA4, 0x78, 0x98};
     const Bytes track = Join({{1, 1, 0, 0},
                               {0xA9, 0x7F, 0xAA, 0x00, 0xAC, 0x00, 0xE0, 0x7F},
                               dse_files::Note(0x60, 0, 0, 0x18, 1),
                               {0x92, 0x18, 0x98}});
-    ntdlib::dse::WaveBank other = ntdlib::dse::WaveBank::Parse(dse_files::BankFile());
-    other.instruments->programs[0]->splits[0][edit::kDseVolume] = 0x50;
     nds_files::Image image;
     image.files = {{"SOUND/BGM/bgm.swd", dse_files::MainBankFile()},
                    {"SOUND/BGM/bgm0001.smd", dse_files::SongFile({conductor, track})},
@@ -56,6 +63,12 @@ File TestFile()
                    {"SOUND/BGM/bgm0003.swd", other.Write()}};
 
     return hokuto::format::ImportDseImage(nds_files::BuildImage(image).first);
+}
+
+// The file of three songs whose bank of bgm0003 is OtherBank.
+File TestFile()
+{
+    return TestFile(OtherBank());
 }
 
 std::shared_ptr<const DseSet> SetOf(const File& file)
@@ -376,6 +389,36 @@ void TestWaveEditLoop()
     Check(on.Loops() && on.LoopStart() == 2 && on.LoopLength() == 30, "a loop in a wave that played once");
 }
 
+// A bank that shares the main bank and holds a square wave in the edited slot keeps the square wave as it is. The
+// other banks take the edit.
+void TestWaveEditSharedSquare()
+{
+    ntdlib::dse::WaveBank other = OtherBank();
+    edit::SetDseWaveFormat(*other.waves[1], 3);
+    const File file = TestFile(other);
+    const std::shared_ptr<const DseSet> set = SetOf(file);
+    const edit::DseWaveValues one = edit::DseWaveValuesOf(*set, kMainBank, 1);
+
+    const File looped = edit::WithDseWave(file, *set, kMainBank, 1, {one.rate, true, 8});
+    const File faster = edit::WithDseWave(file, *set, kMainBank, 1, {2 * one.rate, one.loop, one.loop_start});
+
+    std::shared_ptr<const DseSet> read = SetOf(looped);
+    for (const uint32_t bank : {kMainBank, kFirstBank})
+    {
+        const ntdlib::dse::WaveInfo& held = *read->banks[bank].bank->waves[1];
+        Check(held.Loops() && held.LoopStart() == 2 && held.LoopLength() == 30, "a wave of samples takes the loop");
+    }
+    Check(read->banks[kOtherBank].bank->waves[1] == set->banks[kOtherBank].bank->waves[1],
+          "the square wave keeps its loop");
+
+    read = SetOf(faster);
+    Check(read->banks[kFirstBank].bank->waves[1]->SampleRate() == 2 * one.rate, "a wave of samples takes the rate");
+    Check(read->banks[kOtherBank].bank->waves[1] == set->banks[kOtherBank].bank->waves[1],
+          "the square wave keeps its rate");
+    Check(SplitOf(*read, kOtherBank, 1, 0) == SplitOf(*set, kOtherBank, 1, 0),
+          "the square wave's split keeps its tuning");
+}
+
 // The same values keep every byte. A value that the wave can't take is refused.
 void TestWaveEditUnchangedAndRefused()
 {
@@ -445,6 +488,7 @@ int main()
                                         TestSplitEditUnchangedAndRefused();
                                         TestWaveEditRate();
                                         TestWaveEditLoop();
+                                        TestWaveEditSharedSquare();
                                         TestWaveEditUnchangedAndRefused();
                                         TestWaveView();
                                     });

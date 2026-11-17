@@ -17,8 +17,8 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/gba.h"
-#include "ntdlib/mp2k/sequencer.h"
+#include "agblib/agb/gba.h"
+#include "agblib/mp2k/sequencer.h"
 
 #include "check_gba_edits.h"
 #include "song/sequence.h"
@@ -103,7 +103,7 @@ struct ChannelSpans
 bool Brief(const Sequence& song, uint32_t tick, uint32_t length)
 {
     const double ticks =
-        hokuto::song::TempoAt(song, tick) * 60.0 / ntdlib::agb::kFrameRate / ntdlib::mp2k::kTickCounter;
+        hokuto::song::TempoAt(song, tick) * 60.0 / agblib::agb::kFrameRate / agblib::mp2k::kTickCounter;
     return length > 0 && length < std::ceil(ticks - 1e-6);
 }
 

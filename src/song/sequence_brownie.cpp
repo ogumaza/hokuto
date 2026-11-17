@@ -2,8 +2,8 @@
 
 // The reader of the songs of Brownie Brown's GBA driver, with the commands of their notes.
 
-#include "ntdlib/brownie/driver.h"
-#include "ntdlib/sequence_export/agb/settings.h"
+#include "agblib/brownie/driver.h"
+#include "agblib/sequence_export/agb/settings.h"
 #include "ntdlib/sequence_export/instruments.h"
 
 #include "format/brownie_items.h"
@@ -14,8 +14,6 @@ namespace hokuto::song
 {
 namespace
 {
-
-namespace export_ = ntdlib::sequence_export;
 
 using sequence_parts::AddTrack;
 using sequence_parts::ClipToLoop;
@@ -68,7 +66,7 @@ void TakeBrownieCommands(Sequence& sequence, const ntdlib::commands::Sequence& c
     for (Track& track : sequence.tracks)
     {
         const bool noise =
-            track.number < ntdlib::brownie::kFirstSampleChannel && track.number % 4 == ntdlib::brownie::kNoiseChannel;
+            track.number < agblib::brownie::kFirstSampleChannel && track.number % 4 == agblib::brownie::kNoiseChannel;
         for (Note& note : track.notes)
         {
             note.midi_key = note.key;
@@ -105,12 +103,12 @@ Sequence ReadSequence(const BrownieRom& rom, uint32_t sound)
     }
 
     // The performer plays one pass of the loop.
-    ntdlib::sequence_export::agb::ConvertSettings settings;
+    agblib::sequence_export::agb::ConvertSettings settings;
     settings.loops = 1;
     try
     {
-        const export_::brownie::Performance performance =
-            export_::brownie::PerformSong(rom.rom, rom.info, song, settings);
+        const agblib::sequence_export::brownie::Performance performance =
+            agblib::sequence_export::brownie::PerformSong(rom.rom, rom.info, song, settings);
 
         Sequence sequence = SequenceHead(performance, name, sound);
         sequence.driver = &rom.Rules();

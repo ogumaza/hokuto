@@ -34,6 +34,7 @@
 #include "ntdlib/sar/sequence_file.h"
 
 #include "edit/bytecode.h"
+#include "edit/effects.h"
 #include "edit/files.h"
 #include "edit/new_items.h"
 #include "edit/other_console_parts.h"
@@ -700,6 +701,18 @@ std::optional<std::string> EngineRefused(const format::File& file, format::Engin
     }
 
     return std::nullopt;
+}
+
+song::Mixing PlayedMixing(const format::File& file, uint32_t sound)
+{
+    const format::Engine engine = format::EngineOf(file, sound);
+    const format::Engine played = EngineRefused(file, engine) ? file.engine : engine;
+    if (format::MixingRefused(played, format::Mixing::kEnhanced))
+    {
+        return song::Mixing::kStrict;
+    }
+
+    return ModelMixing(format::MixingOf(file, sound));
 }
 
 OtherConsoleSong ForEngine(const format::File& file, uint32_t sound, format::Engine engine)

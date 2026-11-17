@@ -13,13 +13,13 @@
 #include <numbers>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/mp2k/song.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/krawall_cart.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/testing/dse_song_files.h"
-#include "ntdlib/testing/krawall_cart.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/sar_files.h"
 #include "ntdlib/testing/sdat_files.h"
@@ -35,8 +35,8 @@ namespace hokuto::testing
 // The song's header sets the reverb to `reverb`, or leaves the reverb of the driver.
 inline std::vector<uint8_t> GbaMeasureCart(uint8_t reverb)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     std::vector<int8_t> sine(64);
@@ -55,7 +55,7 @@ inline std::vector<uint8_t> GbaMeasureCart(uint8_t reverb)
     track.Fine();
     cart.Song({track}, voices, 0, 0, reverb);
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -142,9 +142,9 @@ inline std::vector<uint8_t> DseMeasureImage()
 // A ROM of Krawall from ntdlib's test cartridge, with one module of 1 channel and 4 rows: C-4 of the first instrument.
 inline std::shared_ptr<const song::DriverRom> KrawallMeasureRom()
 {
-    ntdlib::testing::krawall_cart::Cart image;
+    agblib::testing::krawall_cart::Cart image;
     image.Module(1, 4, {{.row = 0, .channel = 0, .note = 49, .instrument = 1}});
-    const ntdlib::agb::Rom rom = image.ToRom();
+    const agblib::agb::Rom rom = image.ToRom();
     return song::LoadKrawallRom(hokuto::testing::RomBytes(rom));
 }
 

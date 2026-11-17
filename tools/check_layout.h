@@ -53,6 +53,7 @@
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "checked_archive.h"
 #include "format/archive.h"
 #include "song/archive.h"
 
@@ -152,8 +153,19 @@ struct Totals
     int64_t wii_bytes = 0;
 };
 
-// The grammar of the sequences of an archive of `flavor`.
-nwsnd::Grammar GrammarFor(sar::Flavor flavor);
+// The labels of `sequence` at their offsets in `encoded`, as a sequence file of the 3DS, the Wii U or the Switch
+// (sar::SequenceFile), or of the Wii (ntdlib::rsar::SequenceFile), holds them.
+template <typename SequenceFile>
+decltype(SequenceFile::labels) LabelsOf(const commands::Sequence& sequence, const nwsnd::Encoded& encoded)
+{
+    decltype(SequenceFile::labels) labels;
+    for (const commands::Label& label : sequence.labels)
+    {
+        labels.push_back({label.name, encoded.offsets[label.item]});
+    }
+
+    return labels;
+}
 
 // The file of `sequence` as the writer writes it.
 std::vector<uint8_t> FileOf(const commands::Sequence& sequence, uint32_t version, sar::Flavor flavor);
@@ -171,25 +183,49 @@ sar::Layout Grow(const sar::Layout& layout, std::vector<uint32_t>& added);
 // Where each of the original's pieces starts, for the sequence piece at a file's start.
 std::map<std::size_t, std::size_t> PieceStarts(const sar::Layout& layout);
 
+// The readings of an archive that the checks take, by the default rules of its options and by the strict rules. Each
+// reading loads once, when a check first takes it.
+class Readings
+{
+public:
+    Readings(const std::vector<uint8_t>& archive, const sar::Options& options);
+
+    // The archive by the default rules. Throws as sar::SoundArchive::Load throws.
+    const sar::SoundArchive& Default();
+
+    // The archive by the strict rules, or nothing where they don't read it.
+    const std::optional<sar::SoundArchive>& Strict();
+
+private:
+    const std::vector<uint8_t>& archive_;
+    sar::Options options_;
+    std::optional<sar::SoundArchive> default_;
+    std::optional<std::optional<sar::SoundArchive>> strict_;
+};
+
 // Prints problem `what` of the archive at `path`, and counts it.
 void Problem(const std::filesystem::path& path, const std::string& what, Totals& totals);
 
-// The STRG block of `archive`, from the header's table of blocks. Nothing for an archive without one.
-std::optional<std::span<const uint8_t>> StringBlockOf(std::span<const uint8_t> archive, sar::Flavor flavor);
-
-// The name that the reader gives item `item_id` of `archive`, for the types whose lists it reads. Nothing for another
-// type.
-std::optional<std::string> ReaderNameOf(const sar::SoundArchive& archive, uint32_t item_id);
+// What the reader gives item `item_id` of `archive`, for the types whose lists it reads: the item's name, or no item
+// where the index lies past the reader's list. `read` is false for another type. The default rules read every sound,
+// bank and wave archive, and only the strict rules read every player and group (`strict`). By the default rules, a
+// player or a group past the reader's list gives no name and `read` false.
+struct ReaderName
+{
+    bool read = false;
+    std::optional<std::string> name;
+};
+ReaderName ReaderNameOf(const sar::SoundArchive& archive, uint32_t item_id, bool strict);
 
 // Checks that ntdlib's StringBlock writes the STRG block of `original` again from its names, byte for byte, that
 // FindItem finds each name's item, and that the reader gives the items the same names.
 void CheckNames(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Options& options,
-                Totals& totals);
+                Readings& readings, Totals& totals);
 
 // Checks the files and the sounds' starts of `joined`, the bytes of `grown`, with the reader.
-void CheckTables(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                 const std::vector<uint8_t>& joined, const sar::Layout& layout, const sar::Layout& grown,
-                 const std::vector<uint32_t>& added, const sar::Options& options, Totals& totals);
+void CheckTables(const std::filesystem::path& path, const std::vector<uint8_t>& joined, const sar::Layout& layout,
+                 const sar::Layout& grown, const std::vector<uint32_t>& added, const sar::Options& options,
+                 Readings& readings, Totals& totals);
 
 // Whether `a` and `b` hold the same values, but for the volume and the tracks' flags.
 bool SameOtherwise(const sar::SoundInfo& a, const sar::SoundInfo& b);
@@ -204,19 +240,20 @@ std::string KindOf(std::span<const uint8_t> file);
 // archive alone. The 3DS's file table holds no lists of groups. There, the name under which the tool finds a group file
 // beside the archive gives its group (ntdlib::sar::SoundArchive::GroupFileGroups).
 void CheckGroupFiles(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                     const sar::Options& options, Totals& totals);
+                     const sar::Options& options, Readings& readings, Totals& totals);
 
-// Checks the runs of files that `layout`, the cut of `original`, holds, after each one grows.
-void CheckRuns(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-               const sar::Options& options, Totals& totals);
+// Checks each run of files that `layout` holds after the run grows. `layout` is the cut of the archive that `readings`
+// reads.
+void CheckRuns(const std::filesystem::path& path, const sar::Layout& layout, const sar::Options& options,
+               Readings& readings, Totals& totals);
 
 // Checks the writing of the tables' values, where the strict rules read the archive.
 void CheckValues(const std::filesystem::path& path, const std::vector<uint8_t>& original, sar::Options options,
-                 Totals& totals);
+                 Readings& readings, Totals& totals);
 
 // Checks the places of the sounds' optional values, where the strict rules read the archive.
 void CheckPlaces(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                 sar::Options options, Totals& totals);
+                 sar::Options options, Readings& readings, Totals& totals);
 
 // Whether `a` and `b` hold the same values.
 bool SameSound(const sar::SoundInfo& a, const sar::SoundInfo& b);
@@ -249,53 +286,51 @@ std::size_t LeadOf(std::size_t block, sar::Flavor flavor);
 
 // Checks ntdlib's writing of the INFO block of `original` and its replacement. `layout` is the cut of `original`.
 void CheckInfo(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-               const sar::Options& options, Totals& totals);
+               const sar::Options& options, Readings& readings, Totals& totals);
 
 // Whether each entry of `archive`'s INFO block that holds a string index names its item there, and whether the string
 // table holds the names in the order of the tables. The options of an entry start 20 bytes in for a sound, 24 for a
 // sound group, 12 for a bank, 8 for a wave archive, and 4 for a group and a player. Bit 0 gives the string index.
 bool NamesInOrder(std::span<const uint8_t> archive, sar::Flavor flavor);
 
-// A name that `archive`'s STRG block lacks, from `stem`, or none for an archive without one.
-std::string FreeName(std::span<const uint8_t> archive, sar::Flavor flavor, const std::string& stem);
-
 // Checks ntdlib's new file and new sequence sound in `original`, with its cut `layout`. The model is the first sequence
 // sound whose file the reader reads.
 void CheckNewItems(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                   const sar::Options& options, Totals& totals);
+                   const sar::Options& options, Readings& readings, Totals& totals);
 
 // Checks ntdlib's new wave sounds in `original`, with its cut `layout`. A copy of the first wave sound file that the
 // reader reads takes a copy of each wave sound that the file holds, at its index. A wave sound copied from the first
 // sequence sound follows, at index 0.
 void CheckNewWaveSounds(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                        const sar::Layout& layout, const sar::Options& options, Totals& totals);
+                        const sar::Layout& layout, const sar::Options& options, Readings& readings, Totals& totals);
 
 // Checks ntdlib's new files outside the archive and new stream sounds in `original`.
 void CheckNewStreams(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                     const sar::Options& options, Totals& totals);
+                     const sar::Options& options, Readings& readings, Totals& totals);
 
 // Checks ntdlib's new wave archives and new bank in `original`, with its cut `layout`. The model is the first bank
 // whose file the reader reads, with waves in wave archives whose files the reader reads. Each of those wave archives
 // gets a copy, with a name where the archive has names. The model's file then names the copies (WithWaveArchives) and
 // goes in as a new bank. Its entry lists the copies where the model's entry lists wave archives.
 void CheckNewBank(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                  const sar::Options& options, Totals& totals);
+                  const sar::Options& options, Readings& readings, Totals& totals);
 
 // Checks ntdlib's WithValuePlaces on `original`, with its cut `layout`, where the strict rules read the archive and it
 // isn't cut short. Every option of a pan, of the priorities and of a channel priority leaves the sounds' entries, and
 // WithValuePlaces gives them back.
 void CheckValuePlaces(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                      const sar::Layout& layout, sar::Options options, Totals& totals);
+                      const sar::Layout& layout, sar::Options options, Readings& readings, Totals& totals);
 
 // Checks ntdlib's lists of banks in `original`, with its cut `layout`. Each sequence sound with fewer than four banks
 // takes a list one slot longer, with an empty slot at its end. Then each sequence sound with banks takes a list one
 // bank shorter.
 void CheckBankLists(const std::filesystem::path& path, const std::vector<uint8_t>& original, const sar::Layout& layout,
-                    const sar::Options& options, Totals& totals);
+                    const sar::Options& options, Readings& readings, Totals& totals);
 
-// Checks ntdlib's WithInstruments on each bank of `original` with instruments whose file the reader reads.
-void CheckInstruments(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                      const sar::Options& options, Totals& totals);
+// Checks ntdlib's WithInstruments on each bank with instruments whose file the reader reads, in the archive that
+// `readings` reads.
+void CheckInstruments(const std::filesystem::path& path, const sar::Options& options, Readings& readings,
+                      Totals& totals);
 
 // Checks an archive of the Wii (RSAR) through Hokuto's import and ntdlib's rsar module: the round trip, then every
 // sequence grown as Grow grows it. ntdlib's reader finds each file where it moved. A file that holds no sequence keeps

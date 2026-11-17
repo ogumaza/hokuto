@@ -3,59 +3,13 @@
 // The checks of hokuto_check_layout on the copies of instruments and their places in banks.
 
 #include "check_layout.h"
+#include "same_instrument.h"
 
 namespace hokuto::tools::layout
 {
 
 namespace
 {
-
-// Whether region `x` of a bank whose waves are `x_waves` and region `y` of a bank whose waves are `y_waves` hold the
-// same values, and waves that name the same wave archive and wave.
-bool SameRegion(const std::vector<sar::WaveId>& x_waves, const sar::VelocityRegion& x,
-                const std::vector<sar::WaveId>& y_waves, const sar::VelocityRegion& y)
-{
-    if (x.wave_id_index >= x_waves.size() || y.wave_id_index >= y_waves.size())
-    {
-        return false;
-    }
-
-    const sar::WaveId& x_wave = x_waves[x.wave_id_index];
-    const sar::WaveId& y_wave = y_waves[y.wave_id_index];
-
-    const auto adshr = [](const sar::Adshr& a)
-    {
-        return std::array{a.attack, a.decay, a.sustain, a.hold, a.release};
-    };
-
-    return x_wave.wave_archive_item == y_wave.wave_archive_item && x_wave.index == y_wave.index &&
-           x.original_key == y.original_key && x.volume == y.volume && x.pan == y.pan &&
-           std::bit_cast<uint32_t>(x.pitch) == std::bit_cast<uint32_t>(y.pitch) &&
-           x.ignore_note_off == y.ignore_note_off && x.key_group == y.key_group && x.interpolation == y.interpolation &&
-           adshr(x.adshr) == adshr(y.adshr);
-}
-
-// Whether instrument `x` of bank `a` and instrument `y` of bank `b` hold the same regions, by SameRegion.
-bool SameInstrument(const sar::Bank& a, const std::optional<sar::Instrument>& x, const sar::Bank& b,
-                    const std::optional<sar::Instrument>& y)
-{
-    if (!x || !y)
-    {
-        return !x && !y;
-    }
-
-    const auto same_velocity = [&a, &b](const sar::KeyRegion::Vel& v, const sar::KeyRegion::Vel& w)
-    {
-        return v.lo == w.lo && v.hi == w.hi && v.region.has_value() == w.region.has_value() &&
-               (!v.region || SameRegion(a.waves, *v.region, b.waves, *w.region));
-    };
-    const auto same_key = [&same_velocity](const sar::KeyRegion& k, const sar::KeyRegion& l)
-    {
-        return k.lo == l.lo && k.hi == l.hi && std::ranges::equal(k.velocities, l.velocities, same_velocity);
-    };
-
-    return std::ranges::equal(x->keys, y->keys, same_key);
-}
 
 // The place of each program's instrument in `bank`, a bank file of `flavor`. Nothing for a program without one.
 std::vector<std::optional<std::size_t>> InstrumentPlaces(std::span<const uint8_t> bank, sar::Flavor flavor)
@@ -212,10 +166,10 @@ void CheckCopies(const std::filesystem::path& path, const ReadBank& target, cons
 
 } // namespace
 
-void CheckInstruments(const std::filesystem::path& path, const std::vector<uint8_t>& original,
-                      const sar::Options& options, Totals& totals)
+void CheckInstruments(const std::filesystem::path& path, const sar::Options& options, Readings& readings,
+                      Totals& totals)
 {
-    const sar::SoundArchive archive = sar::SoundArchive::Load(original, options);
+    const sar::SoundArchive& archive = readings.Default();
     sar::Options strict = options;
     strict.rules = sar::Rules::kStopAtFirstProblem;
     std::vector<ReadBank> banks;

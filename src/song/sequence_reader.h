@@ -154,4 +154,12 @@ private:
     std::function<Result()> waiting_; // the latest request, while an abandoned read still runs
 };
 
+// The sequence of `converted`, the conversion of `sequence` for another console, read with the variables' starting
+// values `values` and their changes `changes`. The conversion of a song of the GBA's other drivers ends at the end of
+// its loop's first pass. The song ends there too: the performer can find the conversion's loop a pass or more late. The
+// sequence contains the map of the arrangement's ticks to its ticks (Sequence::arrangement_ticks). Throws what
+// ReadSequence throws.
+Sequence ReadEngineSequence(const Sequence& sequence, const SequenceReader::EngineSound& converted,
+                            const StartValues& values, const Changes& changes);
+
 } // namespace hokuto::song

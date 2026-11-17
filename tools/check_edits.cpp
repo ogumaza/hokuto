@@ -90,6 +90,13 @@
 // delay after a note off. Such a note has no note command, and the Key Editor can't edit it. The tool plans no edit
 // for it, and counts it apart. The effect plays the channel's last note again, and it plays nothing once that note is
 // removed.
+// In the Eternal Duelist revision of Konami's driver, a PSG note command at the track's volume moves the pitch of the
+// note that sounds, and starts no note. An edit of a volume, or a note's removal, can therefore join two notes or part
+// them. Such a note counts apart only where agblib's sequencer shows that its track runs a PSG note command at its tick
+// and starts no note there (PsgPitchMoves). A volume command can also start a PSG channel again in a frame where the
+// track before runs a note command. The read then names that command for the note. A move of that command into the
+// frame changes the command that the note names, and its velocity and length with it. The tool counts such a note
+// among the notes that a command starts again (NamedByTrackBefore).
 //
 // With --timelines, the tool opens the file's timelines as the program does (edit/timelines.h). Each edit of a timeline
 // then takes the converter's layout as the program settles it (edit::SettleTimelines). An edit that the layout can't

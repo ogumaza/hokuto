@@ -595,6 +595,30 @@ std::vector<std::optional<SoundPlace>> SoundPlaces(const ntdlib::rsar::SoundArch
     return places;
 }
 
+std::vector<std::optional<uint32_t>> GbaSongSequences(const format::File& file, const song::GbaRom& rom)
+{
+    std::vector<std::optional<uint32_t>> sequences;
+    for (int song = 0; song < rom.info.song_count; song++)
+    {
+        sequences.push_back(format::GbaSongSequence(file, rom.info.song_table, song));
+    }
+
+    return sequences;
+}
+
+std::vector<std::optional<uint32_t>> DriverSoundSequences(const format::File& file, const song::DriverRom& rom)
+{
+    std::vector<std::optional<uint32_t>> sequences(rom.SoundCount());
+    const std::vector<uint64_t> starts = format::NativePieceStarts(file);
+    for (const uint32_t sound : rom.Sounds())
+    {
+        const std::optional<uint64_t> place = rom.FieldsOf(sound).sequence;
+        sequences[sound] = place ? format::SequenceNamedAt(file, *place, starts) : std::nullopt;
+    }
+
+    return sequences;
+}
+
 std::vector<std::optional<SoundPlace>> DriverSoundPlaces(const format::File& file, const song::DriverRom& rom,
                                                          std::span<const std::optional<uint32_t>> sequences)
 {

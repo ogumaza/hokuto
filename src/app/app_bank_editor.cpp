@@ -172,8 +172,10 @@ void App::UpdateSarBankEditor()
     // waits.
     TakeWaitingBankDrop();
 
-    // While the program builds the archive of another version, or another window waits, the editor takes no edits.
+    // While the program builds the archive of another version, or another window waits, the editor takes no edits. A
+    // press on a button of the list of programs waits while the program only settles the last edit.
     const bool busy = EditorsWait();
+    bank_state_.settling = Settling() && !replace_.shown && !export_.has_value();
     TakeGroupSizes(bank_group_sizes_, bank_view_->sizes);
     bool open = true;
     const BankEdit bank_edit = DrawBankEditor(*bank_view_, bank_state_, ItemShown(bank_editor_), busy, &open);
@@ -264,7 +266,7 @@ bool App::FollowBankView(const std::function<void()>& make, std::string_view ref
 
 void App::TakeWaitingBankDrop()
 {
-    if (waiting_bank_drop_ && reading_version_ == nullptr)
+    if (waiting_bank_drop_ && !Settling())
     {
         const WaitingBankDrop waiting = *std::exchange(waiting_bank_drop_, std::nullopt);
         DropFilesOnBank(waiting.paths, waiting.drop);
@@ -326,16 +328,76 @@ void App::ApplyBankEdit(const BankEdit& bank_edit)
         return;
     }
 
-    try
+    StartBankEdit(bank_edit.name, bank_edit.details, *bank_edit.model);
+}
+
+void App::StartBankEdit(std::string name, std::string details, ntdlib::sar::BankFile model)
+{
+    // An edit whose work still runs comes first.
+    TakeItemEdit(true);
+
+    // Laying the bank out joins the whole archive several times. The work keeps the version and its archive.
+    const auto make = [bank = *bank_editor_, model](const format::File& file, const song::Played& played)
     {
-        format::File file = played_.Wii()
-                                ? edit::WithBankModel(*Document(), *played_.Wii(), *bank_editor_, *bank_edit.model)
-                                : edit::WithBankModel(*Document(), *played_.Sar(), *bank_editor_, *bank_edit.model);
-        DoBankEdit(bank_edit.name, bank_edit.details, std::move(file), *bank_edit.model);
+        return played.Wii() ? edit::WithBankModel(file, *played.Wii(), bank, model)
+                            : edit::WithBankModel(file, *played.Sar(), bank, model);
+    };
+    item_edit_names_ = {std::move(name), std::move(details)};
+    item_edit_.Start(make, history_->Current(), played_);
+
+    // The editor shows the new model at once. Its view follows the version's archive once the program has built it.
+    ShowBankModel(std::move(model));
+}
+
+void App::TakeItemEdit(bool wait)
+{
+    if (!item_edit_.Waiting())
+    {
+        return;
     }
-    catch (const std::exception& error)
+    if (!history_)
     {
-        ShowMessage(error.what());
+        item_edit_.Drop();
+        return;
+    }
+
+    // The work reads the archive of the version that it starts from. An edit that came while it ran can have changed
+    // the archive. The work then runs again once the program holds that version's archive. A call that can't wait for
+    // that archive drops the edit and says so. So does a version whose archive the program couldn't build.
+    const std::shared_ptr<const format::File> version = history_->Current();
+    const bool served = archive_version_ && reading_version_ == nullptr && SameArchive(*version, *archive_version_);
+    if (item_edit_.From() != version && !served)
+    {
+        if (wait || reading_version_ == nullptr)
+        {
+            item_edit_.Drop();
+            bank_view_version_.reset();
+            ShowMessage(
+                "Can't apply the last edit of the bank. Hokuto didn't have the archive of the edit after it. "
+                "Make the bank's edit again.");
+        }
+        return;
+    }
+
+    std::optional<ItemEdit::Outcome> outcome = item_edit_.Take(version, played_, wait);
+    if (!outcome)
+    {
+        return;
+    }
+
+    if (outcome->file)
+    {
+        Do(item_edit_names_.name, item_edit_names_.details, std::move(*outcome->file));
+    }
+    else
+    {
+        ShowMessage(outcome->error);
+    }
+
+    // An edit that didn't happen leaves the version. The Bank Editor then shows the archive's bank again.
+    if (history_->Current() == version)
+    {
+        bank_view_version_.reset();
     }
 }
 
@@ -349,6 +411,16 @@ void App::DoBankEdit(std::string name, std::string details, format::File file, n
     }
 
     // The editor shows the new model at once. The view follows the version's archive once the program has built it.
+    ShowBankModel(std::move(model));
+}
+
+void App::ShowBankModel(ntdlib::sar::BankFile model)
+{
+    if (!bank_view_)
+    {
+        return;
+    }
+
     bank_view_->model = std::move(model);
     bank_view_->entries.clear();
     for (uint32_t entry = 0; entry < bank_view_->model.waves.size(); ++entry)

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "ntdlib/nwsnd/commands.h"
+#include "ntdlib/sar/encodings.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/wave_file.h"
 #include "seqlib/read_error.h"
@@ -202,6 +203,17 @@ SequenceNumbering SequenceNumbers(const std::map<uint32_t, uint32_t>& before, co
 std::string FileText(FileKind kind)
 {
     return kind == FileKind::kWaveSoundFile ? NameOf(kind) : NameOf(kind) + " file";
+}
+
+ntdlib::rsar::WaveEncoding WiiEncoding(sar::WaveEncoding encoding)
+{
+    const std::optional<ntdlib::rsar::WaveEncoding> wii = ntdlib::rsar::EncodingOf(encoding);
+    if (!wii)
+    {
+        throw std::invalid_argument("The Wii doesn't play IMA-ADPCM.");
+    }
+
+    return *wii;
 }
 
 seqlib::WavContents ReadWavFile(std::span<const uint8_t> bytes)

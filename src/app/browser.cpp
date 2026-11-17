@@ -35,6 +35,7 @@ using zone_parts::DrawSectionHeading;
 using zone_parts::SectionHeading;
 using zone_parts::SectionHeadingHeight;
 using zone_parts::SectionOpen;
+using zone_parts::SetSectionOpen;
 
 // The height of an item in the browser, before the display's scale.
 constexpr float kItemHeight = 28.0f;
@@ -208,15 +209,23 @@ bool DrawGroupHeader(ImDrawList* draw, const BrowserGroup& group, std::size_t ma
              theme::kTextDim);
     DrawIcon(draw, group.icon, ImVec2(pos.x + Px(40.0f), middle), Px(15.0f), group.colour);
     ImFont* font = theme::GetFonts().text;
-    const ImVec2 name_size = TextSize(font, theme::kTextSize, group.name);
-    DrawText(draw, font, theme::kTextSize, ImVec2(pos.x + Px(56.0f), middle - name_size.y * 0.5f), theme::kText,
-             group.name);
-
     std::array<char, 16> count{};
     std::snprintf(count.data(), count.size(), "%zu", matches);
     const ImVec2 count_size = TextSize(font, theme::kSmallSize, count.data());
     const float pill_right = pos.x + size.x - margin - Px(8.0f);
     const float pill_left = pill_right - count_size.x - Px(14.0f);
+
+    // The name ends before the count, with an ellipsis where it doesn't fit, such as at 150 %. The row's
+    // tooltip then gives it whole.
+    const float name_left = pos.x + Px(56.0f);
+    const std::string name = FitText(font, theme::kTextSize, group.name, pill_left - Px(6.0f) - name_left);
+    const ImVec2 name_size = TextSize(font, theme::kTextSize, name);
+    DrawText(draw, font, theme::kTextSize, ImVec2(name_left, middle - name_size.y * 0.5f), theme::kText, name);
+    if (name != group.name)
+    {
+        RectTooltip(pos, ImVec2(pos.x + size.x, pos.y + size.y), group.name);
+    }
+
     draw->AddRectFilled(ImVec2(pill_left, middle - Px(9.0f)), ImVec2(pill_right, middle + Px(9.0f)), theme::kControl,
                         Px(9.0f));
     DrawText(draw, font, theme::kSmallSize, ImVec2(pill_left + Px(7.0f), middle - count_size.y * 0.5f),
@@ -514,6 +523,10 @@ void DrawBrowser(const std::vector<BrowserGroup>& groups, std::string_view file,
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(2.0f));
         const ImVec2 origin = ImGui::GetCursorScreenPos();
         const ImVec2 avail = ImGui::GetContentRegionAvail();
+        if (!std::exchange(state.sound_restored, true))
+        {
+            SetSectionOpen("Sound", state.sound_open);
+        }
         const bool sound_open = SectionOpen("Sound", false);
         const float room = avail.y - Px(kSoundGap) - SectionHeadingHeight("Sound") - Px(kBrowserMargin) * 0.5f;
         const float tree = TreeHeight(room, sound_open);
@@ -553,6 +566,14 @@ void DrawBrowser(const std::vector<BrowserGroup>& groups, std::string_view file,
         if (DrawBrowserSound(ImVec2(origin.x, divider.y + Px(kSoundGap)), avail.x, sound_open, sound) && !sound_open)
         {
             storage->SetBool(reveal, true);
+        }
+
+        // The settings keep the section's state, written again once it changes.
+        const bool now_open = SectionOpen("Sound", false);
+        if (now_open != state.sound_open)
+        {
+            state.sound_open = now_open;
+            ImGui::MarkIniSettingsDirty();
         }
     }
     ImGui::End();

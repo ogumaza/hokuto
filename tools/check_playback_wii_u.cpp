@@ -39,6 +39,15 @@ WiiURun RunWiiUModel(const sar::SoundArchive& archive, uint32_t sound, std::size
     return run;
 }
 
+// The frames of `samples` from frame `from` on that differ from `expected`'s frames from `first` on, up to the end of
+// either, for the Wii U's frames (see RunDifferences).
+template <class Sample>
+std::size_t WiiUDifferences(std::span<const Sample> samples, std::size_t from, const WiiURun& expected,
+                            std::size_t first, float scale, std::size_t* first_difference = nullptr)
+{
+    return RunDifferences(samples, from, expected, kWiiUFrameSamples * 2, first, scale, first_difference);
+}
+
 // The closeness of `output` to the model's output for the frame after a seek to frame `frame`, with the model's output
 // over the second before frame `lead_start` as the signal where that's louder (see SeekCloseness).
 Closeness WiiUSeekCloseness(std::span<const int16_t> output, const WiiURun& expected, std::size_t frame,
@@ -98,31 +107,6 @@ Closeness WiiUSwitchCloseness(std::span<const float> samples, std::size_t from, 
     return ClosenessOf(samples.subspan(start, wanted.size()), wanted);
 }
 
-} // namespace
-
-bool RenderFrames(song::SequencePlayer& player, std::size_t frames, std::size_t frame_samples,
-                  std::vector<float>& output)
-{
-    const std::size_t total = frames * frame_samples;
-    while (output.size() / 2 < total)
-    {
-        const std::size_t block = std::min(kBlock, total - output.size() / 2);
-        const std::size_t at = output.size();
-        output.resize(at + block * 2);
-        const std::size_t done = player.Render(output.data() + at, block);
-        output.resize(at + done * 2);
-        if (done < block)
-        {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-namespace
-{
-
 // The player's output for `before` frames on a model without effects in strict mixing, then on a model with `effects`
 // in `mixing`, up to `frames` frames in all. A catch-up runs the new model up to the player's frame, and the player
 // takes it at its next frame. The program does the same after an edit during playback.
@@ -130,49 +114,42 @@ std::vector<float> RunWiiUSwitch(const std::shared_ptr<const sar::SoundArchive>&
                                  const std::shared_ptr<const song::Sequence>& sequence, const song::AuxEffects& effects,
                                  song::Mixing mixing, std::size_t before, std::size_t frames)
 {
-    const auto clock = std::make_shared<song::PlaybackClock>(kWiiUFrameSamples);
-    song::SequencePlayer player(std::make_shared<song::SequenceModel>(archive, sequence), 0, clock);
-    std::vector<float> output;
-    if (!RenderFrames(player, before, kWiiUFrameSamples, output))
-    {
-        return output;
-    }
-
-    song::ModelCatchUp catch_up;
-    catch_up.Start(std::make_shared<song::SequenceModel>(archive, sequence,
-                                                         song::ModelOptions{.effects = effects, .mixing = mixing}),
-                   clock);
-    while (!catch_up.Finished())
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    clock->Offer(catch_up.Take());
-    RenderFrames(player, frames, kWiiUFrameSamples, output);
-
-    return output;
+    return playback_steps::RunSwitch(std::make_shared<song::SequenceModel>(archive, sequence),
+                                     std::make_shared<song::SequenceModel>(
+                                         archive, sequence, song::ModelOptions{.effects = effects, .mixing = mixing}),
+                                     before, frames);
 }
 
 // The seeks of `model` back and forth through its run of `played_frames` frames that fail against `expected`. A seek
 // restores a snapshot that the run took. With `close`, the output after a seek only has to lie close to the model's
-// (AddSeek), and otherwise each frame that differs counts.
+// (AddSeek), and otherwise each frame that differs counts. A seek that fails counts as one, and with `close` as a seek
+// that isn't exact.
 std::size_t CheckSnapshotSeeks(song::SequenceModel& model, std::size_t played_frames, const WiiURun& expected,
                                bool close, Totals& totals)
 {
     std::size_t seeks = 0;
     for (const std::size_t frame : {played_frames / 2, played_frames / 4, std::size_t{1}, played_frames * 3 / 4})
     {
-        if (frame < played_frames && model.SeekFrame(frame))
+        if (frame >= played_frames)
         {
-            const uint64_t lead = model.LeadFrames();
-            const std::size_t lead_start = frame > lead ? frame - static_cast<std::size_t>(lead) : 0;
-            if (close)
-            {
-                seeks += AddSeek({WiiUSeekCloseness(model.Output(), expected, frame, lead_start)}, totals) ? 0 : 1;
-            }
-            else
-            {
-                seeks += WiiUDifferences(model.Output(), 0, expected, frame, 1.0f);
-            }
+            continue;
+        }
+        if (!model.SeekFrame(frame))
+        {
+            totals.seeks += close ? 1 : 0;
+            seeks++;
+            continue;
+        }
+
+        const uint64_t lead = model.LeadFrames();
+        const std::size_t lead_start = frame > lead ? frame - static_cast<std::size_t>(lead) : 0;
+        if (close)
+        {
+            seeks += AddSeek({WiiUSeekCloseness(model.Output(), expected, frame, lead_start)}, totals) ? 0 : 1;
+        }
+        else
+        {
+            seeks += WiiUDifferences(model.Output(), 0, expected, frame, 1.0f);
         }
     }
 

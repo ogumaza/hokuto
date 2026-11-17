@@ -77,7 +77,7 @@ void TestSampleValues()
 // A bend of a sample track in the later revision names its sample by the track's duty byte, and a wave command changes
 // that byte. Song 1 of the cartridge below plays a note of sample 1 on track 4, sets wave 0, then bends. The driver's
 // output stage then sets the voice's step from sample 0's header (song::KonamiBorrowedRates). The voice plays on round
-// sample 1's loop. ntdlib's ArchivePlayer, run directly, gives the reference: a new step of sample 0 changes the song's
+// sample 1's loop. agblib's ArchivePlayer, run directly, gives the reference: a new step of sample 0 changes the song's
 // output. With a byte that does nothing in place of the wave command, the bend names sample 1, and the new step of
 // sample 0 changes nothing.
 //

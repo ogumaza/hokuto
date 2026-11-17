@@ -16,9 +16,9 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/brownie/driver.h"
-#include "ntdlib/konami/seqformat.h"
-#include "ntdlib/rd2/driver.h"
+#include "agblib/brownie/driver.h"
+#include "agblib/konami/seqformat.h"
+#include "agblib/rd2/driver.h"
 #include "seqlib/pcm.h"
 #include "seqlib/wav.h"
 
@@ -67,9 +67,9 @@ struct DriverRow
 
 // A row for each of the GBA's other drivers, in the order of format::kEngineFacts.
 constexpr std::array<DriverRow, kDriverEngineCount> kDriverRows = {{
-    {format::Engine::kKonami, &RulesAt<ntdlib::konami::Revision, &KonamiRules>, &LoadAs<&LoadKonamiRom>},
-    {format::Engine::kRd2, &RulesAt<ntdlib::rd2::Revision, &Rd2Rules>, &LoadAs<&LoadRd2Rom>},
-    {format::Engine::kBrownie, &RulesAt<ntdlib::brownie::Revision, &BrownieRules>, &LoadAs<&LoadBrownieRom>},
+    {format::Engine::kKonami, &RulesAt<agblib::konami::Revision, &KonamiRules>, &LoadAs<&LoadKonamiRom>},
+    {format::Engine::kRd2, &RulesAt<agblib::rd2::Revision, &Rd2Rules>, &LoadAs<&LoadRd2Rom>},
+    {format::Engine::kBrownie, &RulesAt<agblib::brownie::Revision, &BrownieRules>, &LoadAs<&LoadBrownieRom>},
     {format::Engine::kUbiMilan, &UbiMilanRulesAt, &LoadAs<&LoadUbiMilanRom>},
     {format::Engine::kRare, &RareRules, &LoadAs<&LoadRareRom>},
     {format::Engine::kQuintet, &QuintetRules, &LoadAs<&LoadQuintetRom>},
@@ -117,7 +117,7 @@ ntdlib::commands::Command ValueCommand(ntdlib::commands::Kind kind, int64_t valu
     return command;
 }
 
-std::vector<uint8_t> Pcm8Wav(const ntdlib::agb::Rom& rom, uint32_t address, uint32_t length, bool is_unsigned,
+std::vector<uint8_t> Pcm8Wav(const agblib::agb::Rom& rom, uint32_t address, uint32_t length, bool is_unsigned,
                              std::optional<WavLoop> loop, uint32_t rate)
 {
     seqlib::Pcm out;
@@ -154,11 +154,11 @@ std::map<uint32_t, uint32_t> ItemsByOffset(std::span<const uint32_t> offsets)
     return items;
 }
 
-std::string VersionedSoundName(int song, int songs, std::span<const ntdlib::sequence_export::agb::SongVersion> versions,
+std::string VersionedSoundName(int song, int songs, std::span<const agblib::sequence_export::agb::SongVersion> versions,
                                std::size_t version)
 {
     const std::string& named = version < versions.size() ? versions[version].name : std::string();
-    return "Song " + ntdlib::sequence_export::agb::SongNumber(song, songs) + (named.empty() ? "" : " (" + named + ")");
+    return "Song " + agblib::sequence_export::agb::SongNumber(song, songs) + (named.empty() ? "" : " (" + named + ")");
 }
 
 std::shared_ptr<const DriverRom> LoadDriverRom(format::Engine engine, std::vector<uint8_t> bytes)

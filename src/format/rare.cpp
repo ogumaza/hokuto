@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
-// Rare's driver for the GBA (ntdlib/rare/layout.h) as one of the drivers of format/drivers.h. The driver's revisions
-// differ in the traits of their commands (ntdlib::rare::Traits). A file's revision of the driver stores them as bits
+// Rare's driver for the GBA (agblib/rare/layout.h) as one of the drivers of format/drivers.h. The driver's revisions
+// differ in the traits of their commands (agblib::rare::Traits). A file's revision of the driver stores them as bits
 // (format/rare.h).
 
 #include "format/rare.h"
@@ -14,10 +14,10 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
-#include "ntdlib/rare/commands.h"
-#include "ntdlib/rare/driver.h"
-#include "ntdlib/rare/layout.h"
+#include "agblib/agb/rom.h"
+#include "agblib/rare/commands.h"
+#include "agblib/rare/driver.h"
+#include "agblib/rare/layout.h"
 #include "xsflib/binary.h"
 
 #include "format/archive.h"
@@ -31,10 +31,10 @@ namespace
 {
 
 // The driver that `rom` contains, or nothing.
-std::optional<ntdlib::rare::DriverInfo> Detect(const ntdlib::agb::Rom& rom, std::string& error)
+std::optional<agblib::rare::DriverInfo> Detect(const agblib::agb::Rom& rom, std::string& error)
 {
-    ntdlib::rare::DriverInfo info;
-    if (!ntdlib::rare::DetectDriver(rom, {}, info, error))
+    agblib::rare::DriverInfo info;
+    if (!agblib::rare::DetectDriver(rom, {}, info, error))
     {
         return std::nullopt;
     }
@@ -66,19 +66,19 @@ public:
 
     File Import(std::span<const uint8_t> rom) const override
     {
-        const ntdlib::agb::Rom read = RomOf(rom);
+        const agblib::agb::Rom read = RomOf(rom);
         std::string error;
-        const std::optional<ntdlib::rare::DriverInfo> info = Detect(read, error);
+        const std::optional<agblib::rare::DriverInfo> info = Detect(read, error);
         if (!info)
         {
             throw xsflib::FormatError(error.empty() ? "the ROM shows no sign of Rare's driver"
                                                     : "Rare's tune table holds no tune that Hokuto can read: " + error);
         }
 
-        ntdlib::rare::Layout layout = ntdlib::rare::Cut(read, *info);
+        agblib::rare::Layout layout = agblib::rare::Cut(read, *info);
         NativeDriver driver{
             .revision = RareRevision(layout.traits), .free_start = layout.free.start, .padding = layout.free.padding};
-        for (const ntdlib::rare::Span& run : layout.free.filler)
+        for (const agblib::rare::Span& run : layout.free.filler)
         {
             driver.filler.push_back({run.start, run.size});
         }
@@ -100,31 +100,31 @@ public:
                               std::span<const ntdlib::sar::Field> fields) const override
     {
         const NativeDriver& driver = *native.driver;
-        ntdlib::rare::FreeSpace free{.start = driver.free_start, .padding = driver.padding};
+        agblib::rare::FreeSpace free{.start = driver.free_start, .padding = driver.padding};
         for (const FillerRun& run : driver.filler)
         {
             free.filler.push_back({run.start, run.size});
         }
 
-        return ntdlib::rare::Join(RareTraits(driver.revision), sequences, pieces, fields, free,
+        return agblib::rare::Join(RareTraits(driver.revision), sequences, pieces, fields, free,
                                   {.filler = native.gba_filler});
     }
 
     std::vector<uint32_t> ItemOffsets(const ntdlib::commands::Sequence& sequence, uint8_t revision) const override
     {
-        return ntdlib::rare::ItemOffsets(sequence, RareTraits(revision));
+        return agblib::rare::ItemOffsets(sequence, RareTraits(revision));
     }
 
     ntdlib::commands::Scale ScaleOf(ntdlib::commands::Kind kind, uint8_t) const override
     {
-        return ntdlib::rare::ScaleOf(kind);
+        return agblib::rare::ScaleOf(kind);
     }
 
     std::vector<std::vector<uint32_t>> TrackEntries(std::span<const ntdlib::sar::Piece> pieces,
                                                     std::span<const ntdlib::sar::Field> fields, uint8_t) const override
     {
         // The fields of the tunes' track lists name the items where the tracks start, once each, in the order of the
-        // items (ntdlib::rare::Join).
+        // items (agblib::rare::Join).
         std::vector<std::vector<uint32_t>> entries(pieces.size());
         for (const ntdlib::sar::Field& field : fields)
         {
@@ -146,7 +146,7 @@ public:
     void Encode(const ntdlib::commands::Sequence& sequence, std::span<const uint32_t> entries,
                 uint8_t revision) const override
     {
-        ntdlib::rare::EncodeSequence(sequence, entries, RareTraits(revision));
+        agblib::rare::EncodeSequence(sequence, entries, RareTraits(revision));
     }
 };
 

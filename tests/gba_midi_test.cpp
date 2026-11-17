@@ -22,12 +22,12 @@
 #include <tuple>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/mp2k/commands.h"
+#include "agblib/mp2k/song.h"
+#include "agblib/testing/mp2k_cart.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/mp2k/commands.h"
-#include "ntdlib/mp2k/song.h"
-#include "ntdlib/testing/mp2k_cart.h"
 #include "seqlib/midi/builder.h"
 #include "xsflib/testing/check.h"
 
@@ -43,7 +43,7 @@ namespace
 {
 
 namespace midi = seqlib::midi;
-namespace mp2k_cart = ntdlib::testing::mp2k_cart;
+namespace mp2k_cart = agblib::testing::mp2k_cart;
 using hokuto::edit::GbaMidiInstrument;
 using hokuto::edit::GbaMidiSong;
 using hokuto::edit::GbaSongOfMidi;
@@ -81,7 +81,7 @@ TrackCommands TrackOf(const GbaMidiSong& song, std::size_t track)
             bool coded = false;
             for (int code = 0; code <= 48; code++)
             {
-                coded = coded || ntdlib::mp2k::ClockLength(code) == length;
+                coded = coded || agblib::mp2k::ClockLength(code) == length;
             }
             XSFLIB_CHECK(coded && command.value.value % kOne == 0);
             tick += static_cast<uint32_t>(length);
@@ -90,7 +90,7 @@ TrackCommands TrackOf(const GbaMidiSong& song, std::size_t track)
         const int64_t value =
             command.value.source == Source::kVariable
                 ? command.value.value
-                : ntdlib::commands::FromUnit(command.value.value, ntdlib::mp2k::ScaleOf(command.kind));
+                : ntdlib::commands::FromUnit(command.value.value, agblib::mp2k::ScaleOf(command.kind));
         found.commands.emplace_back(tick, command.kind, command.index, command.key, value, command.velocity / kOne);
         found.items.push_back(item);
         if (command.kind == Kind::kJump || command.kind == Kind::kEnd)
@@ -210,7 +210,7 @@ void TestTracks()
     const GbaMidiSong plain = GbaSongOfMidi(ThreeChannels());
     XSFLIB_CHECK(OfKind(TrackOf(plain, 1).commands, Kind::kProgram) == (std::vector<Timed>{At(0, Kind::kProgram, 0)}));
     XSFLIB_CHECK(
-        ErrorOf<std::invalid_argument>([&] { ntdlib::mp2k::EncodeSequence(plain.sequence, 0x08100000); }).empty());
+        ErrorOf<std::invalid_argument>([&] { agblib::mp2k::EncodeSequence(plain.sequence, 0x08100000); }).empty());
 }
 
 // Without a loop, a track ends where the track chunks that contain the events of its channel end. Channel 1's chunk
@@ -476,10 +476,10 @@ void TestRefusals()
 // drum kit of the voice group then.
 void TestProposedVoices()
 {
-    std::vector<ntdlib::mp2k::Voice> voices(128);
+    std::vector<agblib::mp2k::Voice> voices(128);
     XSFLIB_CHECK(hokuto::edit::ProposedGbaVoice({true, 0}, voices) == 0);
-    voices[5].type = ntdlib::mp2k::kVoiceDrumKit;
-    voices[9].type = ntdlib::mp2k::kVoiceDrumKit;
+    voices[5].type = agblib::mp2k::kVoiceDrumKit;
+    voices[9].type = agblib::mp2k::kVoiceDrumKit;
     XSFLIB_CHECK(hokuto::edit::ProposedGbaVoice({false, 3}, voices) == 3);
     XSFLIB_CHECK(hokuto::edit::ProposedGbaVoice({true, 0}, voices) == 5);
     XSFLIB_CHECK(hokuto::edit::ProposedGbaVoice({true, 9}, voices) == 9);
@@ -500,7 +500,7 @@ void TestProposedVoices()
 // cartridge has Metroid Fusion's sequencer. The notes of that sequencer read a key and a velocity and no third byte.
 std::vector<uint8_t> GbaRom(bool fusion = false)
 {
-    using enum ntdlib::mp2k::Command;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     if (fusion)
@@ -523,7 +523,7 @@ std::vector<uint8_t> GbaRom(bool fusion = false)
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -613,16 +613,16 @@ void TestImport()
                  (std::vector<std::vector<uint32_t>>{{0, 12, 36, 110}, {24, 12, 38, 100}}));
     XSFLIB_CHECK(played.tracks[0].volume == (std::vector<hokuto::song::Setting>{{0, 100}}));
     XSFLIB_CHECK(played.tracks[1].volume == (std::vector<hokuto::song::Setting>{{0, 127}}));
-    ntdlib::mp2k::SongHeader header;
-    XSFLIB_CHECK(ntdlib::mp2k::ReadSong(rom->rom, rom->info, 0, header));
+    agblib::mp2k::SongHeader header;
+    XSFLIB_CHECK(agblib::mp2k::ReadSong(rom->rom, rom->info, 0, header));
     XSFLIB_CHECK(header.track_count == 2 && header.priority == 40 && header.reverb == 0x80 + 50);
     const hokuto::song::Sequence after = hokuto::song::ReadSequence(*rom, 1);
     XSFLIB_CHECK(Notes(after.tracks.at(0)) == Notes(before.tracks.at(0)));
 
     // The file keeps the pairings in the map of the voice group that the song's header names. A later import into a
     // song of the same voice group replaces the pairings of its instruments, and keeps the others.
-    ntdlib::mp2k::SongHeader old_header;
-    XSFLIB_CHECK(ntdlib::mp2k::ReadSong(original->rom, original->info, 0, old_header));
+    agblib::mp2k::SongHeader old_header;
+    XSFLIB_CHECK(agblib::mp2k::ReadSong(original->rom, original->info, 0, old_header));
     XSFLIB_CHECK(hokuto::edit::GbaVoiceGroupOf(file, places, 0) == old_header.voices);
     XSFLIB_CHECK(hokuto::edit::GbaVoiceGroupOf(file, places, 1) == old_header.voices);
     XSFLIB_CHECK(!hokuto::edit::GbaVoiceGroupOf(file, places, 2));
@@ -644,8 +644,8 @@ void TestImport()
         hokuto::edit::WithGbaMidiSong(edited, places, 1, GbaSongOfMidi(single.Encode(), {{{false, 0}, 7}}));
     XSFLIB_CHECK(both.instrument_maps ==
                  (std::map<uint32_t, GbaVoiceMap>{{old_header.voices, {{{false, 0}, 7}, {{true, 0}, 0}}}}));
-    ntdlib::mp2k::SongHeader short_header;
-    XSFLIB_CHECK(ntdlib::mp2k::ReadSong(short_rom->rom, short_rom->info, 0, short_header));
+    agblib::mp2k::SongHeader short_header;
+    XSFLIB_CHECK(agblib::mp2k::ReadSong(short_rom->rom, short_rom->info, 0, short_header));
     XSFLIB_CHECK(short_header.priority == 0 && short_header.reverb == 0);
 
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>(
@@ -709,7 +709,7 @@ void TestFusionTies()
 // level and ends at its note-off. The bytes from 0x38000 on are 0xFF: the ROM's free space.
 std::vector<uint8_t> PsgRom()
 {
-    using enum ntdlib::mp2k::Command;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(2, 2, 60, {0, 0, 15, 0})}});
@@ -723,7 +723,7 @@ std::vector<uint8_t> PsgRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 

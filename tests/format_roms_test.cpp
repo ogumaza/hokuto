@@ -13,8 +13,8 @@ namespace
 // past 0x40000 has zeros after them.
 std::vector<uint8_t> GbaRom(uint32_t padding = 0x38000, uint32_t size = 0x40000)
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     cart.Resize(size);
@@ -33,7 +33,7 @@ std::vector<uint8_t> GbaRom(uint32_t padding = 0x38000, uint32_t size = 0x40000)
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -603,7 +603,7 @@ void TestDseImageRefusals()
 // the file opened, and the export then returns the game's ROM unchanged. A file of another console takes no filler.
 void TestGbaFiller()
 {
-    const std::vector<uint8_t> rom = GbaRom(0x38000, ntdlib::mp2k::kLargestRom);
+    const std::vector<uint8_t> rom = GbaRom(0x38000, agblib::mp2k::kLargestRom);
     const File file = format::ImportGbaRom(rom);
     SEQLIB_REQUIRE(file.native && !file.native->gba_filler && file.sequences.size() == 2);
     XSFLIB_CHECK(!format::LacksRoom(file) && format::ExportArchive(file) == rom);
@@ -690,13 +690,13 @@ void TestGbaFiller()
 // Bit 1 belongs to such a ROM too.
 void TestGbaTwoByteNotes()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
     mp2k_cart::Cart cart;
     cart.WriteMetroid(16, true);
     const uint32_t voices = cart.VoiceGroup({{0, mp2k_cart::Cart::Voice(0, cart.Wave(mp2k_cart::Saw(), 13379, 0))}});
     cart.Song({mp2k_cart::Track().Cmd(kCmdVoice, 0).Note(24, 60, 100, 50).Wait(24).Fine()}, voices);
-    const ntdlib::agb::Rom made = cart.ToRom();
+    const agblib::agb::Rom made = cart.ToRom();
     const std::vector<uint8_t> rom = hokuto::testing::RomBytes(made);
     const File file = format::ImportGbaRom(rom);
     const File plain = format::ImportGbaRom(GbaRom());

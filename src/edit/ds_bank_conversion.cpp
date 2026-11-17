@@ -14,7 +14,6 @@
 #include <set>
 #include <span>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -263,12 +262,20 @@ int PeakOf(std::span<const int16_t> samples)
     return peak;
 }
 
-} // namespace
-
-std::size_t DsWavesSize(const sar::BankFile& bank, std::span<const std::optional<sar::WaveFile>> waves,
-                        uint32_t most_rate)
+// The highest rate of wave `entry`: `most_rate`, or its rate in `wave_rates` where that is lower.
+uint32_t HighestRateOf(uint32_t entry, uint32_t most_rate, const DsWaveRates& wave_rates)
 {
-    std::set<std::tuple<uint32_t, uint32_t, uint8_t>> uses;
+    const auto found = wave_rates.find(entry);
+
+    return found != wave_rates.end() ? std::min(found->second, most_rate) : most_rate;
+}
+
+// Each wave of `waves` that an instrument of `bank` plays, by its entry, with the rates and volumes at which its
+// regions play it (DsWavesSize).
+std::map<uint32_t, std::set<std::pair<uint32_t, uint8_t>>> PlayedWaves(
+    const sar::BankFile& bank, std::span<const std::optional<sar::WaveFile>> waves)
+{
+    std::map<uint32_t, std::set<std::pair<uint32_t, uint8_t>>> uses;
     for (const std::optional<sar::BankFile::Instrument>& instrument : bank.instruments)
     {
         if (!instrument)
@@ -287,22 +294,79 @@ std::size_t DsWavesSize(const sar::BankFile& bank, std::span<const std::optional
             const uint32_t entry = region->values.wave_id_index;
             if (entry < waves.size() && waves[entry])
             {
-                uses.insert({entry, RateAndRootOf(*waves[entry], region->values).rate, region->values.volume});
+                uses[entry].insert({RateAndRootOf(*waves[entry], region->values).rate, region->values.volume});
             }
         }
     }
 
+    return uses;
+}
+
+// The bytes of wave `entry` of `waves` on the DS, played at each rate of `uses` up to `highest` (DsWavesSize).
+std::size_t WaveBytes(const sar::WaveFile& wave, const std::set<std::pair<uint32_t, uint8_t>>& uses, uint32_t highest)
+{
+    const uint64_t samples = PlayedSamples(wave);
     std::size_t size = 0;
-    for (const auto& [entry, rate, volume] : uses)
+    for (const auto& [rate, volume] : uses)
     {
-        const uint64_t samples = PlayedSamples(*waves[entry]);
-        size += kWaveHeadBytes + (rate > most_rate ? samples * most_rate / rate : samples) / 2;
+        size += kWaveHeadBytes + (rate > highest ? samples * highest / rate : samples) / 2;
     }
 
     return size;
 }
 
-void AddDsBankWarnings(const DsBankFiles& files, bool at_mix_rate, std::vector<std::string>& warnings)
+} // namespace
+
+std::size_t DsWavesSize(const sar::BankFile& bank, std::span<const std::optional<sar::WaveFile>> waves,
+                        uint32_t most_rate, const DsWaveRates& wave_rates)
+{
+    std::size_t size = 0;
+    for (const auto& [entry, uses] : PlayedWaves(bank, waves))
+    {
+        size += WaveBytes(*waves[entry], uses, HighestRateOf(entry, most_rate, wave_rates));
+    }
+
+    return size;
+}
+
+std::optional<uint32_t> LowerLargestDsWave(const sar::BankFile& bank,
+                                           std::span<const std::optional<sar::WaveFile>> waves, DsWaveRates& wave_rates)
+{
+    // Each wave takes the next lower rate below the highest rate at which it plays. The wave with the highest such rate
+    // goes first, and of two such waves, the one that takes the most bytes. A wave takes a rate only once every wave
+    // above it has.
+    std::optional<std::pair<uint32_t, uint32_t>> lowered;
+    std::size_t largest = 0;
+    for (const auto& [entry, uses] : PlayedWaves(bank, waves))
+    {
+        const uint32_t highest = HighestRateOf(entry, kDsMixRate, wave_rates);
+        uint32_t played = 0;
+        for (const auto& [rate, volume] : uses)
+        {
+            played = std::max(played, std::min(rate, highest));
+        }
+
+        const auto below = std::ranges::find_if(kDsLowerRates, [played](uint32_t rate) { return rate < played; });
+        const std::size_t bytes = WaveBytes(*waves[entry], uses, highest);
+        if (below != kDsLowerRates.end() &&
+            (!lowered || *below > lowered->second || (*below == lowered->second && bytes > largest)))
+        {
+            lowered = std::pair(entry, *below);
+            largest = bytes;
+        }
+    }
+
+    if (!lowered)
+    {
+        return std::nullopt;
+    }
+
+    wave_rates[lowered->first] = lowered->second;
+
+    return lowered->second;
+}
+
+void AddDsBankWarnings(const DsBankFiles& files, std::vector<std::string>& warnings)
 {
     if (files.stereo_waves > 0)
     {
@@ -344,7 +408,7 @@ void AddDsBankWarnings(const DsBankFiles& files, bool at_mix_rate, std::vector<s
                       "wave.");
     }
 
-    if (at_mix_rate && files.rates_lowered > 0)
+    if (files.rates_lowered > 0)
     {
         static_assert(kDsMixRate == 32728, "The warning's text gives the DS's mix rate.");
         warnings.push_back("The DS mixes at 32,728 Hz. " + std::to_string(files.rates_lowered) +
@@ -390,10 +454,10 @@ void LevelGains(std::span<const WaveUse> uses, std::span<const std::optional<sar
 }
 
 // The wave of each of `uses`, a wave of `waves`, in IMA-ADPCM at its gain and `result.scale`, at a rate up to
-// `most_rate` (DsBankFilesOf). `result` counts the lowered rates and the lost loops.
+// `most_rate` and `wave_rates` (DsBankFilesOf). `result` counts the lowered rates and the lost loops.
 std::vector<std::vector<uint8_t>> EncodeWaves(std::span<const WaveUse> uses,
                                               std::span<const std::optional<sar::WaveFile>> waves, uint32_t most_rate,
-                                              DsBankFiles& result)
+                                              const DsWaveRates& wave_rates, DsBankFiles& result)
 {
     std::vector<std::vector<uint8_t>> encoded;
     for (const WaveUse& use : uses)
@@ -410,9 +474,18 @@ std::vector<std::vector<uint8_t>> EncodeWaves(std::span<const WaveUse> uses,
         }
 
         const bool loops = wave.loop && wave.loop_start < samples.size();
+        const uint32_t highest = HighestRateOf(use.entry, most_rate, wave_rates);
         LaidOutSamples laid_out =
-            LaidOutOf(std::move(samples), use.rate, loops ? std::optional(wave.loop_start) : std::nullopt, most_rate);
-        result.rates_lowered += use.rate > most_rate ? 1 : 0;
+            LaidOutOf(std::move(samples), use.rate, loops ? std::optional(wave.loop_start) : std::nullopt, highest);
+        // A looped wave keeps its rate where its loop can't take the words of the lower rate (LaidOutOf).
+        if (use.rate > highest && laid_out.rate < use.rate && highest < most_rate)
+        {
+            ++result.lowered_rates[highest];
+        }
+        else if (use.rate > highest && laid_out.rate < use.rate)
+        {
+            ++result.rates_lowered;
+        }
 
         // The field of a loop's start counts words, the decoder's state first.
         const uint32_t words =
@@ -538,7 +611,8 @@ std::vector<KeyRun> DsRegionMaker::KeyRunsOf(const sar::BankFile::Instrument& in
 } // namespace
 
 DsBankFiles DsBankFilesOf(const sar::BankFile& bank, std::span<const std::optional<sar::WaveFile>> waves,
-                          const std::function<double(const MonoLevel&)>& stereo_gain, uint32_t most_rate)
+                          const std::function<double(const MonoLevel&)>& stereo_gain, uint32_t most_rate,
+                          const DsWaveRates& wave_rates)
 {
     DsBankFiles result;
 
@@ -565,7 +639,7 @@ DsBankFiles DsBankFilesOf(const sar::BankFile& bank, std::span<const std::option
     LevelGains(regions.Uses(), waves, result);
 
     // The waves, in IMA-ADPCM.
-    const std::vector<std::vector<uint8_t>> encoded = EncodeWaves(regions.Uses(), waves, most_rate, result);
+    const std::vector<std::vector<uint8_t>> encoded = EncodeWaves(regions.Uses(), waves, most_rate, wave_rates, result);
 
     result.wave_count = encoded.size();
     result.bank = sdat::BankFile(model);

@@ -14,10 +14,10 @@
 #include <utility>
 #include <vector>
 
+#include "agblib/rd2/commands.h"
+#include "agblib/rd2/sequencer.h"
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/commands/units.h"
-#include "ntdlib/rd2/commands.h"
-#include "ntdlib/rd2/sequencer.h"
 
 #include "edit/bytecode.h"
 #include "edit/mp2k.h"
@@ -46,7 +46,7 @@ using track_detail::TrailingDataStart;
 constexpr int kRd2TicksPerQuarter = 24;
 
 // The places of a song's header of Nintendo R&D2's driver: item 0 contains the count of tracks and a byte of 0, and the
-// items after it each track's start (ntdlib/rd2/commands.h). Throws std::invalid_argument with a message for the user
+// items after it each track's start (agblib/rd2/commands.h). Throws std::invalid_argument with a message for the user
 // for a sound effects' sequence.
 uint32_t Rd2TrackCount(const Sequence& sequence)
 {
@@ -70,7 +70,7 @@ uint32_t Rd2TrackCount(const Sequence& sequence)
     for (int entry = 1; entry <= count; entry++)
     {
         const Command& item = sequence.items[static_cast<std::size_t>(entry)];
-        if (item.kind != Kind::kOpenTrack || item.encoding.opcode != ntdlib::rd2::kHeaderEntry)
+        if (item.kind != Kind::kOpenTrack || item.encoding.opcode != agblib::rd2::kHeaderEntry)
         {
             throw std::invalid_argument("Hokuto finds no header of the song's tracks.");
         }
@@ -101,7 +101,7 @@ bool Rd2OpensTrack(const Sequence& sequence, int track)
                                [track](const Command& item)
                                {
                                    return item.kind == Kind::kOpenTrack &&
-                                          item.encoding.opcode != ntdlib::rd2::kHeaderEntry && item.index == track;
+                                          item.encoding.opcode != agblib::rd2::kHeaderEntry && item.index == track;
                                });
 }
 
@@ -301,12 +301,12 @@ int FreeRd2Track(const Sequence& sequence)
         }
     }
 
-    if (count < static_cast<uint32_t>(ntdlib::rd2::kPlayerTracks) && !Rd2OpensTrack(sequence, static_cast<int>(count)))
+    if (count < static_cast<uint32_t>(agblib::rd2::kPlayerTracks) && !Rd2OpensTrack(sequence, static_cast<int>(count)))
     {
         return static_cast<int>(count);
     }
 
-    throw std::invalid_argument("A song of Nintendo R&D2's driver plays " + std::to_string(ntdlib::rd2::kPlayerTracks) +
+    throw std::invalid_argument("A song of Nintendo R&D2's driver plays " + std::to_string(agblib::rd2::kPlayerTracks) +
                                 " tracks at most, and this one has no track free.");
 }
 

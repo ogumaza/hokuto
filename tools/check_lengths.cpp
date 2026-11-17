@@ -38,6 +38,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/nwsnd/length_model.h"
 #include "ntdlib/rsar/formats.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
@@ -62,13 +63,11 @@ namespace song = hokuto::song;
 using hokuto::tools::Part;
 using hokuto::tools::PartOf;
 
-// The silence after the last sound of a sound that ends, and how long past its length the tool listens.
-constexpr double kTailMs = xsflib::rip::LengthRules{}.tail_ms;
+// How long past its length the tool listens to a sound that ends.
 constexpr double kPastEndMs = 10000.0;
 
-// How long the tool listens to a silent sound, and the limit of the length analysis.
-constexpr double kSilentMs = 190000.0;
-constexpr double kLimitMs = xsflib::rip::LengthRules{}.max_ms;
+// How long the tool listens to a silent sound past the silence that ends a busy sequence in the length analysis.
+constexpr double kPastSilenceMs = 10000.0;
 
 // The seconds since `start`.
 double SecondsSince(std::chrono::steady_clock::time_point start)
@@ -167,11 +166,12 @@ double MsOf(uint64_t frames, double frame_ms)
     return static_cast<double>(frames) * frame_ms;
 }
 
-// Plays `model`, a sound whose length says that it stays silent. Returns what's wrong where a frame has sound, or
-// nothing.
-std::optional<std::string> SilentFailure(song::SequenceModel& model, double frame_ms)
+// Plays `model`, a sound whose length says that it stays silent, by `rules`, the rules of the length analysis. Returns
+// what's wrong where a frame has sound, or nothing.
+std::optional<std::string> SilentFailure(song::SequenceModel& model, const xsflib::rip::LengthRules& rules)
 {
-    const Played played = Play(model, FrameAt(kSilentMs, frame_ms), 0, std::nullopt);
+    const double silent_ms = static_cast<double>(rules.silent_frames) * rules.frame_ms + kPastSilenceMs;
+    const Played played = Play(model, FrameAt(silent_ms, rules.frame_ms), 0, std::nullopt);
     if (played.last_sound)
     {
         return "silent, but frame " + std::to_string(*played.last_sound) + " has sound";
@@ -181,21 +181,22 @@ std::optional<std::string> SilentFailure(song::SequenceModel& model, double fram
 }
 
 // Plays `model`, a sound that `length` describes as one that ends: the last sound's frame ends at the length less the
-// tail. Returns what's wrong where it doesn't, or nothing. Counts a sound that ends at its first idle frame in
-// `counts`.
-std::optional<std::string> EndFailure(song::SequenceModel& model, const format::SoundLength& length, double frame_ms,
-                                      Counts& counts)
+// tail of `rules`, the rules of the length analysis. Returns what's wrong where it doesn't, or nothing. Counts a sound
+// that ends at its first idle frame in `counts`.
+std::optional<std::string> EndFailure(song::SequenceModel& model, const format::SoundLength& length,
+                                      const xsflib::rip::LengthRules& rules, Counts& counts)
 {
+    const double frame_ms = rules.frame_ms;
     const Played played =
         Play(model, FrameAt(static_cast<double>(length.length) + kPastEndMs, frame_ms), 0, std::nullopt);
-    const double expected = static_cast<double>(length.length) - kTailMs;
+    const double expected = static_cast<double>(length.length) - rules.tail_ms;
     if (!played.started || !played.last_sound)
     {
         return "ends at " + std::to_string(length.length) + " ms, but the model plays no sound";
     }
 
     // The idle frames that the analysis waits for before a sound ends.
-    const double idle_ms = static_cast<double>(xsflib::rip::LengthRules{}.idle_frames + 1) * frame_ms;
+    const double idle_ms = static_cast<double>(rules.idle_frames + 1) * frame_ms;
     const double last_sound_end = MsOf(*played.last_sound + 1, frame_ms);
     if (last_sound_end < expected - frame_ms || last_sound_end > expected + idle_ms)
     {
@@ -211,12 +212,14 @@ std::optional<std::string> EndFailure(song::SequenceModel& model, const format::
     return std::nullopt;
 }
 
-// Plays `model`, a sound that `length` describes as one that plays past the limit: the model still plays at the limit.
-// Returns what's wrong where it doesn't, or nothing.
-std::optional<std::string> LimitFailure(song::SequenceModel& model, const format::SoundLength& length, double frame_ms)
+// Plays `model`, a sound that `length` describes as one that plays past the limit: the model still plays at the limit
+// of `rules`, the rules of the length analysis. Returns what's wrong where it doesn't, or nothing.
+std::optional<std::string> LimitFailure(song::SequenceModel& model, const format::SoundLength& length,
+                                        const xsflib::rip::LengthRules& rules)
 {
+    const double frame_ms = rules.frame_ms;
     const Played played =
-        Play(model, FrameAt(kLimitMs + length.fade, frame_ms), FrameAt(kLimitMs, frame_ms), std::nullopt);
+        Play(model, FrameAt(rules.max_ms + length.fade, frame_ms), FrameAt(rules.max_ms, frame_ms), std::nullopt);
     if (played.ended || !played.sound_from)
     {
         return std::string("plays past the limit, but the model ") +
@@ -286,11 +289,13 @@ std::optional<std::string> LoopFailure(song::SequenceModel& model, const format:
 
 // Plays sound `sound` of the archive that `file` builds, `wii` on the Wii and `archive` elsewhere, and checks that it
 // ends, loops or stays silent as `length` says. `build` is the Wii's build of NW4R SND, `effects` the file's effects on
-// the aux buses, and `frame_ms` the length of a frame. `name` is the file's name. Counts the sound in `counts`.
+// the aux buses, and `rules` the rules of the length analysis for the console's frames. `name` is the file's name.
+// Counts the sound in `counts`.
 void CheckSoundLength(const format::File& file, const std::shared_ptr<const ntdlib::rsar::SoundArchive>& wii,
                       const std::shared_ptr<const ntdlib::sar::SoundArchive>& archive,
-                      const std::optional<ntdlib::SndBuild>& build, const song::AuxEffects& effects, double frame_ms,
-                      const std::string& name, uint32_t sound, const format::SoundLength& length, Counts& counts)
+                      const std::optional<ntdlib::SndBuild>& build, const song::AuxEffects& effects,
+                      const xsflib::rip::LengthRules& rules, const std::string& name, uint32_t sound,
+                      const format::SoundLength& length, Counts& counts)
 {
     counts.sounds++;
     const std::string sound_name = wii ? (sound < wii->Sounds().size() ? wii->Sounds()[sound].name : "")
@@ -329,22 +334,22 @@ void CheckSoundLength(const format::File& file, const std::shared_ptr<const ntdl
         if (length.silent)
         {
             counts.silent++;
-            failure = SilentFailure(*model, frame_ms);
+            failure = SilentFailure(*model, rules);
         }
         else if (length.fade == 0)
         {
             counts.ends++;
-            failure = EndFailure(*model, length, frame_ms, counts);
+            failure = EndFailure(*model, length, rules, counts);
         }
-        else if (static_cast<double>(length.length) >= kLimitMs)
+        else if (static_cast<double>(length.length) >= rules.max_ms)
         {
             counts.limits++;
-            failure = LimitFailure(*model, length, frame_ms);
+            failure = LimitFailure(*model, length, rules);
         }
         else
         {
             counts.loops++;
-            failure = LoopFailure(*model, length, frame_ms, name, sound_name, counts);
+            failure = LoopFailure(*model, length, rules.frame_ms, name, sound_name, counts);
         }
         if (failure)
         {
@@ -471,7 +476,9 @@ int main(int argc, char** argv)
     const auto& [file, wii, archive, build] = opened;
 
     const song::AuxEffects effects = hokuto::edit::ModelEffects(file.aux_effects);
-    const double frame_ms = wii ? 3.0 : (FlavorOf(*file.native) == ntdlib::sar::Flavor::kCafe ? 3.0 : 5.0);
+    const song::FrameMs frame = wii ? song::kWiiFrameMs : song::FrameMsOf(FlavorOf(*file.native));
+    const xsflib::rip::LengthRules rules =
+        ntdlib::nwsnd::LengthRulesFor(static_cast<double>(frame.numerator) / static_cast<double>(frame.denominator));
 
     Counts counts;
     const auto start = std::chrono::steady_clock::now();
@@ -483,7 +490,7 @@ int main(int argc, char** argv)
             continue;
         }
 
-        CheckSoundLength(file, wii, archive, build, effects, frame_ms, name, sound, length, counts);
+        CheckSoundLength(file, wii, archive, build, effects, rules, name, sound, length, counts);
     }
 
     std::printf(

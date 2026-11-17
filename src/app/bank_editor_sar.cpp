@@ -402,6 +402,32 @@ void SarDeleteInstrument(const BankView& view, const std::vector<uint32_t>& prog
     state.region.reset();
 }
 
+// Button `button` of the list of programs, `width` wide. Returns whether the user pressed it, or whether its press
+// waited for this frame. While the program only settles the last edit (`state.settling`), the button shows grey like
+// the others, and a press on it waits in `state.waiting_press`: the user sees the last edit's values at once, and the
+// next edit follows as soon as the program takes it. The button shows lit while its press waits. A press goes when
+// the program waits for something else, such as another window, and when the user selects another program.
+bool DrawProgramButton(const char* label, ProgramButton button, float width, bool enabled, bool busy,
+                       BankEditorState& state)
+{
+    const std::pair<ProgramButton, std::optional<uint32_t>> press(button, state.program);
+    const bool waits = state.waiting_press == press;
+    if (waits && !busy)
+    {
+        state.waiting_press.reset();
+    }
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(waits ? ImGuiCol_ButtonActive : ImGuiCol_Button));
+    const bool pressed = ImGui::Button(label, ImVec2(width, 0.0f));
+    ImGui::PopStyleColor();
+    if (busy && state.settling && enabled && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+    {
+        state.waiting_press = press;
+    }
+
+    return pressed || (waits && !busy && enabled);
+}
+
 // The list of programs at `pos`, `size` large, with the buttons that add, duplicate and delete an instrument and the
 // field that renumbers it under the list.
 void DrawPrograms(const BankView& view, BankEditorState& state, const ShownItem& bank, bool busy, ImVec2 pos,
@@ -430,20 +456,25 @@ void DrawPrograms(const BankView& view, BankEditorState& state, const ShownItem&
     ImGui::SetCursorScreenPos(ImVec2(pos.x, state.list_max.y + Px(kGap)));
     const std::array<float, 3> width = ProgramButtonWidths(size.x);
 
+    // A press that waited belongs to the program that was selected then, and to a wait for the last edit alone.
     const bool chosen = state.program.has_value();
+    if (state.waiting_press && (state.waiting_press->second != state.program || (busy && !state.settling)))
+    {
+        state.waiting_press.reset();
+    }
     ImGui::BeginDisabled(busy);
-    if (ImGui::Button("Add", ImVec2(width[0], 0.0f)))
+    if (DrawProgramButton("Add", ProgramButton::kAdd, width[0], true, busy, state))
     {
         SarAddInstrument(view, chosen, state, edit);
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(!chosen);
-    if (ImGui::Button("Duplicate", ImVec2(width[1], 0.0f)) && chosen)
+    if (DrawProgramButton("Duplicate", ProgramButton::kDuplicate, width[1], chosen, busy, state) && chosen)
     {
         SarDuplicateInstrument(view, state, edit);
     }
     ImGui::SameLine();
-    if (ImGui::Button("Delete", ImVec2(width[2], 0.0f)) && chosen)
+    if (DrawProgramButton("Delete", ProgramButton::kDelete, width[2], chosen, busy, state) && chosen)
     {
         SarDeleteInstrument(view, programs, state, edit);
     }

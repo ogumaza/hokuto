@@ -16,7 +16,7 @@
 #include <utility>
 #include <vector>
 
-#include "ntdlib/brownie/driver.h"
+#include "agblib/brownie/driver.h"
 #include "ntdlib/commands/sequence.h"
 
 #include "edit/bytecode.h"
@@ -29,7 +29,7 @@
 namespace hokuto::edit::brownie_parts
 {
 
-namespace brownie = ntdlib::brownie;
+namespace brownie = agblib::brownie;
 using ntdlib::commands::Command;
 using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
@@ -72,7 +72,7 @@ bool Barrier(const Command& item);
 // A wait command without a value.
 Command Hold();
 
-// The values that the driver's bytes hold in the value of `command` from `source` (ntdlib/brownie/commands.h). A note,
+// The values that the driver's bytes hold in the value of `command` from `source` (agblib/brownie/commands.h). A note,
 // a hold and a rest wait for their frames, and a release for its time. A command splits into the lengths that the
 // length set of its channel has (Writable). A transpose and a tune take a signed byte, and the other values a byte. No
 // command takes a random value or a variable.

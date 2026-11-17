@@ -221,6 +221,32 @@ void TestDsLowerRates(sar::Flavor from)
     XSFLIB_CHECK(Heard(NotesOf(*DsArchiveOf(lower.file), 0)) == Heard(NotesOf(*ArchiveOf(source), kSong)));
 }
 
+// A bank that fits with no byte to spare keeps its rates. At the end of each rate's turn, the files are encoded
+// wherever the estimate alone fits, whatever overhead the earlier tries measured (FitDsBank). Each memory below holds
+// the files of the one before it, less a byte.
+void TestDsExactFit(sar::Flavor from, const std::vector<uint8_t>& bytecode, uint32_t other_start)
+{
+    const File source = TestFile(from, bytecode, other_start);
+    std::size_t memory = DsHeapBytesOf(hokuto::edit::ForDs(source, kSong).file) - 1;
+    for (int step = 0; step < 12; step++)
+    {
+        std::optional<hokuto::edit::OtherConsoleSong> fitted;
+        try
+        {
+            fitted = hokuto::edit::ForDs(source, kSong, memory);
+        }
+        catch (const std::invalid_argument&)
+        {
+            break;
+        }
+
+        const std::size_t heap = DsHeapBytesOf(fitted->file);
+        XSFLIB_CHECK(heap <= memory);
+        XSFLIB_CHECK(DsHeapBytesOf(hokuto::edit::ForDs(source, kSong, heap).file) == heap);
+        memory = heap - 1;
+    }
+}
+
 // A sound converts to the DS only from another console, and only a sequence sound whose commands can move.
 void TestDsRefusals(sar::Flavor flavor)
 {
@@ -382,6 +408,8 @@ int main()
                                             TestDsBanks(from);
                                             TestDsTrim(from);
                                             TestDsLowerRates(from);
+                                            TestDsExactFit(from, kOneProgramBytecode, 8);
+                                            TestDsExactFit(from, kTwoBanksBytecode, 23);
                                             TestDsRefusals(from);
                                         }
                                         TestDsSettingsLeft(sar::Flavor::kNx);

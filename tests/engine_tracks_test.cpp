@@ -23,8 +23,8 @@ constexpr uint32_t kGbaShared = 4;
 
 std::vector<uint8_t> GbaRom()
 {
-    namespace mp2k_cart = ntdlib::testing::mp2k_cart;
-    using enum ntdlib::mp2k::Command;
+    namespace mp2k_cart = agblib::testing::mp2k_cart;
+    using enum agblib::mp2k::Command;
 
     mp2k_cart::Cart cart;
     const uint32_t wave = cart.Wave(mp2k_cart::Saw(), 13379, 0);
@@ -63,7 +63,7 @@ std::vector<uint8_t> GbaRom()
         cart.Put8(mp2k_cart::kRomBase + a, 0xFF);
     }
 
-    const ntdlib::agb::Rom rom = cart.ToRom();
+    const agblib::agb::Rom rom = cart.ToRom();
     return hokuto::testing::RomBytes(rom);
 }
 
@@ -77,11 +77,7 @@ std::shared_ptr<const hokuto::song::GbaRom> GbaBuilt(const File& file)
 std::vector<std::optional<SoundPlace>> GbaPlacesOf(const File& file)
 {
     const std::shared_ptr<const hokuto::song::GbaRom> rom = GbaBuilt(file);
-    std::vector<std::optional<uint32_t>> sequences;
-    for (int song = 0; song < rom->info.song_count; song++)
-    {
-        sequences.push_back(hokuto::format::GbaSongSequence(file, rom->info.song_table, song));
-    }
+    const std::vector<std::optional<uint32_t>> sequences = hokuto::edit::GbaSongSequences(file, *rom);
 
     return hokuto::edit::GbaSoundPlaces(sequences,
                                         hokuto::format::GbaTrackFields(file, rom->info.song_table, sequences.size()),
@@ -95,11 +91,11 @@ Sequence GbaPlayed(const File& file, uint32_t song)
 }
 
 // The header of song `song` of the ROM that `file` builds.
-ntdlib::mp2k::SongHeader GbaHeader(const File& file, uint32_t song)
+agblib::mp2k::SongHeader GbaHeader(const File& file, uint32_t song)
 {
     const std::shared_ptr<const hokuto::song::GbaRom> rom = GbaBuilt(file);
-    ntdlib::mp2k::SongHeader header;
-    XSFLIB_CHECK(ntdlib::mp2k::ReadSong(rom->rom, rom->info, static_cast<int>(song), header));
+    agblib::mp2k::SongHeader header;
+    XSFLIB_CHECK(agblib::mp2k::ReadSong(rom->rom, rom->info, static_cast<int>(song), header));
 
     return header;
 }
@@ -130,7 +126,7 @@ void TestGbaAdd()
     XSFLIB_CHECK(after.tracks[2].notes.empty() &&
                  after.tracks[2].volume == (std::vector<hokuto::song::Setting>{{0, 127}}));
     XSFLIB_CHECK(after.length == before.length);
-    const ntdlib::mp2k::SongHeader header = GbaHeader(added.file, kGbaSong);
+    const agblib::mp2k::SongHeader header = GbaHeader(added.file, kGbaSong);
     XSFLIB_CHECK(header.tracks.size() == 3 && header.address != GbaHeader(file, kGbaSong).address);
     XSFLIB_CHECK(hokuto::format::MovedSongs(added.file) == std::vector<uint32_t>{sequence});
     XSFLIB_CHECK(GbaRoundTrips(added.file));
@@ -211,7 +207,7 @@ void TestGbaRemove()
     XSFLIB_CHECK(hokuto::format::MovedSongs(removed).empty());
     const std::vector<uint8_t> built = hokuto::format::ExportArchive(removed);
     const std::vector<uint8_t> original = hokuto::format::ExportArchive(file);
-    const uint32_t header = GbaHeader(file, kGbaSong).address - ntdlib::agb::kRomBase;
+    const uint32_t header = GbaHeader(file, kGbaSong).address - agblib::agb::kRomBase;
     SEQLIB_REQUIRE(built.size() == original.size());
     bool kept = true;
     for (std::size_t i = 0; i < built.size(); i++)

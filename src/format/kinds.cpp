@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 
+#include "xsflib/ascii.h"
 #include "xsflib/files.h"
 
 #include "format/archive.h"
@@ -203,9 +204,7 @@ std::string KindOfBytes(std::span<const uint8_t> bytes)
 
 std::string KindOfName(const std::filesystem::path& file)
 {
-    std::string extension = xsflib::Utf8(file.extension());
-    std::ranges::transform(extension, extension.begin(),
-                           [](char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
+    const std::string extension = xsflib::AsciiLower(xsflib::Utf8(file.extension()));
 
     // Hokuto's files, WAV files, AAC files and SARC archives.
     for (const NamedKind& kind : kNamedKinds)

@@ -129,8 +129,9 @@ constexpr std::array<std::pair<uint8_t, std::string_view>, 2> kMixings = {{
 // Each kind of effect's number and name, by the kind. 0 is no effect. The Wii U's kinds follow in the order of
 // nw::snd's classes FxReverbHi, FxReverbStd, FxChorus and FxDelay. The Wii's kinds follow in the order of ntdlib's
 // types of its effects, each 5 more than the type. The 3DS's kinds follow: nw::snd's FxReverb and FxDelay, nn::snd's
-// FxReverb and FxDelay, and nn::snd's FxReverb of 2011.
-constexpr std::array<std::pair<uint8_t, std::string_view>, 16> kEffectKinds = {{
+// FxReverb and FxDelay, and nn::snd's FxReverb of 2011. nn::atk's EffectDelay, EffectLightLimiter and EffectReverb
+// follow.
+constexpr std::array<std::pair<uint8_t, std::string_view>, 19> kEffectKinds = {{
     {1, "i3dl2_reverb"},
     {2, "reverb_hi"},
     {3, "reverb_std"},
@@ -147,10 +148,13 @@ constexpr std::array<std::pair<uint8_t, std::string_view>, 16> kEffectKinds = {{
     {14, "3ds_nn_reverb"},
     {15, "3ds_nn_delay"},
     {16, "3ds_nn_reverb_2011"},
+    {17, "switch_delay"},
+    {18, "switch_light_limiter"},
+    {19, "switch_reverb"},
 }};
 
 // CodeOf and NameOf read the table by the kind's value. The table requires a row for each kind.
-static_assert(kEffectKinds.size() == static_cast<std::size_t>(EffectKind::kCtrNnReverb2011) + 1);
+static_assert(kEffectKinds.size() == static_cast<std::size_t>(EffectKind::kSwitchReverb) + 1);
 
 // The parameters of an I3DL2 reverb, in the order of nn::audio's I3dl2ReverbParameterSet.
 constexpr std::array<std::string_view, 12> kI3dl2ReverbParameters = {
@@ -201,10 +205,29 @@ constexpr std::array<std::string_view, 10> kCtrNnReverb2011Parameters = {
 };
 constexpr std::array<std::string_view, 4> kCtrDelayParameters = {"delay_time", "feedback", "damping", "surround"};
 
+// The parameters of nn::atk's effects, in the order in which each class passes them to the renderer as it adds the
+// effect, with the channel mode last. The times are whole microseconds.
+constexpr std::array<std::string_view, 8> kSwitchDelayParameters = {
+    "delay_time_max", "delay_time",      "in_gain",        "feedback_gain",
+    "dry_gain",       "low_pass_amount", "channel_spread", "channel_mode",
+};
+constexpr std::array<std::string_view, 8> kSwitchLightLimiterParameters = {
+    "look_ahead_time_max", "attack_time", "release_time", "look_ahead_time",
+    "threshold",           "input_gain",  "output_gain",  "channel_mode",
+};
+constexpr std::array<std::string_view, 12> kSwitchReverbParameters = {
+    "early_mode",  "early_gain", "predelay_time", "late_mode", "late_gain", "decay_time", "high_frequency_decay_ratio",
+    "coloration",  "reverb_gain", "out_gain",     "dry_gain",  "channel_mode",
+};
+
 // The choices of the reverbs' modes, and of the 3DS's switches.
 constexpr uint32_t kEarlyModes = 8;
 constexpr uint32_t kFusedModes = 6;
 constexpr uint32_t kSwitchChoices = 2;
+
+// The choices of nn::atk's channel mode (1, 2, 4 or 6 channels) and of its reverb's two modes.
+constexpr uint32_t kChannelModes = 4;
+constexpr uint32_t kAtkReverbModes = 5;
 
 // The limits of the 3DS's parameters, by their names. The times are whole milliseconds. A filter holds whole frames of
 // 160 samples. ntdlib's model refuses other sizes: the libraries' last frame of such a filter runs into the next
@@ -226,6 +249,26 @@ constexpr std::array<std::pair<std::string_view, ParameterLimits>, 12> kCtrLimit
     {"fused_gain", kCtrGain},
     {"delay_time", {1.0f, 5000.0f, 1.0f}},
     {"feedback", kCtrGain},
+}};
+
+// The limits of nn::atk's times, by their kinds and names: whole microseconds within the ranges that nn::atk's setters
+// keep. nn::atk sets no limit on the longest delay. The format holds it to 10 s. The lines of a delay of 10 s on 6
+// channels take 11.5 MB.
+struct AtkLimit
+{
+    EffectKind kind;
+    std::string_view name;
+    ParameterLimits limits;
+};
+constexpr std::array<AtkLimit, 8> kAtkLimits = {{
+    {EffectKind::kSwitchDelay, "delay_time_max", {0.0f, 10'000'000.0f, 1.0f}},
+    {EffectKind::kSwitchDelay, "delay_time", {0.0f, 10'000'000.0f, 1.0f}},
+    {EffectKind::kSwitchLightLimiter, "look_ahead_time_max", {0.0f, 50'000.0f, 1.0f}},
+    {EffectKind::kSwitchLightLimiter, "attack_time", {0.0f, 10'000.0f, 1.0f}},
+    {EffectKind::kSwitchLightLimiter, "release_time", {0.0f, 5'000'000.0f, 1.0f}},
+    {EffectKind::kSwitchLightLimiter, "look_ahead_time", {0.0f, 50'000.0f, 1.0f}},
+    {EffectKind::kSwitchReverb, "predelay_time", {0.0f, 300'000.0f, 1.0f}},
+    {EffectKind::kSwitchReverb, "decay_time", {100'000.0f, 20'000'000.0f, 1.0f}},
 }};
 
 // The kinds of native archive keep the codes and the names of their engines in kEngineFacts. The constants of codes.h
@@ -464,6 +507,12 @@ std::span<const std::string_view> ParameterNamesOf(EffectKind kind)
     case EffectKind::kCtrDelay:
     case EffectKind::kCtrNnDelay:
         return kCtrDelayParameters;
+    case EffectKind::kSwitchDelay:
+        return kSwitchDelayParameters;
+    case EffectKind::kSwitchLightLimiter:
+        return kSwitchLightLimiterParameters;
+    case EffectKind::kSwitchReverb:
+        return kSwitchReverbParameters;
     }
 
     return {};
@@ -477,6 +526,13 @@ uint32_t ChoicesOf(EffectKind kind, std::size_t parameter)
         return 0;
     }
 
+    if (IsAtkKind(kind))
+    {
+        const std::string_view name = names[parameter];
+        return name == "channel_mode"                        ? kChannelModes
+               : name == "early_mode" || name == "late_mode" ? kAtkReverbModes
+                                                             : 0;
+    }
     if (names[parameter] == "early_mode")
     {
         return kEarlyModes;
@@ -514,16 +570,37 @@ bool IsCtrKind(EffectKind kind)
     case EffectKind::kWiiDelay:
     case EffectKind::kWiiReverbStd:
     case EffectKind::kWiiReverbStd2008:
+    case EffectKind::kSwitchDelay:
+    case EffectKind::kSwitchLightLimiter:
+    case EffectKind::kSwitchReverb:
         break;
     }
 
     return false;
 }
 
+bool IsAtkKind(EffectKind kind)
+{
+    return kind == EffectKind::kSwitchDelay || kind == EffectKind::kSwitchLightLimiter ||
+           kind == EffectKind::kSwitchReverb;
+}
+
 std::optional<ParameterLimits> LimitsOf(EffectKind kind, std::size_t parameter)
 {
     const std::span<const std::string_view> names = ParameterNamesOf(kind);
-    if (!IsCtrKind(kind) || parameter >= names.size())
+    if (parameter >= names.size())
+    {
+        return std::nullopt;
+    }
+
+    for (const AtkLimit& limit : kAtkLimits)
+    {
+        if (limit.kind == kind && limit.name == names[parameter])
+        {
+            return limit.limits;
+        }
+    }
+    if (!IsCtrKind(kind))
     {
         return std::nullopt;
     }

@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: MIT
 
 // The mode --variables of hokuto_check_replace: the values of variables.
+//
+// With --variables, the tool checks only the variables of Replace… of a sequence (src/edit/variables.h). Each sequence
+// sound whose commands read variables before they set them takes its sequence file again, from its start, in three
+// rounds. In the first, each such variable moves to the lowest number of its kind that the commands don't use. The
+// sound then has to play each value of each variable at the new number as it played the value at the old number. A
+// variable's values are its choices, or else 0 and 1. In the second round, each variable takes its second value as a
+// fixed value, and in the third its last. Like Replace…, the second leaves out the variables that the sound's commands
+// read now: the game's code sets those. The sound then has to play without starting values, and with others, as it
+// played with the fixed values. Up to 4 sounds of each sequence file take the rounds, one in each version of the file.
 
 #include "check_replace.h"
 
@@ -100,7 +109,7 @@ bool RunsAway(const sar::SoundArchive& archive, uint32_t sound, const song::Star
 // `map`, otherwise than `played_before` says it played that value at its old number, or nothing.
 std::string MovedValuesProblem(const sar::SoundArchive& after, const VariableSound& entry, const edit::VariableMap& map,
                                const std::function<const song::Sequence&(const song::StartValues&)>& played_before,
-                               Totals& totals)
+                               VariableTotals& totals)
 {
     for (const song::Variable& variable : entry.variables)
     {
@@ -125,7 +134,8 @@ std::string MovedValuesProblem(const sar::SoundArchive& after, const VariableSou
 // what the performer played of each sound of `built` with each set of starting values.
 std::string VariablesProblem(const sar::SoundArchive& built, const sar::SoundArchive& after, const VariableSound& entry,
                              const edit::VariableMap& map,
-                             std::map<std::pair<uint32_t, song::StartValues>, song::Sequence>& before, Totals& totals)
+                             std::map<std::pair<uint32_t, song::StartValues>, song::Sequence>& before,
+                             VariableTotals& totals)
 {
     const auto played_before = [&](const song::StartValues& values) -> const song::Sequence&
     {
@@ -181,7 +191,7 @@ constexpr std::size_t kVariablePasses = 4;
 // The sounds of `built` whose commands read variables before they set them, by their sequences, in the order of the
 // sound table: up to kVariablePasses of each sequence. Counts the sounds without a start and those that read variables.
 std::map<uint32_t, std::vector<VariableSound>> VariableSoundsBySequence(
-    const sar::SoundArchive& built, std::span<const std::optional<edit::SoundPlace>> places, Totals& totals)
+    const sar::SoundArchive& built, std::span<const std::optional<edit::SoundPlace>> places, VariableTotals& totals)
 {
     std::map<uint32_t, std::vector<VariableSound>> by_sequence;
     for (std::size_t i = 0; i < built.Sounds().size(); i++)
@@ -226,7 +236,7 @@ struct RoundEdits
 // moved, fixed and held variables, and the refused edits with their reasons.
 RoundEdits EditRound(const format::File& file, std::span<const std::optional<edit::SoundPlace>> places,
                      const std::map<uint32_t, std::vector<VariableSound>>& by_sequence, std::size_t pass,
-                     VariableRound round, Totals& totals)
+                     VariableRound round, VariableTotals& totals)
 {
     format::File edited = file;
     std::vector<std::pair<const VariableSound*, edit::VariableMap>> edits;
@@ -270,7 +280,7 @@ RoundEdits EditRound(const format::File& file, std::span<const std::optional<edi
 void CheckRoundEdits(const sar::SoundArchive& built, const format::File& edited,
                      std::span<const std::pair<const VariableSound*, edit::VariableMap>> edits,
                      std::map<std::pair<uint32_t, song::StartValues>, song::Sequence>& before,
-                     std::set<uint32_t>& checked, const std::string& name, Totals& totals)
+                     std::set<uint32_t>& checked, const std::string& name, VariableTotals& totals)
 {
     // The round's version of the file saves and exports. Each of its edits fails when it doesn't.
     Archive after;
@@ -308,7 +318,8 @@ void CheckRoundEdits(const sar::SoundArchive& built, const format::File& edited,
 } // namespace
 
 void CheckVariables(const format::File& file, const sar::SoundArchive& built,
-                    std::span<const std::optional<edit::SoundPlace>> places, const std::string& name, Totals& totals)
+                    std::span<const std::optional<edit::SoundPlace>> places, const std::string& name,
+                    VariableTotals& totals)
 {
     // The sounds whose commands read variables before they set them, by their sequences, in the order of the sound
     // table.

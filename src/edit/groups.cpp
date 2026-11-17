@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/sar/archive_model.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sar/groups.h"
 #include "ntdlib/sar/info_block.h"
@@ -30,12 +31,6 @@ namespace
 {
 
 namespace sar = ntdlib::sar;
-
-// A file entry of the INFO block: a reference to the file's location, with its type at 0 and its offset from the
-// entry's start at 4. A file in the archive has type 0x220C. Its location holds the file's offset from the FILE block's
-// body at 4, or 0xFFFFFFFF where only groups hold the file.
-constexpr uint16_t kInternalFile = 0x220C;
-constexpr uint32_t kNoPlace = 0xFFFFFFFF;
 
 // The load flags of an item that a group lists: the parts of the item that the game loads with the group. The tools
 // write 0xFFFFFFFF for every part.
@@ -87,6 +82,20 @@ std::vector<uint32_t> ListedWaveArchives(std::span<const uint8_t> bytes, sar::Fl
     return listed;
 }
 
+// Whether `entry`, an entry of the file table of an archive of `flavor`, gives its file a place in the FILE block. An
+// entry cut short gives none.
+bool HasPlace(std::span<const uint8_t> entry, sar::Flavor flavor)
+{
+    try
+    {
+        return sar::PlaceOfFile(entry, flavor) == sar::FilePlace::kBytes;
+    }
+    catch (const xsflib::FormatError&)
+    {
+        return false;
+    }
+}
+
 // The files of `bytes`, an archive of `flavor`, that the FILE block doesn't hold at a place in the file table. A group
 // can't link to such a file: only groups hold it, or it lies beside the archive. Throws xsflib::FormatError for an
 // archive whose tables can't be read.
@@ -96,10 +105,7 @@ std::vector<uint32_t> FilesWithoutPlaces(std::span<const uint8_t> bytes, sar::Fl
     const sar::InfoBlock info = sar::InfoBlock::Read(sar::TablesOf(bytes, flavor).info, flavor);
     for (std::size_t id = 0; id < info.files.size(); ++id)
     {
-        const std::vector<uint8_t>& entry = info.files[id];
-        const xsflib::Reader r(entry, flavor == sar::Flavor::kCafe);
-        const std::size_t location = entry.size() >= 8 && r.U16(0) == kInternalFile ? r.U32(4) : entry.size();
-        if (location + 8 > entry.size() || r.U32(location + 4) == kNoPlace)
+        if (!HasPlace(info.files[id], flavor))
         {
             files.push_back(static_cast<uint32_t>(id));
         }

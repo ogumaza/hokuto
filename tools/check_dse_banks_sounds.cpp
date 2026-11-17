@@ -447,8 +447,9 @@ void CheckSoundMidi(const Game& game, uint32_t sound, const std::string& name, T
         totals.midi_noteless += count == 0 ? 1 : 0;
         if (matched != count)
         {
-            std::printf("%s: %s: %zu of the %zu notes of its MIDI file came back\n", game.name.c_str(), name.c_str(),
-                        matched, count);
+            Fail(game, totals,
+                 name + ": " + std::to_string(matched) + " of the " + std::to_string(count) +
+                     " notes of its MIDI file came back");
         }
     }
     catch (const std::invalid_argument& error)

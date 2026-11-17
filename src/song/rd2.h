@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 
 // A GBA ROM whose music Nintendo R&D2's driver plays. ntdlib finds the driver in the ROM, with its revision, its tables
-// and the settings that the game's code sets for each sequence (ntdlib::rd2::DetectDriver). A song has no name in the
+// and the settings that the game's code sets for each sequence (agblib::rd2::DetectDriver). A song has no name in the
 // ROM: Hokuto names it by its number. ntdlib's performer plays a song on its model of the driver for the arrangement
-// (ntdlib::sequence_export::rd2::PerformSong), and ntdlib's ArchivePlayer plays it on its models of the driver and the
+// (agblib::sequence_export::rd2::PerformSong), and agblib's ArchivePlayer plays it on its models of the driver and the
 // GBA's sound hardware (song/sequence_model.h).
 //
 // The driver's songs are its sequences, then its sound effects: each a track of one of the sound effects' sequences
-// (ntdlib::rd2::SongCount). The game's code can play a sequence in more than one way, such as with a track muted. Each
-// way is a version of the song (ntdlib::sequence_export::rd2::SongVersions), and each version is a sound. Sound `song`
+// (agblib::rd2::SongCount). The game's code can play a sequence in more than one way, such as with a track muted. Each
+// way is a version of the song (agblib::sequence_export::rd2::SongVersions), and each version is a sound. Sound `song`
 // is the song's first version. The sounds after the songs are the other versions, in the order of their songs.
 
 #pragma once
@@ -20,9 +20,9 @@
 #include <string>
 #include <vector>
 
-#include "ntdlib/agb/rom.h"
+#include "agblib/agb/rom.h"
+#include "agblib/rd2/driver.h"
 #include "ntdlib/commands/sequence.h"
-#include "ntdlib/rd2/driver.h"
 
 #include "song/driver.h"
 
@@ -33,7 +33,7 @@ namespace hokuto::song
 struct Rd2Uses;
 std::shared_ptr<Rd2Uses> MakeRd2Uses();
 
-// A GBA ROM, and what ntdlib found of Nintendo R&D2's driver in it.
+// A GBA ROM, and what agblib found of Nintendo R&D2's driver in it.
 struct Rd2Rom final : DriverRom
 {
     const DriverRules& Rules() const override;
@@ -60,7 +60,7 @@ struct Rd2Rom final : DriverRom
                                                int track, int program, int key, int velocity) const override;
     std::shared_ptr<const DriverRom> AuditionRom(const DriverAudition& audition) const override;
 
-    // The song that sound `sound` plays, and the version (ntdlib::rd2::VersionSettings).
+    // The song that sound `sound` plays, and the version (agblib::rd2::VersionSettings).
     int SongOf(uint32_t sound) const;
     int VersionOf(uint32_t sound) const;
 
@@ -78,8 +78,8 @@ struct Rd2Rom final : DriverRom
     // Each sound's song and version, by the sound's number.
     std::vector<std::pair<int, int>> sounds;
 
-    ntdlib::agb::Rom rom;
-    ntdlib::rd2::DriverInfo info;
+    agblib::agb::Rom rom;
+    agblib::rd2::DriverInfo info;
 
     // The samples that each sound's notes play, filled on first use. Reading them takes up to a second. The audio
     // thread and the UI thread both read the ROM: a std::once_flag in the table guards the fill. A copy of the ROM
@@ -91,7 +91,7 @@ struct Rd2Rom final : DriverRom
 inline constexpr int kRd2StartVolume = 0x80;
 
 // The rules of revision `revision` of Nintendo R&D2's driver (song/driver.h).
-const DriverRules& Rd2Rules(ntdlib::rd2::Revision revision);
+const DriverRules& Rd2Rules(agblib::rd2::Revision revision);
 
 // `rom` as a ROM with Nintendo R&D2's driver, or nothing for another driver's ROM.
 const Rd2Rom* Rd2Of(const DriverRom* rom);

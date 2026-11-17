@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: MIT
 
 // The mode --wave-sounds of hokuto_check_replace: new wave sounds.
+//
+// With --wave-sounds, the tool checks only File > Import > Wave Sound File…. Up to 8 wave sound files of a donor go in
+// as new wave sounds, through the edits that the Import windows make. The donor is the archive itself unless a second
+// archive follows it. Each wave archive that the file's waves name goes in first, as a new wave archive with the old
+// one's file. The new file's waves then lie in the new wave archives. The tool reads each file as the Import window
+// reads it (edit::ReadIncomingFile): a file of a later version than the archive's files goes in with their versions.
+// When the donor is the archive itself, the new sounds copy the first sound that plays the file. Otherwise they copy
+// the archive's first wave sound, if it has one. The file also goes in with the archive's first sequence sound as the
+// model. Each new sound has to hold the model's values and play the samples that the donor's sound at its index plays
+// (song::DecodeWaveSound). Every other item has to keep its values, and every file its bytes. The new wave archives'
+// files have to hold the bytes that the read gives, and the new file those bytes but for the wave archives that its
+// waves name. The file has to save and open again in both forms. A file whose wave archives lack their files counts
+// apart.
 
 #include "check_replace.h"
 
@@ -179,7 +192,7 @@ std::optional<sar::Pcm> DecodedWaveSound(const sar::SoundArchive& archive, uint3
 // Counts the sounds compared, those that neither side decodes, and those that no sound of the donor plays.
 std::string NewSoundsProblem(const sar::SoundArchive& built, const sar::SoundArchive& after,
                              const sar::SoundArchive& donor, uint32_t donor_file, uint32_t model,
-                             const NewWaveSounds& items, Totals& totals)
+                             const NewWaveSounds& items, WaveSoundTotals& totals)
 {
     const std::size_t count = items.names.size();
     const auto new_file = static_cast<uint32_t>(after.FileCount() - 1);
@@ -233,7 +246,7 @@ std::string NewSoundsProblem(const sar::SoundArchive& built, const sar::SoundArc
 // waves of file `donor_file` of `donor` name, and the file's wave sounds as copies of sound `model`. `built` is the
 // archive that `file` builds. Returns nothing when nothing is wrong. Counts the new sounds whose samples are compared.
 std::string WaveSoundProblem(const format::File& added, const sar::SoundArchive& built, const sar::SoundArchive& donor,
-                             uint32_t donor_file, uint32_t model, const NewWaveSounds& items, Totals& totals)
+                             uint32_t donor_file, uint32_t model, const NewWaveSounds& items, WaveSoundTotals& totals)
 {
     const sar::Flavor flavor = built.ReadOptions().flavor;
     const Archive after =
@@ -292,7 +305,7 @@ std::optional<uint32_t> FirstOfType(const sar::SoundArchive& built, sar::SoundTy
 // the new sounds, wave archives and joins.
 std::string AddWaveSounds(const format::File& file, const sar::SoundArchive& built,
                           std::span<const edit::Group> edit_groups, const sar::SoundArchive& donor, uint32_t donor_file,
-                          uint32_t model, Joins& joins, Totals& totals)
+                          uint32_t model, Joins& joins, WaveSoundTotals& totals, JoinTotals& joined)
 {
     const auto [added, items] = WithWaveSounds(file, built, donor, donor_file, model, totals.wsd_slowest);
     std::string problem = WaveSoundProblem(added, built, donor, donor_file, model, items, totals);
@@ -315,7 +328,7 @@ std::string AddWaveSounds(const format::File& file, const sar::SoundArchive& bui
         {
             return added;
         };
-        problem = JoinAndNewGroupCheck(file, built, edit_groups, sounds, files_before, {}, with_sounds, joins, totals);
+        problem = JoinAndNewGroupCheck(file, built, edit_groups, sounds, files_before, {}, with_sounds, joins, joined);
     }
 
     return problem;
@@ -325,7 +338,7 @@ std::string AddWaveSounds(const format::File& file, const sar::SoundArchive& bui
 
 void CheckNewWaveSounds(const format::File& file, const sar::SoundArchive& built,
                         std::span<const edit::Group> edit_groups, const sar::SoundArchive& donor, bool self,
-                        const std::string& name, Totals& totals)
+                        const std::string& name, WaveSoundTotals& totals, JoinTotals& joined)
 {
     Joins joins;
 
@@ -352,7 +365,7 @@ void CheckNewWaveSounds(const format::File& file, const sar::SoundArchive& built
             std::string problem;
             try
             {
-                problem = AddWaveSounds(file, built, edit_groups, donor, donor_file, model, joins, totals);
+                problem = AddWaveSounds(file, built, edit_groups, donor, donor_file, model, joins, totals, joined);
             }
             catch (const std::exception& error)
             {

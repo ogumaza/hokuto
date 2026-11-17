@@ -555,4 +555,9 @@ std::string SystemPath(const std::string& path)
     return path;
 }
 
+bool ShowSystemBox(const SDL_MessageBoxData& box, int* chosen)
+{
+    return SDL_ShowMessageBox(&box, chosen);
+}
+
 } // namespace hokuto::app

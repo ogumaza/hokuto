@@ -52,15 +52,8 @@ std::vector<int16_t> PlayWii(const std::shared_ptr<const ntdlib::rsar::SoundArch
     const auto sequence =
         std::make_shared<const hokuto::song::Sequence>(hokuto::song::ReadSequence(*archive, sound, {}, {}, build));
     hokuto::song::SequenceModel model(archive, sequence);
-    const auto samples = static_cast<std::size_t>(kLevelSeconds * model.SampleRate()) * 2;
-    std::vector<int16_t> output;
-    for (bool more = model.SeekFrame(0); more && output.size() < samples; more = model.RunFrame())
-    {
-        const std::span<const int16_t> frame = model.Output();
-        output.insert(output.end(), frame.begin(), frame.end());
-    }
 
-    return output;
+    return PlayModel(model);
 }
 
 // The number of bytes in which `exported` differs from `bytes`, outside the INFO block of `bytes`, an archive of the
@@ -163,35 +156,6 @@ bool CheckWiiExport(const WiiOriginal& original, const Layout& layout, const Rou
     return true;
 }
 
-// Checks that the old values of the edits of `made`, put back in reverse order, give the archive of `original` back.
-void CheckWiiEditsBack(const WiiOriginal& original, const NativeTables& tables, const File& edited,
-                       const std::vector<std::pair<uint32_t, SoundChange>>& made, const std::string& what,
-                       Totals& totals)
-{
-    const std::string& name = original.name;
-    File back = edited;
-    try
-    {
-        for (auto it = made.rbegin(); it != made.rend(); ++it)
-        {
-            const auto& [sound, change] = *it;
-            const uint32_t old = hokuto::edit::ValueOf(tables.sounds[sound], change.value, change.slot);
-            back = hokuto::edit::ChangeSound(back, sound, {change.value, change.slot, old});
-        }
-        if (hokuto::format::ExportArchive(back) != original.bytes)
-        {
-            std::printf("%s: the old values don't give the archive back after the round of the %s.\n", name.c_str(),
-                        what.c_str());
-            ++totals.round_trips;
-        }
-    }
-    catch (const std::exception& error)
-    {
-        std::printf("%s: the edits back of the round of the %s fail: %s\n", name.c_str(), what.c_str(), error.what());
-        ++totals.failures;
-    }
-}
-
 // Checks the levels of the sounds of `made` in `after`, the archive after a round of volumes.
 void CheckWiiLevels(const WiiOriginal& original, const std::shared_ptr<const ntdlib::rsar::SoundArchive>& after,
                     const std::vector<std::pair<uint32_t, SoundChange>>& made, Totals& totals)
@@ -220,15 +184,7 @@ void CheckWiiRound(const WiiOriginal& original, const Layout& layout, const Roun
     const std::string& name = original.name;
     const std::string what = hokuto::edit::NameOf(round.value);
     const NativeTables& tables = *original.file.native->tables;
-    std::vector<std::pair<uint32_t, SoundChange>> candidates;
-    for (uint32_t sound = 0; sound < tables.sounds.size(); ++sound)
-    {
-        if (const std::optional<SoundChange> change = ChangeOf(tables, tables.sounds[sound], round))
-        {
-            candidates.emplace_back(sound, *change);
-        }
-    }
-    const std::vector<std::pair<uint32_t, SoundChange>> changes = Spread(candidates, index);
+    const std::vector<Change> changes = Spread(CandidatesOf(tables, round), index);
 
     // A value that the archive doesn't hold.
     if (!Holds(original.held, round))
@@ -238,27 +194,7 @@ void CheckWiiRound(const WiiOriginal& original, const Layout& layout, const Roun
     }
 
     // The edits, and the values that the tool works out.
-    File edited = original.file;
-    std::vector<NativeSound> expected = tables.sounds;
-    std::vector<std::pair<uint32_t, SoundChange>> made;
-    for (const auto& [sound, change] : changes)
-    {
-        try
-        {
-            edited = hokuto::edit::ChangeSound(edited, sound, change);
-        }
-        catch (const std::invalid_argument& error)
-        {
-            std::printf("%s: %s: the edit of the %s fails: %s\n", name.c_str(), tables.sounds[sound].name.c_str(),
-                        what.c_str(), error.what());
-            ++totals.failures;
-            continue;
-        }
-
-        ++totals.edits;
-        expected[sound] = Changed(expected[sound], change);
-        made.emplace_back(sound, change);
-    }
+    const auto [edited, expected, made] = MakeEdits(name, original.file, tables, changes, what, totals);
 
     // The export holds the new values in place.
     std::shared_ptr<const ntdlib::rsar::SoundArchive> after;
@@ -268,7 +204,7 @@ void CheckWiiRound(const WiiOriginal& original, const Layout& layout, const Roun
     }
 
     // The old values give the archive back.
-    CheckWiiEditsBack(original, tables, edited, made, what, totals);
+    CheckEditsBack(name, original.bytes, tables, edited, made, what, totals);
 
     if (after)
     {

@@ -29,6 +29,7 @@ namespace hokuto::app
 namespace
 {
 
+using edit::AtkStartingParameters;
 using edit::CtrStartingParameters;
 using edit::WiiTypeOf;
 using edit::WiiUTypeOf;
@@ -236,8 +237,55 @@ constexpr std::array<Row, 4> kCtrDelayRows = {{
     kSurroundRow,
 }};
 
+// The rows of nn::atk's effects, in the order in which each class passes its values to the renderer, with the channel
+// mode last. A file keeps the times in microseconds. A time shows in milliseconds, and the reverb's decay time in
+// seconds. The delay's times move in steps of a millisecond, the limiter's attack and look-ahead in steps of a
+// microsecond, its release and the reverb's pre-delay in steps of 0.1 ms, and the decay time in steps of 0.01 s. The
+// ranges are the format's limits (format::LimitsOf), and the ranges that nn::atk's setters hold the other values to.
+// The limiter's threshold and gains show in dB, and the other gains, factors and ratios as the classes take them.
+constexpr std::array<const char*, 4> kChannelModes = {"1", "2", "4", "6"};
+constexpr std::array<const char*, 5> kEarlyReverbModes = {"Room", "Chamber", "Hall", "Cathedral", "Off"};
+constexpr std::array<const char*, 5> kLateReverbModes = {"Room", "Hall", "Plate", "Cathedral", "Longest Lines"};
+constexpr double kMsPerMicrosecond = 0.001;
+constexpr float kMostLimiterGainDb = 12.0412f; // a gain of 4
+constexpr Row kChannelsRow = {"Channels", {}, "", 1.0, 1.0, kChannelModes};
+constexpr std::array<Row, 8> kSwitchDelayRows = {{
+    {"Max delay", {1.0f, 10000.0f, true}, "%.0f ms", kMsPerMicrosecond, kMsPerMicrosecond},
+    {"Delay", {1.0f, 10000.0f, true}, "%.0f ms", kMsPerMicrosecond, kMsPerMicrosecond},
+    {"In gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Feedback", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Dry gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"LPF", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Spread", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    kChannelsRow,
+}};
+constexpr std::array<Row, 8> kSwitchLightLimiterRows = {{
+    {"Max look-ahead", {0.0f, 50.0f}, "%.3f ms", kMsPerMicrosecond, 1.0},
+    {"Attack", {0.0f, 10.0f}, "%.3f ms", kMsPerMicrosecond, 1.0},
+    {"Release", {0.1f, 5000.0f, true}, "%.1f ms", kMsPerMicrosecond, 0.01},
+    {"Look-ahead", {0.0f, 50.0f}, "%.3f ms", kMsPerMicrosecond, 1.0},
+    {"Threshold", {-100.0f, 0.0f}, "%.2f dB", 1.0, 100.0, {}, true},
+    {"Input gain", {-100.0f, kMostLimiterGainDb}, "%.2f dB", 1.0, 100.0, {}, true},
+    {"Output gain", {-100.0f, kMostLimiterGainDb}, "%.2f dB", 1.0, 100.0, {}, true},
+    kChannelsRow,
+}};
+constexpr std::array<Row, 12> kSwitchReverbRows = {{
+    {"Early mode", {}, "", 1.0, 1.0, kEarlyReverbModes},
+    {"Early gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Pre-delay", {0.0f, 300.0f}, "%.1f ms", kMsPerMicrosecond, 0.01},
+    {"Late mode", {}, "", 1.0, 1.0, kLateReverbModes},
+    {"Late gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Decay time", {0.1f, 20.0f, true}, "%.2f s", 0.000001, 0.0001},
+    {"Decay HF ratio", {0.1f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Coloration", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Reverb gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Out gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    {"Dry gain", {0.0f, 1.0f}, "%.2f", 1.0, 100.0},
+    kChannelsRow,
+}};
+
 // A delay of one of the effects, and the longest delay that its line holds, by their places in the kind's parameters.
-// The system library holds a delay at its maximum.
+// The system library holds a delay at its maximum. nn::atk holds its delay and its limiter's look-ahead the same way.
 struct DelayLimit
 {
     format::EffectKind kind;
@@ -245,12 +293,14 @@ struct DelayLimit
     std::size_t maximum;
 };
 
-constexpr std::array<DelayLimit, 5> kDelayLimits = {{
+constexpr std::array<DelayLimit, 7> kDelayLimits = {{
     {format::EffectKind::kReverbHi, 0, 7},
     {format::EffectKind::kReverbStd, 0, 6},
     {format::EffectKind::kDelay, 0, 3},
     {format::EffectKind::kWiiReverbHi2008, 0, 7},
     {format::EffectKind::kWiiReverbStd2008, 0, 6},
+    {format::EffectKind::kSwitchDelay, 1, 0},
+    {format::EffectKind::kSwitchLightLimiter, 3, 0},
 }};
 
 // Keeps each delay of `effect` within its maximum after an edit of parameter `edited`. A longer delay lengthens its
@@ -313,6 +363,12 @@ std::span<const Row> RowsOf(format::EffectKind kind)
     case format::EffectKind::kCtrDelay:
     case format::EffectKind::kCtrNnDelay:
         return kCtrDelayRows;
+    case format::EffectKind::kSwitchDelay:
+        return kSwitchDelayRows;
+    case format::EffectKind::kSwitchLightLimiter:
+        return kSwitchLightLimiterRows;
+    case format::EffectKind::kSwitchReverb:
+        return kSwitchReverbRows;
     }
 
     return {};
@@ -370,7 +426,7 @@ bool DrawPresets(format::Effect& effect)
 
 // The parameters that a new effect of `kind` starts from, and that a reset of a parameter returns to: nn::audio's first
 // preset for the I3DL2 reverb, Hokuto's starting values for the effects of the Wii U and the Wii, and the libraries'
-// defaults for the 3DS's effects.
+// defaults for the 3DS's effects and nn::atk's.
 std::vector<float> StartingParameters(format::EffectKind kind)
 {
     if (const std::optional<EffectType> type = WiiUTypeOf(kind))
@@ -384,6 +440,10 @@ std::vector<float> StartingParameters(format::EffectKind kind)
     if (format::IsCtrKind(kind))
     {
         return CtrStartingParameters(kind);
+    }
+    if (format::IsAtkKind(kind))
+    {
+        return AtkStartingParameters(kind);
     }
 
     return PresetParameters(0);
@@ -546,7 +606,8 @@ ActionNames EffectChangeNames(const EffectPlace& place, EffectEdit edit, const f
 EffectEdit DrawEffectWindow(const EffectPlace& place, format::Effect& effect, bool* open)
 {
     // A window over the middle of the main window, in the style of Studio Setup. The title names the channel, the
-    // insert's number and the effect. The window keeps its place when another effect opens in it.
+    // insert's number and the effect. Another effect opens in the same window. The window stays in the middle at the
+    // new effect's size, unless the user has dragged it. A dragged window keeps its place.
     const std::string title = EffectTitle(place, effect) + "###Effect";
     ImGui::SetNextWindowSize(ImVec2(Px(480.0f), 0.0f));
     const bool visible = BeginDialogWindow(title.c_str(), open, ImGuiWindowFlags_NoResize);
