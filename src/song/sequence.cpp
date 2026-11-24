@@ -38,6 +38,7 @@
 #include "song/ds.h"
 #include "song/gba.h"
 #include "song/sequence_parts.h"
+#include "song/starts.h"
 
 namespace hokuto::song
 {
@@ -323,7 +324,7 @@ export_::PerformOptions PerformOptionsOf(const StartValues& values, const Change
     export_::PerformOptions options;
     for (const auto& [number, value] : values)
     {
-        if (number >= 0 && number < kGameVariables)
+        if (number >= 0 && number < kSetVariables)
         {
             options.variables[static_cast<uint8_t>(number)] = value;
         }
@@ -341,7 +342,7 @@ export_::PerformOptions PerformOptionsOf(const StartValues& values, const Change
 }
 
 Sequence ReadSequence(const sar::SoundArchive& archive, uint32_t sound, const StartValues& values,
-                      const Changes& changes)
+                      const Changes& changes, const format::SoundStart& start)
 {
     if (sound >= archive.Sounds().size() || archive.Sounds()[sound].type != sar::SoundType::kSequence)
     {
@@ -352,9 +353,10 @@ Sequence ReadSequence(const sar::SoundArchive& archive, uint32_t sound, const St
     // A game does both through the sound's handle.
     const sar::SoundInfo& info = archive.Sounds()[sound];
     const sar::Flavor flavor = archive.ReadOptions().flavor;
-    const export_::Settings settings = SettingsOf(archive);
-    const export_::PerformOptions options = PerformOptionsOf(values, changes, flavor);
+    export_::Settings settings = SettingsOf(archive);
+    export_::PerformOptions options = PerformOptionsOf(values, changes, flavor);
     StartValues kept(options.variables.begin(), options.variables.end());
+    ApplyStart(options, settings, start);
     Changes kept_changes = GameChanges(changes);
     try
     {
@@ -364,6 +366,7 @@ Sequence ReadSequence(const sar::SoundArchive& archive, uint32_t sound, const St
         Sequence sequence = SequenceHead(performance, info.name, sound);
         sequence.start_values = std::move(kept);
         sequence.changes = std::move(kept_changes);
+        sequence.start = start;
         sequence.holds = performance.holds;
 
         // The tracks that ran commands, with notes or without. A sequence with a loop ends with the loop. The performer

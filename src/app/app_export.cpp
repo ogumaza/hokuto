@@ -13,6 +13,7 @@
 #include <initializer_list>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include "ntdlib/rvl/snd/rsar_options.h"
@@ -31,6 +32,7 @@
 #include "format/drivers.h"
 #include "format/file.h"
 #include "format/kinds.h"
+#include "format/project.h"
 #include "song/archive.h"
 #include "song/driver.h"
 #include "song/items.h"
@@ -167,6 +169,49 @@ void AddStreams(ExportWork& work, const std::shared_ptr<const format::File>& ver
         work.files.emplace_back(names.back(), *version->native->streams.at(streams[i]).bytes);
     }
     work.warnings.push_back(StreamsNote(names));
+}
+
+// The export of the ROM of `project`, a file with more than one archive, into `work`. `original` contains the archives
+// as they opened. The archives join in turn into one ROM (format::ExportProject). The filler runs aren't offered: a ROM
+// without room for the songs of every archive that outgrow their places can't export. Each archive of MusicPlayer2000
+// warns of the notes that its edits make collide.
+void ExportProjectWork(ExportWork& work, const format::Project& project, const format::Project& original,
+                       const std::vector<std::string>& notes)
+{
+    try
+    {
+        work.archive = format::ExportProject(project);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        // The joins refuse songs that pass the GBA's 32 MiB. Their message names the 32 MiB.
+        if (std::string_view(error.what()).find("32 MiB") == std::string_view::npos)
+        {
+            throw;
+        }
+
+        work.error = "The ROM has no room after its data for the songs that no longer fit.";
+        return;
+    }
+
+    std::size_t moved = 0;
+    for (const format::File& archive : project.archives)
+    {
+        moved += format::MovedSongs(archive).size();
+    }
+    const format::File& first = project.archives.front();
+    const std::size_t before = first.native->game_sizes ? first.native->game_sizes->archive : work.archive.size();
+    work.warnings = RomWarnings(moved, before, work.archive.size(), RomRoom::kFreeSpace, true);
+    for (std::size_t a = 0; a < project.archives.size() && a < original.archives.size(); a++)
+    {
+        if (project.archives[a].native->engine == format::Engine::kGba)
+        {
+            const std::vector<std::string> collisions =
+                GbaCollisionWarnings(project.archives[a], original.archives[a], work.archive);
+            work.warnings.insert(work.warnings.end(), collisions.begin(), collisions.end());
+        }
+    }
+    work.warnings.insert(work.warnings.end(), notes.begin(), notes.end());
 }
 
 // The export of a GBA ROM, or a ROM with another of the GBA's drivers, into `work`.
@@ -505,6 +550,10 @@ void App::StartArchiveWork(Export& job)
     // the game lacks go beside the archive. The archive's file table gives their places.
     const std::shared_ptr<const format::File> version = history_->Current();
     const std::shared_ptr<const format::File> original = history_->Original();
+    const std::shared_ptr<const format::Project> project =
+        history_->Archives() > 1 ? std::make_shared<const format::Project>(history_->CurrentProject()) : nullptr;
+    const std::shared_ptr<const format::Project> original_project =
+        project ? std::make_shared<const format::Project>(history_->OriginalProject()) : nullptr;
 
     // A sound that plays on another console's engine in Hokuto goes out as the archive holds it. The file's tables
     // name it, or else the archive or the ROM that the zones play.
@@ -514,7 +563,8 @@ void App::StartArchiveWork(Export& job)
     {
         notes.push_back(EngineSoundsNote(on_engines, EngineName(version->engine)));
     }
-    const auto build = [version, original, notes, source_folder = job.source_folder, dsi_key = settings_.dsi_key]
+    const auto build = [version, original, project, original_project, notes, source_folder = job.source_folder,
+                        dsi_key = settings_.dsi_key]
     {
         // The streams that the game lacks go beside the archive. The file table of the exported archive, `opened`,
         // gives their places.
@@ -526,6 +576,12 @@ void App::StartArchiveWork(Export& job)
             // without room for the songs that outgrow their places follows the file's choice: the songs go into the
             // ROM's filler runs, or their edits stay out, and the songs go in as the file opened. A ROM with another of
             // the GBA's drivers does the same.
+            // A ROM with more than one driver joins the archives of every driver.
+            if (project)
+            {
+                ExportProjectWork(work, *project, *original_project, notes);
+                return work;
+            }
             if (version->native->engine == format::Engine::kGba || version->native->driver)
             {
                 ExportRomWork(work, version, original, notes);

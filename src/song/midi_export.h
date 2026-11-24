@@ -30,12 +30,14 @@
 namespace hokuto::song
 {
 
-// Converts sequence sound `sound` of `archive`, with the variables' starting values `values` and the game's `changes`.
-// `program` names the program in the SoundFont and the SFZ files. Throws std::runtime_error with a message for the user
-// if it isn't a sequence sound or its data is damaged.
+// Converts sequence sound `sound` of `archive`, with the variables' starting values `values`, the game's `changes` and
+// the rest of the game's start `start` (ApplyStart in song/starts.h). The tracks that the start quiets play at a volume
+// of 0, as ntdlib's converter plays them: their notes stay in the MIDI file at CC11 0. `program` names the program in
+// the SoundFont and the SFZ files. Throws std::runtime_error with a message for the user if it isn't a sequence sound
+// or its data is damaged.
 ntdlib::sequence_export::Conversion ConvertToMidi(const ntdlib::sar::SoundArchive& archive, uint32_t sound,
                                                   const StartValues& values, const Changes& changes,
-                                                  const std::string& program);
+                                                  const std::string& program, const format::SoundStart& start = {});
 
 // The same for sequence sound `sound` of the Wii archive `archive`, with the settings of `build` of NW4R SND, the
 // game's build, or else of the build that the archive's version gives (SettingsOf).
@@ -47,7 +49,8 @@ ntdlib::sequence_export::Conversion ConvertToMidi(const ntdlib::rsar::SoundArchi
 // The same for song `song` of the GBA ROM `rom`, with the default settings of
 // agblib::sequence_export::agb::ConvertSettings: two passes of a loop, a MIDI channel for each track, and the events on
 // the beat. The conversion contains no SFZ files. Throws std::runtime_error with a message for the user when the song
-// can't be read or plays no notes. For a song that plays no notes, the error is EmptyConversion.
+// can't be read or makes no sound: it has no notes, or all its notes play at a level of 0. For a song that makes no
+// sound, the error is EmptyConversion.
 ntdlib::sequence_export::Conversion ConvertToMidi(const GbaRom& rom, int song, const std::string& program);
 
 // The conversion of song `name` of a GBA ROM with one of the drivers of song/driver.h, from the files that ntdlib's
@@ -55,7 +58,8 @@ ntdlib::sequence_export::Conversion ConvertToMidi(const GbaRom& rom, int song, c
 // default settings of agblib::sequence_export::agb::ConvertSettings: two passes of a loop, and a MIDI channel for each
 // track. The conversion contains no SFZ files: a driver that writes them adds them (DriverRom::WritesSfz). Throws
 // std::runtime_error with a message for the user when the converter couldn't read the song (`ok` false), or when the
-// song plays no notes. For a song that plays no notes, the error is EmptyConversion.
+// song makes no sound. With MusicPlayer2000, a song whose notes all play at a level of 0 makes none. For a song that
+// makes no sound, the error is EmptyConversion.
 ntdlib::sequence_export::Conversion AgbConversion(const std::string& name, bool ok, bool silent,
                                                   std::vector<std::string> warnings, std::vector<uint8_t> midi,
                                                   std::vector<uint8_t> sf2);
@@ -84,11 +88,27 @@ ntdlib::sequence_export::Conversion AgbConversion(const std::string& name, Files
 ntdlib::sequence_export::Conversion ConvertToMidi(const DsArchive& archive, uint32_t sound, const StartValues& values,
                                                   const std::string& program);
 
+// What plays the files of a conversion of DSE.
+enum class DseFilesFor
+{
+    // SoundFont and SFZ players.
+    kPlayers,
+    // A bank of another console made from the SoundFont. It plays no volume LFO.
+    kBank,
+    // A bank of the DS made from the SoundFont. The DS's sound unit pans linearly, and the bank plays no volume LFO.
+    kDsBank,
+};
+
 // The same for sound `sound` of `set`, the DSE sounds of a DS cartridge image. A converter on ntdlib's frame of DSE
-// converts the sound the same way (ntdlib::sequence_export::dse::ConvertSequence). The MIDI file contains the intro and
-// one pass of the loop. Throws std::runtime_error with a message for the user when the sound is missing from the set or
-// the converter refuses it.
-ntdlib::sequence_export::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::string& program);
+// converts the sound the same way (ntdlib::sequence_export::dse::ConvertSequence), with the song in the state that the
+// set gives it (DseSoundStart). The MIDI file contains the intro and one pass of the loop. For a bank, each zone of the
+// SoundFont plays at the mean power of its volume LFOs, without them
+// (ntdlib::sequence_export::dse::PerformOptions::volume_lfos_as_mean_power). For a bank of the DS, the MIDI file and
+// the SoundFont also keep the driver's pans for a mixer that pans linearly, and the conversion has no SFZ files
+// (ntdlib::sequence_export::dse::PerformOptions::linear_pans). Throws std::runtime_error with a message for the user
+// when the sound is missing from the set or the converter refuses it.
+ntdlib::sequence_export::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::string& program,
+                                                  DseFilesFor target = DseFilesFor::kPlayers);
 
 // A conversion of ntdlib's converter of the sequences of the DS or of DSE, in the frame's form. The report reads the
 // approximations of the performance's common part.
@@ -109,7 +129,8 @@ ntdlib::sequence_export::Conversion FrameConversion(Converted converted)
     return conversion;
 }
 
-// What the files can't hold, from what hacsf2 reports: each approximation with its count, then each warning.
+// What the files can't hold, from what ntdlib's converter reports: each approximation with its count, then each
+// warning.
 std::vector<std::string> ConversionReport(const ntdlib::sequence_export::Conversion& conversion);
 
 // The lines of `report` that concern an export's SFZ files (`sfz`) or its SoundFont 2 files. ntdlib's converter writes
@@ -148,7 +169,7 @@ void WriteMidiAndSfz(const ntdlib::sequence_export::Conversion& conversion, cons
 // whether to replace files.
 void CheckSfzSamples(const ntdlib::sequence_export::Conversion& conversion, const std::filesystem::path& midi);
 
-// The error of ConvertToMidi and AgbConversion for a song of the GBA that plays no notes: it makes no MIDI file.
+// The error of ConvertToMidi and AgbConversion for a song of the GBA that makes no sound: it makes no MIDI file.
 class EmptyConversion : public std::runtime_error
 {
 public:

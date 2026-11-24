@@ -55,6 +55,7 @@
 #include "edit/tracks.h"
 #include "format/archive.h"
 #include "format/file.h"
+#include "format/project.h"
 #include "song/catch_up.h"
 #include "song/driver.h"
 #include "song/ds.h"
@@ -238,20 +239,39 @@ struct EditWork
     std::string error;
 };
 
+// What plays an archive of a file: the archive, the ROM or the set that `version` builds, the sequence of the file that
+// each of the archive's files contains, and the field that contains each sound's start (App::ShowDocument). In a file
+// with more than one archive, an archive that isn't in front also keeps the view that it showed last, its browser
+// groups and the browser's state for them. The browser draws those groups under the archive's row.
+struct ArchivePlay
+{
+    std::shared_ptr<const format::File> version;
+    song::Played played;
+    std::vector<std::optional<uint32_t>> sequences;
+    std::optional<std::vector<std::optional<uint32_t>>> start_fields;
+    std::optional<format::EditorView> view;
+    std::vector<BrowserGroup> browser;
+    BrowserState browser_state;
+};
+
 // What File > Open or File > Import makes away from the program's thread: the file with its timelines laid out for
 // editing, the archive that it builds for playback, the sequences of its files and the field of each sound's start.
 // A file of the Wii builds its archive for the Wii's model, a file of the GBA its ROM, and a file of the DS its
 // archive with the build of the cartridge's driver. An imported sound archive gives a file that stays untitled
-// until it's saved. `error` gives the message when the file can't open.
+// until it's saved. `error` gives the message when the file can't open. In a file with more than one archive,
+// `project` contains the archives, with `document` in front, and `archives` gives what plays each archive.
 struct OpenWork
 {
     std::shared_ptr<const format::File> document;
     song::Played played;
     std::vector<std::optional<uint32_t>> sequences;
     std::optional<std::vector<std::optional<uint32_t>>> start_fields;
+    std::shared_ptr<const format::Project> project;
+    std::vector<ArchivePlay> archives;
     bool imported = false;
     bool text_form = false;
     std::string error;
+    std::vector<std::string> notes; // shown once the file shows, such as the guesses of DSE's playback
 };
 
 // An open or an import while its work runs: the work, and the path and the name of the file.

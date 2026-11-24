@@ -629,8 +629,8 @@ void TestScenesInText()
         XSFLIB_CHECK(error("    variable 1 " + std::string(value) + "\n")
                          .starts_with("Line 4: a variable's value is a whole number from -32768 to 32767"));
     }
-    XSFLIB_CHECK(error("    variable 32 1\n")
-                     .starts_with("Line 4: a variable's number has to be a whole number from 0 to 31, not 32"));
+    XSFLIB_CHECK(error("    variable 48 1\n")
+                     .starts_with("Line 4: a variable's number has to be a whole number from 0 to 47, not 48"));
     XSFLIB_CHECK(
         error("    variable 3 1\n    variable 3 2\n").starts_with("Line 5: the scene starts variable 3 twice"));
     XSFLIB_CHECK(error("    at 2 variable 3 1\n    at 1 variable 3 2\n")
@@ -647,25 +647,28 @@ void TestScenesInText()
     XSFLIB_CHECK(error("sequence 0\n    variable 1 1\n").starts_with("Line 5: no command"));
 }
 
-// The binary form refuses a kind of variable of a later version.
+// The binary form refuses a kind of variable of a later version, and takes a track variable of every track.
 void TestScenesInBinary()
 {
     const ScenesFixture fixture = MakeScenesFixture();
     const std::vector<uint8_t>& binary = fixture.binary;
 
-    // Scenes that the binary form refuses: a zero of a later version, a variable past 31, a variable started twice and
-    // changes out of order. A top byte of 0xFF puts the second change's time after the third's.
+    // Scenes that the binary form refuses: a zero of a later version, a variable past 31, a track variable past 15, a
+    // variable started twice and changes out of order. A top byte of 0xFF puts the second change's time after the
+    // third's. A byte of 0xFF after the third value's number makes it track variable 16 of every track. After the first
+    // value's number, it makes the value one of track variable 0 of every track, variable 32.
     XSFLIB_CHECK(Patched(binary, 6, 25, 1).starts_with("The file contains a variable type (1) that this version"));
     XSFLIB_CHECK(Patched(binary, 6, 49, 1).starts_with("The file contains a variable type (1) that this version"));
-    XSFLIB_CHECK(Patched(binary, 6, 24, 40) ==
-                 "The file is damaged: scene 0 sets variable 40, and a scene sets variables 0 to 31 only.");
+    XSFLIB_CHECK(Patched(binary, 6, 24, 40) == "The file is damaged: a scene sets variable 40.");
+    XSFLIB_CHECK(Patched(binary, 6, 33, 0xFF) == "The file is damaged: a scene sets variable 16 of every track.");
+    XSFLIB_CHECK(Patched(binary, 6, 25, 0xFF).empty());
     XSFLIB_CHECK(Patched(binary, 6, 28, 0) == "The file is damaged: scene 0 starts variable 0 twice.");
     XSFLIB_CHECK(Patched(binary, 6, 55, 0xFF) ==
                  "The file is damaged: scene 0 changes its variables out of the order of their times.");
     XSFLIB_CHECK(Patched(binary, 6, 48, 31).empty());
 }
 
-// Neither form holds a variable past 31 or changes out of the order of their times. A file without scenes has no SCEN
+// Neither form holds a variable past 47 or changes out of the order of their times. A file without scenes has no SCEN
 // chunk.
 void TestScenesRefused()
 {
@@ -673,11 +676,11 @@ void TestScenesRefused()
 
     // Scenes that neither form can hold.
     File past = WithScenes();
-    past.scenes[1].changes.push_back({5, 32, 0});
+    past.scenes[1].changes.push_back({5, 48, 0});
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { format::Write(past); }) ==
-                 "scene 1 sets variable 32, and a scene sets variables 0 to 31 only");
+                 "scene 1 sets variable 48, and a scene sets variables 0 to 47 only");
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { format::WriteText(past); }) ==
-                 "scene 1 sets variable 32, and a scene sets variables 0 to 31 only");
+                 "scene 1 sets variable 48, and a scene sets variables 0 to 47 only");
     File backwards = WithScenes();
     std::swap(backwards.scenes[0].changes[0], backwards.scenes[0].changes[1]);
     XSFLIB_CHECK(ErrorOf<std::invalid_argument>([&] { format::Write(backwards); }) ==

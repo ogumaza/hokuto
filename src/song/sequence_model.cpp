@@ -188,9 +188,9 @@ std::unique_ptr<ConsoleModel> NewModel(const Played& played, const Sequence& seq
         return NewDriverModel(*played.Driver(), options.mixing, FrameFactsOf(played, options.mixing).frame_samples,
                               options.dry);
     case format::Family::kNitroComposer:
-        return NewDsModel(*played.Ds(), options.mixing, options.dry);
+        return NewDsModel(*played.Ds(), options.mixing, options.dry, sequence.start_values);
     case format::Family::kDse:
-        return NewDseModel(*played.Dse(), options.mixing);
+        return NewDseModel(*played.Dse(), DseSoundTick(*played.Dse(), sequence.sound), options.mixing);
     }
 
     throw std::logic_error("an unknown family of engines");
@@ -524,6 +524,10 @@ std::array<int16_t, kGameVariables> SequenceModel::Variables() const
 
     std::array<int16_t, kGameVariables> values{};
     values.fill(-1);
+    for (const auto& [number, value] : sequence_->profile_values)
+    {
+        values[static_cast<std::size_t>(number)] = value;
+    }
     for (const auto& [number, value] : sequence_->start_values)
     {
         if (number >= 0 && number < kGameVariables)
@@ -544,7 +548,7 @@ bool SequenceModel::Start()
     {
         model_ = console_model::NewModel(played_, *sequence_,
                                          ModelOptions{.effects = effects_, .mixing = mixing_, .dry = dry_});
-        playing_ = model_->StartSequence(sequence_->sound);
+        playing_ = model_->StartSequence(sequence_->sound, sequence_->start);
         if (playing_)
         {
             model_->SetArrangement(*sequence_);
@@ -560,12 +564,13 @@ bool SequenceModel::Start()
         return false;
     }
 
-    // The variables take their starting values before the sound's first frame. A game sets them through the sound's
-    // handle the same way.
+    // The variables take their starting values before the sound's first frame, then the rest of the start. A game sets
+    // them through the sound's handle the same way.
     for (const auto& [number, value] : sequence_->start_values)
     {
         model_->SetVariable(number, value);
     }
+    model_->ApplyStart(sequence_->start);
 
     ApplyMutes();
     ApplyBusVolumes();

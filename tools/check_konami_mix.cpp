@@ -57,6 +57,7 @@
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -498,6 +499,68 @@ struct VolumePlan
     std::map<uint32_t, uint32_t> velocities;
 };
 
+// Whether `changed`, the commands of a sequence after a volume edit, are `commands` with new values: `mapped` of each
+// old one, in the volumes and notes of `setters` and the velocities of `next_volumes`. A command's encoding and bytes
+// aren't compared: a delay can take other bytes.
+bool HoldsNewVolumes(const std::vector<Command>& commands, const std::vector<Command>& changed,
+                     const std::set<uint32_t>& setters, const std::set<uint32_t>& next_volumes,
+                     const std::function<int64_t(int64_t)>& mapped)
+{
+    if (changed.size() != commands.size())
+    {
+        return false;
+    }
+
+    for (uint32_t item = 0; item < commands.size(); ++item)
+    {
+        Command expected = commands[item];
+        if (expected.kind == Kind::kNote && setters.contains(item))
+        {
+            expected.velocity = mapped(expected.velocity / kOne) * kOne;
+        }
+        else if (setters.contains(item))
+        {
+            expected.value.value = mapped(expected.value.value / kOne) * kOne;
+        }
+        if (next_volumes.contains(item))
+        {
+            expected.velocity = mapped(expected.velocity / kOne) * kOne;
+        }
+        Command actual = changed[item];
+        actual.encoding = expected.encoding;
+        actual.bytes = expected.bytes;
+        if (actual != expected)
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// The new velocity of each old one that the notes of `song` hold where the volume edit of track `edited` reaches them,
+// with `mapped` of each old volume, by the driver's `revision`.
+std::map<uint32_t, uint32_t> NewVelocities(const Sequence& song, int edited, agblib::konami::Revision revision,
+                                           const std::function<int64_t(int64_t)>& mapped)
+{
+    const bool sample_note = !agblib::konami::IsPsgTrack(edited);
+    std::map<uint32_t, uint32_t> velocities;
+    for (const Track& other : song.tracks)
+    {
+        for (const hokuto::song::Note& note : other.notes)
+        {
+            if (VolumeReaches(note, other.number, edited, revision))
+            {
+                const int volume = hokuto::song::KonamiVolumeOf(note.velocity, revision, sample_note);
+                velocities[note.velocity] = static_cast<uint32_t>(
+                    hokuto::song::KonamiVelocityOf(static_cast<int>(mapped(volume)), revision, sample_note));
+            }
+        }
+    }
+
+    return velocities;
+}
+
 // The edited file and the plan of the volume edit of a chosen track of sequence `sequence`, played by `song`, in
 // `edited`, the file after the edits so far. `file` is the file before the edits, and `revision` and `console` its
 // driver's revision and console. Returns nothing, and counts the refusal, when the edit is refused. Returns nothing
@@ -564,50 +627,16 @@ std::optional<std::pair<hokuto::edit::Edited, VolumePlan>> PlanVolume(const std:
         return std::nullopt;
     }
 
-    // Each command contains its new value. Only the track before it can change besides. A delay can take other bytes.
-    const std::vector<Command>& changed = result.file.sequences[sequence]->items;
-    bool same_items = changed.size() == commands.items.size();
-    for (uint32_t item = 0; same_items && item < commands.items.size(); ++item)
-    {
-        Command expected = commands.items[item];
-        if (expected.kind == Kind::kNote && setters.contains(item))
-        {
-            expected.velocity = mapped(expected.velocity / kOne) * kOne;
-        }
-        else if (setters.contains(item))
-        {
-            expected.value.value = mapped(expected.value.value / kOne) * kOne;
-        }
-        if (next_volumes.contains(item))
-        {
-            expected.velocity = mapped(expected.velocity / kOne) * kOne;
-        }
-        Command actual = changed[item];
-        actual.encoding = expected.encoding;
-        actual.bytes = expected.bytes;
-        same_items = actual == expected;
-    }
-    if (!same_items)
+    // Each command contains its new value. Only the track before it can change besides.
+    if (!HoldsNewVolumes(commands.items, result.file.sequences[sequence]->items, setters, next_volumes, mapped))
     {
         std::printf("%s: sequence %u: the volume edit of track %d isn't in the commands\n", name.c_str(), sequence,
                     track->number);
         ++totals.problems;
     }
 
-    const bool sample_note = !agblib::konami::IsPsgTrack(track->number);
-    VolumePlan plan{.track = track->number, .lower = to < from, .velocities = {}};
-    for (const Track& other : song.tracks)
-    {
-        for (const hokuto::song::Note& note : other.notes)
-        {
-            if (VolumeReaches(note, other.number, track->number, revision))
-            {
-                const int volume = hokuto::song::KonamiVolumeOf(note.velocity, revision, sample_note);
-                plan.velocities[note.velocity] = static_cast<uint32_t>(
-                    hokuto::song::KonamiVelocityOf(static_cast<int>(mapped(volume)), revision, sample_note));
-            }
-        }
-    }
+    VolumePlan plan{
+        .track = track->number, .lower = to < from, .velocities = NewVelocities(song, track->number, revision, mapped)};
 
     return std::pair(std::move(result), std::move(plan));
 }
@@ -844,6 +873,58 @@ void VolumeRound(const Rounds& rounds, Totals& totals)
     CheckReaches(name, archive, *after, sequences, reads, reached, Mix::kVolume, "volume", totals);
 }
 
+// Checks sound `sound` of `after`, the export after the pan edits, against `before`, its read before them. Track
+// `number` has to show the pan `to`, within `step`, and the other tracks have to play as before.
+void CheckPanSound(const std::string& name, const CheckedArchive& archive, const CheckedArchive& after, uint32_t sound,
+                   const Sequence& before, int number, int to, int step, Totals& totals)
+{
+    const Sequence read = after.Read(sound);
+    const uint32_t end = EndOf(before, read, totals);
+    const Track* track = TrackNumbered(read, number);
+    const Track* old = TrackNumbered(before, number);
+    if (track == nullptr || old == nullptr)
+    {
+        std::printf("%s: %s: track %d is missing after the pan edit\n", name.c_str(), archive.NameOf(sound).c_str(),
+                    number);
+        ++totals.problems;
+        return;
+    }
+
+    // In the revisions whose records hold a pan, an edited PSG track's shown pan counts apart.
+    const int shown = hokuto::song::MixAt(*track, Mix::kPan, old->notes.front().start);
+    const bool psg_decides = agblib::konami::RecordHasPan(archive.Konami()->info.revision);
+    const bool off = std::abs(shown - to) > step;
+    if (off && psg_decides && agblib::konami::IsPsgTrack(number))
+    {
+        ++totals.psg_pans;
+    }
+    else if (off)
+    {
+        std::printf("%s: %s: track %d shows a pan of %d after the edit to %d\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), number, shown, to);
+        ++totals.problems;
+    }
+
+    bool psg = false;
+    for (const Track& other : before.tracks)
+    {
+        if (NotesOf(before, other.number, end) == NotesOf(read, other.number, end))
+        {
+            continue;
+        }
+        if (psg_decides && agblib::konami::IsPsgTrack(other.number))
+        {
+            psg = true;
+            continue;
+        }
+
+        std::printf("%s: %s: track %d plays otherwise after the pan edit of track %d\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), other.number, number);
+        ++totals.problems;
+    }
+    totals.psg_apart += psg ? 1 : 0;
+}
+
 // The round of the track's pan.
 void PanRound(const Rounds& rounds, Totals& totals)
 {
@@ -913,52 +994,7 @@ void PanRound(const Rounds& rounds, Totals& totals)
     for (const auto& [sequence, sound] : sounds)
     {
         const auto& [number, to] = plans.at(sequence);
-        const Sequence& before = reads.at(sound);
-        const Sequence read = after->Read(sound);
-        const uint32_t end = EndOf(before, read, totals);
-        const Track* track = TrackNumbered(read, number);
-        const Track* old = TrackNumbered(before, number);
-        if (track == nullptr || old == nullptr)
-        {
-            std::printf("%s: %s: track %d is missing after the pan edit\n", name.c_str(), archive.NameOf(sound).c_str(),
-                        number);
-            ++totals.problems;
-            continue;
-        }
-
-        // In the revisions whose records hold a pan, an edited PSG track's shown pan counts apart.
-        const int shown = hokuto::song::MixAt(*track, Mix::kPan, old->notes.front().start);
-        const bool psg_decides = agblib::konami::RecordHasPan(revision);
-        const bool off = std::abs(shown - to) > step;
-        if (off && psg_decides && agblib::konami::IsPsgTrack(number))
-        {
-            ++totals.psg_pans;
-        }
-        else if (off)
-        {
-            std::printf("%s: %s: track %d shows a pan of %d after the edit to %d\n", name.c_str(),
-                        archive.NameOf(sound).c_str(), number, shown, to);
-            ++totals.problems;
-        }
-
-        bool psg = false;
-        for (const Track& other : before.tracks)
-        {
-            if (NotesOf(before, other.number, end) == NotesOf(read, other.number, end))
-            {
-                continue;
-            }
-            if (psg_decides && agblib::konami::IsPsgTrack(other.number))
-            {
-                psg = true;
-                continue;
-            }
-
-            std::printf("%s: %s: track %d plays otherwise after the pan edit of track %d\n", name.c_str(),
-                        archive.NameOf(sound).c_str(), other.number, number);
-            ++totals.problems;
-        }
-        totals.psg_apart += psg ? 1 : 0;
+        CheckPanSound(name, archive, *after, sound, reads.at(sound), number, to, step, totals);
     }
     CheckReaches(name, archive, *after, sequences, reads, reached, Mix::kPan, "pan", totals);
 }
@@ -1000,6 +1036,99 @@ void SendsRound(const Rounds& rounds, Totals& totals)
     }
 }
 
+// The program that the instrument edit gives track `number` when its first note plays `from`: the next after `from` of
+// the programs that the track can play, or else the first of them. A PSG track plays the programs of its kind of
+// channel, and any other track `samples`. Nothing where the track can play no other program.
+std::optional<int> NextProgram(const CheckedArchive& archive, int number, int from, const std::vector<int>& samples)
+{
+    std::vector<int> choices;
+    if (agblib::konami::IsPsgTrack(number))
+    {
+        for (const uint32_t program : hokuto::song::KonamiTrackPrograms(*archive.Konami(), number))
+        {
+            choices.push_back(static_cast<int>(program));
+        }
+    }
+    else
+    {
+        choices = samples;
+    }
+    if (choices.empty() || (choices.size() == 1 && choices[0] == from))
+    {
+        return std::nullopt;
+    }
+
+    const auto next = std::ranges::upper_bound(choices, from);
+
+    return next != choices.end() ? *next : choices.front();
+}
+
+// Checks sound `sound` of `after`, the export after the instrument edits, against `before`, its read before them. Track
+// `number`'s notes that played program `from` have to play `to`, and the other tracks have to play as before.
+void CheckInstrumentSound(const std::string& name, const CheckedArchive& archive, const CheckedArchive& after,
+                          uint32_t sound, const Sequence& before, int number, uint32_t from, uint32_t to,
+                          Totals& totals)
+{
+    const Sequence read = after.Read(sound);
+    const uint32_t end = EndOf(before, read, totals);
+    const bool psg_decides = agblib::konami::RecordHasPan(archive.Konami()->info.revision);
+    bool psg = false;
+    for (const Track& track : before.tracks)
+    {
+        if (track.number == number || NotesOf(before, track.number, end) == NotesOf(read, track.number, end))
+        {
+            continue;
+        }
+
+        if (psg_decides && agblib::konami::IsPsgTrack(track.number))
+        {
+            psg = true;
+            continue;
+        }
+
+        std::printf("%s: %s: track %d plays otherwise after the instrument edit of track %d\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), track.number, number);
+        ++totals.problems;
+    }
+    totals.psg_instruments += psg ? 1 : 0;
+
+    // Each note takes the new program at its tick, or keeps the program that it played.
+    const Track* now = TrackNumbered(read, number);
+    const Track* was = TrackNumbered(before, number);
+    if (now == nullptr || was == nullptr)
+    {
+        std::printf("%s: %s: track %d is missing after the instrument edit\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), number);
+        ++totals.problems;
+        return;
+    }
+
+    std::map<uint32_t, uint32_t> programs;
+    for (const hokuto::song::Note& note : now->notes)
+    {
+        programs.emplace(note.start, note.program);
+    }
+    std::size_t wrong = 0;
+    for (const hokuto::song::Note& note : was->notes)
+    {
+        if (note.start >= end)
+        {
+            continue;
+        }
+
+        const auto found = programs.find(note.start);
+        const uint32_t expected = note.program == from ? to : note.program;
+        wrong += found == programs.end() || found->second != expected ? 1 : 0;
+        ++totals.instrument_notes;
+    }
+    if (wrong != 0)
+    {
+        std::printf("%s: %s: %zu notes of track %d don't play their new instrument, of %u for %u\n", name.c_str(),
+                    archive.NameOf(sound).c_str(), wrong, number, to, from);
+        ++totals.problems;
+    }
+}
+
 // The round of the instruments.
 void InstrumentRound(const Rounds& rounds, Totals& totals)
 {
@@ -1019,24 +1148,12 @@ void InstrumentRound(const Rounds& rounds, Totals& totals)
         }
 
         const auto from = static_cast<int>(track->notes.front().program);
-        std::vector<int> choices;
-        if (agblib::konami::IsPsgTrack(track->number))
-        {
-            for (const uint32_t program : hokuto::song::KonamiTrackPrograms(*archive.Konami(), track->number))
-            {
-                choices.push_back(static_cast<int>(program));
-            }
-        }
-        else
-        {
-            choices = samples;
-        }
-        const auto next = std::ranges::upper_bound(choices, from);
-        if (choices.empty() || (choices.size() == 1 && choices[0] == from))
+        const std::optional<int> next = NextProgram(archive, track->number, from, samples);
+        if (!next)
         {
             continue;
         }
-        const int to = next != choices.end() ? *next : choices.front();
+        const int to = *next;
 
         try
         {
@@ -1074,65 +1191,7 @@ void InstrumentRound(const Rounds& rounds, Totals& totals)
     for (const auto& [sequence, sound] : sounds)
     {
         const auto& [number, from, to] = plans.at(sequence);
-        const Sequence& before = reads.at(sound);
-        const Sequence read = after->Read(sound);
-        const uint32_t end = EndOf(before, read, totals);
-        const bool psg_decides = agblib::konami::RecordHasPan(archive.Konami()->info.revision);
-        bool psg = false;
-        for (const Track& track : before.tracks)
-        {
-            if (track.number == number || NotesOf(before, track.number, end) == NotesOf(read, track.number, end))
-            {
-                continue;
-            }
-
-            if (psg_decides && agblib::konami::IsPsgTrack(track.number))
-            {
-                psg = true;
-                continue;
-            }
-
-            std::printf("%s: %s: track %d plays otherwise after the instrument edit of track %d\n", name.c_str(),
-                        archive.NameOf(sound).c_str(), track.number, number);
-            ++totals.problems;
-        }
-        totals.psg_instruments += psg ? 1 : 0;
-
-        // Each note takes the new program at its tick, or keeps the program that it played.
-        const Track* now = TrackNumbered(read, number);
-        const Track* was = TrackNumbered(before, number);
-        if (now == nullptr || was == nullptr)
-        {
-            std::printf("%s: %s: track %d is missing after the instrument edit\n", name.c_str(),
-                        archive.NameOf(sound).c_str(), number);
-            ++totals.problems;
-            continue;
-        }
-
-        std::map<uint32_t, uint32_t> programs;
-        for (const hokuto::song::Note& note : now->notes)
-        {
-            programs.emplace(note.start, note.program);
-        }
-        std::size_t wrong = 0;
-        for (const hokuto::song::Note& note : was->notes)
-        {
-            if (note.start >= end)
-            {
-                continue;
-            }
-
-            const auto found = programs.find(note.start);
-            const uint32_t expected = note.program == from ? to : note.program;
-            wrong += found == programs.end() || found->second != expected ? 1 : 0;
-            ++totals.instrument_notes;
-        }
-        if (wrong != 0)
-        {
-            std::printf("%s: %s: %zu notes of track %d don't play their new instrument, of %u for %u\n", name.c_str(),
-                        archive.NameOf(sound).c_str(), wrong, number, to, from);
-            ++totals.problems;
-        }
+        CheckInstrumentSound(name, archive, *after, sound, reads.at(sound), number, from, to, totals);
     }
     CheckReaches(name, archive, *after, sequences, reads, reached, std::nullopt, "instrument", totals);
 }

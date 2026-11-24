@@ -460,7 +460,8 @@ void TestInstrument()
                                            edit::Program{0, cart::kLooped}, edit::Program{0, cart::kHeld})
                           .file;
     XSFLIB_CHECK(format::ExportArchive(held) == expected);
-    for (const song::Note& note : TrackOf(ReadOf(held, 0), 0)->notes)
+    const Sequence held0 = ReadOf(held, 0);
+    for (const song::Note& note : TrackOf(held0, 0)->notes)
     {
         XSFLIB_CHECK(note.program == cart::kHeld);
     }

@@ -13,6 +13,7 @@
 #include "ntdlib/rvl/snd/rsar_options.h"
 
 #include "edit/bytecode.h"
+#include "edit/dse_files.h"
 #include "edit/effects.h"
 #include "edit/midi_imports.h"
 #include "edit/midi_songs.h"
@@ -96,12 +97,6 @@ std::optional<std::vector<std::optional<uint32_t>>> StartFieldsOf(const format::
     }
 }
 
-ntdlib::dse::Build DseBuildOfFile(const format::File& document)
-{
-    return document.native && document.native->cartridge ? song::DseBuildOf(*document.native->cartridge->image)
-                                                         : ntdlib::dse::Build::kLater;
-}
-
 ntdlib::ntr::snd::Build DsBuildOfFile(const format::File& document)
 {
     if (document.native && document.native->cartridge)
@@ -159,7 +154,7 @@ std::shared_ptr<const song::DsArchive> DsArchiveOf(const format::File& version, 
 
 std::shared_ptr<const song::DseSet> DseSetOf(const format::File& version)
 {
-    return song::LoadDseSet(format::ExportArchive(version), DseBuildOfFile(version));
+    return edit::DseSetOfFile(version);
 }
 
 std::shared_ptr<const ntdlib::rsar::SoundArchive> WiiArchiveOf(const format::File& version, const std::string& name)

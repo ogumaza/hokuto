@@ -472,14 +472,14 @@ void TestReadCalls()
 // sets nothing for certain. Variable 9 counts too. One of the two paths to its comparison sets it, and the other
 // doesn't. A wait takes variable 6's exact value, and the addition to variable 4 works from variable 4's value. Neither
 // has choices. The sound sets variable 9. The variable has choices all the same: only a comparison with a fixed value
-// reads it. The sequence takes the branch that its starting values choose. A value for a variable past the game's 32 is
+// reads it. The sequence takes the branch that its starting values choose. A value for a variable past the game's 48 is
 // left out.
 void TestReadVariables()
 {
     const std::shared_ptr<const sar::SoundArchive> archive = OpenVariablesArchive();
 
     const Sequence unset = ReadSequence(*archive, kVariablesSound);
-    const Sequence chosen = ReadSequence(*archive, kVariablesSound, {{0, 1}, {40, 7}});
+    const Sequence chosen = ReadSequence(*archive, kVariablesSound, {{0, 1}, {48, 7}});
 
     const std::vector<Variable> kExpected = {
         {0, {-1, 1}, false}, {2, {-1, 0, 2, 4}, false}, {3, {-1, 3, 5}, false}, {4, {}, true},
@@ -607,7 +607,7 @@ void TestReadChanges()
     const ModelRun model = RunModel(*archive, kChangesSound, 410);
 
     const Sequence unchanged = ReadSequence(*archive, kChangesSound);
-    const Sequence changed = ReadSequence(*archive, kChangesSound, {}, {{1012, 0, 1}, {500, 40, 7}});
+    const Sequence changed = ReadSequence(*archive, kChangesSound, {}, {{1012, 0, 1}, {500, 48, 7}});
     const Sequence twice = ReadSequence(*archive, kChangesSound, {}, {{2015, 0, 1}, {760, 0, 2}});
 
     SEQLIB_REQUIRE(model.after[202] == 97 && model.after[203] == 98);

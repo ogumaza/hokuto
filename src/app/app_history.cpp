@@ -19,6 +19,7 @@
 #include "edit/timelines.h"
 #include "format/drivers.h"
 #include "format/file.h"
+#include "format/kinds.h"
 #include "song/archive.h"
 
 namespace hokuto::app
@@ -179,12 +180,24 @@ void App::Do(std::string name, std::string details, format::File file, std::opti
     {
         list_before = KeySelection{list_sequence_, list_editor_track_, list_editor_.selected};
     }
-    history_rows_.resize(history_->Done());
-    history_rows_.push_back({name, details, TimeOfDay(now)});
-    action_selections_.resize(history_->Done());
+    // In a file with more than one archive, the history refuses an edit that changes bytes of another archive's song
+    // (format::WithArchive). The rows and the selections then stay as they are.
+    const std::size_t done = history_->Done();
+    try
+    {
+        history_->Do({name, details, now, std::make_shared<const format::File>(std::move(file))});
+    }
+    catch (const std::invalid_argument& error)
+    {
+        ShowMessage("Can't make this edit. " + format::AsSentence(error.what()));
+        return;
+    }
+
+    history_rows_.resize(done);
+    history_rows_.push_back({std::move(name), std::move(details), TimeOfDay(now)});
+    action_selections_.resize(done);
     action_selections_.push_back({std::move(before), after, std::move(list_before), list_selection_});
     key_selection_ = std::move(after);
-    history_->Do({std::move(name), std::move(details), now, std::make_shared<const format::File>(std::move(file))});
     FollowVersion();
 }
 
@@ -229,7 +242,16 @@ void App::MoveInHistory(const std::function<void(edit::History&)>& move)
 
     const std::size_t done = history_->Done();
     const std::shared_ptr<const format::File> left = history_->Current();
+    const std::size_t front = history_->Front();
     move(*history_);
+
+    // In a file with more than one archive, a move that changed another archive brings that archive to the front.
+    if (history_->Front() != front)
+    {
+        ShowFront(front);
+        return;
+    }
+
     FollowHistory(done, *left);
 }
 

@@ -35,8 +35,10 @@
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
+#include "cli/hok_archives.h"
 #include "cli/hok_parts.h"
 #include "edit/ds_files.h"
+#include "edit/dse_files.h"
 #include "edit/lengths.h"
 #include "edit/other_console.h"
 #include "edit/timelines.h"
@@ -47,6 +49,7 @@
 #include "format/file.h"
 #include "format/kinds.h"
 #include "format/model.h"
+#include "format/project.h"
 #include "format/text.h"
 #include "song/aac.h"
 #include "song/archive.h"
@@ -170,7 +173,7 @@ constexpr const char* kUsage =
     "                                    --sound <name or number>  Render this sound. Repeat it for more sounds.\n"
     "                                                              Without it, every sequence sound renders.\n"
     "                                    --loops <n>      Times the loop plays before the fade (default 2).\n"
-    "                                    --fade <s>       Length of the fade in seconds (default 10).\n"
+    "                                    --fade <s>       Length of the fade in seconds (default 7).\n"
     "                                    --tail <s>       Longest release tail of a sound that ends, in seconds\n"
     "                                                     (default 10). Tails that sound on fade over the last 1 s.\n"
     "                                    --seamless       Render the loop's second pass without a fade, and mark it\n"
@@ -188,6 +191,15 @@ constexpr const char* kUsage =
     "                                                     Stems without or with the effects on the FX channels\n"
     "                                                     (default effects).\n"
     "                                    --threads <n>    Sounds to render at once (default 1).\n"
+    "  hok --driver <engine> <command> ...\n"
+    "                                    A GBA ROM can contain two drivers, such as MusicPlayer2000 beside Nintendo\n"
+    "                                    R&D2's driver, and its .hok file an archive for each. A command that takes a\n"
+    "                                    sound takes the archive of this engine: gba (MusicPlayer2000), konami, rd2,\n"
+    "                                    brownie, ubimilan, rare, quintet or krawall. Without --driver, it takes the\n"
+    "                                    first archive. Without --driver, hok items, wav, sf2, sfz, midi and mixdown\n"
+    "                                    write a folder for each archive, named after its engine. hok midi and\n"
+    "                                    mixdown with --sound take the first archive. hok import, export, text and\n"
+    "                                    binary take every archive, and refuse --driver.\n"
     "  hok --version                     Print the version.\n"
     "  hok --help                        Print this help. -h and help do the same.\n"
     "Any .hok file that hok reads can be in the text form or the binary form.\n";
@@ -310,16 +322,78 @@ void PrintDsArchivePlace(std::span<const uint8_t> image, const hokuto::format::F
                 shared ? (" at offset " + std::to_string(taken->offset)).c_str() : "");
 }
 
-hokuto::format::File ReadHok(const std::string& path)
+// Prints the notes for the DSE sounds of `file`, imported from the cartridge image `image`, to stderr: the guesses that
+// the playback makes (song::DseOpenNotes). The app shows the same notes when it imports the image. Prints nothing for
+// another file.
+void PrintDseNotes(std::span<const uint8_t> image, const hokuto::format::File& file)
+{
+    if (!file.native || file.native->engine != hokuto::format::Engine::kDse || !hokuto::format::IsDsImage(image))
+    {
+        return;
+    }
+
+    const auto played = hokuto::edit::DseSetOfFile(file);
+    for (const std::string& note : hokuto::song::DseOpenNotes(image, *played))
+    {
+        std::fprintf(stderr, "note: %s\n", note.c_str());
+    }
+}
+
+// The engine of the archive that a command takes from an input of more than one archive (--driver), or nothing for the
+// first archive.
+using Driver = std::optional<hokuto::format::Engine>;
+
+// The archives of the .hok file at `path`.
+hokuto::format::Project ReadHokProject(const std::string& path)
 {
     try
     {
-        return hokuto::format::ReadEitherForm(ReadInput(path));
+        // A file of version 1 keeps no starts. Its archive's SHA-1 finds them. Such a file has one archive.
+        const std::vector<uint8_t> bytes = ReadInput(path);
+        hokuto::format::Project project = hokuto::format::ReadProject(bytes);
+        if (project.archives.size() == 1)
+        {
+            project.archives.front() = hokuto::format::WithOlderStarts(std::move(project.archives.front()), bytes);
+            if (const std::optional<std::string> note =
+                    hokuto::format::OlderDseLevelsNote(project.archives.front(), bytes))
+            {
+                std::fprintf(stderr, "note: %s\n", note->c_str());
+            }
+        }
+
+        return project;
     }
     catch (const xsflib::FormatError& error)
     {
         throw std::runtime_error(path + ": " + error.what());
     }
+}
+
+// The index of the archive of `project` that a command takes: the archive of `driver`, or else the first.
+std::size_t ChosenArchive(const hokuto::format::Project& project, const std::string& path, Driver driver)
+{
+    if (!driver)
+    {
+        return 0;
+    }
+
+    for (std::size_t a = 0; a < project.archives.size(); ++a)
+    {
+        if (project.archives[a].engine == *driver)
+        {
+            return a;
+        }
+    }
+
+    throw std::runtime_error(path + " contains no archive of the engine " +
+                             std::string(hokuto::format::NameOf(*driver)) + ".");
+}
+
+// The archive of the .hok file at `path` that a command takes (ChosenArchive).
+hokuto::format::File ReadHok(const std::string& path, Driver driver)
+{
+    hokuto::format::Project project = ReadHokProject(path);
+    return std::move(project.archives[ChosenArchive(project, path, driver)]);
 }
 
 // Writes the streams of `file` that the game lacks beside the archive at `path`. `archive` holds the archive's bytes,
@@ -443,9 +517,7 @@ hokuto::song::Played GameOfHok(const hokuto::format::File& hok)
         return hokuto::song::LoadDriverRom(hok.engine, hokuto::format::ExportArchive(hok));
 
     case hokuto::format::Family::kDse:
-        return hokuto::song::LoadDseSet(hokuto::format::ExportArchive(hok),
-                                        hok.native->cartridge ? hokuto::song::DseBuildOf(*hok.native->cartridge->image)
-                                                              : ntdlib::dse::Build::kLater);
+        return hokuto::edit::DseSetOfFile(hok);
 
     case hokuto::format::Family::kNitroComposer:
         return hokuto::song::LoadDsArchive(hokuto::format::ExportArchive(hok),
@@ -462,11 +534,18 @@ hokuto::song::Played GameOfHok(const hokuto::format::File& hok)
     return {};
 }
 
-// The archive of the .hok file at `path`, whose file name is `name`.
-ArchiveInput InputOfHok(const std::string& path, const std::string& name)
+// The archive of the .hok file at `path` that `driver` chooses. The file's name is `name`.
+ArchiveInput InputOfHok(const std::string& path, const std::string& name, Driver driver)
 {
     ArchiveInput input;
-    const auto read = std::make_shared<const hokuto::format::File>(ReadHok(path));
+    hokuto::format::Project project = ReadHokProject(path);
+    const std::size_t chosen = ChosenArchive(project, path, driver);
+    if (project.archives.size() > 1)
+    {
+        input.driver = hokuto::format::DriverTitle(project.archives[chosen].engine);
+    }
+
+    const auto read = std::make_shared<const hokuto::format::File>(std::move(project.archives[chosen]));
     const hokuto::format::File& hok = *read;
     if (!hok.native)
     {
@@ -474,6 +553,7 @@ ArchiveInput InputOfHok(const std::string& path, const std::string& name)
     }
 
     input.hok = read;
+    input.starts = hok.starts;
     input.played = GameOfHok(hok);
     if (input.played)
     {
@@ -505,8 +585,9 @@ ArchiveInput InputOfHok(const std::string& path, const std::string& name)
 // of the Wii takes the game's build from the main.dol of the extracted disc that holds it. An import takes the build
 // the same way. A .hok file of the Wii keeps the build. A GBA ROM, or a .hok file of the GBA, reads as the ROM. A DS
 // image reads as the sound archive that an import extracts from it, played by the build of the driver in its ARM7
-// binary. A .hok file of the DS keeps the image when it came from one.
-ArchiveInput ReadArchive(const std::string& path)
+// binary. A .hok file of the DS keeps the image when it came from one. An input of more than one archive reads as the
+// archive that `driver` chooses (ChosenArchive).
+ArchiveInput ReadArchive(const std::string& path, Driver driver)
 {
     std::vector<uint8_t> bytes = ReadInput(path);
     const std::filesystem::path file = xsflib::PathFromUtf8(path);
@@ -524,13 +605,18 @@ ArchiveInput ReadArchive(const std::string& path)
         break;
 
     case InputKind::kGbaRom:
-        if (const hokuto::format::Driver* driver = hokuto::format::DriverOfRom(bytes))
         {
-            input.played = hokuto::song::LoadDriverRom(driver->Facts().engine, std::move(bytes));
-        }
-        else
-        {
-            input.played = hokuto::song::LoadGbaRom(std::move(bytes));
+            // The archive that the import gives, of the engine that --driver names or else the first.
+            const hokuto::format::Project project = hokuto::format::ImportGbaArchives(bytes).project;
+            const hokuto::format::Engine engine = project.archives[ChosenArchive(project, path, driver)].engine;
+            if (project.archives.size() > 1)
+            {
+                input.driver = hokuto::format::DriverTitle(engine);
+            }
+
+            input.played = engine == hokuto::format::Engine::kGba
+                               ? hokuto::song::Played(hokuto::song::LoadGbaRom(std::move(bytes)))
+                               : hokuto::song::Played(hokuto::song::LoadDriverRom(engine, std::move(bytes)));
         }
         break;
 
@@ -553,13 +639,14 @@ ArchiveInput ReadArchive(const std::string& path)
         break;
 
     case InputKind::kHokuto:
-        return InputOfHok(path, name);
+        return InputOfHok(path, name, driver);
 
     // An input of no other kind reads as a sound archive of the 3DS, the Wii U or the Switch, or fails with the reason.
     case InputKind::kLaterArchive:
     case InputKind::kMidi:
         input.played = hokuto::song::LoadArchive(std::move(bytes), name, file);
         input.streams = hokuto::song::ReadStreams(*input.played.Sar(), file);
+        input.starts = hokuto::format::GameStarts(input.played.Sar()->Bytes(), *input.played.Sar());
         break;
     }
 
@@ -670,9 +757,9 @@ std::size_t SoundIndex(const hokuto::format::File& file, const std::string& inpu
 // with each sequence in the mode that the program finds for it, and laid out as a save lays it out. The new file keeps
 // the mode of the sound's sequence.
 void WriteOtherConsole(const std::string& input, const std::string& sound, const std::string& output,
-                       const std::string& console, hokuto::edit::MonoWaves mono)
+                       const std::string& console, hokuto::edit::MonoWaves mono, Driver driver)
 {
-    hokuto::format::File file = ReadHok(input);
+    hokuto::format::File file = ReadHok(input, driver);
     // The Wii's archive and a later console's have tables. A ROM or a set of sounds doesn't.
     const bool tables =
         file.native && (hokuto::format::FamilyOf(*file.native) == hokuto::format::Family::kNintendoWare ||
@@ -691,8 +778,8 @@ void WriteOtherConsole(const std::string& input, const std::string& sound, const
     const ntdlib::sar::Flavor other = file.native->engine == hokuto::format::Engine::kWii || !tables
                                           ? ntdlib::sar::Flavor::kCafe
                                           : hokuto::song::OtherConsole(FlavorOf(*file.native));
-    const bool to_wii = console == hokuto::format::kWiiArchiveName;
-    const bool to_ds = console == hokuto::format::kDsArchiveName;
+    const bool to_wii = console == hokuto::format::FactsOf(hokuto::format::Engine::kWii).name;
+    const bool to_ds = console == hokuto::format::FactsOf(hokuto::format::Engine::kDs).name;
     const std::optional<ntdlib::sar::Flavor> to =
         console.empty() ? std::optional(other) : hokuto::format::FlavorNamed(console);
     if (!to && !to_wii && !to_ds)
@@ -714,8 +801,8 @@ void WriteOtherConsole(const std::string& input, const std::string& sound, const
 }
 
 // Runs hok other with `arguments`: the input, the output and the sound, then the console and the choice of mono or
-// stereo waves. Returns 2 for arguments that don't fit, or else 0.
-int RunOther(const std::vector<std::string>& arguments)
+// stereo waves. `driver` chooses the archive of the input. Returns 2 for arguments that don't fit, or else 0.
+int RunOther(const std::vector<std::string>& arguments, Driver driver)
 {
     // The console, then the choice of mono or stereo waves, each optional.
     std::string console;
@@ -737,7 +824,7 @@ int RunOther(const std::vector<std::string>& arguments)
         }
     }
 
-    WriteOtherConsole(arguments[2], arguments[3], arguments[4], console, mono);
+    WriteOtherConsole(arguments[2], arguments[3], arguments[4], console, mono, driver);
     return 0;
 }
 
@@ -766,6 +853,29 @@ bool TakeThreads(std::vector<std::string>& arguments, std::size_t& threads)
     return true;
 }
 
+// Prints the archives of an import of a GBA ROM with more than one driver, and the drivers that the import left out.
+void PrintArchives(const hokuto::format::ImportedArchives& archives)
+{
+    for (const std::string& note : archives.notes)
+    {
+        std::fprintf(stderr, "note: %s\n", note.c_str());
+    }
+
+    if (archives.project.archives.size() < 2)
+    {
+        return;
+    }
+
+    std::string list;
+    for (const hokuto::format::File& archive : archives.project.archives)
+    {
+        list += (list.empty() ? "" : ", ") + std::string(hokuto::format::NameOf(archive.engine)) + " (" +
+                Counted(archive.sequences.size(), "sequence", "sequences") + ")";
+    }
+
+    std::printf("The ROM contains %zu archives: %s.\n", archives.project.archives.size(), list.c_str());
+}
+
 // Imports the archive, ROM or image `input` into the .hok file `output`. `dol` names a Wii game's main.dol, and `sdat`
 // the archive of a DS image.
 void RunImport(const std::string& input, const std::string& output, const std::string& dol, const std::string& sdat)
@@ -790,6 +900,7 @@ void RunImport(const std::string& input, const std::string& output, const std::s
     }
 
     hokuto::format::File file;
+    hokuto::format::ImportedArchives archives;
     try
     {
         switch (kind)
@@ -806,10 +917,7 @@ void RunImport(const std::string& input, const std::string& output, const std::s
             break;
 
         case InputKind::kGbaRom:
-            {
-                const hokuto::format::Driver* driver = hokuto::format::DriverOfRom(bytes);
-                file = driver ? driver->Import(bytes) : hokuto::format::ImportGbaRom(bytes);
-            }
+            archives = hokuto::format::ImportGbaArchives(bytes);
             break;
 
         case InputKind::kWiiArchive:
@@ -840,8 +948,17 @@ void RunImport(const std::string& input, const std::string& output, const std::s
         throw std::runtime_error("Can't import " + input + ". " + hokuto::format::AsSentence(error.what()));
     }
 
+    // A GBA ROM gives an archive for each driver whose songs it holds.
+    if (kind == InputKind::kGbaRom)
+    {
+        WriteOutput(output, hokuto::format::WriteProject(archives.project));
+        PrintArchives(archives);
+        return;
+    }
+
     WriteOutput(output, hokuto::format::Write(file));
     PrintDsArchivePlace(bytes, file);
+    PrintDseNotes(bytes, file);
 }
 
 // Exports the .hok file `input` to the archive, ROM or image `output`. `filler` lets a GBA ROM's songs move into runs
@@ -851,8 +968,29 @@ void RunImport(const std::string& input, const std::string& output, const std::s
 void RunExport(const std::string& input, const std::string& output, bool filler, const std::string& dsi_key,
                const std::string& game)
 {
+    // A ROM with more than one driver joins each archive in turn. It takes no filler runs.
+    const hokuto::format::Project project = ReadHokProject(input);
+    if (project.archives.size() > 1)
+    {
+        if (filler)
+        {
+            throw std::runtime_error("--filler doesn't apply to a ROM with more than one driver.");
+        }
+
+        try
+        {
+            WriteOutput(output, hokuto::format::ExportProject(project));
+        }
+        catch (const std::invalid_argument& error)
+        {
+            throw std::runtime_error("Can't export the ROM. " + hokuto::format::AsSentence(error.what()));
+        }
+
+        return;
+    }
+
     // A GBA ROM without room for the songs that outgrow their places uses the file's choice, or --filler.
-    hokuto::format::File file = ReadHok(input);
+    hokuto::format::File file = project.archives.front();
     if (filler && (!file.native || (file.native->engine != hokuto::format::Engine::kGba && !file.native->driver)))
     {
         throw std::runtime_error("--filler works only with .hok files of GBA ROMs. " + input + " isn't one.");
@@ -933,15 +1071,21 @@ void RunExport(const std::string& input, const std::string& output, bool filler,
     WriteGroupFiles(file, archive, input, output, game);
 }
 
-// Writes the .hok file `input` in the model form to `output`.
-void RunModel(const std::string& input, const std::string& output)
+// Writes the .hok file `input` in the model form to `output`. `driver` chooses the archive.
+void RunModel(const std::string& input, const std::string& output, Driver driver)
 {
     // The model's refusal is a clause, such as "the archive is cut short, and a file in the model form requires the
     // whole archive".
+    if (ReadHokProject(input).archives.size() > 1)
+    {
+        throw std::runtime_error("Can't convert " + input +
+                                 " to the model form. A file with more than one archive keeps their native layouts.");
+    }
+
     hokuto::format::File file;
     try
     {
-        file = hokuto::format::InModelForm(ReadHok(input));
+        file = hokuto::format::InModelForm(ReadHok(input, driver));
     }
     catch (const xsflib::FormatError& error)
     {
@@ -953,12 +1097,14 @@ void RunModel(const std::string& input, const std::string& output)
 }
 
 // Measures the lengths of the sequence sounds of the .hok file `input` on `threads` threads, and writes the file with
-// them to `output`.
-void RunLengths(const std::string& input, const std::string& output, std::size_t threads)
+// them to `output`. `driver` chooses the archive.
+void RunLengths(const std::string& input, const std::string& output, std::size_t threads, Driver driver)
 {
     // The sounds play from the archive that the file builds, with the group files that it builds beside it. A sound
     // of the Wii plays on the model of the file's build of NW4R SND.
-    const hokuto::format::File file = ReadHok(input);
+    const hokuto::format::Project project = ReadHokProject(input);
+    const std::size_t index = ChosenArchive(project, input, driver);
+    const hokuto::format::File& file = project.archives[index];
     if (!file.native)
     {
         throw std::runtime_error(input + " contains no sound archive.");
@@ -993,17 +1139,17 @@ void RunLengths(const std::string& input, const std::string& output, std::size_t
         measured = hokuto::edit::WithLengths(file, *archive, threads);
     }
 
-    WriteOutput(output, hokuto::format::Write(*measured));
+    WriteOutput(output, hokuto::format::WriteProject(hokuto::format::WithArchive(project, index, *measured)));
     std::printf("Measured the lengths of %s.\n",
                 Counted(measured->lengths.size(), "sequence sound", "sequence sounds").c_str());
 }
 
 // Writes the items, the waves or the banks of `input` into the folder `output`, for `command` items, wav, sf2 or sfz.
-// Returns 1 when an item failed, or else 0.
-int RunItems(const std::string& command, const std::string& input, const std::string& output)
+// `driver` chooses the archive. Returns 1 when an item failed, or else 0.
+int RunItems(const std::string& command, const std::string& input, const std::string& output, Driver driver)
 {
     // The folder is made if it's missing. A failure leaves out the item, and the others go on.
-    const ArchiveInput archive = ReadArchive(input);
+    const ArchiveInput archive = ReadArchive(input, driver);
     if (archive.played.Gba() && command == "sfz")
     {
         throw std::runtime_error("hok sfz doesn't support GBA ROMs. Use hok sf2 to convert their voice groups.");
@@ -1067,6 +1213,7 @@ struct Options
     std::string dol;
     std::string sdat;
     std::size_t threads = hokuto::edit::MostLengthThreads();
+    Driver driver;
 };
 
 // Takes the options out of `arguments`. Returns false for an option with a wrong value. TakeThreads says why.
@@ -1105,6 +1252,54 @@ bool TakeOptions(std::vector<std::string>& arguments, Options& options)
     return true;
 }
 
+// The engines of the archives of the input at `path`: a .hok file or a GBA ROM. One engine or none for any other input.
+std::vector<hokuto::format::Engine> ArchiveEnginesOf(const std::string& path)
+{
+    const std::vector<uint8_t> bytes = ReadInput(path);
+    using hokuto::format::InputKind;
+    const std::optional<InputKind> kind = hokuto::format::FirstInputKind(bytes, hokuto::format::kInputOrder);
+    std::vector<hokuto::format::Engine> engines;
+    if (kind == InputKind::kHokuto || kind == InputKind::kGbaRom)
+    {
+        const hokuto::format::Project project =
+            kind == InputKind::kHokuto ? ReadHokProject(path) : hokuto::format::ImportGbaArchives(bytes).project;
+        for (const hokuto::format::File& archive : project.archives)
+        {
+            engines.push_back(archive.engine);
+        }
+    }
+
+    return engines;
+}
+
+// Runs `run` with `arguments` on the archives of the input `arguments[input]` that ArchiveRuns gives, with `driver`
+// and the choice of `takes_sounds`. A run of one archive among several writes into a folder named after its engine,
+// inside the folder `arguments[folder]`. `run` takes the arguments and the driver of the run. Returns the highest
+// exit code.
+template <typename Run>
+int RunEachArchive(std::vector<std::string> arguments, std::size_t input, std::size_t folder, Driver driver,
+                   bool takes_sounds, Run run)
+{
+    const std::vector<hokuto::format::Engine> engines =
+        driver || takes_sounds || input >= arguments.size() || folder >= arguments.size()
+            ? std::vector<hokuto::format::Engine>()
+            : ArchiveEnginesOf(arguments[input]);
+    int code = 0;
+    const std::filesystem::path base = folder < arguments.size() ? xsflib::PathFromUtf8(arguments[folder]) : "";
+    for (const hokuto::cli::ArchiveRun& each : hokuto::cli::ArchiveRuns(engines, driver, takes_sounds))
+    {
+        std::vector<std::string> these = arguments;
+        if (each.engine_folder)
+        {
+            const std::string engine(hokuto::format::NameOf(*each.driver));
+            these[folder] = xsflib::Utf8(base / xsflib::PathFromUtf8(engine));
+        }
+        code = std::max(code, run(these, each.driver));
+    }
+
+    return code;
+}
+
 // Runs `command` on `input`, writing to `output`. Returns the exit code.
 int RunCommand(const std::string& command, const std::string& input, const std::string& output, const Options& options)
 {
@@ -1118,24 +1313,28 @@ int RunCommand(const std::string& command, const std::string& input, const std::
     }
     else if (command == "text")
     {
-        const std::string text = hokuto::format::WriteText(ReadHok(input));
+        const std::string text = hokuto::format::WriteProjectText(ReadHokProject(input));
         WriteOutput(output, std::span(reinterpret_cast<const uint8_t*>(text.data()), text.size()));
     }
     else if (command == "binary")
     {
-        WriteOutput(output, hokuto::format::Write(ReadHok(input)));
+        WriteOutput(output, hokuto::format::WriteProject(ReadHokProject(input)));
     }
     else if (command == "model")
     {
-        RunModel(input, output);
+        RunModel(input, output, options.driver);
     }
     else if (command == "lengths")
     {
-        RunLengths(input, output, options.threads);
+        RunLengths(input, output, options.threads, options.driver);
     }
     else if (command == "items" || command == "wav" || command == "sf2" || command == "sfz")
     {
-        return RunItems(command, input, output);
+        const auto run = [](const std::vector<std::string>& each, Driver driver)
+        {
+            return RunItems(each[0], each[1], each[2], driver);
+        };
+        return RunEachArchive({command, input, output}, 1, 2, options.driver, false, run);
     }
     else
     {
@@ -1148,6 +1347,28 @@ int RunCommand(const std::string& command, const std::string& input, const std::
 
 int Run(std::vector<std::string> arguments)
 {
+    // --driver comes before the command.
+    Driver driver;
+    if (arguments.size() >= 3 && arguments[1] == "--driver")
+    {
+        driver = hokuto::format::EngineNamed(arguments[2]);
+        if (!driver)
+        {
+            std::fprintf(stderr, "There's no engine named %s.\n", arguments[2].c_str());
+            return 2;
+        }
+
+        arguments.erase(arguments.begin() + 1, arguments.begin() + 3);
+    }
+
+    // import, export, text and binary take every archive of a file.
+    constexpr std::array kEveryArchive = {"import", "export", "text", "binary"};
+    if (driver && arguments.size() >= 2 && std::ranges::find(kEveryArchive, arguments[1]) != kEveryArchive.end())
+    {
+        std::fprintf(stderr, "hok %s takes every archive. Leave out --driver.\n", arguments[1].c_str());
+        return 2;
+    }
+
     if (arguments.size() == 2 && arguments[1] == "--version")
     {
         std::printf("hok %s\n", HOKUTO_VERSION);
@@ -1162,20 +1383,30 @@ int Run(std::vector<std::string> arguments)
 
     if (arguments.size() >= 5 && arguments.size() <= 7 && arguments[1] == "other")
     {
-        return RunOther(arguments);
+        return RunOther(arguments, driver);
     }
 
-    if (arguments.size() >= 2 && arguments[1] == "mixdown")
+    // A command that writes every sound into a folder writes a folder for each archive. With --sound, it takes the
+    // archive that --driver names, or else the first.
+    if (arguments.size() >= 2 && (arguments[1] == "mixdown" || arguments[1] == "midi"))
     {
-        return hokuto::cli::hok_parts::RunMixdown(arguments, ReadArchive);
-    }
+        const auto run = [](const std::vector<std::string>& each, Driver each_driver)
+        {
+            const auto read = [each_driver](const std::string& path)
+            {
+                return ReadArchive(path, each_driver);
+            };
+            return each[1] == "mixdown" ? hokuto::cli::hok_parts::RunMixdown(each, read)
+                                        : hokuto::cli::hok_parts::RunMidi(each, read);
+        };
 
-    if (arguments.size() >= 2 && arguments[1] == "midi")
-    {
-        return hokuto::cli::hok_parts::RunMidi(arguments, ReadArchive);
+        // Arguments too few for an input and a folder run once, for the command's usage.
+        const bool once = arguments.size() < 4 || std::ranges::find(arguments, "--sound") != arguments.end();
+        return RunEachArchive(arguments, arguments.size() - 2, arguments.size() - 1, driver, once, run);
     }
 
     Options options;
+    options.driver = driver;
     if (!TakeOptions(arguments, options))
     {
         return 2;

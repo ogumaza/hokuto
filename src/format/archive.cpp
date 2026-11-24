@@ -22,8 +22,11 @@
 #include "agblib/mp2k/commands.h"
 #include "agblib/mp2k/driver.h"
 #include "agblib/mp2k/layout.h"
+#include "ntdlib/cafe/snd/sequence_starts.h"
+#include "ntdlib/ctr/snd/starting_tracks.h"
 #include "ntdlib/dse/layout.h"
 #include "ntdlib/dse/sets.h"
+#include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/snd/commands.h"
 #include "ntdlib/rsar/layout.h"
 #include "ntdlib/sar/formats.h"
@@ -33,6 +36,7 @@
 #include "ntdlib/sar/tables.h"
 #include "ntdlib/sdat/cut.h"
 #include "ntdlib/sdat/formats.h"
+#include "ntdlib/sequence_export/dse/sequence_input.h"
 #include "seqlib/file_name.h"
 #include "xsflib/binary.h"
 #include "xsflib/bytes.h"
@@ -41,6 +45,7 @@
 #include "format/archive_parts.h"
 #include "format/codes.h"
 #include "format/drivers.h"
+#include "format/dse_files.h"
 #include "format/file.h"
 #include "format/kinds.h"
 #include "format/text.h"
@@ -153,8 +158,8 @@ std::map<uint32_t, std::span<const uint8_t>> Spans(const std::map<uint32_t, std:
 std::vector<uint8_t> JoinPieces(const NativeArchive& native, std::span<const ntdlib::commands::Sequence> sequences,
                                 std::span<const ntdlib::sar::Piece> pieces, std::span<const ntdlib::sar::Field> fields)
 {
-    const agblib::mp2k::JoinOptions mp2k_options{.filler = native.gba_filler,
-                                                 .note_arguments = native.gba_note_arguments};
+    const agblib::mp2k::JoinOptions mp2k_options{
+        .filler = native.gba_filler, .note_arguments = native.gba_note_arguments, .free_floor = native.gba_free_floor};
     try
     {
         return native.engine == Engine::kWii ? ntdlib::rsar::Join(BuildOfWiiArchive(native), sequences, pieces, fields)
@@ -229,6 +234,232 @@ std::map<uint32_t, NativeStream> GamesStreams(std::map<uint32_t, std::vector<uin
 
 } // namespace
 
+namespace
+{
+
+// The milliseconds from a 3DS sound's start to the start of its sound frame `frame`, rounded down. A frame lasts 160
+// samples at the DSP's rate of 268111856 / 8192 Hz: 81920000 / 16756991 ms. The engine makes a change at that time in
+// the same frame.
+uint32_t CtrFrameMs(uint32_t frame)
+{
+    return static_cast<uint32_t>(static_cast<uint64_t>(frame) * 81920000 / 16756991);
+}
+
+// The start that ntdlib's 3DS list gives as `start`, named `name`.
+SoundStart StartOfCtr(uint32_t sound, std::string name, const ntdlib::ctr::snd::SequenceStart& start)
+{
+    SoundStart made{.sound = sound, .name = std::move(name), .muted = start.muted, .silenced = start.silenced};
+    for (uint8_t track = 0; track < start.track_volumes.size(); ++track)
+    {
+        if (start.track_volumes[track] != 1.0f)
+        {
+            made.track_volumes.emplace(track, start.track_volumes[track]);
+        }
+    }
+
+    // The game's effect isn't kept: Hokuto has no table of the games' effects.
+    const std::pair<float, std::optional<float>*> kRatios[] = {
+        {start.tempo_ratio, &made.tempo_ratio}, {start.pitch, &made.pitch}, {start.volume, &made.volume}};
+    for (const auto& [ratio, kept] : kRatios)
+    {
+        if (ratio != 1.0f)
+        {
+            *kept = ratio;
+        }
+    }
+    if (start.fx_send[0] != 0.0f || start.fx_send[1] != 0.0f)
+    {
+        made.sends = StartSends{start.fx_send[0], start.fx_send[1], 0.0f};
+    }
+    if (start.banks)
+    {
+        made.banks = *start.banks;
+    }
+    made.seed = start.seed;
+    if (start.lpf != 0.0f)
+    {
+        made.low_pass = start.lpf;
+    }
+
+    // Indices 32 to 47 set a track variable of every track.
+    for (const ntdlib::ctr::snd::SequenceVariable& variable : start.variables)
+    {
+        if (variable.index != ntdlib::ctr::snd::SequenceVariable::kNone)
+        {
+            made.variables.push_back(
+                {.time = CtrFrameMs(variable.frame), .variable = variable.index, .value = variable.value});
+        }
+    }
+    std::stable_sort(made.variables.begin(), made.variables.end(),
+                     [](const StartVariable& a, const StartVariable& b) { return a.time < b.time; });
+
+    return made;
+}
+
+// The start that ntdlib's Wii U list gives as `variables` and `tracks`, the tracks that play, named `name`. The game
+// turns the other tracks down to a volume of 0.
+SoundStart StartOfCafe(uint32_t sound, std::string name, const ntdlib::cafe::snd::SequenceVariables& variables,
+                       uint16_t tracks)
+{
+    SoundStart made{.sound = sound, .name = std::move(name), .silenced = static_cast<uint16_t>(~tracks)};
+    for (const ntdlib::cafe::snd::SequenceVariable& variable : variables)
+    {
+        if (variable.index == ntdlib::cafe::snd::SequenceVariable::kNone)
+        {
+            continue;
+        }
+
+        StartVariable& kept = made.variables.emplace_back();
+        kept.value = variable.value;
+        kept.variable = variable.index;
+        if (variable.track != ntdlib::cafe::snd::SequenceVariable::kNoTrack)
+        {
+            kept.variable = static_cast<uint8_t>(kFirstTrackVariable + variable.index);
+            kept.track = static_cast<uint8_t>(variable.track);
+        }
+    }
+
+    return made;
+}
+
+} // namespace
+
+std::vector<SoundStart> GameStarts(std::span<const uint8_t> bytes, const ntdlib::sar::SoundArchive& archive)
+{
+    // The Switch has no list.
+    const ntdlib::sar::Flavor flavor = archive.ReadOptions().flavor;
+    std::vector<SoundStart> found;
+    if (flavor != ntdlib::sar::Flavor::kCtr && flavor != ntdlib::sar::Flavor::kCafe)
+    {
+        return found;
+    }
+
+    // Each sound's start, then its other states in the order in which the game plays them.
+    const std::string sha1 = xsflib::Sha1::Hex(xsflib::Sha1::Of(bytes));
+    for (uint32_t sound = 0; sound < archive.Sounds().size(); ++sound)
+    {
+        const ntdlib::sar::SoundInfo& info = archive.Sounds()[sound];
+        if (info.type != ntdlib::sar::SoundType::kSequence)
+        {
+            continue;
+        }
+
+        if (flavor == ntdlib::sar::Flavor::kCtr)
+        {
+            found.push_back(StartOfCtr(sound, {}, ntdlib::ctr::snd::StartingSequenceTracks(sha1, info.name)));
+            for (const ntdlib::ctr::snd::SequenceArrangement& state :
+                 ntdlib::ctr::snd::SequenceArrangements(sha1, info.name))
+            {
+                found.push_back(StartOfCtr(sound, std::string(state.suffix), state.start));
+            }
+        }
+        else
+        {
+            const ntdlib::cafe::snd::SequenceStart start = ntdlib::cafe::snd::StartOfSequence(sha1, info.name);
+            found.push_back(StartOfCafe(sound, {}, start.variables, start.tracks));
+            for (const ntdlib::cafe::snd::SequenceArrangement& state :
+                 ntdlib::cafe::snd::SequenceArrangements(sha1, info.name))
+            {
+                SoundStart made = StartOfCafe(sound, std::string(state.suffix), state.variables, state.tracks);
+                made.tempo_ratio = state.tempo_ratio != 1.0f ? std::optional<float>(state.tempo_ratio) : std::nullopt;
+                made.pitch = state.pitch != 1.0f ? std::optional<float>(state.pitch) : std::nullopt;
+                found.push_back(std::move(made));
+            }
+        }
+
+        // A start without a name that sets nothing is left out.
+        const auto sets_nothing = [sound](const SoundStart& start)
+        {
+            return start.sound == sound && start.name.empty() && IsEmpty(start);
+        };
+        std::erase_if(found, sets_nothing);
+    }
+
+    return found;
+}
+
+namespace
+{
+
+// The major version of the format that added the starts.
+constexpr uint16_t kStartsVersion = 2;
+
+} // namespace
+
+File WithOlderStarts(File file, std::span<const uint8_t> bytes)
+{
+    const std::optional<uint16_t> major = MajorVersionOf(bytes);
+    const bool dse = file.engine == Engine::kDse && file.native && file.native->cartridge;
+    if (!major || *major >= kStartsVersion || !file.starts.empty() || !file.native ||
+        file.form != ArchiveForm::kNative || (file.engine != Engine::k3ds && file.engine != Engine::kWiiU && !dse))
+    {
+        return file;
+    }
+
+    try
+    {
+        // A set of DSE's files finds its starts by the game's image and the paths of the files, which an edit keeps.
+        const std::vector<uint8_t> archive = ExportArchive(file);
+        if (dse)
+        {
+            const std::vector<uint8_t> image = CartridgeImage(*file.native->cartridge);
+            file.starts = DseGameStarts(ntdlib::ntr::Rom::Parse(image), ntdlib::dse::ReadSet(archive));
+        }
+        else
+        {
+            const ntdlib::sar::Flavor flavor =
+                file.engine == Engine::k3ds ? ntdlib::sar::Flavor::kCtr : ntdlib::sar::Flavor::kCafe;
+            if (const std::optional<ntdlib::sar::SoundArchive> read = ReadStrictly(archive, flavor))
+            {
+                file.starts = GameStarts(archive, *read);
+            }
+        }
+
+        // The lengths came from every track with no start. A sound that now has a start is measured again.
+        for (const SoundStart& start : file.starts)
+        {
+            if (start.name.empty())
+            {
+                file.lengths.erase(start.sound);
+            }
+        }
+    }
+    catch (const std::exception&)
+    {
+        // An archive that can't be built finds no game's starts. The file plays as before.
+    }
+
+    return file;
+}
+
+std::optional<std::string> OlderDseLevelsNote(const File& file, std::span<const uint8_t> bytes)
+{
+    const std::optional<uint16_t> major = MajorVersionOf(bytes);
+    if (!major || *major >= kStartsVersion || file.engine != Engine::kDse || !file.native || !file.native->cartridge ||
+        file.form != ArchiveForm::kNative)
+    {
+        return std::nullopt;
+    }
+
+    try
+    {
+        std::vector<std::string> warnings;
+        const std::vector<uint8_t> archive = ExportArchive(file);
+        if (ntdlib::sequence_export::dse::ReadSequences(ntdlib::dse::ReadSet(archive), warnings).empty())
+        {
+            return std::nullopt;
+        }
+
+        const std::vector<uint8_t> image = CartridgeImage(*file.native->cartridge);
+        return DseLevelsNote(ntdlib::ntr::Rom::Parse(image));
+    }
+    catch (const std::exception&)
+    {
+        // A set whose archive or image can't be read finds no starts in WithOlderStarts. It gets no note either.
+        return std::nullopt;
+    }
+}
+
 File ImportArchive(std::span<const uint8_t> archive, ntdlib::sar::Flavor flavor,
                    std::vector<std::vector<uint8_t>> group_files, std::map<uint32_t, std::vector<uint8_t>> streams,
                    std::span<const std::string> groups, const ntdlib::sar::KnownSequences& known)
@@ -281,6 +512,10 @@ File ImportArchive(std::span<const uint8_t> archive, ntdlib::sar::Flavor flavor,
 
     File file;
     file.engine = EngineOf(flavor);
+    if (read)
+    {
+        file.starts = GameStarts(archive, *read);
+    }
     file.sequences = ShareSequences(std::move(layout.sequences));
     file.native = NativeArchive{.engine = file.engine,
                                 .pieces = std::move(layout.pieces),

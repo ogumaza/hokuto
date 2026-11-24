@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the exports to MIDI with SoundFont 2 or SFZ (src/song/midi_export.h) against the files of hacsf2, of cafesf2
-// for a Wii U archive, of citrusf2 for a 3DS archive, or of revosf2 for a Wii archive. ntdlib's converter makes the
-// converters' files, and the tool runs that converter in its process. The tool opens a sound archive twice:
+// Checks the exports to MIDI with SoundFont 2 or SFZ (src/song/midi_export.h) against the files of ntdlib's converter
+// of each console's sequences, with that console's settings: the Switch's, the Wii U's, the 3DS's or the Wii's. The
+// tool runs the converter in its process. The tool opens a sound archive twice:
 //
 // - as the converter opens it, with the group files beside it, and
 // - as the program imports it into a Hokuto file. The file then builds the archive again, and the export reads that.
 //
-// Each sequence sound converts on both sides with the converter's options: no variable set and no changes. The tool
-// compares the MIDI file, the SoundFont 2 file, each SFZ file and sample, and the report, byte for byte. A sound that
-// fails on both sides with the same error counts as the same. The tests check that the files go where the converters
-// put them.
+// Each sequence sound converts on both sides with the converter's options. A sound of the 3DS or the Wii U starts as
+// the game starts it, as the converters of those consoles play it: the converter's side takes the start from ntdlib's
+// lists by the archive's SHA-1, and Hokuto's side from the file that the import made. The tool compares the MIDI file,
+// the SoundFont 2 file, each SFZ file and sample, and the report, byte for byte. A sound that fails on both sides with
+// the same error counts as the same. The tests check that the files go where the converters put them.
 //
 // A GBA ROM converts with agblib's converter of MusicPlayer2000 and the default settings of
 // agblib::sequence_export::agb::ConvertSettings. The converter's side reads the ROM, and Hokuto's side the ROM that the
@@ -25,7 +26,8 @@
 // the same settings: each sound of the driver (song::DriverRom::Sounds), such as a song's live version. With
 // --reference and a folder, the tool also compares each MIDI file and SoundFont 2 file with the file of the same name
 // in that folder. Konami's converter writes SFZ files too. Each SFZ file and sample of Hokuto's export has to match the
-// files of the converter, and the summary counts them.
+// files of the converter, and the summary counts them. A ROM with MusicPlayer2000 beside another driver imports with an
+// archive for each (format::ImportGbaArchives), and each archive converts as above.
 //
 // A DS cartridge image, or a sound archive of the DS (SDAT), converts with ntdlib's converter of NITRO-Composer's
 // sequences, with the build of the driver that the ARM7 binary of the image contains. ntdlib's frame of a DS converter
@@ -38,9 +40,10 @@
 // stores.
 //
 // A DS cartridge image without a sound archive uses its DSE files (song::DseSounds). Each sound converts with ntdlib's
-// converter of DSE's sequences, with the build of the driver that the image contains. ntdlib's frame of a DSE converter
-// runs the converter the same way. The converter's side reads the set of the game's image, and Hokuto's side the set
-// that the Hokuto file builds. The tool compares the same files as on the DS.
+// converter of DSE's sequences, with the build of the driver that the image contains and each song in the first state
+// that ntdlib's dse::GameStarts gives it. ntdlib's frame of a DSE converter runs the converter the same way. The
+// converter's side reads the set of the game's image, and Hokuto's side the set that the Hokuto file builds, with the
+// file's starts. The tool compares the same files as on the DS.
 //
 // A Wii archive converts with the build of NW4R SND that its version gives. Hokuto converts each sound by itself as the
 // archive gives it.
@@ -54,6 +57,15 @@
 // usage: hokuto_check_exports [--reference <folder>] [--program <name>] <archive, GBA ROM or DS image> [sound]
 
 #include "check_exports.h"
+
+#include <type_traits>
+
+#include "ntdlib/cafe/snd/sequence_starts.h"
+#include "ntdlib/ctr/snd/starting_tracks.h"
+#include "xsflib/sha1.h"
+
+#include "format/project.h"
+#include "song/starts.h"
 
 namespace hokuto::tools::exports
 {
@@ -144,12 +156,81 @@ std::string Listed(const std::vector<std::string>& parts)
 namespace
 {
 
+// Sets `options` and `settings` to the start that ntdlib's converter gives sound `sound` of the 3DS's or the Wii U's
+// archive whose SHA-1 is `sha1`, as the converter of each console sets them up from ntdlib's lists: the tracks that
+// play, the tracks' volumes, the variables at their frames, the generator's state, the tempo ratio, the pitch, the
+// volume, the banks and the sends.
+void SetUpConvertersStart(sar::Flavor flavor, const std::string& sha1, const std::string& sound,
+                          export_::PerformOptions& options, export_::Settings& settings)
+{
+    if (flavor == sar::Flavor::kCtr)
+    {
+        const ntdlib::ctr::snd::SequenceStart start = ntdlib::ctr::snd::StartingSequenceTracks(sha1, sound);
+        options.tracks = static_cast<uint16_t>(options.tracks & ~(start.muted | start.silenced));
+        options.track_volumes = start.track_volumes;
+        for (const ntdlib::ctr::snd::SequenceVariable& variable : start.variables)
+        {
+            if (variable.index == ntdlib::ctr::snd::SequenceVariable::kNone)
+            {
+                continue;
+            }
+
+            if (variable.frame == 0)
+            {
+                options.variables[variable.index] = variable.value;
+            }
+            else
+            {
+                options.changes.push_back({.frame = variable.frame, .index = variable.index, .value = variable.value});
+            }
+        }
+        if (start.seed)
+        {
+            options.seed = *start.seed;
+            settings.random_steps_before_start = 0;
+        }
+
+        options.tempo_ratio = start.tempo_ratio;
+        options.pitch = start.pitch;
+        options.volume = start.volume;
+        options.lpf = start.lpf;
+        options.banks = start.banks;
+        options.fx_sends[0] = start.fx_send[0];
+        options.fx_sends[1] = start.fx_send[1];
+    }
+    else if (flavor == sar::Flavor::kCafe)
+    {
+        const ntdlib::cafe::snd::SequenceStart start = ntdlib::cafe::snd::StartOfSequence(sha1, sound);
+        for (const ntdlib::cafe::snd::SequenceVariable& variable : start.variables)
+        {
+            if (variable.index == ntdlib::cafe::snd::SequenceVariable::kNone)
+            {
+                continue;
+            }
+
+            if (variable.track == ntdlib::cafe::snd::SequenceVariable::kNoTrack)
+            {
+                options.variables[variable.index] = variable.value;
+            }
+            else
+            {
+                options.track_variables.push_back(
+                    {.track = static_cast<uint8_t>(variable.track), .index = variable.index, .value = variable.value});
+            }
+        }
+        options.tracks = static_cast<uint16_t>(options.tracks & start.tracks);
+    }
+}
+
 // Converts each sequence sound of `theirs`, the converter's archive, and of `ours`, the archive that a Hokuto file
 // builds, with the converter's `settings` and the name `program`. Prints a line for each sound that differs. With
-// `only`, converts the sound of that name alone. `name` names the archive.
+// `only`, converts the sound of that name alone. `name` names the archive. A sound of the 3DS or the Wii U starts as
+// the game starts it: the converter's side by `sha1`, the SHA-1 of the game's archive, and Hokuto's side by `file`, the
+// file that the import made.
 template <typename Archive, typename SoundType>
 Counts CheckSounds(const Archive& theirs_archive, const Archive& ours_archive, const export_::Settings& settings,
-                   const std::string& program, const std::string& name, const std::string& only)
+                   const std::string& program, const std::string& name, const std::string& only,
+                   const std::string& sha1 = {}, const hokuto::format::File* file = nullptr)
 {
     Counts counts;
     for (uint32_t sound = 0; sound < theirs_archive.Sounds().size(); sound++)
@@ -163,10 +244,15 @@ Counts CheckSounds(const Archive& theirs_archive, const Archive& ours_archive, c
         counts.sounds++;
         Side theirs;
         Side ours;
+        export_::PerformOptions options;
+        export_::Settings started = settings;
+        if constexpr (std::is_same_v<Archive, sar::SoundArchive>)
+        {
+            SetUpConvertersStart(theirs_archive.ReadOptions().flavor, sha1, info.name, options, started);
+        }
         try
         {
-            theirs.conversion =
-                export_::ConvertSequence(theirs_archive, sound, export_::PerformOptions(), settings, program);
+            theirs.conversion = export_::ConvertSequence(theirs_archive, sound, options, started, program);
         }
         catch (const std::exception& error)
         {
@@ -174,7 +260,17 @@ Counts CheckSounds(const Archive& theirs_archive, const Archive& ours_archive, c
         }
         try
         {
-            ours.conversion = hokuto::song::ConvertToMidi(ours_archive, sound, {}, {}, program);
+            if constexpr (std::is_same_v<Archive, sar::SoundArchive>)
+            {
+                const hokuto::format::SoundStart start =
+                    file != nullptr ? hokuto::format::StartOf(*file, sound) : hokuto::format::SoundStart();
+                ours.conversion = hokuto::song::ConvertToMidi(ours_archive, sound, hokuto::song::StartValuesOf(start),
+                                                              hokuto::song::ChangesOf(start), program, start);
+            }
+            else
+            {
+                ours.conversion = hokuto::song::ConvertToMidi(ours_archive, sound, {}, {}, program);
+            }
         }
         catch (const std::exception& error)
         {
@@ -223,8 +319,8 @@ void CompareSides(const Side& theirs, const Side& ours, const std::string& name,
 namespace
 {
 
-// Checks revosf2's conversion of the sounds of the Wii archive at `path`, named `name`, in `bytes`. Returns the tool's
-// exit status. Both sides name `program` as the program that made the files.
+// Checks the conversion of the sounds of the Wii archive at `path`, named `name`, in `bytes`. Returns the tool's exit
+// status. Both sides name `program` as the program that made the files.
 int CheckWiiArchive(std::vector<uint8_t> bytes, const std::filesystem::path& path, const std::string& name,
                     const std::string& only, const std::string& program)
 {
@@ -266,6 +362,7 @@ int CheckSarArchive(std::vector<uint8_t> bytes, const std::filesystem::path& pat
     // The converter's archive, and the one that the Hokuto file builds. Both have the group files beside the archive.
     std::optional<sar::SoundArchive> converter_archive;
     std::shared_ptr<const sar::SoundArchive> hokuto_archive;
+    hokuto::format::File file;
     export_::Settings settings = export_::SwitchSettings();
     try
     {
@@ -286,8 +383,7 @@ int CheckSarArchive(std::vector<uint8_t> bytes, const std::filesystem::path& pat
         }
 
         const std::shared_ptr<const sar::SoundArchive> opened = hokuto::song::OpenArchive(path);
-        const hokuto::format::File file =
-            hokuto::format::ImportArchive(bytes, flavor, opened->GroupFiles(), {}, opened->GroupFileGroups());
+        file = hokuto::format::ImportArchive(bytes, flavor, opened->GroupFiles(), {}, opened->GroupFileGroups());
         hokuto_archive = hokuto::song::LoadArchive(hokuto::format::ExportArchive(file), name,
                                                    hokuto::format::ExportGroupFiles(file));
     }
@@ -297,8 +393,9 @@ int CheckSarArchive(std::vector<uint8_t> bytes, const std::filesystem::path& pat
         return 2;
     }
 
+    const std::string sha1 = xsflib::Sha1::Hex(xsflib::Sha1::Of(bytes));
     const Counts counts = CheckSounds<sar::SoundArchive, sar::SoundType>(*converter_archive, *hokuto_archive, settings,
-                                                                         program, name, only);
+                                                                         program, name, only, sha1, &file);
     std::printf("%s: %zu sequence sounds checked. %zu differ, and %zu fail on both sides.\n", name.c_str(),
                 counts.sounds, counts.differ, counts.failed);
 
@@ -344,14 +441,41 @@ std::optional<Options> ParseArguments(std::vector<std::string> arguments)
     return Options{reference_folder, program, xsflib::PathFromUtf8(arguments[1]), only};
 }
 
+// Checks each archive of the GBA ROM `bytes`, as the program imports it (format::ImportGbaArchives). A ROM that the
+// import refuses checks as the archive of its first driver, or else of MusicPlayer2000, and the check names the
+// failure. Returns the worst result of the archives.
+int CheckGbaArchives(std::vector<uint8_t> bytes, const std::string& name, const std::string& only,
+                     const std::filesystem::path& reference_folder, const std::string& stem, const std::string& program)
+{
+    bool mp2k = false;
+    bool driver = false;
+    try
+    {
+        for (const hokuto::format::File& archive : hokuto::format::ImportGbaArchives(bytes).project.archives)
+        {
+            (archive.engine == hokuto::format::Engine::kGba ? mp2k : driver) = true;
+        }
+    }
+    catch (const std::exception&)
+    {
+        driver = hokuto::format::DriverOfRom(bytes) != nullptr;
+        mp2k = !driver;
+    }
+
+    const int mp2k_result = mp2k ? CheckGbaRom(bytes, name, only, program) : 0;
+    const int driver_result =
+        driver ? CheckDriverRom(std::move(bytes), name, only, reference_folder, stem, program) : 0;
+
+    return std::max(mp2k_result, driver_result);
+}
+
 } // namespace
 
 } // namespace hokuto::tools::exports
 
-using hokuto::tools::exports::CheckDriverRom;
 using hokuto::tools::exports::CheckDs;
 using hokuto::tools::exports::CheckDse;
-using hokuto::tools::exports::CheckGbaRom;
+using hokuto::tools::exports::CheckGbaArchives;
 using hokuto::tools::exports::CheckSarArchive;
 using hokuto::tools::exports::CheckWiiArchive;
 using hokuto::tools::exports::Options;
@@ -379,13 +503,9 @@ int main(int argc, char** argv)
         {
             return CheckWiiArchive(std::move(bytes), path, name, only, program);
         }
-        if (hokuto::format::IsGbaRom(bytes) && hokuto::format::DriverOfRom(bytes) != nullptr)
-        {
-            return CheckDriverRom(std::move(bytes), name, only, reference_folder, xsflib::Utf8(path.stem()), program);
-        }
         if (hokuto::format::IsGbaRom(bytes))
         {
-            return CheckGbaRom(std::move(bytes), name, only, program);
+            return CheckGbaArchives(std::move(bytes), name, only, reference_folder, xsflib::Utf8(path.stem()), program);
         }
         if (hokuto::format::IsDsImage(bytes) && hokuto::format::DsArchivesIn(bytes).empty() &&
             hokuto::format::HoldsDseFiles(bytes))

@@ -213,10 +213,22 @@ void WriteTimelines(TextOut& out, const File& file);
 void WriteView(TextOut& out, const EditorView& view, const NativeTables* tables);
 void ParseView(const std::vector<Token>& tokens, std::size_t line, EditorView& view, std::set<std::string>& given);
 void ParseSceneValue(const std::vector<Token>& tokens, std::size_t line, Scene& scene);
+std::string TimeText(uint32_t time);
+std::string SoundNameComment(std::size_t sound, const NativeTables* tables);
+float ParseFloat(const Token& token, std::size_t line);
+uint32_t ParseTime(const Token& token, std::size_t line);
+int16_t ParseVariableValue(const Token& token, std::size_t line);
 FieldDraft ParseField(const std::vector<Token>& tokens, std::size_t line);
 uint32_t ItemOfLabel(const NativeArchive& native, std::span<const Sequence> sequences,
                      const std::vector<std::map<std::string, uint32_t>>& locals, const ntdlib::sar::Place& place,
                      const Token& label, std::size_t line);
 void ParseTimeline(const std::vector<Token>& tokens, std::size_t number, File& file, TimelineLines& read);
+
+// The starts in text and back (text_starts.cpp).
+void WriteStart(TextOut& out, const SoundStart& start, const NativeTables* tables);
+bool IsStartWord(const Token& word);
+SoundStart ParseStartLine(const std::vector<Token>& tokens, std::size_t line);
+void ParseStartValue(const std::vector<Token>& tokens, std::size_t line, SoundStart& start);
+void FinishStart(const SoundStart& start, std::size_t line);
 
 } // namespace hokuto::format::text_parts

@@ -326,7 +326,7 @@ void CheckNextSound(const Game& game, uint32_t sound, uint32_t next, const std::
         const edit::DseIncomingSong incoming = edit::ReadIncomingDseSong(SongFileOf(set, next, header));
         const File replaced = edit::ReplaceDseSound(game.file, set, sound, incoming);
         const std::vector<uint8_t> exported = hokuto::format::ExportArchive(replaced);
-        const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build);
+        const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build, game.game_code);
         const hokuto::song::Sequence played = hokuto::song::ReadSequence(*read, sound);
         const hokuto::song::Sequence wanted = hokuto::song::ReadSequence(set, next);
         const bool same_events = SameEvents(TracksOf(*read, sound), TracksOf(set, next));
@@ -370,8 +370,10 @@ void CheckSoundMidi(const Game& game, uint32_t sound, const std::string& name, T
     ntdlib::sequence_export::dse::Conversion conversion;
     try
     {
-        conversion = ntdlib::sequence_export::dse::ConvertSequence(set.sounds[sound].Files(), name,
-                                                                   {.build = set.build}, "hokuto_check_dse_banks");
+        conversion = ntdlib::sequence_export::dse::ConvertSequence(
+            set.sounds[sound].Files(), name,
+            {.build = set.build, .tick_microseconds = hokuto::song::DseSoundTick(set, sound)},
+            "hokuto_check_dse_banks");
     }
     catch (const std::exception&)
     {
@@ -388,7 +390,7 @@ void CheckSoundMidi(const Game& game, uint32_t sound, const std::string& name, T
         const edit::DseIncomingSong incoming = edit::DseSongOfMidi(conversion.midi, name + ".mid");
         const File replaced = edit::ReplaceDseSound(game.file, set, sound, incoming, programs);
         const std::shared_ptr<const DseSet> read =
-            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(replaced), game.build);
+            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(replaced), game.build, game.game_code);
         const hokuto::song::Sequence played = hokuto::song::ReadSequence(*read, sound);
         const hokuto::song::Sequence wanted = hokuto::song::ReadSequence(set, sound);
         for (const std::vector<hokuto::song::Note>& track : NotesOf(wanted))

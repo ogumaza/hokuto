@@ -200,7 +200,9 @@ bool App::PlayDseFeedback(const KeyNote& note, const std::shared_ptr<std::atomic
     try
     {
         const ntdlib::sequence_export::dse::SequenceInput& sound = played_.Dse()->sounds.at(sequence_->sound);
-        const song::DseBank bank{.bank = sound.banks.at(note.bank_slot), .main_bank = sound.main_bank};
+        const song::DseBank bank{.bank = sound.banks.at(note.bank_slot),
+                                 .main_bank = sound.main_bank,
+                                 .tick_microseconds = song::DseSoundTick(*played_.Dse(), sequence_->sound)};
         PlayAudition(std::make_unique<song::DseNotePreview>(bank, static_cast<int>(note.program), note.key,
                                                             note.velocity, release, played_.Dse()->build,
                                                             model_mixing_));

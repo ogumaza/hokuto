@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The inspector: the selected track's card, its instruments, mode and colour, and its channel strip.
+// The inspector: the selected track's card, its instruments, mode, colour and start, and its channel strip.
 
 #include <imgui.h>
 
@@ -24,6 +24,7 @@
 #include "app/sound_section.h"
 #include "app/theme.h"
 #include "app/time_text.h"
+#include "app/track_start_rows.h"
 #include "app/transport.h"
 #include "app/views.h"
 #include "app/widgets.h"
@@ -312,8 +313,9 @@ float DrawColourProperty(ImDrawList* draw, ImVec2 pos, float width, const TrackV
     return pos.y + height;
 }
 
-// The sections of the selected track from `y`: its card, its instrument and colour, and the selected part on it, or
-// a line that says no track is selected. Returns the top of the next section.
+// The sections of the selected track from `y`: its card, its instrument and colour, its Start rows where the file's
+// console has a game's starts, and the selected part on it, or a line that says no track is selected. Returns the top
+// of the next section.
 float DrawTrackSections(ImDrawList* draw, float left, float y, float width, float gap, SongView* song, TrackView* track,
                         ArrangementState& state, bool busy)
 {
@@ -326,6 +328,10 @@ float DrawTrackSections(ImDrawList* draw, float left, float y, float width, floa
         {
             y = DrawInstrumentRows(draw, ImVec2(left, y), width, *song, *track, state, busy);
             y = DrawColourProperty(draw, ImVec2(left, y), width, *track, state);
+            if (state.start_mutes)
+            {
+                y = DrawTrackStart(draw, ImVec2(left, y), width, *track, state.selected_track, state);
+            }
         }
         y += gap;
 

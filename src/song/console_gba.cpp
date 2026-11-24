@@ -56,7 +56,7 @@ public:
 
     // A song whose header can't be read, or whose music player plays none of its tracks, throws. So does a driver whose
     // output runs at another rate than the ROM's settings give.
-    bool StartSequence(uint32_t sound) override
+    bool StartSequence(uint32_t sound, const format::SoundStart&) override
     {
         Driver::Start(player_, rom_, sound, enhanced_);
         return player_.Rate() == rate_;

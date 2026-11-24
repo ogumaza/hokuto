@@ -56,7 +56,9 @@ using text_parts::DseProblem;
 using text_parts::Fail;
 using text_parts::FieldDraft;
 using text_parts::FinishSequence;
+using text_parts::FinishStart;
 using text_parts::Integer;
+using text_parts::IsStartWord;
 using text_parts::IsTablesWord;
 using text_parts::ItemOfLabel;
 using text_parts::kEndPiece;
@@ -69,6 +71,8 @@ using text_parts::ParseEffect;
 using text_parts::ParseField;
 using text_parts::ParseInteger;
 using text_parts::ParseSceneValue;
+using text_parts::ParseStartLine;
+using text_parts::ParseStartValue;
 using text_parts::ParseTablesLine;
 using text_parts::ParseTimeline;
 using text_parts::ParseView;
@@ -231,6 +235,10 @@ private:
     void ReadSoundLengthLine(const std::vector<Token>& tokens, std::size_t number);
     // Reads the colour of a track.
     void ReadTrackColourLine(const std::vector<Token>& tokens, std::size_t number);
+    // Reads a start's line, and checks the start before it.
+    void ReadStartLine(const std::vector<Token>& tokens, std::size_t number);
+    // Checks the start whose lines the reader has read, if one is open, and closes it.
+    void CloseStart();
     // Reads a line of an instrument map.
     void ReadInstrumentMapLine(const std::vector<Token>& tokens, std::size_t number);
     // Reads a line of a bank map.
@@ -278,6 +286,8 @@ private:
     std::optional<std::vector<uint8_t>> items_chunk_;
     std::size_t model_line_ = 0;
     bool scene_open_ = false;
+    std::optional<std::size_t> start_line_; // the line of the open start
+    std::set<std::pair<uint32_t, std::string>> start_names_;
     std::array<bool, kAuxBuses> volume_given_{};
     EditorView view_;
     std::set<std::string> view_given_;
@@ -345,10 +355,11 @@ void TextReader::ReadLine(const std::vector<Token>& tokens, std::size_t number)
             Fail(number, "a Hokuto file in text starts with hok and its version, such as hok 1.0");
         }
 
-        if (*major != kMajorVersion)
+        if (*major < kFirstMajorVersion || *major > kMajorVersion)
         {
             Fail(number, "a later version of Hokuto saved the file, in version " + tokens[1].text +
-                             " of the format. This version reads only version " + std::to_string(kMajorVersion));
+                             " of the format. This version reads versions " + std::to_string(kFirstMajorVersion) +
+                             " and " + std::to_string(kMajorVersion));
         }
 
         header_ = true;
@@ -374,8 +385,13 @@ void TextReader::ReadLine(const std::vector<Token>& tokens, std::size_t number)
         return;
     }
 
-    // A scene's values follow its line, before the sequences.
+    // A start's fields and variables follow its line, and a scene's values follow its line, before the sequences.
     const Token& word = tokens[0];
+    if (start_line_ && IsStartWord(word))
+    {
+        ParseStartValue(tokens, number, file_.starts.back());
+        return;
+    }
     if (section_ == Section::kHeader && (word.Is("variable") || word.Is("at")))
     {
         if (!scene_open_)
@@ -388,6 +404,7 @@ void TextReader::ReadLine(const std::vector<Token>& tokens, std::size_t number)
     }
 
     scene_open_ = false;
+    CloseStart();
     if (ReadSettingLine(tokens, number) || ReadSequenceLine(tokens, number) || ReadNativeLine(tokens, number))
     {
         return;
@@ -454,6 +471,10 @@ bool TextReader::ReadSettingLine(const std::vector<Token>& tokens, std::size_t n
     else if (word.Is("sound_length"))
     {
         ReadSoundLengthLine(tokens, number);
+    }
+    else if (word.Is("start"))
+    {
+        ReadStartLine(tokens, number);
     }
     else if (word.Is("scene"))
     {
@@ -661,6 +682,10 @@ void TextReader::ReadEngineLine(const std::vector<Token>& tokens, std::size_t nu
     if (word.Is("engine"))
     {
         const std::optional<Engine> named = EngineNamed(tokens[1].text);
+        if (tokens[1].text == kArchivesEngineName)
+        {
+            Fail(number, "the file contains more than one archive. Open it as a project");
+        }
         if (!named)
         {
             Fail(number, "there's no engine named " + tokens[1].text);
@@ -805,6 +830,28 @@ void TextReader::ReadSoundLengthLine(const std::vector<Token>& tokens, std::size
     if (!file_.lengths.emplace(sound, length).second)
     {
         Fail(number, whose + " come twice");
+    }
+}
+
+void TextReader::ReadStartLine(const std::vector<Token>& tokens, std::size_t number)
+{
+    RequireHeader(number, "the starts come before the sequences");
+
+    SoundStart start = ParseStartLine(tokens, number);
+    if (!start_names_.emplace(start.sound, start.name).second)
+    {
+        Fail(number, "sound " + std::to_string(start.sound) + " already has a start named " + tokens[2].text);
+    }
+
+    file_.starts.push_back(std::move(start));
+    start_line_ = number;
+}
+
+void TextReader::CloseStart()
+{
+    if (const std::optional<std::size_t> line = std::exchange(start_line_, std::nullopt))
+    {
+        FinishStart(file_.starts.back(), *line);
     }
 }
 
@@ -1042,6 +1089,10 @@ void TextReader::ReadChunkLine(const std::vector<Token>& tokens, std::size_t num
         }
 
         AtLine(number, [&] { native_->cartridge = ReadCartridge(bytes); });
+        if (native_->engine != Engine::kDse && !native_->cartridge->places.empty())
+        {
+            Fail(number, "the CART chunk gives the places of DSE files, and the archive isn't a set of DSE files");
+        }
 
         return;
     }
@@ -1308,6 +1359,7 @@ void TextReader::CheckCommandValues(const Driver* driver, const std::optional<Mo
 
 File TextReader::Finish()
 {
+    CloseStart();
     FinishDraft();
     CheckHeaderAndView();
     if (native_)
@@ -1383,6 +1435,38 @@ bool IsText(std::span<const uint8_t> bytes)
 {
     const std::string_view text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     return WithoutByteOrderMark(text).starts_with("hok ");
+}
+
+std::optional<uint16_t> MajorVersionOf(std::span<const uint8_t> bytes)
+{
+    // The binary form's header holds the major version after the signature.
+    if (IsBinary(bytes))
+    {
+        return static_cast<uint16_t>(bytes[8] | bytes[9] << 8);
+    }
+    if (!IsText(bytes))
+    {
+        return std::nullopt;
+    }
+
+    // The text form's first line: hok, a space, the major version, a dot and the minor version.
+    const std::string_view text =
+        WithoutByteOrderMark(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    const std::string_view line = text.substr(0, text.find_first_of("\r\n"));
+    const std::size_t space = line.find(' ');
+    const std::size_t dot = line.find('.');
+    if (space == std::string_view::npos || dot == std::string_view::npos || dot < space)
+    {
+        return std::nullopt;
+    }
+
+    const std::optional<uint64_t> major = Integer(line.substr(space + 1, dot - space - 1));
+    if (!major || *major > 0xFFFF)
+    {
+        return std::nullopt;
+    }
+
+    return static_cast<uint16_t>(*major);
 }
 
 File ReadEitherForm(std::span<const uint8_t> bytes)

@@ -3,10 +3,11 @@
 // Tests the lengths for players (src/song/lengths.h and src/edit/lengths.h). The sequences play at timebase 48 and
 // tempo 120: 96 ticks a second. The loop's sequence plays its intro for 1 s, then its loop twice, 1 s a pass, before
 // the fade. Its length is 3 s, within two frames of the console's model, on the Switch, the Wii U, the 3DS and the Wii.
-// The arrangement's loop runs from tick 96 to 192. The note's sequence plays key 60 for 0.25 s and ends. Its release
-// and 0.5 s of silence follow, without a fade. A sound past the table gets no lengths. A file takes the lengths of its
-// sequence sounds in place of the lengths that it held, a file of the Wii included. A measure that its progress stops
-// gives nothing.
+// The arrangement's loop runs from tick 96 to 192. The note's sequence plays key 60 for 0.25 s and ends. It ends at the
+// last sound of its release, without a fade. A loop fades over 7 s. A sound past the table gets no lengths. A file
+// takes the lengths of its sequence sounds in place of the lengths that it held, a file of the Wii included. A measure
+// that its progress stops gives nothing. The length rules contain the silence, the limit and the fade of
+// docs/format.md.
 
 #include "edit/lengths.h"
 
@@ -17,12 +18,15 @@
 #include <optional>
 #include <vector>
 
+#include "ntdlib/ctr/snd/length_model.h"
+#include "ntdlib/nwsnd/length_model.h"
 #include "ntdlib/rvl/snd/rsar_options.h"
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sound_build.h"
 #include "ntdlib/testing/rsar_files.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/bytes.h"
+#include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
 
 #include "format/archive.h"
@@ -65,6 +69,17 @@ constexpr ntdlib::SndBuild kWiiBuild{20070227, false};
 // The length of the loop's sequence in milliseconds: its intro and two passes of its loop, 288 ticks at 96 ticks a
 // second.
 constexpr uint32_t kLoopLength = 3000;
+
+// The note's 0.25 s, and a loop's fade.
+constexpr uint32_t kNoteMs = 250;
+constexpr uint32_t kFadeMs = 7000;
+
+// A bound on the note's release: the length of a sound that ends counts no silence after its last sound.
+constexpr uint32_t kShortRelease = 500;
+
+// The rules of docs/format.md: a sound stays silent for 180 s at most, and plays for 600 s at most.
+constexpr double kSilentMs = 180000.0;
+constexpr double kLimitMs = 600000.0;
 
 // A looped saw of 480 samples at 48 kHz, as PCM16 in the byte order of `flavor`'s console.
 std::vector<uint8_t> SawWave(ntdlib::sar::Flavor flavor)
@@ -159,6 +174,26 @@ bool Near(uint32_t ms, uint32_t expected, uint32_t frame_ms)
     return ms + 2 * frame_ms >= expected && ms <= expected + 2 * frame_ms;
 }
 
+// The length rules contain the values of docs/format.md for frames of 3 ms (the Wii U and the Wii), of 5 ms (the
+// Switch) and of the 3DS: the silence and the limit, each within one frame, and a fade of 7 s for a loop and for notes
+// held without end. The rules contain no silence after a sound that ends. TestMeasure checks that such a sound ends at
+// its last sound.
+void TestRules()
+{
+    for (const double frame_ms : {3.0, 5.0, ntdlib::ctr::snd::LengthConsole::kFrameMs})
+    {
+        const xsflib::rip::LengthRules rules = ntdlib::nwsnd::LengthRulesFor(frame_ms);
+        const double silent_ms = static_cast<double>(rules.silent_frames) * frame_ms;
+        const double limit_ms = static_cast<double>(rules.max_frames) * frame_ms;
+
+        XSFLIB_CHECK(rules.frame_ms == frame_ms);
+        XSFLIB_CHECK(silent_ms <= kSilentMs && silent_ms > kSilentMs - frame_ms);
+        XSFLIB_CHECK(limit_ms <= kLimitMs && limit_ms > kLimitMs - frame_ms && rules.max_ms == kLimitMs);
+        XSFLIB_CHECK(rules.fade_ms == static_cast<double>(kFadeMs) &&
+                     rules.held_fade_ms == static_cast<double>(kFadeMs));
+    }
+}
+
 // The length of a sound that loops and of a sound that ends, on each console. A sound past the archive's sounds has no
 // length.
 void TestMeasure()
@@ -169,13 +204,13 @@ void TestMeasure()
         const auto archive = TestArchive(flavor);
         const uint32_t frame_ms = flavor == ntdlib::sar::Flavor::kCafe ? 3 : 5;
         const std::optional<hokuto::song::Length> loop = hokuto::song::MeasureLength(*archive, kLoopSound);
-        XSFLIB_CHECK(loop && Near(loop->length, kLoopLength, frame_ms) && loop->fade == 10000 && loop->loops == 2 &&
+        XSFLIB_CHECK(loop && Near(loop->length, kLoopLength, frame_ms) && loop->fade == kFadeMs && loop->loops == 2 &&
                      !loop->silent && (loop->loop == hokuto::song::Loop{96, 192}));
 
-        // The note sounds for 250 ms. Its release and 500 ms of silence follow.
+        // The note sounds for 250 ms, and its release follows.
         const std::optional<hokuto::song::Length> note = hokuto::song::MeasureLength(*archive, kNoteSound);
-        XSFLIB_CHECK(note && note->length >= 750 && note->length < kLoopLength && note->fade == 0 && note->loops == 0 &&
-                     !note->silent && !note->loop);
+        XSFLIB_CHECK(note && note->length >= kNoteMs && note->length < kNoteMs + kShortRelease && note->fade == 0 &&
+                     note->loops == 0 && !note->silent && !note->loop);
         XSFLIB_CHECK(!hokuto::song::MeasureLength(*archive, 2));
     }
 
@@ -183,15 +218,15 @@ void TestMeasure()
     const auto wii_loop =
         hokuto::song::LoadWiiArchive(WiiArchiveBytes(kWiiLoopBytecode), "loop.brsar", ntdlib::rvl::snd::kRsarOptions);
     const std::optional<hokuto::song::Length> loop = hokuto::song::MeasureLength(*wii_loop, kWiiBuild, 0);
-    XSFLIB_CHECK(loop && Near(loop->length, kLoopLength, 3) && loop->fade == 10000 && loop->loops == 2 &&
+    XSFLIB_CHECK(loop && Near(loop->length, kLoopLength, 3) && loop->fade == kFadeMs && loop->loops == 2 &&
                  !loop->silent && (loop->loop == hokuto::song::Loop{96, 192}));
     XSFLIB_CHECK(!hokuto::song::MeasureLength(*wii_loop, kWiiBuild, 1));
 
     const auto wii_note =
         hokuto::song::LoadWiiArchive(WiiArchiveBytes(kWiiNoteBytecode), "note.brsar", ntdlib::rvl::snd::kRsarOptions);
     const std::optional<hokuto::song::Length> note = hokuto::song::MeasureLength(*wii_note, kWiiBuild, 0);
-    XSFLIB_CHECK(note && note->length >= 750 && note->length < kLoopLength && note->fade == 0 && note->loops == 0 &&
-                 !note->silent && !note->loop);
+    XSFLIB_CHECK(note && note->length >= kNoteMs && note->length < kNoteMs + kShortRelease && note->fade == 0 &&
+                 note->loops == 0 && !note->silent && !note->loop);
 }
 
 // A file takes the lengths of its sequence sounds, and drops the lengths of other sounds. A progress that returns
@@ -213,7 +248,7 @@ void TestFileLengths()
     if (measured && measured->lengths.size() == 2)
     {
         const hokuto::format::SoundLength& loop = measured->lengths.at(kLoopSound);
-        XSFLIB_CHECK(Near(loop.length, kLoopLength, 5) && loop.fade == 10000 && loop.loops == 2 &&
+        XSFLIB_CHECK(Near(loop.length, kLoopLength, 5) && loop.fade == kFadeMs && loop.loops == 2 &&
                      (loop.loop == hokuto::format::LoopTicks{96, 192}));
         XSFLIB_CHECK(measured->lengths.at(kNoteSound).fade == 0 && !measured->lengths.at(kNoteSound).loop);
     }
@@ -236,7 +271,7 @@ void TestFileLengths()
     if (wii_measured && wii_measured->lengths.size() == 1)
     {
         const hokuto::format::SoundLength& loop = wii_measured->lengths.at(0);
-        XSFLIB_CHECK(Near(loop.length, kLoopLength, 3) && loop.fade == 10000 && loop.loops == 2 &&
+        XSFLIB_CHECK(Near(loop.length, kLoopLength, 3) && loop.fade == kFadeMs && loop.loops == 2 &&
                      (loop.loop == hokuto::format::LoopTicks{96, 192}));
     }
 }
@@ -248,6 +283,7 @@ int main()
     return xsflib::testing::RunTest("lengths",
                                     []
                                     {
+                                        TestRules();
                                         TestMeasure();
                                         TestFileLengths();
                                     });

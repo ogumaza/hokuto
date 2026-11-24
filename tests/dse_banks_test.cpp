@@ -73,7 +73,7 @@ File TestFile()
 
 std::shared_ptr<const DseSet> SetOf(const File& file)
 {
-    return hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater);
+    return hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater, {});
 }
 
 // The banks, in the order of the files.

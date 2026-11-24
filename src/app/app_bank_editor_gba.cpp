@@ -275,9 +275,7 @@ void App::DropFilesOnGbaBank(const std::vector<std::string>& paths, const BankDr
         DoGbaGroupVersion("Add Samples", gba_bank_view_->name + ", " + ProgramsText(programs), *bank_editor_,
                           edit::WithGbaVoicesAt(file, *played_.Gba(), *bank_editor_, voices));
         bank_state_.program = programs.front();
-        bank_state_.gba_row.reset();
-        bank_state_.gba_held.reset();
-        bank_state_.gba_steps.reset();
+        ForgetGbaProgram(bank_state_);
     }
     catch (const std::exception& error)
     {

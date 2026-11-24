@@ -29,6 +29,9 @@ bool HeapFull(const std::exception& error);
 // Whether `error` is edit::WithGbaNewBytes's refusal of new bytes for want of room in the ROM.
 bool LacksRoom(const std::invalid_argument& error);
 
+// `value` in hexadecimal, with 0x and eight digits: an item ID or an offset.
+std::string HexOf(uint32_t value);
+
 // Up to `most` indices from 0 to `count`, spread evenly.
 std::vector<std::size_t> SpreadIndices(std::size_t count, std::size_t most);
 

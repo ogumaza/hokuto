@@ -114,9 +114,9 @@ constexpr char kSampleLoopStartTip[] = "First sample of the loop.";
 // A field for a whole number that shows `shown` until the user types. Enter returns the number that the user typed,
 // with any commas left out. Other text is refused with `refusal`. While `busy`, the number that the user typed waits in
 // `waiting` for `item`.
-std::optional<uint32_t> NumberField(const char* id, std::array<char, 16>& text, bool& typing, uint32_t shown, bool busy,
-                                    WaitingValues<std::string>& waiting, const ShownItem& item, BankEdit& edit,
-                                    const std::string& refusal)
+std::optional<uint32_t> WholeNumberField(const char* id, std::array<char, 16>& text, bool& typing, uint32_t shown,
+                                         bool busy, WaitingValues<std::string>& waiting, const ShownItem& item,
+                                         BankEdit& edit, const std::string& refusal)
 {
     const std::optional<std::string> ended = TypedField(id, text, typing, std::to_string(shown), busy, waiting, item);
     if (!ended)
@@ -182,8 +182,8 @@ void DrawDriverSampleRate(const DriverSampleView& sample, BankEditorState& state
                               "leaves empty.");
     FieldLabel("Rate (Hz)", rate_tip.c_str());
     const std::string rate_refusal = "The rate must be " + rate_range + ".";
-    if (const std::optional<uint32_t> rate = NumberField("##rate", state.typed_rate, state.typing_rate, held.rate, busy,
-                                                         state.typed_waiting, item, edit, rate_refusal);
+    if (const std::optional<uint32_t> rate = WholeNumberField("##rate", state.typed_rate, state.typing_rate, held.rate,
+                                                              busy, state.typed_waiting, item, edit, rate_refusal);
         rate && *rate != held.rate)
     {
         if (*rate < sample.least_rate || *rate > sample.most_rate)
@@ -219,8 +219,8 @@ void DrawDriverSampleLoop(const DriverSampleView& sample, BankEditorState& state
     const std::string loop_refusal =
         "The loop must start from 0 to " + Grouped(sample.length > 0 ? sample.length - 1 : 0) + ".";
     if (const std::optional<uint32_t> start =
-            NumberField("##loop-start", state.typed_loop, state.typing_loop, sample.loop_start.value_or(0), busy,
-                        state.typed_waiting, item, edit, loop_refusal);
+            WholeNumberField("##loop-start", state.typed_loop, state.typing_loop, sample.loop_start.value_or(0), busy,
+                             state.typed_waiting, item, edit, loop_refusal);
         start && !no_loop && *start != *sample.loop_start)
     {
         if (*start >= sample.length)

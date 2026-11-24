@@ -150,7 +150,8 @@ inline std::shared_ptr<const song::DriverRom> KrawallMeasureRom()
 
 // The archive's bytes: sequence sound 0 plays key 60 at velocity 127 for 96 ticks on program 0, waits 96 ticks and
 // ends. Program 0 plays a constant wave of 2 s. With `sends`, the track first sends to buses A and B at full level.
-inline std::vector<uint8_t> CtrNoteArchiveBytes(bool sends = false)
+// With `low_pass`, the track first sets a low-pass of -0.25: command 0xD8 with argument 48.
+inline std::vector<uint8_t> CtrNoteArchiveBytes(bool sends = false, bool low_pass = false)
 {
     namespace sar_files = ntdlib::testing::sar_files;
     constexpr ntdlib::sar::Flavor kCtr = ntdlib::sar::Flavor::kCtr;
@@ -158,6 +159,10 @@ inline std::vector<uint8_t> CtrNoteArchiveBytes(bool sends = false)
     if (sends)
     {
         commands.insert(commands.begin(), {0xD9, 0x7F, 0xDA, 0x7F});
+    }
+    if (low_pass)
+    {
+        commands.insert(commands.begin(), {0xD8, 48});
     }
     sar_files::ArchiveSpec spec;
     spec.sounds = {{.name = "SEQ_NOTE", .file = 0, .banks = {0}}};

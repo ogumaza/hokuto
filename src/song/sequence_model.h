@@ -255,7 +255,7 @@ public:
     //   10.42 ms: 341 samples at 32,728 Hz in strict mixing, and 500 at about 47,989 Hz in enhanced mixing
     //   (ntdlib::ntr::kEnhancedRate). The sound starts with the profile of its game (DsProfileOf). With `dry`, it
     //   leaves out the profile's reverb and output effect (DryDsProfile). Enhanced mixing leaves out the output effect
-    //   in any case (ntdlib::ntr::ArchivePlayerOptions::enhanced).
+    //   in any case (ntdlib::ntr::ArchivePlayerOptions::enhanced). It also leaves out the profile's locks of channels.
     // - A sound of a set of DSE, the DSE sounds of a DS cartridge image: the frames are those of the DS.
     SequenceModel(Played played, std::shared_ptr<const Sequence> sequence, ModelOptions options = {});
 

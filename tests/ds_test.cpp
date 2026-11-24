@@ -57,6 +57,7 @@
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sdat/layout.h"
 #include "ntdlib/sequence_export/ntr/convert.h"
+#include "ntdlib/sequence_export/ntr/game_profiles.h"
 #include "ntdlib/testing/nds_files.h"
 #include "ntdlib/testing/sdat_files.h"
 #include "seqlib/midi/reader.h"
@@ -124,8 +125,9 @@ const files::Wave kSquare{
     .loop_length = 4,
     .data = {0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0, 0x40, 0x40, 0xC0, 0xC0}};
 
-// The test archive. `first_name`, when it isn't empty, names its first sequence in a SYMB block.
-Bytes TestArchiveBytes(const std::string& first_name = "")
+// The test archive. `first_name`, when it isn't empty, names its first sequence in a SYMB block. `first` gives the
+// bytes of its first sequence.
+Bytes TestArchiveBytes(const std::string& first_name = "", const Bytes& first = kTwoTracks)
 {
     sdat::ArchiveModel model;
     if (!first_name.empty())
@@ -141,7 +143,7 @@ Bytes TestArchiveBytes(const std::string& first_name = "")
     model.banks = {sdat::BankInfo{3, {0, kNone, kNone, kNone}, ""}};
     model.wave_archives = {sdat::WaveArchiveInfo{4, ""}};
     model.players = {sdat::PlayerInfo{1, 0, 0, 0, ""}};
-    model.files = {files::Sequence(kTwoTracks), files::Sequence(kChoice),
+    model.files = {files::Sequence(first), files::Sequence(kChoice),
                    files::SequenceArchive({{.offset = 0}, {.offset = 0xFFFFFFFF}, {.offset = 4}}, kArchived),
                    files::Bank({{.type = 1, .region = {.wave = 0}}}), files::WaveArchive({kSquare})};
 
@@ -875,15 +877,15 @@ void TestNotePreview()
 }
 
 // The test archive in file `path` of a cartridge image of game `code`. The program loads such an archive the same way:
-// the game comes from the image (DsGameOf). `first_name` names the archive's first sequence (TestArchiveBytes). A file
-// of 0xFF bytes after a byte of 1 comes last in the image. Like the image that a .hok file keeps, the image leaves the
-// 0xFF bytes out.
+// the game comes from the image (DsGameOf). `first_name` names the archive's first sequence, and `first` gives its
+// bytes (TestArchiveBytes). A file of 0xFF bytes after a byte of 1 comes last in the image. Like the image that a .hok
+// file keeps, the image leaves the 0xFF bytes out.
 std::shared_ptr<const DsArchive> ArchiveOfGame(const std::string& code,
                                                const std::string& path = "sound/sound_data.sdat",
-                                               const std::string& first_name = "")
+                                               const std::string& first_name = "", const Bytes& first = kTwoTracks)
 {
     namespace nds_files = ntdlib::testing::nds_files;
-    const Bytes archive = TestArchiveBytes(first_name);
+    const Bytes archive = TestArchiveBytes(first_name, first);
     nds_files::Image spec;
     spec.game_code = code;
     spec.files = {{path, archive}, {"sound/zz.bin", {0x01, 0xFF, 0xFF, 0xFF}}};
@@ -1057,6 +1059,273 @@ void TestProfiles()
     Check(SameReverb(options.reverb, reverb.settings.reverb) && options.variables.size() == 1 &&
               options.variables.at(0) == 5,
           "the performer takes the profile and the starting values");
+}
+
+// Sequence 0 of the archive of the locks: six notes that sound together for 400 ticks.
+//
+//    0: C7 00           note wait off
+//    2: 3C 7F 83 10     note 60, velocity 127, 400 ticks
+//    6: 40 7F 83 10     note 64
+//   10: 43 7F 83 10     note 67
+//   14: 48 7F 83 10     note 72
+//   18: 4C 7F 83 10     note 76
+//   22: 4F 7F 83 10     note 79
+//   26: 80 83 10        wait 400 ticks
+//   29: FF              end
+const Bytes kHeldNotes = {0xC7, 0x00, 0x3C, 0x7F, 0x83, 0x10, 0x40, 0x7F, 0x83, 0x10, 0x43, 0x7F, 0x83, 0x10, 0x48,
+                          0x7F, 0x83, 0x10, 0x4C, 0x7F, 0x83, 0x10, 0x4F, 0x7F, 0x83, 0x10, 0x80, 0x83, 0x10, 0xFF};
+
+// ntdlib's output of the test archive's sequence 0, run directly for `driver_frames` of the driver's frames in
+// `mixing`: started with `settings`, with `commands` right after the start. Before each driver frame, the commands of
+// each of `locks` in that frame go out (ntdlib::ntr::ChannelLockCommands), and so do `lists` through
+// ntdlib::ntr::TickListProgress, with the ticks that player 0 has run. In strict mixing, the 16-bit samples come as
+// floats of the same values.
+std::vector<float> DirectWhilePlaying(const DsArchive& archive, int driver_frames, Mixing mixing,
+                                      const ntdlib::ntr::GameSettings& settings,
+                                      const ntdlib::ntr::snd::CommandList& commands,
+                                      std::span<const ntdlib::ntr::ChannelLock> locks,
+                                      std::span<const ntdlib::ntr::TickCommands> lists)
+{
+    ntdlib::ntr::ArchivePlayerOptions options{archive.build};
+    options.enhanced = mixing == Mixing::kEnhanced;
+    ntdlib::ntr::ArchivePlayer player(archive.archive, options);
+    uint32_t ticks = 0;
+    player.on_tick = [&ticks](int number)
+    {
+        ticks += number == 0 ? 1 : 0;
+    };
+    player.Start(ntdlib::ntr::SequenceRef{0}, settings);
+    if (!commands.empty())
+    {
+        player.Send(commands);
+    }
+
+    ntdlib::ntr::TickListProgress progress(lists.size());
+    const auto send = [&player](const ntdlib::ntr::snd::CommandList& list)
+    {
+        player.Send(list);
+    };
+    std::vector<float> floats;
+    std::vector<ntdlib::ntr::SoundOutput> strict;
+    for (int frame = 0; frame < driver_frames; frame++)
+    {
+        for (const ntdlib::ntr::ChannelLock& lock : locks)
+        {
+            if (lock.frame == static_cast<uint64_t>(frame))
+            {
+                player.Send(ntdlib::ntr::ChannelLockCommands(lock));
+            }
+        }
+        progress.SendDue(lists, static_cast<uint64_t>(frame) * ntdlib::ntr::snd::kFrameClocks, ticks, send);
+        if (mixing == Mixing::kEnhanced)
+        {
+            player.RunFrame(floats);
+        }
+        else
+        {
+            player.RunFrame(strict);
+        }
+    }
+
+    std::vector<int16_t> samples;
+    ntdlib::ntr::AppendPcm16(strict, samples);
+    floats.insert(floats.end(), samples.begin(), samples.end());
+
+    return floats;
+}
+
+// The samples of `played` in `mixing`, as DirectWhilePlaying gives them.
+std::vector<float> SamplesOf(const Played& played, Mixing mixing)
+{
+    if (mixing == Mixing::kEnhanced)
+    {
+        return played.floats;
+    }
+
+    return {played.samples.begin(), played.samples.end()};
+}
+
+// The samples of the model's last frame in `mixing`, as DirectWhilePlaying gives them.
+std::vector<float> FrameOf(SequenceModel& model, Mixing mixing)
+{
+    if (mixing == Mixing::kEnhanced)
+    {
+        const std::span<const float> floats = model.FloatOutput();
+        return {floats.begin(), floats.end()};
+    }
+
+    return {model.Output().begin(), model.Output().end()};
+}
+
+// Whether `frame` holds the samples of model frame `number` of `expected`, a frame of `size` samples.
+bool FrameMatches(std::span<const float> frame, std::span<const float> expected, std::size_t number, std::size_t size)
+{
+    return frame.size() == size && expected.size() >= (number + 1) * size &&
+           std::ranges::equal(frame, expected.subspan(number * size, size));
+}
+
+// Spirit Tracks' SEQ_184 in `archive` with `profile` in `mixing`: from the start, after a seek past the lock, and after
+// a seek of a new model straight to frame 400. That seek runs the frames before its lead without mixing, and the lock
+// comes in one of them. Strict mixing plays the lock. Enhanced mixing leaves it out, and the notes on the locked
+// channels play on.
+void CheckLockedPlayback(const std::shared_ptr<const DsArchive>& archive, const ntdlib::ntr::GameProfile& profile,
+                         Mixing mixing)
+{
+    const bool strict = mixing == Mixing::kStrict;
+    const std::string mode = strict ? "" : " in enhanced mixing";
+    const std::vector<float> locked =
+        DirectWhilePlaying(*archive, 900, mixing, profile.settings, profile.commands, profile.channel_locks, {});
+    const std::vector<float> unlocked =
+        DirectWhilePlaying(*archive, 900, mixing, profile.settings, profile.commands, {}, {});
+    const std::vector<float>& expected = strict ? locked : unlocked;
+    const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0));
+    const hokuto::song::ModelOptions options{.mixing = mixing, .snapshot_interval = 20};
+    const auto model = std::make_shared<SequenceModel>(archive, sequence, options);
+    const auto fresh = std::make_shared<SequenceModel>(archive, sequence, options);
+
+    const Played played = Play(*model, 290);
+    const std::size_t frame = 2 * model->FrameSamples();
+    const bool sought = model->SeekFrame(280);
+    const std::vector<float> after_seek = FrameOf(*model, mixing);
+    const bool fresh_sought = fresh->SeekFrame(400);
+    const std::vector<float> after_fresh_seek = FrameOf(*fresh, mixing);
+
+    const std::vector<float> samples = SamplesOf(played, mixing);
+    SEQLIB_REQUIRE(samples.size() == 290 * frame && locked.size() >= 401 * frame && unlocked.size() == locked.size());
+    SEQLIB_REQUIRE(fresh->LeadFrames() + 263 < 400 &&
+                   !std::ranges::equal(std::span(locked).subspan(280 * frame, frame),
+                                       std::span(unlocked).subspan(280 * frame, frame)) &&
+                   !std::ranges::equal(std::span(locked).subspan(400 * frame, frame),
+                                       std::span(unlocked).subspan(400 * frame, frame)));
+    Check(locked != unlocked, "the lock changes the output" + mode);
+    Check(std::equal(samples.begin(), samples.end(), expected.begin()),
+          (strict ? "the output with the lock" : "the output without the lock") + mode);
+    Check(sought && FrameMatches(after_seek, expected, 280, frame), "a seek past the lock" + mode);
+    Check(fresh_sought && FrameMatches(after_fresh_seek, expected, 400, frame),
+          "a seek of a new model across the lock's frame" + mode);
+}
+
+// Spirit Tracks' code locks channels 6 and 7 for a stream that a cutscene prepares while SEQ_184 plays, before the
+// driver's frame 526 from the sequence's start (ntdlib's profile, from runs of the game's code). The lock stops the
+// notes on those channels at once. In strict mixing, the model has to match ntdlib's ArchivePlayer, run directly with
+// the lock, and has to differ from the run without the lock. Enhanced mixing leaves the lock out, as it leaves out the
+// output effect: the model has to match ArchivePlayer, run directly in enhanced mixing without the lock
+// (CheckLockedPlayback). The performer takes the lock too: the MIDI export has to give the files of ntdlib's DS
+// converter, run directly with the profile as the converter applies it (ApplyProfile).
+void TestChannelLocks()
+{
+    namespace ntr_export = ntdlib::sequence_export::ntr;
+    const std::string path = "SoundData/final_sound_data.sdat";
+    const std::shared_ptr<const DsArchive> archive = ArchiveOfGame("BKIE", path, "SEQ_184", kHeldNotes);
+    const ntdlib::ntr::GameProfile profile = ntdlib::ntr::GameProfileOf("BKIE", path, 0, "SEQ_184");
+    SEQLIB_REQUIRE(profile.channel_locks.size() == 1 && profile.channel_locks[0].frame == 526);
+    ntr_export::PerformOptions options;
+    options.build = archive->build;
+    ntr_export::ApplyProfile(profile, options);
+    const ntr_export::Conversion direct =
+        ntr_export::ConvertSequence(archive->archive, {0}, "SEQ_184", options, "Hokuto");
+
+    const ntdlib::sequence_export::Conversion exported = hokuto::song::ConvertToMidi(*archive, 0, {}, "Hokuto");
+
+    Check(hokuto::song::DsProfileOf(*archive, 0).channel_locks == profile.channel_locks &&
+              hokuto::song::DsPerformOptions(*archive, 0, {}).channel_locks == profile.channel_locks,
+          "the profile's locks");
+    Check(exported.midi == direct.midi && exported.sf2 == direct.sf2, "the MIDI export with the lock");
+    CheckLockedPlayback(archive, profile, Mixing::kStrict);
+    CheckLockedPlayback(archive, profile, Mixing::kEnhanced);
+}
+
+// Sequence 0 of the archive of the intro: one note of 700 ticks.
+//
+//    0: 3C 7F 85 3C     note 60, velocity 127, 700 ticks
+//    4: FF              end
+const Bytes kLongNote = {0x3C, 0x7F, 0x85, 0x3C, 0xFF};
+
+// ntdlib's output of the test archive's sequence 0 in `mixing`, as DirectWhilePlaying gives it: started with
+// `profile`'s settings and variable 0 at `variable`, with the profile's commands and `state`'s right after the start.
+// With `lists`, the state's lists of commands after a tick go out too.
+std::vector<float> DirectState(const DsArchive& archive, int driver_frames, Mixing mixing,
+                               ntdlib::ntr::GameProfile profile, int16_t variable,
+                               const ntdlib::ntr::ProfileArrangement& state, bool lists)
+{
+    profile.settings.variables.local[0] = variable;
+    profile.commands.insert(profile.commands.end(), state.commands.begin(), state.commands.end());
+    const std::vector<ntdlib::ntr::TickCommands> none;
+
+    return DirectWhilePlaying(archive, driver_frames, mixing, profile.settings, profile.commands, {},
+                              lists ? state.tick_commands : none);
+}
+
+// SEQ_39 in `archive` in `mixing`, with variable 0 at -1: the intro of `profile`. The checks run from the start, after
+// a seek past the fade, after a seek back into the fade, and after a seek of a new model straight past the fade. The
+// fade runs from about frame 508 to frame 560. The seek back starts from the snapshot at frame 520, and the lists have
+// to go out again from there. The new model runs the frames before its lead without mixing, and the fade starts in one
+// of them.
+void CheckIntroPlayback(const std::shared_ptr<const DsArchive>& archive, const ntdlib::ntr::GameProfile& profile,
+                        const ntdlib::ntr::ProfileArrangement& intro, Mixing mixing)
+{
+    const std::string mode = mixing == Mixing::kEnhanced ? " in enhanced mixing" : "";
+    const std::vector<float> expected = DirectState(*archive, 1400, mixing, profile, -1, intro, true);
+    const std::vector<float> without_fade = DirectState(*archive, 1400, mixing, profile, -1, intro, false);
+    const auto sequence = std::make_shared<const Sequence>(hokuto::song::ReadSequence(*archive, 0, {{0, -1}}));
+    const hokuto::song::ModelOptions options{.mixing = mixing, .snapshot_interval = 20};
+    const auto model = std::make_shared<SequenceModel>(archive, sequence, options);
+    const auto fresh = std::make_shared<SequenceModel>(archive, sequence, options);
+
+    const Played played = Play(*model, 690);
+    const std::size_t frame = 2 * model->FrameSamples();
+    const bool sought = model->SeekFrame(600);
+    const std::vector<float> after_seek = FrameOf(*model, mixing);
+    const bool sought_back = model->SeekFrame(530);
+    const std::vector<float> after_seek_back = FrameOf(*model, mixing);
+    const bool fresh_sought = fresh->SeekFrame(600);
+    const std::vector<float> after_fresh_seek = FrameOf(*fresh, mixing);
+
+    const std::vector<float> samples = SamplesOf(played, mixing);
+    SEQLIB_REQUIRE(samples.size() == 690 * frame && expected.size() >= samples.size());
+    SEQLIB_REQUIRE(fresh->LeadFrames() + 508 < 600 &&
+                   !std::ranges::equal(std::span(expected).subspan(600 * frame, frame),
+                                       std::span(without_fade).subspan(600 * frame, frame)) &&
+                   !std::ranges::equal(std::span(expected).subspan(530 * frame, frame),
+                                       std::span(without_fade).subspan(530 * frame, frame)));
+    Check(expected != without_fade, "the fade changes the output" + mode);
+    Check(std::equal(samples.begin(), samples.end(), expected.begin()), "the output of the intro" + mode);
+    Check(sought && FrameMatches(after_seek, expected, 600, frame), "a seek past the fade" + mode);
+    Check(sought_back && FrameMatches(after_seek_back, expected, 530, frame), "a seek back into the fade" + mode);
+    Check(fresh_sought && FrameMatches(after_fresh_seek, expected, 600, frame),
+          "a seek of a new model past the fade" + mode);
+}
+
+// Spirit Tracks starts SEQ_39 at section 0, with variable 0 at 0 (ntdlib's profile). With variable 0 at -1, the game
+// plays the intro: every track at 127 with the volume and the tempo of the mixer's state 1, then a fade to the piece's
+// state over 15 frames of the game's code from tick 504 (the profile's state _INTRO, from runs of the game's code).
+// The Variables zone starts the variable at the profile's 0. Starting values of -1 choose the state, and no starting
+// value or 0 chooses none. In both mixing modes, the model has to match ntdlib's ArchivePlayer, run directly with the
+// state's commands and its lists after tick 504 (CheckIntroPlayback), and the lists have to change the output. The
+// performer takes the state too.
+void TestIntroState()
+{
+    const std::string path = "SoundData/final_sound_data.sdat";
+    const std::shared_ptr<const DsArchive> archive = ArchiveOfGame("BKIE", path, "SEQ_39", kLongNote);
+    const ntdlib::ntr::GameProfile profile = ntdlib::ntr::GameProfileOf("BKIE", path, 0, "SEQ_39");
+    const auto intro =
+        std::ranges::find(profile.arrangements, std::string("_INTRO"), &ntdlib::ntr::ProfileArrangement::suffix);
+    SEQLIB_REQUIRE(intro != profile.arrangements.end() && intro->tick_commands.size() == 1 &&
+                   intro->tick_commands[0].tick == 504);
+
+    const Sequence sequence = hokuto::song::ReadSequence(*archive, 0, {{0, -1}});
+
+    Check(hokuto::song::DsStateOf(profile, {{0, -1}}) == &*intro && !hokuto::song::DsStateOf(profile, {}) &&
+              !hokuto::song::DsStateOf(profile, {{0, 0}}),
+          "the starting values choose the intro");
+    Check(hokuto::song::DsProfileOf(*archive, 0, {{0, -1}}).tick_commands == intro->tick_commands &&
+              hokuto::song::DsProfileOf(*archive, 0).tick_commands.empty() &&
+              hokuto::song::DsPerformOptions(*archive, 0, {{0, -1}}).tick_commands == intro->tick_commands,
+          "the intro's lists");
+    Check(hokuto::song::StartingValue(sequence, 0) == 0 && hokuto::song::StartingValue(sequence, 1) == -1,
+          "the Variables zone starts at the profile's values");
+    CheckIntroPlayback(archive, profile, *intro, Mixing::kStrict);
+    CheckIntroPlayback(archive, profile, *intro, Mixing::kEnhanced);
 }
 
 // The items of a DS archive in the browser: its banks, wave archives and streams with their names, their file names,
@@ -1246,6 +1515,8 @@ int main()
                                         TestNotePreview();
                                         TestOutputEffect();
                                         TestProfiles();
+                                        TestChannelLocks();
+                                        TestIntroState();
                                         TestItemTables();
                                         TestItemPcm();
                                         TestItemFiles();

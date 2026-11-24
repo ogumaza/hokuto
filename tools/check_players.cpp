@@ -441,7 +441,7 @@ void CheckWaveSound(const std::string& archive, const WaveSoundFacts& facts, con
 // Checks stream sound `sound` of `archive` against `pcm`, its stream of `stream_rate` decoded, played at `pitch` (see
 // the top of the file). The channels of `tracks` play, each once, up to `most_channels`. `run_for` runs the console's
 // model with the sound for a number of seconds at most. The tracks at the centre give gains where `gains` holds: on the
-// Switch and the Wii U, with the default pan curve only.
+// Switch and the Wii U with the default pan curve, and on the 3DS and the Wii.
 template <class RunFor>
 void CheckStreamSound(const std::string& archive, const std::string& sound, const sar::Pcm& pcm, uint32_t stream_rate,
                       uint8_t volume, double pitch, const std::vector<PlayedTrack>& tracks, std::size_t most_channels,

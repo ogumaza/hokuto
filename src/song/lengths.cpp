@@ -10,6 +10,9 @@
 #include <exception>
 #include <memory>
 #include <optional>
+#include <span>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "agblib/agb/gba.h"
@@ -20,6 +23,9 @@
 #include "ntdlib/nx/atk/length_model.h"
 #include "ntdlib/rvl/snd/length_model.h"
 #include "xsflib/rip/length.h"
+
+#include "song/start_handle.h"
+#include "song/starts.h"
 
 namespace hokuto::song
 {
@@ -60,10 +66,167 @@ Length LengthOf(const xsflib::rip::Timing& timing, double frame_ms, const ReadSe
     return length;
 }
 
+// The 3DS's model for the measure, with the start's volume.
+struct CtrStartModel : ntdlib::ctr::snd::ArchiveModel
+{
+    float volume = 1.0f;
+};
+
+// The 3DS's struct of the length analysis for CtrStartModel. The 3DS's model of playback scales its output by the
+// start's volume (start_handle::AtVolume), and a frame sounds where a sample at that volume is audible. A decaying tail
+// at a lower volume falls below the level of silence earlier.
+struct CtrStartLengths : CtrLengths
+{
+    using Model = CtrStartModel;
+
+    static bool Sounded(const Model& model)
+    {
+        const auto audible = [volume = model.volume](int16_t sample)
+        {
+            const int16_t heard = start_handle::AtVolume(sample, volume);
+            return heard > xsflib::rip::kSilenceLevel || heard < -xsflib::rip::kSilenceLevel;
+        };
+
+        return std::ranges::any_of(Output(model), audible);
+    }
+};
+
+// A change of a variable in the measure: the frame that it comes in, counted from 0 at the sound's start
+// (ChangeFrame), the variable and its value.
+struct FrameChange
+{
+    uint64_t frame = 0;
+    int variable = 0;
+    int16_t value = 0;
+};
+
+// A model of the Wii U or the Switch for the measure, with the start's changes of variables. Neither engine schedules
+// a change. The model makes each change at the start of its frame, before the frame's ticks, as playback does
+// (SequenceModel::ChangeVariables). ntdlib's length analysis reads the engine through `engine`.
+template <class Console>
+struct ChangingModel
+{
+    using Inner = typename Console::Model;
+    using Engine = std::remove_reference_t<decltype(*std::declval<Inner&>().engine)>;
+    using Player = std::remove_pointer_t<decltype(std::declval<Engine&>().StartSequence(0))>;
+
+    std::unique_ptr<Inner> inner;
+    Engine* engine = nullptr;
+    Player* player = nullptr;
+    std::vector<FrameChange> changes;
+    uint64_t frame = 0;
+};
+
+// The struct of the length analysis for a ChangingModel of the console of `Console`, ntdlib's struct for the console.
+template <class Console>
+struct ChangingLengths
+{
+    using Model = ChangingModel<Console>;
+
+    static constexpr double kFrameMs = Console::kFrameMs;
+
+    // The frame's changes, then the frame.
+    static bool RunFrame(Model& model)
+    {
+        for (const FrameChange& change : model.changes)
+        {
+            if (change.frame == model.frame)
+            {
+                start_handle::SetNwVariable(*model.engine, *model.player, change.variable, change.value);
+            }
+        }
+        model.engine->RunFrame();
+        ++model.frame;
+
+        return true;
+    }
+
+    // A change still to come can change the sound while the sequence plays.
+    static bool Pending(const Model& model)
+    {
+        const auto later = [&model](const FrameChange& change)
+        {
+            return change.frame >= model.frame;
+        };
+
+        return !model.player->IsFinished() && std::ranges::any_of(model.changes, later);
+    }
+
+    static std::span<const int16_t> Output(const Model& model)
+    {
+        return Console::Output(*model.inner);
+    }
+
+    static bool Ringing(const Model& model)
+    {
+        return Console::Ringing(*model.inner);
+    }
+
+    static std::size_t VoiceCount(const Model& model)
+    {
+        return Console::VoiceCount(*model.inner);
+    }
+
+    static xsflib::rip::VoicePlace Voice(const Model& model, std::size_t index)
+    {
+        return Console::Voice(*model.inner, index);
+    }
+};
+
+// The changes of `start` at the frames of a console whose frames last `frame_ms`.
+std::vector<FrameChange> FrameChangesOf(const format::SoundStart& start, FrameMs frame_ms)
+{
+    std::vector<FrameChange> changes;
+    for (const VariableChange& change : ChangesOf(start))
+    {
+        changes.push_back({ChangeFrame(change.time, frame_ms), change.variable, change.value});
+    }
+
+    return changes;
+}
+
+// Measures sequence sound `sound` on a model of the Wii U or the Switch that `make_inner()` makes, with the struct of
+// the length analysis `Console`, on the console of `flavor`. The sound starts as playback starts it
+// (ConsoleModel::ApplyStart), and the start's changes come at their frames.
+template <class Console, class MakeInner>
+std::optional<xsflib::rip::Timing> MeasureNw(const MakeInner& make_inner, uint32_t sound,
+                                             const format::SoundStart& start, sar::Flavor flavor)
+{
+    using Lengths = ChangingLengths<Console>;
+    const std::vector<FrameChange> changes = FrameChangesOf(start, FrameMsOf(flavor));
+    const auto make_model = [&make_inner, &changes]
+    {
+        auto model = std::make_unique<typename Lengths::Model>();
+        model->inner = make_inner();
+        model->engine = &*model->inner->engine;
+        model->changes = changes;
+        return model;
+    };
+    const auto start_sound = [sound, &start](typename Lengths::Model& model)
+    {
+        auto* player = model.engine->StartSequence(sound);
+        if (player == nullptr)
+        {
+            return player;
+        }
+
+        model.player = player;
+        for (const auto& [number, value] : StartValuesOf(start))
+        {
+            start_handle::SetNwVariable(*model.engine, *player, number, value);
+        }
+        start_handle::ApplyNw(*model.engine, *player, start);
+        return player;
+    };
+
+    return ntdlib::nwsnd::MeasureSequence<Lengths>(make_model, start_sound,
+                                                   ntdlib::nwsnd::LengthRulesFor(Lengths::kFrameMs));
+}
+
 } // namespace
 
 std::optional<Length> MeasureLength(const sar::SoundArchive& archive, uint32_t sound, const AuxEffects& effects,
-                                    const AuxVolumes& volumes)
+                                    const AuxVolumes& volumes, const format::SoundStart& start)
 {
     if (sound >= archive.Sounds().size() || archive.Sounds()[sound].type != sar::SoundType::kSequence)
     {
@@ -75,16 +238,39 @@ std::optional<Length> MeasureLength(const sar::SoundArchive& archive, uint32_t s
     const bool ctr = flavor == sar::Flavor::kCtr;
     const auto measure = [&]
     {
-        // The 3DS plays without effects.
+        // The 3DS plays without effects. It gives the sound its start as playback does (ConsoleModel::ApplyStart), and
+        // schedules the start's changes. The measure hears the output at the start's volume.
         if (ctr)
         {
             const auto make_model = [&]
             {
-                auto model = std::make_unique<ntdlib::ctr::snd::ArchiveModel>();
+                auto model = std::make_unique<CtrStartModel>();
                 model->Start(archive);
+                model->volume = start.volume.value_or(1.0f);
                 return model;
             };
-            return ntdlib::nwsnd::MeasureSequence<CtrLengths>(make_model, sound);
+            const auto start_sound = [sound, &start](CtrStartModel& model)
+            {
+                auto* player = model.engine->StartSequence(sound, start.banks);
+                if (player == nullptr)
+                {
+                    return player;
+                }
+
+                for (const auto& [number, value] : StartValuesOf(start))
+                {
+                    player->SetVariable(*model.engine, number, value);
+                }
+                for (const VariableChange& change : ChangesOf(start))
+                {
+                    model.engine->ScheduleVariable(*player, change.variable, change.value,
+                                                   ChangeFrame(change.time, FrameMsOf(sar::Flavor::kCtr)));
+                }
+                start_handle::ApplyCtr(*model.engine, *player, start);
+                return player;
+            };
+            return ntdlib::nwsnd::MeasureSequence<CtrStartLengths>(
+                make_model, start_sound, ntdlib::nwsnd::LengthRulesFor(CtrStartLengths::kFrameMs));
         }
 
         if (wii_u)
@@ -93,14 +279,14 @@ std::optional<Length> MeasureLength(const sar::SoundArchive& archive, uint32_t s
             {
                 return WiiUModel(archive, effects, volumes);
             };
-            return ntdlib::nwsnd::MeasureSequence<WiiULengths>(make_model, sound);
+            return MeasureNw<WiiULengths>(make_model, sound, start, flavor);
         }
 
         const auto make_model = [&]
         {
             return SwitchModel(archive, effects, volumes);
         };
-        return ntdlib::nwsnd::MeasureSequence<SwitchLengths>(make_model, sound);
+        return MeasureNw<SwitchLengths>(make_model, sound, start, flavor);
     };
     const std::optional<xsflib::rip::Timing> timing = xsflib::rip::TryMeasure(measure);
     if (!timing)
@@ -110,7 +296,7 @@ std::optional<Length> MeasureLength(const sar::SoundArchive& archive, uint32_t s
 
     const auto read_sequence = [&]
     {
-        return ReadSequence(archive, sound);
+        return ReadSequence(archive, sound, StartValuesOf(start), ChangesOf(start), start);
     };
     return LengthOf(*timing, ctr ? CtrLengths::kFrameMs : (wii_u ? WiiULengths::kFrameMs : SwitchLengths::kFrameMs),
                     read_sequence);
@@ -213,10 +399,9 @@ std::optional<PlayedFrames> PlayToEnd(DriverPlayer& player, uint64_t target)
 
 std::optional<Length> MeasureLength(const DriverRom& rom, uint32_t sound)
 {
-    // xsflib's limit, fade and silence after the last sound.
+    // xsflib's limit and fade. A sequence that ends ends at its last sound.
     constexpr xsflib::rip::LengthRules kRules;
     constexpr auto kFadeMs = static_cast<uint32_t>(kRules.fade_ms);
-    constexpr auto kAfterLastMs = static_cast<uint32_t>(kRules.tail_ms);
     std::optional<Sequence> sequence;
     try
     {
@@ -274,7 +459,7 @@ std::optional<Length> MeasureLength(const DriverRom& rom, uint32_t sound)
     }
     else
     {
-        length.length = ms_of(last_sound) + kAfterLastMs;
+        length.length = ms_of(last_sound);
     }
 
     return length;

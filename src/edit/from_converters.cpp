@@ -15,9 +15,11 @@
 
 #include "ntdlib/commands/sequence.h"
 #include "ntdlib/sar/formats.h"
+#include "ntdlib/sequence_export/linear_pan.h"
 
 #include "edit/converter.h"
 #include "edit/ds_files.h"
+#include "edit/dse_files.h"
 #include "edit/midi_songs.h"
 #include "edit/new_items.h"
 #include "edit/other_console.h"
@@ -54,14 +56,18 @@ using other_console_parts::Song;
 // on after the jump. The song's tempo moves between whole tempos from bar to bar and keeps the MIDI file's time. The
 // SoundFont is imported as a bank after a wave archive of its samples (BankOfSoundFont in edit/sound_font_banks.h). Its
 // MIDI banks 0 to 127 go in, and control change 0 selects among them, for a source's bank of more than 128 programs.
+// Every region of the bank plays `gain` centibels louder than its zone: the cut that the converter gives every zone.
 // The sound, the bank and the wave archive take `name` after SEQ_, BANK_ and WARC_. The sound uses Hokuto's settings
-// and the sine and cosine pan curve. The pans of the MIDI file follow that law. The reverb of the song sends to bus A,
-// and the new file has no effect there. The warnings name no console but the source console: the file can be converted
-// on to another console. With `to_ds`, the file is converted on to the DS. The DS has no buses. The warnings then give
-// no advice about bus A, and the warning about whole tempos names the DS.
+// and the sine and cosine pan curve. The pans of the MIDI file follow that law. With `linear_pans`, the MIDI file and
+// the SoundFont hold pans for the DS's sound unit. That unit pans linearly. The sound then keeps the default pan curve,
+// and the conversion to the DS gives no warning about a curve. The reverb of the song sends to bus A, and the new file
+// has no effect there. The warnings name no console but the source console: the file can be converted on to another
+// console. With `to_ds`, the file is converted on to the DS. The DS has no buses. The warnings then give no advice
+// about bus A, and the warning about whole tempos names the DS. With `stops_sounds`, control change 120 stops the
+// track's channels at once (MidiOptions::stops_sounds). Without it, the song leaves the controller out.
 OtherConsoleSong FromConversion(const format::File& file, uint32_t sound,
                                 const ntdlib::sequence_export::Conversion& conversion, const std::string& name,
-                                bool to_ds)
+                                double gain, bool to_ds, bool linear_pans, bool stops_sounds)
 {
     const MidiSong midi = SongOfMidi(conversion.midi, name,
                                      {.from_tick_0 = true,
@@ -69,8 +75,9 @@ OtherConsoleSong FromConversion(const format::File& file, uint32_t sound,
                                       .ends_at_loop = true,
                                       .joins_layers = true,
                                       .selects_banks = true,
+                                      .stops_sounds = stops_sounds,
                                       .engine = to_ds ? "DS" : "NintendoWare"});
-    const SoundFontBank bank = BankOfSoundFont(conversion.sf2, sar::Flavor::kCafe, kEveryMidiBank);
+    const SoundFontBank bank = BankOfSoundFont(conversion.sf2, sar::Flavor::kCafe, kEveryMidiBank, gain);
 
     Song song;
     song.result.file = format::NewFile(format::Engine::kWiiU);
@@ -84,7 +91,11 @@ OtherConsoleSong FromConversion(const format::File& file, uint32_t sound,
                                         std::vector<uint32_t>{bank_id});
     const auto new_sequence = static_cast<uint32_t>(song.result.file.sequences.size() - 1);
     const auto added = static_cast<uint32_t>(song.result.file.native->tables->sounds.size() - 1);
-    song.result.file = ChangeSound(song.result.file, added, {.value = SoundValue::kPanCurve, .slot = 0, .to = 3});
+    if (!linear_pans)
+    {
+        song.result.file = ChangeSound(song.result.file, added, {.value = SoundValue::kPanCurve, .slot = 0, .to = 3});
+    }
+
     Settle(song, added, std::nullopt);
     CopyParts(song, file, sound, added, std::nullopt, std::nullopt);
     if (!song.result.file.timelines)
@@ -152,15 +163,17 @@ OtherConsoleSong FromGba(const format::File& file, uint32_t sound, bool to_ds)
         ConversionOf([&] { return song::ConvertToMidi(*rom, static_cast<int>(sound), "Hokuto"); });
     const std::string name = Underscored(song::GbaSongName(*rom, static_cast<int>(sound)));
 
-    return FromConversion(file, sound, conversion, name, to_ds);
+    return FromConversion(file, sound, conversion, name, 0.0, to_ds, false, false);
 }
 
 // Sequence `sound` of `file` as a new file of the Wii U (FromConversion). `file` is a file of the DS. ntdlib's
 // converter of the DS makes a MIDI file of the intro and one pass of the loop, and a SoundFont of the instruments that
 // it plays (song::ConvertToMidi). The conversion uses the build of the driver in the cartridge image when the file
 // keeps the image, and the sound plays with the profile of its game (song::DsProfileOf). The sequence's name loses its
-// prefix SEQ_: the new sound, bank and wave archive take SEQ_, BANK_ and WARC_ before it. Throws std::invalid_argument
-// with a message for the user for a sequence that Hokuto can't send, and the exceptions of the imports.
+// prefix SEQ_: the new sound, bank and wave archive take SEQ_, BANK_ and WARC_ before it. Every zone of the SoundFont
+// has the cut of a zone panned fully to one side (ntdlib::sequence_export::PanCut), and the new bank removes it.
+// Throws std::invalid_argument with a message for the user for a sequence that Hokuto can't send, and the exceptions of
+// the imports.
 OtherConsoleSong FromDs(const format::File& file, uint32_t sound)
 {
     const std::shared_ptr<const song::DsArchive> archive = song::LoadDsArchive(
@@ -175,24 +188,32 @@ OtherConsoleSong FromDs(const format::File& file, uint32_t sound)
         name.erase(0, 4);
     }
 
-    return FromConversion(file, sound, conversion, Underscored(std::move(name)), false);
+    return FromConversion(file, sound, conversion, Underscored(std::move(name)), ntdlib::sequence_export::PanCut(),
+                          false, false, false);
 }
 
 // Sound `sound` of `file` as a new file of the Wii U (FromConversion). `file` is a file of DSE's files. ntdlib's
 // converter of DSE makes a MIDI file of the intro and one pass of the loop, and a SoundFont of the instruments that it
-// plays (song::ConvertToMidi). The conversion uses the build of the driver in the cartridge image when the file keeps
-// the image. Throws std::invalid_argument with a message for the user for a sound that Hokuto can't send, and the
-// exceptions of the imports. FromConversion takes `to_ds`.
+// plays (song::ConvertToMidi). The conversion uses the build of the driver in the cartridge image, and the tick of the
+// game, when the file keeps the image. The song starts in its state (edit::DseSetOfFile). Every zone of the SoundFont
+// has the cut of a zone panned fully to one side (ntdlib::sequence_export::PanCut), and the new bank removes it. With
+// `to_ds`, the conversion keeps the driver's pans for the DS's sound unit. That unit pans linearly, as DSE's voices do.
+// The MIDI file and the zones then hold no level of a pan and no cut, and the new bank takes no gain. The DS plays the
+// pans and the levels of the source (H-766). The converter stops a part with control change 120 where DSE's voices fall
+// silent (ntdlib's dse::VoiceView::volume), and the new file stops the track's channels there (H-769 and H-771). The
+// new bank plays no volume LFO, and each zone of the SoundFont plays at the mean power of its volume LFOs (H-770).
+// Throws std::invalid_argument with a message for the user for a sound that Hokuto can't send, and the exceptions of
+// the imports. FromConversion takes `to_ds`.
 OtherConsoleSong FromDse(const format::File& file, uint32_t sound, bool to_ds)
 {
-    const std::shared_ptr<const song::DseSet> set = song::LoadDseSet(
-        format::ExportArchive(file),
-        file.native->cartridge ? song::DseBuildOf(*file.native->cartridge->image) : ntdlib::dse::Build::kLater);
+    const std::shared_ptr<const song::DseSet> set = DseSetOfFile(file);
+    const song::DseFilesFor target = to_ds ? song::DseFilesFor::kDsBank : song::DseFilesFor::kBank;
     const ntdlib::sequence_export::Conversion conversion =
-        ConversionOf([&] { return song::ConvertToMidi(*set, sound, "Hokuto"); });
+        ConversionOf([&] { return song::ConvertToMidi(*set, sound, "Hokuto", target); });
     const std::string name = Underscored(song::DseSoundName(*set, sound));
+    const double gain = to_ds ? 0.0 : ntdlib::sequence_export::PanCut();
 
-    return FromConversion(file, sound, conversion, name, to_ds);
+    return FromConversion(file, sound, conversion, name, gain, to_ds, to_ds, true);
 }
 
 // Sound `sound` of `file` as a new file of the Wii U (FromConversion). `file` is a file of a ROM with one of the GBA's
@@ -209,7 +230,7 @@ OtherConsoleSong FromDriver(const format::File& file, uint32_t sound, bool to_ds
     std::string name = Underscored(rom->SoundName(sound));
     std::erase_if(name, [](char c) { return c == '(' || c == ')'; });
 
-    return FromConversion(file, sound, conversion, name, to_ds);
+    return FromConversion(file, sound, conversion, name, 0.0, to_ds, false, false);
 }
 
 } // namespace

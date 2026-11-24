@@ -375,9 +375,6 @@ std::string EffectText(std::size_t bus, const Effect& effect)
     return text;
 }
 
-namespace
-{
-
 // A parameter's value: a decimal number with an optional '-', point and exponent, such as -1000, 0.8 or 1e-45, held to
 // the nearest float. xsflib also reads a '+' and a decimal comma. The text form takes neither.
 float ParseFloat(const Token& token, std::size_t line)
@@ -394,6 +391,9 @@ float ParseFloat(const Token& token, std::size_t line)
 
     return static_cast<float>(number->value);
 }
+
+namespace
+{
 
 // The aux bus that `token` names: a letter from A to C. Nothing for another token.
 std::optional<std::size_t> BusOf(const Token& token)
@@ -492,9 +492,6 @@ std::pair<std::size_t, float> ParseBusVolume(const std::vector<Token>& tokens, s
     return {*bus, volume};
 }
 
-namespace
-{
-
 // A time in milliseconds as seconds, with a fraction only where it has one: 90000 is 90, and 1500 is 1.5.
 std::string TimeText(uint32_t time)
 {
@@ -520,8 +517,6 @@ std::string SoundNameComment(std::size_t sound, const NativeTables* tables)
 
     return " # " + NameText(tables->sounds[sound].name);
 }
-
-} // namespace
 
 // The lines of scene `index`: its sound and its name, then a line for each starting value and for each change. Where
 // `tables` name the sound, a comment gives its name.
@@ -877,9 +872,6 @@ void ParseView(const std::vector<Token>& tokens, std::size_t line, EditorView& v
     }
 }
 
-namespace
-{
-
 // A time in seconds, to the millisecond: a whole number of seconds, with three decimal places at most.
 uint32_t ParseTime(const Token& token, std::size_t line)
 {
@@ -930,8 +922,6 @@ int16_t ParseVariableValue(const Token& token, std::size_t line)
     const auto magnitude = static_cast<int32_t>(*size);
     return static_cast<int16_t>(negative ? -magnitude : magnitude);
 }
-
-} // namespace
 
 // A line of a scene's values: variable, a variable's number and the value that it starts with, or at and a time before
 // them for a change at that time. A scene starts each variable once at most. Its changes come in the order of their

@@ -16,6 +16,10 @@ using file_parts::In;
 using file_parts::Newer;
 using file_parts::Out;
 
+// The byte after a variable's number in SCEN for a track variable of every track. The number is then the track
+// variable's, from 0 to 15.
+constexpr uint8_t kEveryTrack = 0xFF;
+
 } // namespace
 
 namespace file_parts
@@ -290,9 +294,23 @@ void ReadMixer(std::span<const uint8_t> chunk, File& file)
     }
 }
 
+namespace
+{
+
+// A variable's number and the byte after it in SCEN: 0, or kEveryTrack.
+void WriteVariable(Out& out, uint8_t variable)
+{
+    const bool every_track = variable >= kFirstTrackVariable;
+    out.U8(static_cast<uint8_t>(every_track ? variable - kFirstTrackVariable : variable));
+    out.U8(every_track ? kEveryTrack : 0);
+}
+
+} // namespace
+
 // SCEN: the scenes. Their number, then each scene: its sound, its name, the number of its starting values and each one,
-// then the number of its changes and each one. A starting value is the variable's number, a zero and the value. A
-// change is its time, then the same.
+// then the number of its changes and each one. A starting value is the variable's number, a byte for its tracks and the
+// value. A change is its time, then the same. The byte is 0 for a player's or a global variable, and kEveryTrack for a
+// track variable of every track.
 std::vector<uint8_t> ScenesChunk(const File& file)
 {
     Out out;
@@ -310,8 +328,7 @@ std::vector<uint8_t> ScenesChunk(const File& file)
         out.Count(scene.values.size(), "starting values of a scene");
         for (const auto& [variable, value] : scene.values)
         {
-            out.U8(variable);
-            out.U8(0);
+            WriteVariable(out, variable);
             out.U16(static_cast<uint16_t>(value));
         }
 
@@ -319,8 +336,7 @@ std::vector<uint8_t> ScenesChunk(const File& file)
         for (const VariableChange& change : scene.changes)
         {
             out.U32(change.time);
-            out.U8(change.variable);
-            out.U8(0);
+            WriteVariable(out, change.variable);
             out.U16(static_cast<uint16_t>(change.value));
         }
     }
@@ -333,16 +349,25 @@ std::vector<uint8_t> ScenesChunk(const File& file)
 namespace
 {
 
-// A variable's number and the zero after it. A later version may give the zero a meaning.
+// A variable's number and the byte after it: 0 for a player's or a global variable, and kEveryTrack for a track
+// variable of every track. A later version may give the byte another meaning.
 uint8_t ReadVariable(In& in)
 {
     const uint8_t variable = in.U8();
-    if (const uint8_t kind = in.U8(); kind != 0)
+    const uint8_t kind = in.U8();
+    if (kind != 0 && kind != kEveryTrack)
     {
         Newer("a variable type (" + std::to_string(kind) + ")");
     }
 
-    return variable;
+    const int last = kind == 0 ? kFirstTrackVariable : kSceneVariables - kFirstTrackVariable;
+    if (variable >= last)
+    {
+        Damaged("a scene sets variable " + std::to_string(variable) +
+                (kind == 0 ? std::string() : std::string(" of every track")));
+    }
+
+    return static_cast<uint8_t>(kind == 0 ? variable : kFirstTrackVariable + variable);
 }
 
 } // namespace

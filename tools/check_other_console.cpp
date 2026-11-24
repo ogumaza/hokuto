@@ -189,32 +189,12 @@ Worst WorstOf(const song::LevelComparison& comparison)
     return worst;
 }
 
-// The levels of `render`'s windows of 50 ms in dBFS: the mean power of both channels.
-std::vector<double> WindowLevels(const song::DryRender& render)
-{
-    const auto window = static_cast<std::size_t>(render.rate * song::kWindowSeconds);
-    const std::size_t frames = render.samples.size() / 2;
-    std::vector<double> levels;
-    for (std::size_t at = 0; at < frames; at += window)
-    {
-        const std::size_t end = std::min(at + window, frames);
-        double power = 0.0;
-        for (std::size_t i = 2 * at; i < 2 * end; i++)
-        {
-            power += static_cast<double>(render.samples[i]) * render.samples[i];
-        }
-        levels.push_back(10.0 * std::log10(std::max(power / static_cast<double>(2 * (end - at)), 1e-20)));
-    }
-
-    return levels;
-}
-
-// The end in seconds of the last of `levels` at `floor` or above, or 0.
-double AudibleEnd(const std::vector<double>& levels, double floor)
+// The end in seconds of the last of `levels` that the measure would count beside a loudest window at `top`, or 0.
+double AudibleEnd(const std::vector<double>& levels, double top)
 {
     for (std::size_t i = levels.size(); i > 0; i--)
     {
-        if (levels[i - 1] >= floor)
+        if (levels[i - 1] >= top - song::kCountRangeDb && levels[i - 1] > song::kCountFloorDbfs)
         {
             return static_cast<double>(i) * song::kWindowSeconds;
         }
@@ -500,8 +480,8 @@ void CountWarningKinds(const std::vector<std::string>& warnings,
 // that the measure counts.
 std::pair<double, double> AudibleEnds(const song::DryRender& before, const song::DryRender& after)
 {
-    const std::vector<double> levels_before = WindowLevels(before);
-    const std::vector<double> levels_after = WindowLevels(after);
+    const std::vector<double> levels_before = song::WindowLevels(before.samples, before.rate);
+    const std::vector<double> levels_after = song::WindowLevels(after.samples, after.rate);
     double top = -200.0;
     for (const double level : levels_before)
     {
@@ -511,9 +491,8 @@ std::pair<double, double> AudibleEnds(const song::DryRender& before, const song:
     {
         top = std::max(top, level);
     }
-    const double floor = std::max(top - 50.0, -70.0);
-    const double end_before = AudibleEnd(levels_before, floor);
-    const double end_after = AudibleEnd(levels_after, floor);
+    const double end_before = AudibleEnd(levels_before, top);
+    const double end_after = AudibleEnd(levels_after, top);
 
     return {end_before, end_after};
 }

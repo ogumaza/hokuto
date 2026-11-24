@@ -170,19 +170,18 @@ void Round(const Game& game, const char* name, const Change& change, Totals& tot
         const std::vector<uint32_t> waves = hokuto::song::DseBankWaves(*set.banks[bank].bank);
         const auto at = static_cast<std::size_t>(set.banks[bank].file_offset);
         const std::span<const uint8_t> file = std::span(game.bytes).subspan(at);
-        for (const SplitAt& place : WalkBank(file).splits)
+        const Walk walk = WalkBank(file);
+        for (const SplitAt& place : walk.splits)
         {
-            DseSplit old;
-            std::copy_n(file.begin() + static_cast<std::ptrdiff_t>(place.offset), old.size(), old.begin());
-            const DseSplit next = change(old, waves);
-            std::ranges::copy(next, expected.begin() + static_cast<std::ptrdiff_t>(at + place.offset));
+            PutSplit(std::span(expected).subspan(at), walk, place.offset,
+                     change(SplitIn(file, walk, place.offset), waves));
         }
     }
 
     const std::vector<uint8_t> exported = hokuto::format::ExportArchive(edited);
     CheckExport(game, exported, expected, name, totals);
 
-    const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build);
+    const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build, game.game_code);
     if (read->banks.size() != set.banks.size())
     {
         Fail(game, totals, std::string(name) + ": the reader reads another count of banks");
@@ -199,10 +198,10 @@ void Round(const Game& game, const char* name, const Change& change, Totals& tot
         const auto at = static_cast<std::size_t>(read->banks[bank].file_offset);
         const std::span<const uint8_t> file = std::span(expected).subspan(at);
         const hokuto::app::DseBankView view = hokuto::app::MakeDseBankView(*read, bank);
-        for (const SplitAt& place : WalkBank(file).splits)
+        const Walk walk = WalkBank(file);
+        for (const SplitAt& place : walk.splits)
         {
-            DseSplit want;
-            std::copy_n(file.begin() + static_cast<std::ptrdiff_t>(place.offset), want.size(), want.begin());
+            const DseSplit want = SplitIn(file, walk, place.offset);
             if (held.instruments->programs.at(place.program)->splits.at(place.split) != want)
             {
                 Fail(game, totals,
@@ -252,25 +251,27 @@ void WriteWave(const Game& game, uint32_t main_bank, uint32_t wave, const edit::
         }
 
         // A square wave or noise in the slot of a bank that shares the main bank stays as it is.
+        const WavePlaces& places = walk.wave_places;
         const std::span<const uint8_t> info = file.subspan(found->second);
-        if (info[kWaveFormat] > kImaAdpcm)
+        if (info[places.format] > kImaAdpcm)
         {
             continue;
         }
 
         const std::span<uint8_t> out = std::span(expected).subspan(at + found->second);
-        const uint32_t rate = Get32(info, kWaveRate);
+        const uint32_t rate = RateIn(info, places);
         if (values.rate != old.rate)
         {
-            Put32(out, kWaveRate, values.rate);
+            PutRate(out, places, values.rate);
             for (const SplitAt& place : walk.splits)
             {
-                if (rate == 0 || Get16(file, place.offset + edit::kDseWave) != wave)
+                DseSplit split = SplitIn(file, walk, place.offset);
+                if (rate == 0 || Get16(split, edit::kDseWave) != wave)
                 {
                     continue;
                 }
 
-                const auto tuning = static_cast<int16_t>(Get16(file, place.offset + edit::kDseTuning));
+                const auto tuning = static_cast<int16_t>(Get16(split, edit::kDseTuning));
                 const int64_t moved =
                     std::llround(tuning + kTuningOfDoubledRate * std::log2(static_cast<double>(values.rate) / rate));
                 if (!std::in_range<int16_t>(moved))
@@ -280,18 +281,19 @@ void WriteWave(const Game& game, uint32_t main_bank, uint32_t wave, const edit::
                                              "refuse it");
                 }
                 const auto bits = static_cast<uint16_t>(moved);
-                expected[at + place.offset + edit::kDseTuning] = static_cast<uint8_t>(bits);
-                expected[at + place.offset + edit::kDseTuning + 1] = static_cast<uint8_t>(bits >> 8);
+                split[edit::kDseTuning] = static_cast<uint8_t>(bits);
+                split[edit::kDseTuning + 1] = static_cast<uint8_t>(bits >> 8);
+                PutSplit(std::span(expected).subspan(at), walk, place.offset, split);
             }
         }
         if (values.loop != old.loop || values.loop_start != old.loop_start)
         {
-            const uint8_t format = info[kWaveFormat];
-            const uint32_t end = Get32(info, kWaveLoopStart) + Get32(info, kWaveLoopLength);
+            const uint8_t format = info[places.format];
+            const uint32_t end = Get32(info, places.loop_start) + Get32(info, places.loop_length);
             const uint32_t word = values.loop_start / SamplesInWord(format) + FirstWord(format);
-            out[kWaveLoops] = 1;
-            Put32(out, kWaveLoopStart, word);
-            Put32(out, kWaveLoopLength, end - word);
+            out[places.loops] = 1;
+            Put32(out, places.loop_start, word);
+            Put32(out, places.loop_length, end - word);
         }
     }
 }
@@ -363,7 +365,7 @@ void WaveRound(const Game& game, Totals& totals)
 
     const std::vector<uint8_t> exported = hokuto::format::ExportArchive(edited);
     CheckExport(game, exported, expected, "waves", totals);
-    const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build);
+    const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build, game.game_code);
     for (const auto& [bank, wave] : edited_waves)
     {
         const edit::DseWaveValues values = edit::DseWaveValuesOf(*read, bank, wave);

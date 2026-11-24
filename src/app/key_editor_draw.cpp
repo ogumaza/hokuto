@@ -417,6 +417,14 @@ void DrawOverview(ImDrawList* draw, const Canvas& canvas, const KeyTrack& track,
 namespace
 {
 
+// Whether the rectangle `rect` of a note lies wholly outside the canvas's notes. A rectangle that touches an edge lies
+// inside.
+bool NoteOutside(const Canvas& canvas, const ImRect& rect)
+{
+    return rect.Max.x < canvas.notes.Min.x || rect.Min.x > canvas.notes.Max.x || rect.Max.y < canvas.notes.Min.y ||
+           rect.Min.y > canvas.notes.Max.y;
+}
+
 // A note that a later note cut short ends in a bar of the collision colour, set off from the note by a dark line.
 void DrawCutMark(ImDrawList* draw, const ImRect& rect)
 {
@@ -433,8 +441,7 @@ void DrawUnstarted(ImDrawList* draw, const Canvas& canvas, const KeyTrack& track
     for (const KeyNote& note : track.unstarted)
     {
         const ImRect rect = NoteRect(canvas, note, 0, 0, 0);
-        if (rect.Max.x < canvas.notes.Min.x || rect.Min.x > canvas.notes.Max.x || rect.Max.y < canvas.notes.Min.y ||
-            rect.Min.y > canvas.notes.Max.y)
+        if (NoteOutside(canvas, rect))
         {
             continue;
         }
@@ -470,8 +477,7 @@ void DrawNotes(ImDrawList* draw, const Canvas& canvas, const KeyTrack& track, co
             resize = static_cast<int32_t>(std::max<int64_t>(length + gesture.resize, 1) - note.length);
         }
         const ImRect rect = NoteRect(canvas, note, shift, transpose, resize);
-        if (rect.Max.x < canvas.notes.Min.x || rect.Min.x > canvas.notes.Max.x || rect.Max.y < canvas.notes.Min.y ||
-            rect.Min.y > canvas.notes.Max.y)
+        if (NoteOutside(canvas, rect))
         {
             continue;
         }

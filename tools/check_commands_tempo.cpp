@@ -21,9 +21,14 @@ struct TempoShown
 
 } // namespace
 
-TempoRules TempoRulesOf(const CheckedArchive& archive)
+bool CountsQuintetTicks(const CheckedArchive& archive)
 {
-    if (archive.driver && archive.driver->Rules().DriverEngine() == hokuto::format::Engine::kQuintet)
+    return archive.driver && archive.driver->Rules().DriverEngine() == hokuto::format::Engine::kQuintet;
+}
+
+TempoRules TempoRulesOf(const CheckedArchive& archive, uint32_t sound)
+{
+    if (CountsQuintetTicks(archive))
     {
         // A tempo T runs T ticks of the performer a frame, 37 to one tick of the driver, at 96 ticks of the driver a
         // quarter note. The tempo row shows the real tempo, with the frames of the GBA at kFrameRate.
@@ -36,9 +41,12 @@ TempoRules TempoRulesOf(const CheckedArchive& archive)
     }
     if (archive.dse)
     {
-        // A sequence's tempo counts for the driver's nominal tick, and the driver runs its ticks by the DS's clock.
-        constexpr double kTickMs = 1000.0 * ntdlib::dse::Player::kTickClocks / ntdlib::ntr::kSystemClockHz;
-        return {ntdlib::dse::Driver::kTickMicroseconds / 1000.0 / kTickMs, 0, true};
+        // A sequence's tempo counts for the sound's nominal tick, the one that the game's settings give, and the driver
+        // runs its ticks by the DS's clock.
+        const int tick = hokuto::song::DseSoundTick(*archive.dse, sound);
+        const double tick_ms =
+            1000.0 * static_cast<double>(ntdlib::dse::Player::TickClocks(tick)) / ntdlib::ntr::kSystemClockHz;
+        return {tick / 1000.0 / tick_ms, 0, true};
     }
     if (archive.ds)
     {
@@ -209,7 +217,7 @@ TempoExcuse TempoExcuseOf(const File& file, uint32_t sequence, const CheckedArch
     {
         return TempoExcuse::kFrames;
     }
-    if (!same && TempoRulesOf(archive).quarter_ticks != 0 &&
+    if (!same && CountsQuintetTicks(archive) &&
         QuintetFramesDecide(before, read, QuintetResets(file, sequence, before), totals.quintet_apart))
     {
         return TempoExcuse::kQuintetFrames;
@@ -441,14 +449,15 @@ bool Overtaken(const hokuto::song::Sequence& song, const std::vector<TempoPointV
     return rules.lag > 0 && next <= tick + rules.lag && !PlaysTempoFrom(song, tick, bpm, rules, next);
 }
 
-// Checks the points of each sequence of `shown` against the performer's tempo, by `rules`, and that a point shows each
-// change of the tempo.
+// Checks the points of each sequence of `shown` against the performer's tempo, by the rules of its first sound
+// (TempoRulesOf), and that a point shows each change of the tempo.
 void CheckRowPoints(const std::string& name, const CheckedArchive& archive, const std::map<uint32_t, TempoShown>& shown,
-                    const TempoRules& rules, Totals& totals)
+                    Totals& totals)
 {
     const bool gba = archive.gba != nullptr;
     for (const auto& [sequence, view] : shown)
     {
+        const TempoRules rules = TempoRulesOf(archive, view.sound);
         const std::vector<TempoPointView>& points = view.points;
         totals.tempo_sequences += points.empty() ? 0 : 1;
         for (std::size_t i = 0; i < points.size(); ++i)
@@ -578,13 +587,14 @@ File DragTempoPoints(const std::string& name, const File& file, const std::map<u
 }
 
 // Checks that the first sound of each sequence of `shown` that `tempos` edits plays its notes and its new tempos from
-// `after`, the archive with the new tempos, by `rules`.
+// `after`, the archive with the new tempos, by the rules of that sound (TempoRulesOf).
 void CheckFirstSounds(const std::string& name, const File& file, const CheckedArchive& archive,
                       const CheckedArchive& after, const std::map<uint32_t, TempoShown>& shown,
-                      std::map<uint32_t, std::map<uint32_t, double>>& tempos, const TempoRules& rules, Totals& totals)
+                      std::map<uint32_t, std::map<uint32_t, double>>& tempos, Totals& totals)
 {
     for (const auto& [sequence, view] : shown)
     {
+        const TempoRules rules = TempoRulesOf(archive, view.sound);
         const std::map<uint32_t, double>& changed = tempos[sequence];
         if (changed.empty())
         {
@@ -797,8 +807,7 @@ void TempoRow(const std::string& name, const File& file, const CheckedArchive& a
     }
 
     // The points against the performer's tempo.
-    const TempoRules rules = TempoRulesOf(archive);
-    CheckRowPoints(name, archive, shown, rules, totals);
+    CheckRowPoints(name, archive, shown, totals);
 
     // The drags, in one version of the file. A value's change leaves every command in its place.
     std::map<uint32_t, std::map<uint32_t, double>> tempos;
@@ -817,7 +826,7 @@ void TempoRow(const std::string& name, const File& file, const CheckedArchive& a
         ++totals.problems;
         return;
     }
-    CheckFirstSounds(name, file, archive, after, shown, tempos, rules, totals);
+    CheckFirstSounds(name, file, archive, after, shown, tempos, totals);
 
     // The other sounds that the tempo row lists for the edited commands of each sequence.
     std::map<uint32_t, std::set<uint32_t>> listed = ListedSounds(name, file, places, shown, tempos, totals);

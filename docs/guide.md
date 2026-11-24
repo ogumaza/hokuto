@@ -197,11 +197,11 @@ A song exports as MIDI with SoundFont 2 or SFZ, and the samples export as SoundF
 
 ### GBA with Nintendo R&D2's driver
 
-Hokuto detects GBA ROMs that use Nintendo R&D2's sound driver. A ROM can hold MusicPlayer2000 as well: Hokuto then opens
-it with R&D2's driver, and MusicPlayer2000's songs don't show. The browser lists the songs by number, the music first
-and then the sound effects. A sound effect is one track of a sequence of sound effects. Where the game plays a song in
-more than one way, such as with a track muted, each way is a version of the song, named after its number. The versions
-share their commands, and an edit of one changes them all.
+Hokuto detects GBA ROMs that use Nintendo R&D2's sound driver. A ROM can hold MusicPlayer2000 as well. Hokuto then opens
+both, and the browser shows a row for each driver (see [The browser](#the-browser)). The browser lists the songs by
+number, the music first and then the sound effects. A sound effect is one track of a sequence of sound effects. Where
+the game plays a song in more than one way, such as with a track muted, each way is a version of the song, named after
+its number. The versions share their commands, and an edit of one changes them all.
 
 A song names up to 10 tracks, and any track plays any of the voices: the PSG channels and the voices of the driver
 mixer. In enhanced mixing, a note that finds every voice busy gets a new voice. A tempo of 150 plays one tick in each
@@ -376,14 +376,29 @@ rules of the later builds.
 - Square waves play on channels 8 to 13 only, and noise on 14 and 15 only. As on the GBA, the Key Editor marks notes
   that lose their channel.
 - Some games set up a sequence in their code as they start it: its variables, the channels of its player and tracks, and
-  the SDK's reverb or output effect. Hokuto has these settings for a number of games, by the game code in the image, and
-  plays and exports the sequences with them. In its other states, a game can play a sequence another way. Those states
-  aren't included.
+  the SDK's reverb or output effect. Some also take channels away from a sequence while it plays, such as the channels
+  of a stream that a cutscene prepares. Hokuto has these settings for a number of games, by the game code in the image,
+  and plays and exports the sequences with them. In enhanced mixing, Hokuto leaves out the output effect and takes no
+  channels away: the notes on those channels play on. The arrangement and the exports show the console's notes in both
+  modes. In other states, a game can play a sequence another way. Hokuto leaves those states out, with one
+  exception. Spirit Tracks usually starts two sequences past their intro, and a choice of -1 for variable 0 plays the
+  intro and its fade as the game does.
 
 ### DS with DSE
 
 Some DS images use DSE (Digital Sound Elements), the driver from Procyon Studio, in place of a sound archive. Hokuto
-opens them the same way. The browser lists the songs, sound effects and wave banks.
+opens them the same way. The browser lists the songs, sound effects and wave banks, from the image's files and from
+the packs that some games keep them in, compressed or not. When Hokuto has to guess the game's build of DSE or the
+length of its tick, a note says so as the image opens, and `hok import` prints it.
+
+Some games start a song below full level. For the games in its list, Hokuto plays and exports each such song at the
+level that the game starts it at most often, and the file keeps the level.
+
+Some games keep their DSE files in the oldest version, 0x402. Hokuto opens, plays, edits and exports them as it does
+the later version, and writes them back in version 0x402. The browser's Export… of a song or a bank gives its file in
+that version too. A bank in that version holds at most 255 wave slots, programs and key groups, and a program at most
+255 splits and 255 LFOs. Each program has to start within the first 64 KiB of the bank's programs. A wave's sample
+rate goes up to 65,535 Hz. Hokuto refuses an edit or a replacement past those limits and says which one.
 
 - Sequences open as programs, never as timelines.
 - Tracks on the same driver channel share volume and pan. A mixer edit changes the channel.
@@ -416,10 +431,21 @@ exports as a bare SDAT.
 | Waves | Wave archives and their waves |
 | Wave Sound Files | Wave sound files and their wave sounds, under the sound group name |
 
+A file shows only the groups that its console or driver has. A GBA ROM and DSE have no Sounds group, and only the
+Wii and the later consoles have Wave Sound Files.
+
 Click a sequence to show it. Click an instrument to hear a second of middle C, or the nearest key that sounds. Click a
 wave, a wave sound or a stream sound to hear it, and click again to stop. Double-click a bank or an instrument to open
 the [Bank Editor](#the-bank-editor), and a wave or a stream sound for its [properties](#waves-and-streams). Right-click
 an item for Export… and Replace…. The [Sound section](#the-sound-section) under the tree shows the selected item.
+
+A GBA ROM can hold more than one sound driver, such as MusicPlayer2000 beside Nintendo R&D2's driver. The browser then
+shows a row for each driver, with the count of its sequence sounds, and that driver's groups under its row. Click a
+row to open or close it. Choose a sound of either driver to show it: the arrangement, the editors and the mixer then
+work on that driver's sounds. Only that driver's selected item shows as selected. A click on any item of the other
+driver switches to it, and playback stops. An editor of the other driver's items, such as the Bank Editor, closes.
+Undo shows the driver that an action changed. One project file keeps every driver, and Export… of the ROM writes the
+edits of every driver into one ROM.
 
 ## Playing
 
@@ -464,7 +490,8 @@ from a random number or a variable shows as a bar.
   the game.
 - **Enhanced** lifts those limits: up to 1,024 voices, mixed at about 48 kHz in floating point with a long windowed-sinc
   resampler. On the GBA, it also smooths the PSG channels. On the GBA with MusicPlayer2000 and on the DS, a note gets a
-  new channel where the console would drop it or cut it. A note in its release still gives way.
+  new channel where the console would drop it or cut it. A note in its release still gives way. On the DS, enhanced
+  mixing leaves out the SDK's output effect and takes no channels away from a sequence while it plays.
 
 The switch in the mixer header sets the mode of the current sound, and Project > Project Setup… sets every sound. The
 Wii plays in strict mixing only.
@@ -574,6 +601,13 @@ The Project menu, or a right-click in the track list, edits the tracks of the cu
 - **Copy Track** and **Paste Track** copy a track to another sound. It plays the same notes from the same beat, at the
   tempo of the new sound. A free bank slot gets any missing bank.
 
+A game on the 3DS, the Wii U or the Switch can mute some tracks of a sound as it starts the sound. One sequence then
+plays in several arrangements, as several sounds. When Hokuto imports the archive of a game in its list of known games,
+it finds those tracks. They show grey in the arrangement, and their mixer strips are dimmed. Playback and the audio
+exports keep them silent, and the MIDI exports keep their notes at a volume of 0. The M button is a separate mute. To
+play such a track, right-click it in the track list and clear **Mute at Start**, or clear the box in the inspector. The
+change is an edit of the file, and Undo reverts it. **Mute at Start** mutes any other track at the start the same way.
+
 On the **GBA**, new tracks go after the last one. They have to fit in the music player of every song that shares the
 header, and a header lists 16 tracks at most. You can only paste between songs with the same voice group. Track 0 can
 go, but a song keeps one track. If the header lists more tracks than the player plays, removing one brings in the next.
@@ -622,6 +656,11 @@ The Bank and Program menus of the Track section show the instrument of the first
 that played the old one play the new one. If other tracks or sounds share those commands, they change too, and an equals
 sign marks the track. Type in an open menu to filter it.
 
+On the 3DS, the Wii U and the Switch, the Track section ends with the track's **Start** rows: what the game sets on this
+track when it starts the sound. **Mute at Start** mutes the track. **Volume** gives it a volume, and a row for each
+track variable shows a value that the game sets on this track alone. Tick a box to set a value, and clear it to drop
+the value. Each change is an edit of the file.
+
 ### The Sound section
 
 The Sound section in the inspector shows the values of the current sound in the archive tables. The one in the browser
@@ -636,6 +675,14 @@ shows the selected item.
 
 Ctrl-click a slider for 127, or 64 for a priority. A value that the entry leaves out, such as a pan, gets a place in it
 when you change it.
+
+A sequence sound of the 3DS, the Wii U or the Switch also shows **Start**: what the game sets through the sound's handle
+when it starts the sound. **Speed** is the tempo ratio, **Transpose** and **Fine Tune** the pitch, **Gain** the volume
+on top of the sound volume, **Send A** and **Send B** the sends to the aux buses, and **Low-Pass** a low-pass from -1 to
+0 that adds to each track's low-pass. On the 3DS, **Banks** replaces the sound's bank slots. Tick a row's box to set its
+value, and clear it to drop the value. A row without a value shows none, and the sound plays as its archive sets it.
+Transpose and Fine Tune share one box, and so do the two sends. Hokuto finds these values for the games in its list of
+known games, and playback and every export apply them. Each change is an edit of the file, and Undo reverts it.
 
 **Wave sound** shows values from the wave sound file: the wave, pitch, pans, sends, filters and envelope. Values that
 the console doesn't read, such as the root key, are grey, and so are values that the file has no room for. The Wii U and
@@ -736,7 +783,12 @@ A variable starts at -1 unless the game sets it. Click a switch to choose a star
 outcome of the tests. Variables with many choices have a menu, and variables used as values, such as a volume, have a
 slider from -1 to 127. Double-click it to type any value from -32,768 to 32,767. During playback, the zone shows the
 current value of each variable that the song changes. Variables 16 to 31 are marked Global. In a game, all sequences
-share them. In Hokuto, the choice stays with its sound.
+share them. In Hokuto, the choice stays with its sound. Variables 32 to 47 are marked All Tracks: they set a track
+variable on every track. They appear when the sound's start, a scene or a change sets them.
+
+On the 3DS, the Wii U and the Switch, the **Start** row above the scenes holds the values that the game sets when it
+starts the sound. A sound opens with them. Click Start to go back to them, and right-click it and choose Update Start
+to save the current values and changes there. Update Start is an edit of the file.
 
 **Scenes** save sets of starting values in the `.hok` file. Click + beside Scenes to store one, and click a scene to
 apply it. Right-click it to update, rename or delete it. These edits can be undone.
@@ -989,11 +1041,13 @@ moved song. Always test an exported ROM in an emulator.
 #### DS images
 
 The export writes the image with the edited archive, or the archive alone if you opened an `.sdat` file. DSE files go
-back into their image too. An image that also runs on the DSi contains hashes. With the DSi digest key set in Studio
-Setup, Hokuto updates them. Without it, they stay out of date. Either way, the signature covers the old hashes, and a
-DSi in DSi mode may refuse the image. A DS image can also contain a signature and two whitelist hashes that no key
-updates. The Export window lists the ones that the export leaves out of date, and a DSi or a 3DS may refuse to run
-such an image.
+back into their image too, except the ones that a game keeps inside a pack. The export refuses an edited song or bank in
+a pack and names it. Export it from the browser instead, and put it into the pack with another tool. A bank of sound
+effects doesn't export as a file. Its edits stay in the project. An image that also runs on the DSi contains hashes.
+With the DSi digest key set in Studio Setup, Hokuto updates them. Without it, they stay out of date. Either way, the
+signature covers the old hashes, and a DSi in DSi mode may refuse the image. A DS image can also contain a signature and
+two whitelist hashes that no key updates. The Export window lists the ones that the export leaves out of date, and a DSi
+or a 3DS may refuse to run such an image.
 
 ### MIDI with SoundFont 2 or SFZ
 
@@ -1113,7 +1167,7 @@ sample before the fade is the sample that playback makes.
    both. A stem is **Dry** (without the FX channels), **With Effects** (with the track's sends to the FX channels), or
    **Through Stereo Out** (with the Stereo Out fader as well).
 3. Under **Range**, set how many times a song that loops plays its loop before it fades, and the length of the fade:
-   2 loops and 10 s by default, as game-music rips do. A song that ends plays once, until it's silent, for up to **Tail
+   2 loops and 7 s by default, as game-music rips do. A song that ends plays once, until it's silent, for up to **Tail
    Limit** seconds after its end. **Seamless Loop** renders the loop twice without a fade and marks the second pass as a
    loop in the WAV file, for samplers and game engines. **Mixing** plays every song in strict or enhanced mixing, or as
    each song sets it. A song that plays on past 10 minutes fades there.
@@ -1130,7 +1184,7 @@ sample before the fade is the sample that playback makes.
    the files that it wrote. The window closes when the exports are done, unless **Keep Dialog Open** is ticked or an
    export failed. It opens again at its size and place, and keeps its settings until another file opens.
 
-The shown song keeps its muted and soloed tracks. The other songs play every track.
+The shown song keeps its muted and soloed tracks. The other songs play every track that the game plays.
 
 ## Saving
 
@@ -1196,6 +1250,7 @@ hok sfz <input> <folder>
 hok other <file.hok> <sound> <output> [console] [mono | stereo]
 hok mixdown [options] <input> <folder>
 hok midi [--sfz] [--sound <name or number>]... <input> <folder>
+hok --driver <engine> <command> ...
 hok --version
 hok --help
 ```
@@ -1214,8 +1269,8 @@ hok --help
 - **text** and **binary** convert between the two forms. **model** writes the binary form with the archive in the [model
   form](#the-model-form).
 - **lengths** measures how long each sequence sound plays before its fade. A sound plays with the effects of the file
-  until it has looped twice, ends, or stays silent for 180 s, for 600 s at most. A looping sound then fades over 10 s,
-  and an ending one gets 0.5 s of silence. 3DS sounds play without effects. An edit that can change a sound drops its
+  until it has looped twice, ends, or stays silent for 180 s, for 600 s at most. A looping sound then fades over 7 s,
+  and an ending one ends at its last sound. 3DS sounds play without effects. An edit that can change a sound drops its
   lengths. `--threads` limits how many sounds run at once.
 - **items**, **wav**, **sf2** and **sfz** write every item, wave, SoundFont or SFZ bank of an archive or `.hok` file
   into a folder. The files match what Export… writes. For a GBA ROM, `items` writes assembly and raw samples. With
@@ -1229,12 +1284,18 @@ hok --help
 - **mixdown** renders sequence sounds to WAV files, as the [Audio Mixdown](#audio-mixdown) window does, one file for
   each sound, named after it. A `.hok` file plays with its effects, FX channel volumes and each sound's mixing mode.
   `--sound` picks a sound by name or number, and can repeat. `--loops` and `--fade` set the passes of the loop (2) and
-  the fade (10 s). `--tail` sets the longest tail of a sound that ends (10 s). `--seamless` renders a seamless loop.
+  the fade (7 s). `--tail` sets the longest tail of a sound that ends (10 s). `--seamless` renders a seamless loop.
   `--mixing strict` or `enhanced` sets the mode. `--rate` and `--format 16`, `24` or `32f` set the files' rate and
   samples. `--normalise` and `--dither` work as in the window. `--stems` adds a file for each track, and
   `--stem-effects dry` leaves the FX channels out of them. `--threads` renders several sounds at once.
 - **midi** exports sequence sounds as MIDI files, each with a SoundFont 2 file beside it, or with `--sfz`, SFZ files.
   `--sound` picks sounds as for `mixdown`. A `.hok` file's sounds take their title and copyright tags.
+- **--driver** comes before the command, for a GBA ROM with two drivers or its `.hok` file. It names the driver whose
+  sounds the command takes: `gba` (MusicPlayer2000), `konami`, `rd2`, `brownie`, `ubimilan`, `rare`, `quintet` or
+  `krawall`. Without it, `items`, `wav`, `sf2`, `sfz`, `mixdown` and `midi` write a folder for each driver, named
+  after it. With `--sound`, `mixdown` and `midi` take the first driver's sounds, the one that comes first in that
+  list. The other commands take the first driver too. `import`, `export`, `text` and `binary` always take every
+  driver, and refuse `--driver`.
 
 ## Keyboard shortcuts
 

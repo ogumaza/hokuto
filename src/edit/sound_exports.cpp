@@ -20,6 +20,7 @@
 #include "format/engines.h"
 #include "song/archive.h"
 #include "song/ds.h"
+#include "song/starts.h"
 
 namespace hokuto::edit
 {
@@ -85,6 +86,41 @@ std::optional<format::Engine> OtherEngineOf(const format::File& file, uint32_t s
     return engine;
 }
 
+namespace
+{
+
+// How sound `sound` of `source` starts: the start without a name, and the variables' starting values and changes. A
+// sound that the source gives no values takes the start's, and one that it gives no changes takes the start's changes.
+struct BatchStart
+{
+    format::SoundStart start;
+    song::StartValues values;
+    song::Changes changes;
+};
+
+BatchStart BatchStartOf(const BatchSource& source, uint32_t sound)
+{
+    BatchStart started;
+    const auto played = [sound](const format::SoundStart& kept)
+    {
+        return kept.sound == sound && kept.name.empty();
+    };
+    const auto start = std::find_if(source.starts.begin(), source.starts.end(), played);
+    if (start != source.starts.end())
+    {
+        started.start = *start;
+    }
+
+    const auto values = source.start_values.find(sound);
+    const auto changes = source.changes.find(sound);
+    started.values = values != source.start_values.end() ? values->second : song::StartValuesOf(started.start);
+    started.changes = changes != source.changes.end() ? changes->second : song::ChangesOf(started.start);
+
+    return started;
+}
+
+} // namespace
+
 std::vector<BatchSequence> ReadBatchSequences(const BatchSource& source, std::span<const song::BatchSound> sounds,
                                               std::size_t threads, const std::atomic<bool>* stop)
 {
@@ -100,14 +136,11 @@ std::vector<BatchSequence> ReadBatchSequences(const BatchSource& source, std::sp
             }
 
             const uint32_t sound = sounds[i].sound;
-            const auto values = source.start_values.find(sound);
-            const auto changes = source.changes.find(sound);
-            const song::StartValues& start = values != source.start_values.end() ? values->second : song::StartValues();
-            const song::Changes& changed = changes != source.changes.end() ? changes->second : song::Changes();
+            const BatchStart started = BatchStartOf(source, sound);
             try
             {
-                read[i].sequence = std::make_shared<const song::Sequence>(
-                    song::ReadBatchSequence(source.played, sound, source.build, start, changed));
+                read[i].sequence = std::make_shared<const song::Sequence>(song::ReadBatchSequence(
+                    source.played, sound, source.build, started.values, started.changes, started.start));
             }
             catch (const std::exception& error)
             {
@@ -126,7 +159,7 @@ std::vector<BatchSequence> ReadBatchSequences(const BatchSource& source, std::sp
                     song::SequenceReader::EngineSound converted =
                         EngineSoundOf(*source.file, sound, *engine, source.name);
                     read[i].engine_sequence = std::make_shared<const song::Sequence>(
-                        song::ReadEngineSequence(*read[i].sequence, converted, start, changed));
+                        song::ReadEngineSequence(*read[i].sequence, converted, started.values, started.changes));
                     read[i].engine = std::move(converted);
                 }
             }
@@ -260,22 +293,20 @@ void WriteBatchMidi(const BatchSource& source, uint32_t sound, const std::filesy
 {
     // A sound on another console's engine goes out as the conversion for that console. The Export window's MIDI
     // export converts it the same way.
-    const auto values = source.start_values.find(sound);
-    const auto changes = source.changes.find(sound);
-    const song::StartValues& start = values != source.start_values.end() ? values->second : song::StartValues();
-    const song::Changes& changed = changes != source.changes.end() ? changes->second : song::Changes();
+    const BatchStart started = BatchStartOf(source, sound);
     const std::optional<format::Engine> engine = source.file ? OtherEngineOf(*source.file, sound) : std::nullopt;
     ntdlib::sequence_export::Conversion conversion;
     if (engine)
     {
         const song::SequenceReader::EngineSound converted =
             EngineSoundOf(*source.file, sound, *engine, source.name, true);
-        conversion =
-            song::ConvertBatchSound(converted.played, converted.sound, converted.wii_build, "Hokuto", start, changed);
+        conversion = song::ConvertBatchSound(converted.played, converted.sound, converted.wii_build, "Hokuto",
+                                             started.values, started.changes, started.start);
     }
     else
     {
-        conversion = song::ConvertBatchSound(source.played, sound, source.build, "Hokuto", start, changed);
+        conversion = song::ConvertBatchSound(source.played, sound, source.build, "Hokuto", started.values,
+                                             started.changes, started.start);
     }
     if (source.file)
     {

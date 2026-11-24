@@ -233,7 +233,8 @@ Command NoWait();
 // next frame. The ticks left in the frame run at the old tempo: up to `lag`, 3 at MusicPlayer2000's fastest tempo, 510
 // beats a minute. On the DS, the performer applies a new tempo from the tick of the command. On Quintet's driver,
 // ntdlib's performer measures a quarter note of `quarter_ticks` of its ticks in whole microseconds
-// (agblib::agb::QuarterMicros).
+// (agblib::agb::QuarterMicros). DSE's driver counts a tempo for the tick that the game's settings give a sound, and
+// runs its ticks by the DS's clock.
 struct TempoRules
 {
     double ratio = 1.0;
@@ -242,7 +243,12 @@ struct TempoRules
     uint64_t quarter_ticks = 0;      // the performer's ticks a quarter note on Quintet's driver, where not 0
 };
 
-TempoRules TempoRulesOf(const CheckedArchive& archive);
+// The rules of `archive`. On DSE, they are those of sound `sound`, whose tick sets the ratio. The other drivers ignore
+// `sound`.
+TempoRules TempoRulesOf(const CheckedArchive& archive, uint32_t sound);
+
+// Whether `archive` plays on Quintet's driver, whose performer counts a quarter note in ticks (TempoRules).
+bool CountsQuintetTicks(const CheckedArchive& archive);
 
 // Whether tick `tick` is past the end of `song`, a sound without a loop. A sound whose last change comes more than 10 s
 // after its last sound has died away ends where that sound dies away (ntdlib's EndsAtLastSound). The performer records

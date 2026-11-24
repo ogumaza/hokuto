@@ -53,7 +53,7 @@ DseSong DseSongOf(const File& file, uint32_t sound = 0)
 {
     const std::vector<uint8_t> set = hokuto::format::ExportArchive(file);
     const std::shared_ptr<const hokuto::song::DseSet> loaded =
-        hokuto::song::LoadDseSet(set, ntdlib::dse::Build::kLater);
+        hokuto::song::LoadDseSet(set, ntdlib::dse::Build::kLater, {});
     return {hokuto::format::DseSoundSequences(file, set, hokuto::song::DseSoundRefs(*loaded)).at(sound).value(),
             hokuto::song::ReadSequence(*loaded, sound)};
 }
@@ -65,7 +65,7 @@ void TestDseSounds()
     const File file = hokuto::format::ImportDseImage(DseImage());
     const std::vector<uint8_t> set = hokuto::format::ExportArchive(file);
     const std::shared_ptr<const hokuto::song::DseSet> loaded =
-        hokuto::song::LoadDseSet(set, ntdlib::dse::Build::kLater);
+        hokuto::song::LoadDseSet(set, ntdlib::dse::Build::kLater, {});
     const std::vector<std::optional<uint32_t>> sequences =
         hokuto::format::DseSoundSequences(file, set, hokuto::song::DseSoundRefs(*loaded));
     XSFLIB_CHECK((sequences == std::vector<std::optional<uint32_t>>{0u, 1u}));
@@ -482,7 +482,7 @@ void TestDseOtherBank()
 std::vector<ntdlib::dse::ChannelView> NoteChannels(const File& file)
 {
     const std::shared_ptr<const hokuto::song::DseSet> set =
-        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater);
+        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater, {});
     ntdlib::dse::Player player({.build = set->build});
     std::vector<ntdlib::dse::ChannelView> channels;
     ntdlib::dse::SequenceHooks hooks;

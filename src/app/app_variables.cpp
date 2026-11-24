@@ -11,8 +11,10 @@
 
 #include "app/app.h"
 #include "app/scene_values.h"
+#include "app/sequence_view.h"
 #include "app/time_text.h"
 #include "format/file.h"
+#include "song/starts.h"
 
 namespace hokuto::app
 {
@@ -70,8 +72,8 @@ void App::ApplyVariableChoices()
         return;
     }
 
-    // A variable has its initial value without a choice: -1, or 0 for a global variable on the Wii. A variable holds 16
-    // bits.
+    // Without a choice, a variable starts at its initial value (song::StartingValue): the value of the game's profile
+    // on the DS, or else -1, or 0 for a global variable on the Wii. A variable has 16 bits.
     const std::optional<uint32_t> sound = ShownSound();
     bool chosen = false;
     for (VariableView& variable : song_->variables)
@@ -82,7 +84,7 @@ void App::ApplyVariableChoices()
             continue;
         }
 
-        song::StartValues& values = start_values_[*sound];
+        song::StartValues& values = start_values_.try_emplace(*sound, StartValuesOf(*sound)).first->second;
         if (*value == variable.initial)
         {
             values.erase(variable.number);
@@ -124,6 +126,30 @@ void App::UpdateScenes()
         {
             song_->scenes.push_back({scene.name, SceneStartValues(scene) == values && SceneChanges(scene) == changes});
             scene_places_.push_back(place);
+            for (const auto& [variable, value] : scene.values)
+            {
+                AddEveryTrackVariable(*song_, variable, values);
+            }
+            for (const format::VariableChange& change : scene.changes)
+            {
+                AddEveryTrackVariable(*song_, change.variable, values);
+            }
+        }
+    }
+
+    // The sound's start, and the track variables of every track that it sets.
+    song_->start_scene.reset();
+    if (ShowsStartMutes())
+    {
+        const format::SoundStart start = format::StartOf(*document, *sound);
+        song_->start_scene =
+            SceneView{"Start", song::StartValuesOf(start) == values && song::ChangesOf(start) == changes};
+        for (const format::StartVariable& variable : start.variables)
+        {
+            if (!variable.track)
+            {
+                AddEveryTrackVariable(*song_, variable.variable, values);
+            }
         }
     }
 }
@@ -148,6 +174,31 @@ void App::ApplySceneRequest()
         const std::string name = NewSceneName(file.scenes, *sound);
         file.scenes.push_back({*sound, name, SceneValues(StartValuesOf(*sound)), FileChanges(ChangesOf(*sound))});
         Do("Store Scene", where + name, std::move(file));
+        return;
+    }
+
+    // Recall Start starts the variables with the start's values and changes. Update Start gives the start the values
+    // that the variables start with, and their changes. The start's variables of single tracks stay.
+    if (request->action == SceneAction::kRecallStart || request->action == SceneAction::kUpdateStart)
+    {
+        const format::SoundStart start = format::StartOf(file, *sound);
+        if (request->action == SceneAction::kRecallStart)
+        {
+            start_values_[*sound] = song::StartValuesOf(start);
+            changes_[*sound] = song::ChangesOf(start);
+            ShowChanges(*sound);
+            if (sequence_)
+            {
+                ReadShown();
+            }
+            return;
+        }
+
+        format::SoundStart updated = song::WithVariables(start, StartValuesOf(*sound), ChangesOf(*sound));
+        if (updated != start)
+        {
+            Do("Update Start", where + "Start", format::WithStart(file, std::move(updated)));
+        }
         return;
     }
 
@@ -186,6 +237,8 @@ void App::ApplySceneRequest()
         break;
 
     case SceneAction::kStore:
+    case SceneAction::kRecallStart:
+    case SceneAction::kUpdateStart:
         break;
     }
 }
@@ -236,13 +289,25 @@ void App::UpdateVariables()
 song::StartValues App::StartValuesOf(uint32_t sound) const
 {
     const auto found = start_values_.find(sound);
-    return found != start_values_.end() ? found->second : song::StartValues();
+    if (found != start_values_.end())
+    {
+        return found->second;
+    }
+
+    const format::File* document = Document();
+    return document != nullptr ? song::StartValuesOf(format::StartOf(*document, sound)) : song::StartValues();
 }
 
 song::Changes App::ChangesOf(uint32_t sound) const
 {
     const auto found = changes_.find(sound);
-    return found != changes_.end() ? found->second : song::Changes();
+    if (found != changes_.end())
+    {
+        return found->second;
+    }
+
+    const format::File* document = Document();
+    return document != nullptr ? song::ChangesOf(format::StartOf(*document, sound)) : song::Changes();
 }
 
 void App::ApplyChangeRequest()
@@ -261,7 +326,7 @@ void App::ApplyChangeRequest()
     }
 
     // A variable holds 16 bits. A change's time counts milliseconds in 32 bits.
-    song::Changes& changes = changes_[*sound];
+    song::Changes& changes = changes_.try_emplace(*sound, ChangesOf(*sound)).first->second;
     switch (request->action)
     {
     case ChangeAction::kAdd:

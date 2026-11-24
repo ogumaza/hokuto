@@ -55,6 +55,7 @@
 #include "checked_archive.h"
 #include "edit/commands.h"
 #include "edit/ds_files.h"
+#include "edit/dse_files.h"
 #include "format/archive.h"
 #include "format/drivers.h"
 #include "format/file.h"
@@ -641,7 +642,7 @@ MeasureFile OpenMeasureFile(const std::string& path)
     }
     else if (format::IsDsImage(bytes) && format::DsArchivesIn(bytes).empty() && format::HoldsDseFiles(bytes))
     {
-        m.dse = song::LoadDseSet(format::ExportArchive(format::ImportDseImage(bytes)), song::DseBuildOf(bytes));
+        m.dse = hokuto::edit::DseSetOfFile(format::ImportDseImage(bytes));
     }
     else if (format::IsDsImage(bytes))
     {

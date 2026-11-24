@@ -737,8 +737,14 @@ private:
     std::map<std::string, std::size_t> unread_;
 };
 
-// The name before a program at the end of `stem`, with the program: BANK_GM and 5 of BANK_GM_005.
-std::optional<std::pair<std::string, uint32_t>> SplitProgram(const std::string& stem)
+} // namespace
+
+bool IsSfzName(std::string_view name)
+{
+    return name.size() >= 4 && Lowered(name.substr(name.size() - 4)) == ".sfz";
+}
+
+std::optional<SfzProgramName> SfzProgramOf(const std::string& stem)
 {
     const std::size_t underscore = stem.rfind('_');
     if (underscore == std::string::npos || underscore == 0 || underscore + 1 == stem.size())
@@ -755,19 +761,12 @@ std::optional<std::pair<std::string, uint32_t>> SplitProgram(const std::string& 
         return std::nullopt;
     }
 
-    return std::pair(stem.substr(0, underscore), program);
-}
-
-} // namespace
-
-bool IsSfzName(std::string_view name)
-{
-    return name.size() >= 4 && Lowered(name.substr(name.size() - 4)) == ".sfz";
+    return SfzProgramName{stem.substr(0, underscore), program};
 }
 
 std::vector<SfzInstrument> SfzInstrumentsBeside(const std::filesystem::path& chosen)
 {
-    const std::optional<std::pair<std::string, uint32_t>> own = SplitProgram(xsflib::Utf8(chosen.stem()));
+    const std::optional<SfzProgramName> own = SfzProgramOf(xsflib::Utf8(chosen.stem()));
     if (!own)
     {
         return {{chosen, 0}};
@@ -783,14 +782,14 @@ std::vector<SfzInstrument> SfzInstrumentsBeside(const std::filesystem::path& cho
             continue;
         }
 
-        const std::optional<std::pair<std::string, uint32_t>> other = SplitProgram(xsflib::Utf8(entry.path().stem()));
-        if (other && other->first == own->first)
+        const std::optional<SfzProgramName> other = SfzProgramOf(xsflib::Utf8(entry.path().stem()));
+        if (other && other->name == own->name)
         {
-            files.emplace(other->second, entry.path());
+            files.emplace(other->program, entry.path());
         }
     }
 
-    files.insert_or_assign(own->second, chosen);
+    files.insert_or_assign(own->program, chosen);
 
     std::vector<SfzInstrument> instruments;
     for (const auto& [program, path] : files)
@@ -808,10 +807,9 @@ std::string SfzImportName(std::span<const SfzInstrument> instruments, const std:
         return chosen;
     }
 
-    const std::optional<std::pair<std::string, uint32_t>> split =
-        SplitProgram(xsflib::Utf8(xsflib::PathFromUtf8(chosen).stem()));
+    const std::optional<SfzProgramName> split = SfzProgramOf(xsflib::Utf8(xsflib::PathFromUtf8(chosen).stem()));
 
-    return split ? split->first + ".sfz" : chosen;
+    return split ? split->name + ".sfz" : chosen;
 }
 
 SfzSoundFont SoundFontOfSfz(std::span<const SfzInstrument> instruments, const SfzReader& read)

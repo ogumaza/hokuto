@@ -87,6 +87,12 @@ constexpr const EngineFacts& FactsOf(Engine engine)
     return kEngineFacts[static_cast<std::size_t>(engine)];
 }
 
+// The driver of `engine` in a sentence: MusicPlayer2000 for the GBA's engine, or else the engine's title.
+constexpr std::string_view DriverTitle(Engine engine)
+{
+    return engine == Engine::kGba ? std::string_view("MusicPlayer2000") : FactsOf(engine).title;
+}
+
 // Whether `engine` is the engine of one of the GBA's drivers other than MusicPlayer2000 (format/drivers.h).
 constexpr bool IsDriverEngine(Engine engine)
 {

@@ -199,6 +199,66 @@ void CompareNote(const std::string& name, const std::shared_ptr<const hokuto::so
     }
 }
 
+// Checks `imported`, the file after an import into a voice group of `rom`, `file` as a ROM: with `forms`, the file has
+// to come back from both its forms. Every song has to play the voices that it played, and `file` has to give
+// `original` still. `forms` turns false. Returns the ROM that `imported` exports.
+std::shared_ptr<const hokuto::song::GbaRom> CheckImported(const std::string& name, const File& file,
+                                                          const std::vector<uint8_t>& original,
+                                                          const hokuto::song::GbaRom& rom, const File& imported,
+                                                          bool& forms, Totals& totals)
+{
+    const std::vector<uint8_t> exported = hokuto::format::ExportArchive(imported);
+    if (forms &&
+        (hokuto::format::ExportArchive(hokuto::format::Read(hokuto::format::Write(imported))) != exported ||
+         hokuto::format::ExportArchive(hokuto::format::ReadText(hokuto::format::WriteText(imported))) != exported))
+    {
+        std::printf("%s: the file doesn't come back from its forms\n", name.c_str());
+        totals.failed++;
+    }
+    forms = false;
+
+    const std::shared_ptr<const hokuto::song::GbaRom> built = hokuto::song::LoadGbaRom(exported);
+    const std::vector<int> others = hokuto::song::GbaSongsWithOtherVoices(rom, *built);
+    if (!others.empty())
+    {
+        std::printf("%s: %zu songs play other voices, such as song %d\n", name.c_str(), others.size(), others.front());
+        totals.failed++;
+    }
+    const std::vector<uint8_t> unchanged = hokuto::format::ExportArchive(file);
+    if (unchanged != original)
+    {
+        std::printf("%s: the edit changed the file that it started from\n", name.c_str());
+        totals.failed++;
+    }
+
+    return built;
+}
+
+// Prints the old voice `voice` of program `old_program` of `rom`, and the new voice of `preset` at `place` in `built`,
+// with the first row and its sample of `voices`.
+void PrintVoices(const std::string& name, const hokuto::song::GbaRom& rom, const mp2k::Voice& voice, int old_program,
+                 const hokuto::song::GbaRom& built, uint32_t place, const hokuto::edit::GbaSoundFontVoices& voices,
+                 const hokuto::edit::GbaSoundFontPreset& preset)
+{
+    mp2k::Voice made;
+    mp2k::ReadVoice(built.rom, place, made);
+    const hokuto::edit::GbaSoundFontRow& row = preset.rows.front();
+    const std::vector<uint8_t>& sample = voices.samples.at(row.sample);
+    const auto word = [&sample](std::size_t at)
+    {
+        return xsflib::LoadLe32(sample.data() + at);
+    };
+    mp2k::Wave wave;
+    const bool has_wave = voice.PsgChannel() == 0 && mp2k::ReadWave(rom.rom, voice.wave, wave);
+    std::printf(
+        "%s: program %d: type %02X key %d pan %02X env %d %d %d %d, wave rate %u size %u loop %u; new: "
+        "type %02X, %zu rows, first row key %d pan %02X env %d %d %d %d, sample rate %u size %u loop %u\n",
+        name.c_str(), old_program, voice.type, voice.key, voice.pan_sweep, voice.attack, voice.decay, voice.sustain,
+        voice.release, has_wave ? wave.frequency : 0, has_wave ? wave.size : 0,
+        has_wave && wave.loops ? wave.loop_start : 0, made.type, preset.rows.size(), row.voice.key, row.voice.pan_sweep,
+        row.voice.attack, row.voice.decay, row.voice.sustain, row.voice.release, word(4), word(12), word(8));
+}
+
 // Checks the import of the presets of `group`. With `forms`, the file also has to come back from its forms. `forms`
 // turns false once the group receives its presets.
 void CheckGroup(const std::string& rom_name, const File& file, const std::vector<uint8_t>& original,
@@ -261,29 +321,8 @@ void CheckGroup(const std::string& rom_name, const File& file, const std::vector
     totals.presets += voices.presets.size();
     totals.bytes += voices.bytes;
 
-    const std::vector<uint8_t> exported = hokuto::format::ExportArchive(version.file);
-    if (forms &&
-        (hokuto::format::ExportArchive(hokuto::format::Read(hokuto::format::Write(version.file))) != exported ||
-         hokuto::format::ExportArchive(hokuto::format::ReadText(hokuto::format::WriteText(version.file))) != exported))
-    {
-        std::printf("%s: the file doesn't come back from its forms\n", name.c_str());
-        totals.failed++;
-    }
-    forms = false;
-
-    const std::shared_ptr<const hokuto::song::GbaRom> built = hokuto::song::LoadGbaRom(exported);
-    const std::vector<int> others = hokuto::song::GbaSongsWithOtherVoices(*rom, *built);
-    if (!others.empty())
-    {
-        std::printf("%s: %zu songs play other voices, such as song %d\n", name.c_str(), others.size(), others.front());
-        totals.failed++;
-    }
-    const std::vector<uint8_t> unchanged = hokuto::format::ExportArchive(file);
-    if (unchanged != original)
-    {
-        std::printf("%s: the edit changed the file that it started from\n", name.c_str());
-        totals.failed++;
-    }
+    const std::shared_ptr<const hokuto::song::GbaRom> built =
+        CheckImported(name, file, original, *rom, version.file, forms, totals);
 
     const int song = group.songs.front();
     for (std::size_t i = 0; i < voices.presets.size(); i++)
@@ -303,24 +342,8 @@ void CheckGroup(const std::string& rom_name, const File& file, const std::vector
         }
         if (totals.verbose)
         {
-            mp2k::Voice made;
-            mp2k::ReadVoice(built->rom, version.group + mp2k::kVoiceSize * *programs[i], made);
-            const hokuto::edit::GbaSoundFontRow& row = voices.presets[i].rows.front();
-            const std::vector<uint8_t>& sample = voices.samples.at(row.sample);
-            const auto word = [&sample](std::size_t at)
-            {
-                return xsflib::LoadLe32(sample.data() + at);
-            };
-            mp2k::Wave wave;
-            const bool has_wave = voice.PsgChannel() == 0 && mp2k::ReadWave(rom->rom, voice.wave, wave);
-            std::printf(
-                "%s: program %d: type %02X key %d pan %02X env %d %d %d %d, wave rate %u size %u loop %u; new: "
-                "type %02X, %zu rows, first row key %d pan %02X env %d %d %d %d, sample rate %u size %u loop %u\n",
-                name.c_str(), old_program, voice.type, voice.key, voice.pan_sweep, voice.attack, voice.decay,
-                voice.sustain, voice.release, has_wave ? wave.frequency : 0, has_wave ? wave.size : 0,
-                has_wave && wave.loops ? wave.loop_start : 0, made.type, voices.presets[i].rows.size(), row.voice.key,
-                row.voice.pan_sweep, row.voice.attack, row.voice.decay, row.voice.sustain, row.voice.release, word(4),
-                word(12), word(8));
+            PrintVoices(name, *rom, voice, old_program, *built, version.group + mp2k::kVoiceSize * *programs[i], voices,
+                        voices.presets[i]);
         }
         CompareNote(name, rom, built, song, old_program, static_cast<int>(*programs[i]), KindOf(voice), totals);
     }

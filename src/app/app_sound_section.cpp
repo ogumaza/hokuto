@@ -3,10 +3,12 @@
 // The tracks' colours and the Sound section of the inspector: a colour pick, the tags and the changes of a sound's
 // values.
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <exception>
 #include <utility>
+#include <vector>
 
 #include "app/app.h"
 #include "app/app_internal.h"
@@ -14,6 +16,7 @@
 #include "edit/ds_tables.h"
 #include "edit/gba_tables.h"
 #include "edit/tables.h"
+#include "format/engines.h"
 #include "format/file.h"
 
 namespace hokuto::app
@@ -128,6 +131,91 @@ void App::ApplyColourPick()
     }
 }
 
+bool App::ShowsStartMutes() const
+{
+    const format::File* document = Document();
+    return document != nullptr && sequence_ && song_ &&
+           format::FactsOf(document->engine).family == format::Family::kNintendoWare &&
+           format::EngineOf(*document, sequence_->sound) == document->engine;
+}
+
+void App::ApplyStartMute()
+{
+    const std::optional<int> row = std::exchange(arrangement_.start_mute, std::nullopt);
+    const format::File* document = Document();
+    if (!row || !ShowsStartMutes() || *row < 0 || static_cast<std::size_t>(*row) >= sequence_->tracks.size() ||
+        sequence_->tracks[static_cast<std::size_t>(*row)].number >= 16)
+    {
+        return;
+    }
+
+    // A track that the game mutes in either way plays. Another track takes the 3DS's mute, which starts none of its
+    // notes, or on the Wii U and the Switch a volume of 0.
+    const auto index = static_cast<std::size_t>(*row);
+    const uint32_t bit = 1u << sequence_->tracks[index].number;
+    format::SoundStart start = format::StartOf(*document, sequence_->sound);
+    const bool muted = (format::QuietedTracks(start) & bit) != 0;
+    if (muted)
+    {
+        start.muted &= ~bit;
+        start.silenced &= ~bit;
+    }
+    else if (document->engine == format::Engine::k3ds)
+    {
+        start.muted |= bit;
+    }
+    else
+    {
+        start.silenced |= bit;
+    }
+    Do(muted ? "Unmute Track at Start" : "Mute Track at Start",
+       "Sound: " + song_->name + " - " + song_->tracks[index].name, format::WithStart(*document, std::move(start)));
+}
+
+void App::ApplyTrackStart()
+{
+    std::optional<TrackStartEdit> edit = std::exchange(arrangement_.track_start, std::nullopt);
+    const format::File* document = Document();
+    if (!edit || !ShowsStartMutes() || edit->track < 0 ||
+        static_cast<std::size_t>(edit->track) >= sequence_->tracks.size())
+    {
+        return;
+    }
+
+    // The track's volume, then its variables at time 0, after the start's other variables at time 0.
+    const auto index = static_cast<std::size_t>(edit->track);
+    const auto number = static_cast<uint8_t>(sequence_->tracks[index].number);
+    format::SoundStart start = format::StartOf(*document, sequence_->sound);
+    if (edit->volume)
+    {
+        start.track_volumes[number] = *edit->volume;
+    }
+    else
+    {
+        start.track_volumes.erase(number);
+    }
+    const auto of_track = [number](const format::StartVariable& variable)
+    {
+        return variable.track == number && variable.time == 0;
+    };
+    std::erase_if(start.variables, of_track);
+    const auto later = std::find_if(start.variables.begin(), start.variables.end(),
+                                    [](const format::StartVariable& variable) { return variable.time != 0; });
+    std::vector<format::StartVariable> added;
+    for (const auto& [variable, value] : edit->variables)
+    {
+        added.push_back({.variable = variable, .track = number, .value = value});
+    }
+    start.variables.insert(later, added.begin(), added.end());
+    if (start == format::StartOf(*document, sequence_->sound))
+    {
+        return;
+    }
+
+    Do(edit->name, "Sound: " + song_->name + " - " + song_->tracks[index].name,
+       format::WithStart(*document, std::move(start)));
+}
+
 void App::ApplyTagChange(SoundSection& section)
 {
     const std::optional<TagChange> change = std::exchange(section.tag_changed, std::nullopt);
@@ -139,6 +227,19 @@ void App::ApplyTagChange(SoundSection& section)
 
     Do("Change Tag", "Sound: " + section.view->values.name + " - " + TagLabel(change->key),
        format::WithTag(*document, section.view->sound, change->key, change->value));
+}
+
+void App::ApplyStartChange(SoundSection& section)
+{
+    std::optional<StartChange> change = std::exchange(section.start_changed, std::nullopt);
+    const format::File* document = Document();
+    if (!change || document == nullptr || !section.view ||
+        change->start == format::StartOf(*document, section.view->sound))
+    {
+        return;
+    }
+
+    Do(change->name, "Sound: " + section.view->values.name, format::WithStart(*document, std::move(change->start)));
 }
 
 void App::ApplySoundChange(SoundSection& section)

@@ -92,6 +92,20 @@ const Driver* DriverOfRom(std::span<const uint8_t> rom)
     return nullptr;
 }
 
+std::vector<const Driver*> DriversOfRom(std::span<const uint8_t> rom)
+{
+    std::vector<const Driver*> found;
+    for (const Driver* driver : AllDrivers())
+    {
+        if (driver->Holds(rom))
+        {
+            found.push_back(driver);
+        }
+    }
+
+    return found;
+}
+
 const Driver* DriverOfFile(const File& file)
 {
     return file.native && file.native->driver ? DriverOf(file.native->engine) : nullptr;

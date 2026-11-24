@@ -351,10 +351,10 @@ void TestDsEngines()
                  "of the DS SDK does.");
 }
 
-// A sequence of the DS converts to the Wii U through ntdlib's converter. Its name contains a character that a label
-// can't contain. The labels of the new song have an underscore in its place, and the new sound starts at the song's
-// start. It plays the DS's notes with their keys, each within 10 ms of its time.
-void TestFromDs()
+// A file of a DS archive of sequence SEQ_A-B, whose commands are `bytecode`, and a bank of `instruments`, whose wave 0
+// is a square wave.
+File SmallDsFile(const std::vector<uint8_t>& bytecode,
+                 const std::vector<ntdlib::testing::sdat_files::Instrument>& instruments)
 {
     namespace sdat = ntdlib::sdat;
     namespace sdat_files = ntdlib::testing::sdat_files;
@@ -372,9 +372,17 @@ void TestFromDs()
     model.symbols->names[0] = {"SEQ_A-B"};
     model.symbols->names[2] = {"BANK_A"};
     model.symbols->names[3] = {"WARC_A"};
-    model.files = {sdat_files::Sequence({0x3C, 100, 0x30, 0x40, 100, 0x30, 0xFF}),
-                   sdat_files::Bank({{.type = 1, .region = {.wave = 0}}}), sdat_files::WaveArchive({square})};
-    const File ds = format::ImportDsArchive(sdat::BuildArchive(model));
+    model.files = {sdat_files::Sequence(bytecode), sdat_files::Bank(instruments), sdat_files::WaveArchive({square})};
+
+    return format::ImportDsArchive(sdat::BuildArchive(model));
+}
+
+// A sequence of the DS converts to the Wii U through ntdlib's converter. Its name contains a character that a label
+// can't contain. The labels of the new song have an underscore in its place, and the new sound starts at the song's
+// start. It plays the DS's notes with their keys, each within 10 ms of its time.
+void TestFromDs()
+{
+    const File ds = SmallDsFile({0x3C, 100, 0x30, 0x40, 100, 0x30, 0xFF}, {{.type = 1, .region = {.wave = 0}}});
 
     const hokuto::edit::OtherConsoleSong wii_u = hokuto::edit::ForOtherConsole(ds, 0, sar::Flavor::kCafe);
     XSFLIB_CHECK(wii_u.file.native->tables->sounds.size() == 1 &&
@@ -391,6 +399,24 @@ void TestFromDs()
         XSFLIB_CHECK(std::abs(std::get<0>(sent[i]) - std::get<0>(played[i])) <= 10.0);
         XSFLIB_CHECK(std::get<1>(sent[i]) == std::get<1>(played[i]));
     }
+}
+
+// A region of the DS comes to the Wii U at the level at which the DS plays it. The DS pans a channel linearly: at the
+// centre, each side plays at 64/128, and fully to the right, the right side plays at 128/128, 3.0 dB louder. ntdlib's
+// SoundFont gives every zone a cut of PanCut, 30.1 cB. A zone at a side then requires no gain. The players apply 0.4 of
+// a zone's initialAttenuation: the zone at the centre plays at -30.0 cB and the zone at the right at 0 cB. The new bank
+// removes the cut: program 0, at the centre, has a volume of 127, and program 1, at the right, 127 times the square
+// root of 2, 180.
+void TestFromDsLevels()
+{
+    const File ds = SmallDsFile({0x3C, 100, 0x30, 0x81, 0x01, 0x40, 100, 0x30, 0xFF},
+                                {{.type = 1, .region = {.wave = 0}}, {.type = 1, .region = {.wave = 0, .pan = 127}}});
+
+    const hokuto::edit::OtherConsoleSong wii_u = hokuto::edit::ForOtherConsole(ds, 0, sar::Flavor::kCafe);
+
+    const std::shared_ptr<const sar::SoundArchive> archive = ArchiveOf(wii_u.file);
+    SEQLIB_CHECK_EQ(VolumeOf(*archive, 0, 0), uint8_t{127});
+    SEQLIB_CHECK_EQ(VolumeOf(*archive, 0, 1), uint8_t{180});
 }
 
 } // namespace
@@ -418,5 +444,6 @@ int main()
                                         TestGbaReverbToDs();
                                         TestDsEngines();
                                         TestFromDs();
+                                        TestFromDsLevels();
                                     });
 }

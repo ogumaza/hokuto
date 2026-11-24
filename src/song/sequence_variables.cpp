@@ -552,14 +552,14 @@ SoundVariables ReadVariables(const ntdlib::commands::Sequence& sequence, uint32_
     return {starting.Variables(global_start), all.Variables(global_start)};
 }
 
-// The changes of `changes` that a game can make, in the order of their times. Changes at the same time keep their
-// order.
+// The changes of `changes` that a game can make, in the order of their times: changes of the game's variables and of
+// the track variables of every track. Changes at the same time keep their order.
 Changes GameChanges(const Changes& changes)
 {
     Changes kept;
     for (const VariableChange& change : changes)
     {
-        if (change.variable >= 0 && change.variable < kGameVariables)
+        if (change.variable >= 0 && change.variable < kSetVariables)
         {
             kept.push_back(change);
         }
@@ -624,6 +624,12 @@ SoundVariables VariablesOf(const ntdlib::commands::Sequence& sequence, uint32_t 
 
 int StartingValue(const Sequence& sequence, int number)
 {
+    const auto profile = sequence.profile_values.find(number);
+    if (profile != sequence.profile_values.end())
+    {
+        return profile->second;
+    }
+
     return sequence.wii_build && number >= kFirstGlobal && number < kGameVariables ? 0 : -1;
 }
 

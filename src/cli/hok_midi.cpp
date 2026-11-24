@@ -95,7 +95,7 @@ int RunMidi(std::span<const std::string> arguments, const std::function<ArchiveI
     }
 
     const std::vector<song::BatchSound> sounds =
-        ChosenSounds(song::BatchSounds(input.played), options.sounds, options.input);
+        ChosenSounds(song::BatchSounds(input.played), options.sounds, options.input, input.driver);
     if (sounds.empty())
     {
         throw std::runtime_error(options.input + " contains no sequence sound.");
@@ -103,7 +103,7 @@ int RunMidi(std::span<const std::string> arguments, const std::function<ArchiveI
 
     const std::filesystem::path folder = MadeFolder(options.folder);
     const edit::BatchSource source = {
-        .played = input.played, .build = input.build, .file = input.hok, .name = options.input};
+        .played = input.played, .build = input.build, .file = input.hok, .starts = input.starts, .name = options.input};
     const std::vector<std::string> files = edit::MidiFileNames(sounds, {}, "", {});
 
     // A sound that fails is left out, and the others go on. A sound that plays no notes makes no MIDI file.

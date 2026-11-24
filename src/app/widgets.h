@@ -450,7 +450,8 @@ void TextWrappedAtSpaces(std::string_view text);
 // look of the other buttons, faded. Returns true when it's clicked.
 bool PrimaryButton(const char* label);
 
-// A check box with `label` after it. A click on either turns `on` over, and returns true.
+// A check box with `label` after it. A click on either turns `on` over, and returns true. The text after ## in `label`
+// doesn't show, and a label of ## alone draws the box only.
 bool CheckBox(const char* label, bool* on);
 
 // Shows `text` in a tooltip while the user hovers the last item, with its lines wrapped at a width that reads well.

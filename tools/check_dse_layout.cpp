@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// Checks the import and the export of the DSE files of DS cartridge images. For each image, it checks:
+// Checks the import and the export of the DSE files of DS cartridge images. The files are those that ntdlib's search
+// finds, loose or inside the game's packs (format::DseFilesOf, through ntdlib::dse::FindFiles). For each image, it
+// checks:
 //
 // - The import makes a sequence of each song and each sound effect (ntdlib::dse::Cut). The tool counts them, and names
 //   the songs and the banks of sound effects that stay in the set's bytes.
@@ -11,8 +13,10 @@
 //   contains each edited song and sound effect with the commands of the file. Each file with sequences keeps its
 //   header, its size aside, and the header contains the new size of the file. A song keeps its settings. A bank of
 //   sound effects keeps its two tables and its slots, each with its settings. Every other file of the image keeps its
-//   bytes. An import of the export returns the edited sequences.
-// - The browser's Export… of each song as its file (song::DseItemBytes) reproduces the file of the image byte for byte.
+//   bytes. An import of the export returns the edited sequences. A sequence inside a pack keeps its commands: the
+//   export refuses a changed file inside a pack. The tool checks that refusal on the first such sequence that waits.
+// - The browser's Export… of each song, and of each bank of version 0x402, as its file (song::DseItemBytes)
+//   reproduces the file of the image byte for byte.
 //
 // The tool prints a line for each image. It returns 1 when any check fails, and 2 without an image.
 //
@@ -28,6 +32,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -37,13 +42,16 @@
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/layout.h"
+#include "ntdlib/dse/oldest.h"
 #include "ntdlib/dse/sets.h"
 #include "ntdlib/ntr/rom.h"
+#include "xsflib/binary.h"
 #include "xsflib/bytes.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
 
 #include "format/archive.h"
+#include "format/dse_files.h"
 #include "format/file.h"
 #include "format/text.h"
 #include "layout_problems.h"
@@ -91,34 +99,49 @@ std::map<std::string, std::span<const uint8_t>> ByName(std::span<const ntdlib::d
     return named;
 }
 
-// The files of the set that the image contains, under their names.
-std::vector<ntdlib::dse::NamedFile> FilesOfImage(const ntdlib::ntr::Rom& rom,
-                                                 std::span<const ntdlib::dse::NamedFile> set)
+// The files of a set in an image: each file's bytes in the image, and the paths of the files that are the image's
+// files byte for byte.
+struct ImageFiles
 {
-    std::map<std::string, uint32_t> ids;
-    for (const ntdlib::ntr::RomFile& file : rom.Files())
+    std::vector<ntdlib::dse::NamedFile> files;
+    std::set<std::string> loose;
+};
+
+// The files of `set` that the image contains, under their names, as ntdlib's search finds them in the image's files
+// and packs (format::DseFilesOf). `storage` keeps the decompressed bytes.
+ImageFiles FilesOfImage(const ntdlib::ntr::Rom& rom, std::span<const ntdlib::dse::NamedFile> set,
+                        std::vector<std::vector<uint8_t>>& storage)
+{
+    ImageFiles image_files;
+    std::map<std::string, std::span<const uint8_t>> found;
+    for (const hokuto::format::DseImageFile& file : hokuto::format::DseFilesOf(rom, storage))
     {
-        ids.emplace(file.path.empty() ? "file " + std::to_string(file.id) : file.path, file.id);
+        found.emplace(file.named.path, file.named.bytes);
+        if (file.loose)
+        {
+            image_files.loose.insert(file.named.path);
+        }
     }
 
-    std::vector<ntdlib::dse::NamedFile> files;
     for (const ntdlib::dse::NamedFile& file : set)
     {
-        const auto id = ids.find(file.path);
-        if (id == ids.end())
+        const auto bytes = found.find(file.path);
+        if (bytes == found.end())
         {
             throw std::runtime_error("missing from the image: " + file.path);
         }
-        files.push_back({file.path, rom.FileData(id->second)});
+
+        image_files.files.push_back({file.path, bytes->second});
     }
-    return files;
+
+    return image_files;
 }
 
 // Checks one sequence of `written`, a file of the export, against the commands that give it.
 void CheckWritten(const std::string& what, std::span<const uint8_t> written, const Sequence& sequence,
                   std::optional<uint16_t> effect)
 {
-    const std::optional<uint32_t> at = ntdlib::dse::TracksOffset(written, effect);
+    const std::optional<uint32_t> at = ntdlib::dse::TracksInFile(written, effect);
     const std::vector<uint8_t> bytes = ntdlib::dse::EncodeTracks(sequence).bytes;
     if (!at || *at + bytes.size() > written.size() || !std::ranges::equal(bytes, written.subspan(*at, bytes.size())))
     {
@@ -264,15 +287,44 @@ void CheckImportAgain(const std::string& what, const std::vector<uint8_t>& image
     }
 }
 
-void CheckLonger(const std::string& what, const File& file, std::span<const ntdlib::dse::NamedFile> original,
-                 const std::vector<uint8_t>& image)
+// Checks that the export refuses `file` once sequence `s`, inside a pack, takes `copies`. The message has to name the
+// file at `path` and its pack, the folder part of the path.
+void CheckPackRefused(const std::string& what, const File& file, std::size_t s, Sequence copies,
+                      const std::string& path)
 {
-    // Each sequence with a wait grows, until a bank of sound effects' table can't reach its next effect.
+    File edited = file;
+    edited.sequences[s] = std::move(copies);
+    try
+    {
+        hokuto::format::ExportDsImage(edited);
+        Problem(what, "the export takes a changed file inside a pack");
+    }
+    catch (const std::invalid_argument& error)
+    {
+        const std::string message = error.what();
+        const std::size_t slash = path.rfind('/');
+        const std::string pack = slash == std::string::npos ? "" : path.substr(0, slash);
+        const std::string name = path.substr(slash + 1);
+        if (message.find(name) == std::string::npos || message.find(pack) == std::string::npos)
+        {
+            Problem(what, "the export's refusal names neither " + name + " nor its pack: " + message);
+        }
+    }
+}
+
+void CheckLonger(const std::string& what, const File& file, std::span<const ntdlib::dse::NamedFile> original,
+                 const std::set<std::string>& loose, const std::vector<uint8_t>& image)
+{
+    // Each sequence with a wait grows, until a bank of sound effects' table can't reach its next effect. A sequence
+    // inside a pack keeps its commands.
     File longer = file;
+    bool refusal_checked = false;
+    std::size_t in_packs = 0;
     std::map<std::string, std::size_t> growth;
     std::map<std::string, std::vector<std::pair<std::optional<uint16_t>, uint32_t>>> edited;
     const std::map<std::string, std::span<const uint8_t>> named = ByName(original);
     std::size_t lengthened = 0;
+
     for (std::size_t s = 0; s < file.sequences.size(); ++s)
     {
         const Sequence& sequence = *file.sequences[s];
@@ -285,8 +337,15 @@ void CheckLonger(const std::string& what, const File& file, std::span<const ntdl
         }
 
         std::optional<Sequence> copies = WithWaitCopies(sequence);
-        if (!copies)
+        if (!copies || !loose.contains(ref->path))
         {
+            if (copies && !refusal_checked)
+            {
+                CheckPackRefused(what, file, s, std::move(*copies), ref->path);
+                refusal_checked = true;
+            }
+
+            in_packs += loose.contains(ref->path) ? 0 : 1;
             edited[ref->path].emplace_back(ref->effect, static_cast<uint32_t>(s));
             continue;
         }
@@ -308,13 +367,15 @@ void CheckLonger(const std::string& what, const File& file, std::span<const ntdl
     }
 
     const hokuto::format::DsImageExport exported = hokuto::format::ExportDsImage(longer);
-    if (exported.image == image && lengthened != 0)
+    if ((exported.image == image) != (lengthened == 0))
     {
-        Problem(what, "the longer sequences leave the image as it was");
+        Problem(what, lengthened == 0 ? "the export changes the image without an edit"
+                                      : "the longer sequences leave the image as it was");
     }
 
     const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(exported.image);
-    const std::vector<ntdlib::dse::NamedFile> after = FilesOfImage(rom, original);
+    std::vector<std::vector<uint8_t>> storage;
+    const std::vector<ntdlib::dse::NamedFile> after = FilesOfImage(rom, original, storage).files;
     CheckWrittenFiles(what, longer, after, named, edited);
 
     // Every file of the image that the set doesn't hold keeps its bytes.
@@ -323,13 +384,15 @@ void CheckLonger(const std::string& what, const File& file, std::span<const ntdl
     // An import of the export returns the edited sequences.
     CheckImportAgain(what, exported.image, longer);
 
-    std::printf("  %zu sequences longer, the image %zu bytes against %zu, %zu other files, %zu stale hashes\n",
-                lengthened, exported.image.size(), image.size(), other, exported.stale.size());
+    std::printf(
+        "  %zu sequences longer, %zu in packs kept, the image %zu bytes against %zu, %zu other files, %zu stale "
+        "hashes\n",
+        lengthened, in_packs, exported.image.size(), image.size(), other, exported.stale.size());
 }
 
-// Each song of `image` is exported as its file. The browser's Export… writes the same file. The file has to be `files`'
-// file of the song, byte for byte.
-void CheckSongFiles(const std::string& what, const std::vector<uint8_t>& image,
+// Each song of `image`, and each bank of version 0x402, is exported as its file. The browser's Export… writes the same
+// file. The file has to be `files`' file of the song or the bank, byte for byte.
+void CheckItemFiles(const std::string& what, const std::vector<uint8_t>& image,
                     std::span<const ntdlib::dse::NamedFile> files)
 {
     const std::shared_ptr<const hokuto::song::DseSet> set = hokuto::song::LoadDseSet(image);
@@ -352,7 +415,49 @@ void CheckSongFiles(const std::string& what, const std::vector<uint8_t>& image,
             Problem(what, input.name + " goes out as another file than the image's");
         }
     }
-    std::printf("  %zu songs went out as their files\n", songs);
+
+    // The set lists the banks in the order of their files, and leaves out a bank that it can't read.
+    std::vector<std::span<const uint8_t>> bank_files;
+    for (const ntdlib::dse::NamedFile& file : files)
+    {
+        if (std::memcmp(file.bytes.data(), "swdl", 4) != 0)
+        {
+            continue;
+        }
+
+        try
+        {
+            ntdlib::dse::WaveBank::Parse(file.bytes);
+            bank_files.push_back(file.bytes);
+        }
+        catch (const xsflib::FormatError&)
+        {
+        }
+    }
+
+    if (bank_files.size() != set->banks.size())
+    {
+        Problem(what, "the set lists another number of banks than the files");
+    }
+
+    std::size_t oldest_banks = 0;
+    for (uint32_t bank = 0; bank < set->banks.size() && bank < bank_files.size(); ++bank)
+    {
+        if (!ntdlib::dse::IsOldestVersion(bank_files[bank]))
+        {
+            continue;
+        }
+
+        oldest_banks++;
+        const std::vector<uint8_t> exported =
+            hokuto::song::DseItemBytes(*set, {.kind = hokuto::song::ItemKind::kBank, .index = bank});
+        if (!std::ranges::equal(exported, bank_files[bank]))
+        {
+            Problem(what, "bank " + std::to_string(bank) + " goes out as another file than the image's");
+        }
+    }
+
+    std::printf("  %zu songs and %zu banks of version 0x402 went out as their files\n", songs, oldest_banks);
 }
 
 void CheckImage(const std::string& path, const std::vector<uint8_t>& image, bool text)
@@ -398,10 +503,11 @@ void CheckImage(const std::string& path, const std::vector<uint8_t>& image, bool
     }
 
     const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(image);
-    const std::vector<ntdlib::dse::NamedFile> in_image = FilesOfImage(rom, files);
+    std::vector<std::vector<uint8_t>> storage;
+    const ImageFiles in_image = FilesOfImage(rom, files, storage);
     for (std::size_t f = 0; f < files.size(); f++)
     {
-        if (!std::ranges::equal(files[f].bytes, in_image[f].bytes))
+        if (!std::ranges::equal(files[f].bytes, in_image.files[f].bytes))
         {
             Problem(path, files[f].path + " doesn't come back");
         }
@@ -418,8 +524,8 @@ void CheckImage(const std::string& path, const std::vector<uint8_t>& image, bool
     }
 
     CheckForms(path, file, text);
-    CheckLonger(path, file, files, image);
-    CheckSongFiles(path, image, files);
+    CheckLonger(path, file, files, in_image.loose, image);
+    CheckItemFiles(path, image, files);
     std::printf("%s: %zu files, %zu of them with sequences, %zu in the bytes; %zu sequences; the set takes %zu bytes\n",
                 path.c_str(), files.size(), with_sequences, kept, file.sequences.size(), set.size());
 }

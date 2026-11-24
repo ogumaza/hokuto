@@ -643,6 +643,13 @@ SDL_AppResult App::Iterate()
     // So does a dropped read of the songs of a ROM's samples. Until then, the lambda of the read keeps the ROM.
     std::erase_if(dropped_sample_songs_, Done<DriverSampleSongs>);
 
+    // A choice in the browser of an archive that isn't in front brings that archive to the front, before anything of
+    // the frame refers to the archive in front, its song or its sequence. The last frame applied its changes.
+    if (const std::optional<std::size_t> archive = std::exchange(browser_state_.archive, std::nullopt))
+    {
+        BringToFront(*archive);
+    }
+
     // An item's edit whose work is done becomes an action before the frame is drawn. The reader then builds its
     // archive.
     TakeItemEdit();
@@ -679,12 +686,16 @@ SDL_AppResult App::Iterate()
     DrawInspector(song, master_, arrangement_, sound_section_, busy, &views_.inspector);
     ApplySoundChange(sound_section_);
     ApplyTagChange(sound_section_);
+    ApplyStartChange(sound_section_);
     ApplyWaveSoundChange(sound_section_);
     ShowSoundIn(browser_sound_, BrowsedSound());
     ShowWaveSoundIn(browser_sound_);
-    DrawBrowser(browser_, file_name_, browser_state_, browser_sound_, &views_.browser);
+    UpdateBrowserArchives();
+    DrawBrowser(browser_, browser_archives_, history_ ? history_->Front() : 0, file_name_, browser_state_,
+                browser_sound_, &views_.browser);
     ApplySoundChange(browser_sound_);
     ApplyTagChange(browser_sound_);
+    ApplyStartChange(browser_sound_);
     ApplyWaveSoundChange(browser_sound_);
     OpenBrowsed();
     ApplyBrowserRequests();
@@ -692,9 +703,12 @@ SDL_AppResult App::Iterate()
     arrangement_.track_actions = {IsEnabled(Command::kAddTrack), IsEnabled(Command::kDuplicateTracks),
                                   IsEnabled(Command::kRemoveSelectedTracks), IsEnabled(Command::kCopyTrack),
                                   IsEnabled(Command::kPasteTrack)};
+    arrangement_.start_mutes = ShowsStartMutes();
     arrangement_.empty_hint = ArrangementHint();
     DrawArrangement(song, transport_, arrangement_, ItemShown(ShownSound()), busy);
     ApplyColourPick();
+    ApplyStartMute();
+    ApplyTrackStart();
 
     ApplyArrangementRequests();
     UpdateMixer(song, busy);

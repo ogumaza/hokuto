@@ -468,6 +468,17 @@ void DrawTrackPopups(SongView* song, ArrangementState& state)
                 state.track_action = static_cast<TrackAction>(i);
             }
         }
+
+        // The game's mute of the selected track as the sound starts, on the consoles whose games have one.
+        const auto selected = static_cast<std::size_t>(state.selected_track);
+        if (state.start_mutes && song != nullptr && state.selected_track >= 0 && selected < song->tracks.size())
+        {
+            ImGui::Separator();
+            if (ImGui::MenuItem("Mute at Start", nullptr, song->tracks[selected].start_muted))
+            {
+                state.start_mute = state.selected_track;
+            }
+        }
         ImGui::EndPopup();
     }
 }

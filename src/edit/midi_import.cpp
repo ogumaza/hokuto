@@ -43,6 +43,7 @@ using midi_songs_parts::PlaceNoteOn;
 using midi_songs_parts::PlacePitchBend;
 using midi_songs_parts::PlaceProgramChange;
 using midi_songs_parts::Setting;
+using midi_songs_parts::StopsSounds;
 using midi_songs_parts::TimeKeepingTempos;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
@@ -1067,6 +1068,10 @@ void MidiImport::WriteTrack(LabelWriter& writer, const MidiTrack& track, const s
     TrackCode code(writer, loop_, label);
     uint32_t end = Ticks(track.end);
     bool after_jump = false;
+
+    // The notes that last longer than the MIDI file gives them, at least a tick: the tick of each one's end, and the
+    // MIDI tick of its note-off.
+    std::vector<std::pair<uint32_t, uint64_t>> lengthened;
     for (const Placed& placed : track.placed)
     {
         // An event that moves to the nearer tick stays on its side of the loop's start and end.
@@ -1079,6 +1084,25 @@ void MidiImport::WriteTrack(LabelWriter& writer, const MidiTrack& track, const s
         if (options_.imports && loop_ && loop_end_ && placed.tick < *loop_end_ && loop_->second > 0)
         {
             at = std::min(at, loop_->second - 1);
+        }
+
+        // A stop of the track's channels follows the notes that the MIDI file ended before it. Where such a note
+        // lasts a tick that the MIDI file doesn't give it, the stop and the commands after it wait for the note's
+        // end. The stop stays on its side of the loop's start and end.
+        std::erase_if(lengthened, [at](const std::pair<uint32_t, uint64_t>& note) { return note.first <= at; });
+        if (StopsSounds(placed.command))
+        {
+            uint32_t after = at;
+            for (const auto& [note_end, off] : lengthened)
+            {
+                after = off <= placed.tick ? std::max(after, note_end) : after;
+            }
+
+            const auto crosses = [at, after](uint32_t point)
+            {
+                return at < point && point <= after;
+            };
+            at = loop_ && (crosses(loop_->first) || crosses(loop_->second)) ? at : after;
         }
 
         code.LoopTo(at);
@@ -1101,6 +1125,10 @@ void MidiImport::WriteTrack(LabelWriter& writer, const MidiTrack& track, const s
 
             command.value.value = int64_t{length} * kOne;
             end = std::max(end, std::max(off, at + 1));
+            if (at + length > off)
+            {
+                lengthened.emplace_back(at + length, *placed.off);
+            }
         }
 
         writer.Item(command);

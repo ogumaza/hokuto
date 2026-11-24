@@ -270,6 +270,7 @@ using hokuto::tools::SpreadIndices;
 using hokuto::tools::commands::AllocationFirst;
 using hokuto::tools::commands::brownie_song;
 using hokuto::tools::commands::Chosen;
+using hokuto::tools::commands::CountsQuintetTicks;
 using hokuto::tools::commands::InsertAndRemove;
 using hokuto::tools::commands::KeepValues;
 using hokuto::tools::commands::kMostCommands;
@@ -289,7 +290,6 @@ using hokuto::tools::commands::SettingMoves;
 using hokuto::tools::commands::SongsOf;
 using hokuto::tools::commands::Stepped;
 using hokuto::tools::commands::TempoRow;
-using hokuto::tools::commands::TempoRulesOf;
 using hokuto::tools::commands::Totals;
 using hokuto::tools::commands::WithoutEncoding;
 using ntdlib::commands::Command;
@@ -776,7 +776,7 @@ int main(int argc, char** argv)
     {
         TempoRow(name, file, archive, sequences, places, checked, totals);
         PrintTempoTotals(name, totals, archive.gba != nullptr, archive.Rd2() != nullptr, archive.Rare() != nullptr,
-                         TempoRulesOf(archive).quarter_ticks != 0);
+                         CountsQuintetTicks(archive));
         PrintOutgrown(name, totals, archive.gba != nullptr || archive.driver != nullptr);
         hokuto::tools::PrintSaves(name);
         std::printf("%s: %zu problems.\n", name.c_str(), totals.problems);
@@ -798,7 +798,7 @@ int main(int argc, char** argv)
 
     PrintRoundTotals(name, archive, totals);
     PrintTempoTotals(name, totals, archive.gba != nullptr, archive.Rd2() != nullptr, archive.Rare() != nullptr,
-                     TempoRulesOf(archive).quarter_ticks != 0);
+                     CountsQuintetTicks(archive));
     PrintMoveTotals(name, totals, archive.gba != nullptr);
     PrintOutgrown(name, totals, archive.gba || archive.driver);
     hokuto::tools::PrintSaves(name);

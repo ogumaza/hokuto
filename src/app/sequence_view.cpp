@@ -181,6 +181,11 @@ void AddSongVariables(SongView& view, const song::Sequence& sequence)
     for (const song::VariableChange& change : sequence.changes)
     {
         view.changes.push_back({change.time, change.variable, change.value, song::TickOfMs(sequence, change.time)});
+        AddEveryTrackVariable(view, change.variable, sequence.start_values);
+    }
+    for (const auto& [number, value] : sequence.start_values)
+    {
+        AddEveryTrackVariable(view, number, sequence.start_values);
     }
     for (const song::Variable& variable : sequence.read_variables)
     {
@@ -191,6 +196,24 @@ void AddSongVariables(SongView& view, const song::Sequence& sequence)
 }
 
 } // namespace
+
+void AddEveryTrackVariable(SongView& view, int number, const song::StartValues& values)
+{
+    const auto taken = [number](const VariableView& variable)
+    {
+        return variable.number == number;
+    };
+    if (number < format::kFirstTrackVariable || number >= format::kStartVariables ||
+        std::ranges::any_of(view.variables, taken))
+    {
+        return;
+    }
+
+    const auto found = values.find(number);
+    const auto after = std::ranges::find_if(
+        view.variables, [number](const VariableView& variable) { return variable.number > number; });
+    view.variables.insert(after, {.number = number, .start = found != values.end() ? found->second : -1});
+}
 
 SongView MakeSongView(const song::Sequence& sequence, const std::map<uint32_t, std::string>& labels)
 {
@@ -212,6 +235,21 @@ SongView MakeSongView(const song::Sequence& sequence, const std::map<uint32_t, s
     {
         const song::Track& track = sequence.tracks[i];
         view.tracks.push_back(MakeTrackView(track, parts[i], labels, shared, plays, sequence.ds));
+        TrackView& shown = view.tracks.back();
+        shown.start_muted =
+            track.number >= 0 && track.number < 16 && (format::QuietedTracks(sequence.start) >> track.number & 1) != 0;
+        if (const auto volume = sequence.start.track_volumes.find(static_cast<uint8_t>(track.number));
+            track.number >= 0 && volume != sequence.start.track_volumes.end())
+        {
+            shown.start_volume = volume->second;
+        }
+        for (const format::StartVariable& variable : sequence.start.variables)
+        {
+            if (variable.track && *variable.track == track.number && variable.time == 0)
+            {
+                shown.start_variables[variable.variable] = variable.value;
+            }
+        }
     }
     ShowMixerAt(view, sequence, 0.0);
     AddSongVariables(view, sequence);

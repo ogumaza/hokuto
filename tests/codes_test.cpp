@@ -81,7 +81,7 @@ void TestFlavorCodes()
         XSFLIB_CHECK(format::FlavorNamed(format::NameOf(flavor)) == flavor);
     }
 
-    XSFLIB_CHECK(!format::FlavorOfCode(0) && !format::FlavorOfCode(format::kWiiArchiveCode));
+    XSFLIB_CHECK(!format::FlavorOfCode(0) && !format::FlavorOfCode(format::CodeOf(format::Engine::kWii)));
 
     for (const SoundType type : {SoundType::kUnknown, SoundType::kSequence, SoundType::kWaveSound, SoundType::kStream})
     {

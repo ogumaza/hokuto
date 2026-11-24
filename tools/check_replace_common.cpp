@@ -108,14 +108,6 @@ std::vector<std::optional<std::vector<uint32_t>>> ListsOfGroups(std::span<const 
     return lists;
 }
 
-std::string HexOf(uint32_t id)
-{
-    char text[16];
-    std::snprintf(text, sizeof(text), "0x%08X", id);
-
-    return text;
-}
-
 namespace
 {
 

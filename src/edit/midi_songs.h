@@ -76,6 +76,12 @@ struct MidiOptions
     bool selects_banks = false; // control change 0 selects a bank of 128 programs
     bool imports = false;       // an import's rules: more controllers, the nearest ticks, the first 16 channels
 
+    // Control change 120 stops the track's notes at once: a mute command that stops the track's channels, then one
+    // that ends the mute (SequenceTrack::SetMute's modes 3 and 0). Every note of the song lasts a tick at least. Where
+    // a note that the MIDI file ends before the controller lasts longer for that reason, the mute waits for its end.
+    // Without the option, the song leaves the controller out.
+    bool stops_sounds = false;
+
     // The engine that plays the song. The warning about whole tempos names it: "NintendoWare", or "DS" and "DSE". The
     // tempo commands of the DS and DSE hold whole beats a minute too.
     std::string_view engine = "NintendoWare";

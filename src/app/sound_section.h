@@ -7,8 +7,9 @@
 // of the Wii shows one bank slot (edit::HeldValuesOf). A GBA song shows only its music player, its priority and its
 // reverb (edit/gba_tables.h). The program makes the change once the user lets go of the
 // control (edit/tables.h). A wave sound's values in its wave sound file follow: its wave, its pitch, its pans, its
-// sends, its filters and its envelope (edit/waves.h). The sound's tags follow, a box of text for each key that the
-// program offers (format::kTagKeys).
+// sends, its filters and its envelope (edit/waves.h). A sequence sound of the 3DS, the Wii U or the Switch shows its
+// start: what the game sets through the sound's handle as it starts the sound. The sound's tags follow, a box of text
+// for each key that the program offers (format::kTagKeys).
 
 #pragma once
 
@@ -45,6 +46,18 @@ struct SoundView
     edit::HeldValues held;            // the values that the archive holds
     bool ds = false;                  // a sound of the DS
     bool gba = false;                 // a song of the GBA
+
+    // The sound's start (format::StartOf), for a sequence sound that plays on the file's engine of the 3DS, the Wii U
+    // or the Switch. Only the 3DS takes a start's banks.
+    std::optional<format::SoundStart> start;
+    bool start_banks = false;
+};
+
+// A sound's new start that the user made in the Start rows, with the action's name for the history.
+struct StartChange
+{
+    format::SoundStart start;
+    std::string name;
 };
 
 // A tag that the user typed: its key, and the new value. An empty value removes the tag.
@@ -68,8 +81,9 @@ struct WaveSoundChange
 // clears it. A tag that the user typed waits in `tag_changed` the same way. A wave sound's values in its wave sound
 // file have a view of their own, from the archive of `wave_version`, with the slider that the user holds by its row and
 // its value, and the change in `wave_changed`. While `wave_busy`, those rows take no edits. `wave_group_sizes` measures
-// the groups that load the wave sound file. `filter` holds the text of the menus' search fields, and `typing` the text
-// of the tag that the user types. The inspector and the browser each have a section.
+// the groups that load the wave sound file. The Start rows hold the slider that the user holds in `start_held`, by its
+// row, and the start that the user made in `start_changed`. `filter` holds the text of the menus' search fields, and
+// `typing` the text of the tag that the user types. The inspector and the browser each have a section.
 struct SoundSection
 {
     std::optional<SoundView> view;
@@ -85,6 +99,8 @@ struct SoundSection
     std::optional<WaveSoundChange> wave_changed;
     bool wave_busy = false;
     std::future<std::vector<std::string>> wave_group_sizes;
+    std::optional<std::pair<int, float>> start_held;
+    std::optional<StartChange> start_changed;
     std::array<char, 128> filter{};
     TextTyping typing;
 };

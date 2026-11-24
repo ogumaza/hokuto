@@ -336,9 +336,6 @@ StrictRead ReadStrictly(const format::File& file);
 // file that the FILE block doesn't hold has no list. The 3DS's file table holds no lists, and gives none.
 std::vector<std::optional<std::vector<uint32_t>>> ListsOfGroups(std::span<const uint8_t> bytes, sar::Flavor flavor);
 
-// An item ID in hexadecimal.
-std::string HexOf(uint32_t id);
-
 // What is wrong with group file `now` of `flavor` after file `file_id` took `bytes` in the place of `present`, or
 // nothing. The group file was `was` before. Each copy of the file has to hold what CopyProblem requires, and each other
 // copy its bytes. The group file has to keep its files and items. `name` names the group file in the message.

@@ -4,6 +4,12 @@
 
 #include "check_exports.h"
 
+#include "ntdlib/dse/driver.h"
+#include "ntdlib/dse/game_starts.h"
+#include "ntdlib/dse/ticks.h"
+#include "ntdlib/ntr/rom.h"
+#include "ntdlib/sequence_export/ntr/game_profiles.h"
+
 namespace hokuto::tools::exports
 {
 
@@ -11,34 +17,16 @@ namespace
 {
 
 // The options of ntdlib's frame for the sequence `label` of `archive`, of `game`: the build of the archive's driver,
-// and the settings and commands of the sequence's profile (ntdlib::ntr::GameProfileOf). ntdlib's DS converter uses the
-// same options. The output effect stays out.
+// and what the sequence's profile sets (ntdlib::ntr::GameProfileOf), applied as ntdlib's DS converter applies it
+// (ApplyProfile): the settings, the commands and the locks of channels. The output effect stays out.
 export_::ntr::PerformOptions DsReferenceOptions(const hokuto::song::DsArchive& archive, const std::string& label,
                                                 const std::optional<hokuto::song::DsGame>& game)
 {
     export_::ntr::PerformOptions options;
     options.build = archive.build;
-    if (!game)
+    if (game)
     {
-        return options;
-    }
-
-    const ntdlib::ntr::GameProfile profile = ntdlib::ntr::GameProfileOf(game->code, game->path, game->index, label);
-    const ntdlib::ntr::GameSettings& settings = profile.settings;
-    options.player_channels.insert(settings.channels.begin(), settings.channels.end());
-    options.track_channels = settings.track_channels;
-    options.reverb = settings.reverb;
-    options.commands = profile.commands;
-    for (uint8_t i = 0; i < 16; i++)
-    {
-        if (settings.variables.local[i])
-        {
-            options.variables.try_emplace(i, *settings.variables.local[i]);
-        }
-        if (settings.variables.global[i])
-        {
-            options.variables.try_emplace(static_cast<uint8_t>(16 + i), *settings.variables.global[i]);
-        }
+        export_::ntr::ApplyProfile(ntdlib::ntr::GameProfileOf(game->code, game->path, game->index, label), options);
     }
 
     return options;
@@ -163,11 +151,22 @@ int CheckDse(const std::vector<uint8_t>& bytes, const std::string& name, const s
 {
     std::shared_ptr<const hokuto::song::DseSet> theirs_set;
     std::shared_ptr<const hokuto::song::DseSet> ours_set;
+    std::string game_code;
+    std::optional<ntdlib::dse::GameStarts> game_starts;
     try
     {
         theirs_set = hokuto::song::LoadDseSet(bytes);
-        ours_set = hokuto::song::LoadDseSet(hokuto::format::ExportArchive(hokuto::format::ImportDseImage(bytes)),
-                                            hokuto::song::DseBuildOf(bytes));
+        game_code = hokuto::song::DseGameCodeOf(bytes);
+        ours_set = hokuto::edit::DseSetOfFile(hokuto::format::ImportDseImage(bytes));
+
+        // ntdlib's converter takes the rows of the game's table where the game's code doesn't match its profile.
+        try
+        {
+            game_starts.emplace(ntdlib::ntr::Rom::Parse(bytes));
+        }
+        catch (const xsflib::FormatError&)
+        {
+        }
     }
     catch (const std::exception& error)
     {
@@ -189,8 +188,19 @@ int CheckDse(const std::vector<uint8_t>& bytes, const std::string& name, const s
         Side ours;
         try
         {
+            // ntdlib's converter plays each folder with the tick of the game's settings (ntdlib::dse::TickOf), and
+            // starts each song in its first state (ntdlib::dse::GameStarts).
+            const export_::dse::SequenceInput& input = theirs_set->sounds[sound];
             export_::dse::PerformOptions options;
             options.build = theirs_set->build;
+            options.tick_microseconds = ntdlib::dse::TickOf(game_code, input.folder)
+                                            .tick_microseconds.value_or(ntdlib::dse::Driver::kTickMicroseconds);
+            if (!input.ref.effect)
+            {
+                options.song_start =
+                    ntdlib::dse::StartOf(game_starts ? game_starts->StatesOf(input.ref.path).front()
+                                                     : ntdlib::dse::SongStatesOf(game_code, input.ref.path).front());
+            }
             export_::dse::Conversion converted =
                 export_::dse::ConvertSequence(theirs_set->sounds[sound].Files(), sound_name, options, program);
             theirs.conversion = hokuto::song::FrameConversion(std::move(converted));

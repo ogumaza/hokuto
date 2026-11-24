@@ -375,9 +375,20 @@ bool SameOutput(const song::KonamiRom& rom, const song::KonamiRom& replaced, uin
     return MostDifference(rom, replaced, sound, frames, true) == 0;
 }
 
-// The replacements round: every sample in one file.
-void CheckReplacements(const std::string& name, const format::File& file, const song::KonamiRom& rom,
-                       const std::vector<int>& samples, double seconds, Counts& counts)
+// The samples of a ROM after the replacements round put each one's WAV file in its place: the file, the samples that
+// went in, in their order, the samples counted apart, and the samples whose step or period moved, with the step of
+// their WAV file.
+struct Replaced
+{
+    format::File file;
+    std::vector<int> done;
+    std::set<int> moved;
+    std::map<int, uint32_t> stepped;
+};
+
+// Puts the WAV file of each of `samples` of `rom` in its place in `file`, as far as the ROM has room.
+Replaced ReplaceAll(const std::string& name, const format::File& file, const song::KonamiRom& rom,
+                    const std::vector<int>& samples, Counts& counts)
 {
     // Packed samples go first, then the shorter ones: a ROM with little room then fits the most of them.
     std::vector<int> order = samples;
@@ -392,17 +403,14 @@ void CheckReplacements(const std::string& name, const format::File& file, const 
                                  }
                                  return first.length < second.length;
                              });
-    format::File replaced = file;
-    std::set<int> moved;             // the samples counted apart
-    std::map<int, uint32_t> stepped; // the samples whose step or period moved, and the step of their WAV file
-    std::vector<int> done;
+    Replaced replaced{.file = file};
     for (const int sample : order)
     {
         const edit::IncomingKonamiSample incoming = edit::ReadIncomingKonamiSample(song::KonamiSampleWav(rom, sample));
         try
         {
             // The entries and the headers of the other samples stay as the ROM stores them.
-            replaced = edit::WithKonamiSample(replaced, rom, sample, incoming);
+            replaced.file = edit::WithKonamiSample(replaced.file, rom, sample, incoming);
         }
         catch (const std::invalid_argument& error)
         {
@@ -413,35 +421,41 @@ void CheckReplacements(const std::string& name, const format::File& file, const 
             }
             continue;
         }
-        done.push_back(sample);
+        replaced.done.push_back(sample);
         counts.replaced++;
         const konami::SampleInfo info = rom.info.Sample(rom.rom, sample);
         counts.packed += info.packed ? 1 : 0;
         if (StepOf(rom, incoming.rate) != HeldStep(info))
         {
-            moved.insert(sample);
-            stepped.emplace(sample, StepOf(rom, incoming.rate));
+            replaced.moved.insert(sample);
+            replaced.stepped.emplace(sample, StepOf(rom, incoming.rate));
         }
         if (info.packed)
         {
-            moved.insert(sample);
+            replaced.moved.insert(sample);
         }
     }
+    counts.moved_steps += replaced.stepped.size();
 
-    counts.moved_steps += stepped.size();
-    const std::vector<uint8_t> built = format::ExportArchive(replaced);
-    const std::shared_ptr<const song::KonamiRom> new_rom = song::LoadKonamiRom(built);
-    const uint32_t free_start = file.native->driver->free_start + agblib::agb::kRomBase;
-    for (const int sample : done)
+    return replaced;
+}
+
+// Checks each sample that went into `new_rom` in `replaced` against `rom`: a new place in the free space after
+// `free_start`, the same PCM and loop, and the step of the ROM or of the WAV file.
+void CheckReplacedSamples(const std::string& name, const song::KonamiRom& rom, const song::KonamiRom& new_rom,
+                          uint32_t free_start, const Replaced& replaced, Counts& counts)
+{
+    for (const int sample : replaced.done)
     {
         const konami::SampleInfo before = rom.info.Sample(rom.rom, sample);
-        const konami::SampleInfo after = new_rom->info.Sample(new_rom->rom, sample);
+        const konami::SampleInfo after = new_rom.info.Sample(new_rom.rom, sample);
+        const auto stepped = replaced.stepped.find(sample);
         std::string problem;
         if (!after.valid || after.data < free_start)
         {
             problem = "the entry names no new place";
         }
-        else if (konami::SamplePcm(new_rom->rom, after) != konami::SamplePcm(rom.rom, before))
+        else if (konami::SamplePcm(new_rom.rom, after) != konami::SamplePcm(rom.rom, before))
         {
             problem = "the PCM differs";
         }
@@ -449,11 +463,11 @@ void CheckReplacements(const std::string& name, const format::File& file, const 
         {
             problem = "the loop differs";
         }
-        else if (!stepped.contains(sample) && HeldStep(after) != HeldStep(before))
+        else if (stepped == replaced.stepped.end() && HeldStep(after) != HeldStep(before))
         {
             problem = "the step differs";
         }
-        else if (stepped.contains(sample) && HeldStep(after) != stepped.at(sample))
+        else if (stepped != replaced.stepped.end() && HeldStep(after) != stepped->second)
         {
             problem = "the step isn't the WAV file's";
         }
@@ -464,49 +478,72 @@ void CheckReplacements(const std::string& name, const format::File& file, const 
                         problem.c_str());
         }
     }
+}
 
-    if (!hokuto::tools::RoundTrips(replaced))
+// Checks that each sound of `rom` plays the same `frames` of the driver's frames from `new_rom`, the ROM after the
+// replacements of `replaced` in `file`. A sound that plays a sample counted apart counts apart. For a sound that
+// differs, the line names the samples whose replacement alone changes the output.
+void CheckReplacedSounds(const std::string& name, const format::File& file, const song::KonamiRom& rom,
+                         const song::KonamiRom& new_rom, const Replaced& replaced, int frames, Counts& counts)
+{
+    for (const uint32_t sound : song::KonamiSounds(rom))
+    {
+        counts.sounds++;
+        const std::vector<int> played = rom.SamplesOfSound(sound);
+        const auto apart = [&replaced](int sample)
+        {
+            return replaced.moved.contains(sample);
+        };
+        if (std::ranges::any_of(played, apart))
+        {
+            counts.sounds_apart++;
+            std::printf("%s: %s counted apart: the output differs by %d at most\n", name.c_str(),
+                        song::KonamiSoundName(rom, sound).c_str(), MostDifference(rom, new_rom, sound, frames, false));
+            continue;
+        }
+        if (SameOutput(rom, new_rom, sound, frames))
+        {
+            continue;
+        }
+
+        counts.sounds_differ++;
+        std::string alone;
+        for (const int sample : played)
+        {
+            if (std::ranges::find(replaced.done, sample) == replaced.done.end())
+            {
+                continue;
+            }
+            const format::File one = edit::WithKonamiSample(
+                file, rom, sample, edit::ReadIncomingKonamiSample(song::KonamiSampleWav(rom, sample)));
+            const std::shared_ptr<const song::KonamiRom> one_rom = song::LoadKonamiRom(format::ExportArchive(one));
+            if (!SameOutput(rom, *one_rom, sound, frames))
+            {
+                alone += " " + song::KonamiSampleName(sample);
+            }
+        }
+        std::printf("%s: %s FAILED: the output differs after the replacements. Alone:%s\n", name.c_str(),
+                    song::KonamiSoundName(rom, sound).c_str(), alone.empty() ? " none" : alone.c_str());
+    }
+}
+
+// The replacements round: every sample in one file.
+void CheckReplacements(const std::string& name, const format::File& file, const song::KonamiRom& rom,
+                       const std::vector<int>& samples, double seconds, Counts& counts)
+{
+    const Replaced replaced = ReplaceAll(name, file, rom, samples, counts);
+    const std::shared_ptr<const song::KonamiRom> new_rom = song::LoadKonamiRom(format::ExportArchive(replaced.file));
+    const uint32_t free_start = file.native->driver->free_start + agblib::agb::kRomBase;
+    CheckReplacedSamples(name, rom, *new_rom, free_start, replaced, counts);
+
+    if (!hokuto::tools::RoundTrips(replaced.file))
     {
         counts.failed++;
         std::printf("%s: the replaced file FAILED to come back from the binary or the text form\n", name.c_str());
     }
 
     const int frames = static_cast<int>(std::lround(seconds * agblib::agb::kFrameRate));
-    for (const uint32_t sound : song::KonamiSounds(rom))
-    {
-        counts.sounds++;
-        const std::vector<int> played = rom.SamplesOfSound(sound);
-        const bool apart = std::ranges::any_of(played, [&moved](int sample) { return moved.contains(sample); });
-        if (apart)
-        {
-            counts.sounds_apart++;
-            std::printf("%s: %s counted apart: the output differs by %d at most\n", name.c_str(),
-                        song::KonamiSoundName(rom, sound).c_str(), MostDifference(rom, *new_rom, sound, frames, false));
-            continue;
-        }
-        if (!SameOutput(rom, *new_rom, sound, frames))
-        {
-            // The samples whose replacement alone changes the output.
-            counts.sounds_differ++;
-            std::string alone;
-            for (const int sample : played)
-            {
-                if (std::ranges::find(done, sample) == done.end())
-                {
-                    continue;
-                }
-                const format::File one = edit::WithKonamiSample(
-                    file, rom, sample, edit::ReadIncomingKonamiSample(song::KonamiSampleWav(rom, sample)));
-                const std::shared_ptr<const song::KonamiRom> one_rom = song::LoadKonamiRom(format::ExportArchive(one));
-                if (!SameOutput(rom, *one_rom, sound, frames))
-                {
-                    alone += " " + song::KonamiSampleName(sample);
-                }
-            }
-            std::printf("%s: %s FAILED: the output differs after the replacements. Alone:%s\n", name.c_str(),
-                        song::KonamiSoundName(rom, sound).c_str(), alone.empty() ? " none" : alone.c_str());
-        }
-    }
+    CheckReplacedSounds(name, file, rom, *new_rom, replaced, frames, counts);
 }
 
 } // namespace

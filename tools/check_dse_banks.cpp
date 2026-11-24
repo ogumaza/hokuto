@@ -10,7 +10,9 @@
 //   at 128.
 // - Waves: each split changes to the next wave in the table of its bank.
 //
-// A value of a split past 127 stays. After each round, the tool exports the set and checks it:
+// A value of a split past 127 stays. A file of version 0x402 keeps its counts, its programs' splits and its waves'
+// parameters at other places, and the walk and the bytes that the tool works out follow them (WalkBank, SplitIn,
+// PutSplit). After each round, the tool exports the set and checks it:
 //
 // - The set keeps its size. The tool walks each bank file's bytes for its splits, without the reader, and works out
 //   their new bytes by the format's rules. The export has to equal the image with those bytes, in each file that
@@ -121,7 +123,8 @@ void CheckImage(const std::filesystem::path& path, bool replace, Totals& totals)
         game.bytes = hokuto::format::ExportArchive(game.file);
         game.starts = hokuto::format::NativePieceStarts(game.file);
         game.build = hokuto::song::LoadDseSet(image)->build;
-        game.set = hokuto::song::LoadDseSet(game.bytes, game.build);
+        game.game_code = hokuto::song::DseGameCodeOf(image);
+        game.set = hokuto::song::LoadDseSet(game.bytes, game.build, game.game_code);
         totals.images++;
 
         const DseSet& set = *game.set;

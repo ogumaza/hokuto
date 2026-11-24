@@ -5,7 +5,7 @@
 // and aux buses' volumes, sample for sample. The render ends where its range says, and a fade can follow.
 //
 // The range of a whole song follows the rippers' rule for a song's length. A song that loops plays its loop a number of
-// times and then fades while the loop plays on. xsflib's rips play two passes and a fade of 10 s. A song without a loop
+// times and then fades while the loop plays on. xsflib's rips play two passes and a fade of 7 s. A song without a loop
 // plays to its end and on through its last notes' releases and the effects' tails. Playback with Cycle off plays the
 // same. A range between the locators starts at the left locator and fades or stops at the right one.
 
@@ -26,7 +26,7 @@ namespace hokuto::song
 
 // The passes of the loop and the fade of a whole song by default: xsflib's rule for a rip's length.
 inline constexpr int kMixdownLoops = 2;
-inline constexpr double kMixdownFadeSeconds = 10.0;
+inline constexpr double kMixdownFadeSeconds = 7.0;
 
 // The longest tail of a song that ends, by default: 10 s after the sequence's end. A tail that still sounds there fades
 // over the last second of the 10 s.

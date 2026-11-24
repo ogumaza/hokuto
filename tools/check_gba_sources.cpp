@@ -551,6 +551,104 @@ std::string WithSampleDefinitions(const std::string& text)
     return out + text;
 }
 
+// Prints that the voice group at `address` fails for `what`, and counts the failure.
+void FailGroup(const std::string& name, uint32_t address, const std::string& what, Totals& totals)
+{
+    std::printf("%s: the voice group at 0x%08X: %s\n", name.c_str(), address, what.c_str());
+    totals.failed++;
+}
+
+// Adds the samples that `listed`, programs of the voice group at `address`, play at any key to `samples`. A PSG voice
+// adds 0.
+void AddSamplesOfGroup(const hokuto::song::GbaRom& rom, uint32_t address, const std::vector<int>& listed,
+                       std::set<uint32_t>& samples)
+{
+    for (const int program : listed)
+    {
+        mp2k::Voice voice;
+        if (!mp2k::ReadVoice(rom.rom, address + mp2k::kVoiceSize * static_cast<uint32_t>(program), voice))
+        {
+            continue;
+        }
+        if (!voice.IsSplit())
+        {
+            samples.insert(voice.PsgChannel() == 0 ? voice.wave : 0);
+            continue;
+        }
+        for (int key = 0; key < 128; key++)
+        {
+            mp2k::Voice inner;
+            const uint32_t place = mp2k::SplitVoice(rom.rom, voice, key);
+            if (place != 0 && mp2k::ReadVoice(rom.rom, place, inner) && !inner.IsSplit() && inner.PsgChannel() == 0)
+            {
+                samples.insert(inner.wave);
+            }
+        }
+    }
+}
+
+// Has LLVM assemble `text`, the assembly of the voice group at `address`, and checks its section against the reader's
+// bytes.
+void CheckAssembled(const std::string& name, uint32_t address, const std::string& text, const Options& options,
+                    Totals& totals)
+{
+    const std::string defined = WithSampleDefinitions(text);
+    const std::vector<uint8_t> section = Assembled(options, defined);
+    const std::vector<uint8_t> read = hokuto::song::ReadGbaVoiceGroup(defined).bytes;
+    totals.groups_assembled++;
+
+    // An object file stores a word that names a label as the offset of the label, and the reader as the address of the
+    // label.
+    bool differs = section.size() != read.size();
+    for (std::size_t at = 0; !differs && at + 4 <= read.size(); at += 4)
+    {
+        const uint32_t word_section = xsflib::LoadLe32(section.data() + at);
+        const uint32_t word_read = xsflib::LoadLe32(read.data() + at);
+        differs = word_section != word_read && word_section + hokuto::song::kGbaAssemblyBase != word_read;
+    }
+    if (differs)
+    {
+        FailGroup(name, address, "LLVM's bytes differ " + FirstDifference(section, read), totals);
+    }
+}
+
+// Moves `group`'s tables, key tables and patterns into the free space through `text`, its assembly, with a mark in
+// its labels' names. Each of `listed`, the group's programs, then has to hold the same voice at every key.
+void CheckMovedGroup(const std::string& name, const hokuto::song::GbaRom& rom, const hokuto::format::File& file,
+                     const hokuto::song::GbaVoiceGroup& group, const std::vector<int>& listed, const std::string& text,
+                     Totals& totals)
+{
+    const std::string marked = WithMarkedLabels(text);
+    hokuto::edit::GbaGroupVersion moved;
+    try
+    {
+        moved = hokuto::edit::WithGbaVoiceGroupFile(file, rom, group.address, marked);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        totals.groups_move_refused++;
+        std::printf("%s: the voice group at 0x%08X refuses the move: %s\n", name.c_str(), group.address, error.what());
+        return;
+    }
+
+    totals.groups_moved++;
+    const std::shared_ptr<const hokuto::song::GbaRom> after =
+        hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(moved.file));
+    for (const int program : listed)
+    {
+        mp2k::Voice before_voice;
+        mp2k::Voice after_voice;
+        const auto at = mp2k::kVoiceSize * static_cast<uint32_t>(program);
+        if (!mp2k::ReadVoice(rom.rom, group.address + at, before_voice) ||
+            !mp2k::ReadVoice(after->rom, moved.group + at, after_voice) ||
+            !SameVoice(rom, before_voice, *after, after_voice, true))
+        {
+            FailGroup(name, group.address, "program " + std::to_string(program) + " plays otherwise after the move",
+                      totals);
+        }
+    }
+}
+
 // Checks the samples and the assembly of every voice group of `rom`. `file` and `bytes` are the ROM as a file and as
 // bytes.
 void CheckVoiceGroups(const std::string& name, const hokuto::song::GbaRom& rom, const hokuto::format::File& file,
@@ -559,35 +657,8 @@ void CheckVoiceGroups(const std::string& name, const hokuto::song::GbaRom& rom, 
     std::set<uint32_t> samples;
     for (const hokuto::song::GbaVoiceGroup& group : hokuto::song::GbaVoiceGroups(rom))
     {
-        const auto fail = [&](const std::string& what)
-        {
-            std::printf("%s: the voice group at 0x%08X: %s\n", name.c_str(), group.address, what.c_str());
-            totals.failed++;
-        };
-
         const std::vector<int> listed = hokuto::song::GbaListedPrograms(rom, group);
-        for (const int program : listed)
-        {
-            mp2k::Voice voice;
-            if (!mp2k::ReadVoice(rom.rom, group.address + mp2k::kVoiceSize * static_cast<uint32_t>(program), voice))
-            {
-                continue;
-            }
-            if (!voice.IsSplit())
-            {
-                samples.insert(voice.PsgChannel() == 0 ? voice.wave : 0);
-                continue;
-            }
-            for (int key = 0; key < 128; key++)
-            {
-                mp2k::Voice inner;
-                const uint32_t place = mp2k::SplitVoice(rom.rom, voice, key);
-                if (place != 0 && mp2k::ReadVoice(rom.rom, place, inner) && !inner.IsSplit() && inner.PsgChannel() == 0)
-                {
-                    samples.insert(inner.wave);
-                }
-            }
-        }
+        AddSamplesOfGroup(rom, group.address, listed, samples);
 
         totals.groups++;
         std::string text;
@@ -609,63 +680,17 @@ void CheckVoiceGroups(const std::string& name, const hokuto::song::GbaRom& rom, 
                 hokuto::edit::WithGbaVoiceGroupFile(file, rom, group.address, text);
             if (same.group != group.address || !std::ranges::equal(hokuto::format::ExportArchive(same.file), bytes))
             {
-                fail("the file gives another ROM");
+                FailGroup(name, group.address, "the file gives another ROM", totals);
             }
-
             if (options.every > 0 && totals.groups % options.every == 0)
             {
-                const std::string defined = WithSampleDefinitions(text);
-                const std::vector<uint8_t> section = Assembled(options, defined);
-                const std::vector<uint8_t> read = hokuto::song::ReadGbaVoiceGroup(defined).bytes;
-                totals.groups_assembled++;
-
-                // An object file stores a word that names a label as the offset of the label, and the reader as the
-                // address of the label.
-                bool differs = section.size() != read.size();
-                for (std::size_t at = 0; !differs && at + 4 <= read.size(); at += 4)
-                {
-                    const uint32_t word_section = xsflib::LoadLe32(section.data() + at);
-                    const uint32_t word_read = xsflib::LoadLe32(read.data() + at);
-                    differs = word_section != word_read && word_section + hokuto::song::kGbaAssemblyBase != word_read;
-                }
-                if (differs)
-                {
-                    fail("LLVM's bytes differ " + FirstDifference(section, read));
-                }
+                CheckAssembled(name, group.address, text, options, totals);
             }
-
-            const std::string marked = WithMarkedLabels(text);
-            hokuto::edit::GbaGroupVersion moved;
-            try
-            {
-                moved = hokuto::edit::WithGbaVoiceGroupFile(file, rom, group.address, marked);
-            }
-            catch (const std::invalid_argument& error)
-            {
-                totals.groups_move_refused++;
-                std::printf("%s: the voice group at 0x%08X refuses the move: %s\n", name.c_str(), group.address,
-                            error.what());
-                continue;
-            }
-            totals.groups_moved++;
-            const std::shared_ptr<const hokuto::song::GbaRom> after =
-                hokuto::song::LoadGbaRom(hokuto::format::ExportArchive(moved.file));
-            for (const int program : listed)
-            {
-                mp2k::Voice before_voice;
-                mp2k::Voice after_voice;
-                const auto at = mp2k::kVoiceSize * static_cast<uint32_t>(program);
-                if (!mp2k::ReadVoice(rom.rom, group.address + at, before_voice) ||
-                    !mp2k::ReadVoice(after->rom, moved.group + at, after_voice) ||
-                    !SameVoice(rom, before_voice, *after, after_voice, true))
-                {
-                    fail("program " + std::to_string(program) + " plays otherwise after the move");
-                }
-            }
+            CheckMovedGroup(name, rom, file, group, listed, text, totals);
         }
         catch (const std::exception& error)
         {
-            fail(error.what());
+            FailGroup(name, group.address, error.what(), totals);
         }
     }
 

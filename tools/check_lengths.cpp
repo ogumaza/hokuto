@@ -5,8 +5,8 @@
 // with lengths on song::SequenceModel from its first frame, with the file's effects at the buses' volumes. A frame has
 // sound when one of its samples is louder than ±8, as in the length analysis (xsflib::rip::Audible).
 //
-// A sound that ends has its last sound in the frame that ends 0.5 s before its length, within a frame, or in one of the
-// idle frames after it. The analysis ends a sound at its first idle frame when the output still sounds there
+// A sound that ends has its last sound in the frame that ends at its length, within a frame, or in one of the idle
+// frames after it. The analysis ends a sound at its first idle frame when the output still sounds there
 // (xsflib::rip::LengthRules::end_at_idle_start). On the Wii, AX's depop fades out a stopped voice's last samples over
 // the next frames. The tool counts such ends. No frame has sound for 10 s past its length. A sound that loops plays on
 // through its fade: the model doesn't end before the fade ends, and a frame of the fade has sound. Where the lengths
@@ -180,8 +180,8 @@ std::optional<std::string> SilentFailure(song::SequenceModel& model, const xsfli
     return std::nullopt;
 }
 
-// Plays `model`, a sound that `length` describes as one that ends: the last sound's frame ends at the length less the
-// tail of `rules`, the rules of the length analysis. Returns what's wrong where it doesn't, or nothing. Counts a sound
+// Plays `model`, a sound that `length` describes as one that ends: the last sound's frame ends at the length. `rules`
+// are the rules of the length analysis. Returns what's wrong where it doesn't, or nothing. Counts a sound
 // that ends at its first idle frame in `counts`.
 std::optional<std::string> EndFailure(song::SequenceModel& model, const format::SoundLength& length,
                                       const xsflib::rip::LengthRules& rules, Counts& counts)
@@ -189,7 +189,7 @@ std::optional<std::string> EndFailure(song::SequenceModel& model, const format::
     const double frame_ms = rules.frame_ms;
     const Played played =
         Play(model, FrameAt(static_cast<double>(length.length) + kPastEndMs, frame_ms), 0, std::nullopt);
-    const double expected = static_cast<double>(length.length) - rules.tail_ms;
+    const auto expected = static_cast<double>(length.length);
     if (!played.started || !played.last_sound)
     {
         return "ends at " + std::to_string(length.length) + " ms, but the model plays no sound";

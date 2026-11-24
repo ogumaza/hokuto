@@ -203,6 +203,7 @@ MixdownSources App::MixdownSourcesNow() const
                       .file = version,
                       .start_values = start_values_,
                       .changes = changes_,
+                      .starts = version->starts,
                       .name = file_name_};
     sources.mix = {.mutes = 0, .bus_volumes = BusVolumes(), .gain = GainOfDecibels(master_.volume)};
     if (sequence_)

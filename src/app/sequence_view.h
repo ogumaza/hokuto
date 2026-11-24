@@ -24,6 +24,11 @@ SongView MakeSongView(const song::Sequence& sequence, const std::map<uint32_t, s
 // value that the user gives it.
 void ShowMixerAt(SongView& view, const song::Sequence& sequence, double ticks);
 
+// Adds a row for variable `number` to `view`'s variables, a track variable of every track from 32 to 47, unless the
+// view has one. The row starts at the value that `values` gives it, or -1, and the rows stay in the order of their
+// numbers. A variable from 32 to 47 has a row only where the sound's start, a scene or a change sets it.
+void AddEveryTrackVariable(SongView& view, int number, const song::StartValues& values);
+
 // The setting of a track's mix that `control` shows.
 song::Mix MixOf(MixControl control);
 

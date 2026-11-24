@@ -16,8 +16,6 @@ namespace
 {
 
 constexpr double kHighPassHz = 20.0;
-constexpr double kCountRangeDb = 50.0;
-constexpr double kCountFloorDbfs = -70.0;
 constexpr std::size_t kSpanWindows = 20;
 constexpr std::size_t kSpanHop = 10;
 constexpr std::size_t kSpanCounted = 10;
@@ -376,6 +374,18 @@ std::vector<LevelPlace> RunPlaces(const std::vector<double>& d, const std::vecto
 }
 
 } // namespace
+
+std::vector<double> WindowLevels(std::span<const float> samples, int rate)
+{
+    if (rate < 1000)
+    {
+        throw std::invalid_argument("WindowLevels requires a rate of 1,000 Hz or more");
+    }
+
+    const auto size = static_cast<std::size_t>(std::lround(kWindowSeconds * rate));
+
+    return Levels(WindowPowers(samples, rate, size, 0, SIZE_MAX));
+}
 
 LevelComparison CompareLevels(std::span<const float> reference, std::span<const float> render, int rate)
 {

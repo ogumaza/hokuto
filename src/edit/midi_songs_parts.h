@@ -62,6 +62,10 @@ struct MidiTrack
 // A setting of `kind` to `value`, in the unit of the kind in fixed point.
 Command Setting(Kind kind, int64_t value, uint8_t index = 0);
 
+// Whether `command` is the mute command that stops the track's channels at once, which control change 120 becomes with
+// `stops_sounds` (PlaceControlChange).
+bool StopsSounds(const Command& command);
+
 // Tempo commands in whole beats a minute that keep the time of `tempos`, a MIDI file's tempos in microseconds a quarter
 // note at their ticks, in order from tick 0. The ticks of a song with `timebase` ticks a quarter note count from MIDI
 // tick `start`, `division` MIDI ticks a quarter note. Each stretch between a tempo, a bar line of `lines`, the start

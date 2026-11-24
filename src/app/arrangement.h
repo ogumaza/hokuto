@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -48,6 +49,16 @@ enum class PartValue
     kStart,
     kTranspose,
     kVelocity,
+};
+
+// An edit of what the sound's start gives one track alone, which the inspector's Start rows ask for: the track's row,
+// its volume and its variables at the start, by their numbers from 32 to 47, and the action's name for the history.
+struct TrackStartEdit
+{
+    int track = 0;
+    std::optional<float> volume;
+    std::map<uint8_t, int16_t> variables;
+    std::string name;
 };
 
 // An edit of a part's notes that the arrangement's info line asks for: the ticks that the notes move by, the semitones
@@ -153,6 +164,17 @@ struct ArrangementState
     // then runs it, and clears it.
     std::array<bool, kTrackActions> track_actions = {};
     std::optional<TrackAction> track_action;
+
+    // Where the file's console has a game's starts (`start_mutes`), Mute at Start in the context menu and in the
+    // inspector sets `start_mute` to the track's row. The program then switches whether the game mutes the track as
+    // the sound starts, and clears it.
+    bool start_mutes = false;
+    std::optional<int> start_mute;
+
+    // The inspector's Start rows of the selected track set `track_start`, and hold the slider that the user drags in
+    // `track_start_held`, by its row and its value. The program then edits the sound's start, and clears it.
+    std::optional<TrackStartEdit> track_start;
+    std::optional<std::pair<int, float>> track_start_held;
 
     // The text of the search field of the inspector's menus of a track's bank and program.
     std::array<char, 128> instrument_filter{};

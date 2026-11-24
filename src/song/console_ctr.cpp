@@ -18,6 +18,7 @@
 
 #include "song/console_model.h"
 #include "song/ctr_model.h"
+#include "song/start_handle.h"
 
 namespace hokuto::song
 {
@@ -106,10 +107,18 @@ public:
         }
     }
 
-    bool StartSequence(uint32_t sound) override
+    bool StartSequence(uint32_t sound, const format::SoundStart& start) override
     {
-        player_ = model_->Engine().StartSequence(sound);
+        player_ = model_->Engine().StartSequence(sound, start.banks);
         return player_ != nullptr;
+    }
+
+    // The 3DS's player starts at once and opens its tracks. The start's volume scales the output, as ntdlib's
+    // ApplySequenceStart leaves it to the caller.
+    void ApplyStart(const format::SoundStart& start) override
+    {
+        start_handle::ApplyCtr(model_->Engine(), *player_, start);
+        volume_ = start.volume.value_or(1.0f);
     }
 
     void SetVariable(int number, int16_t value) override
@@ -150,12 +159,12 @@ public:
             throw std::runtime_error("The DSP stopped responding.");
         }
 
-        quiet_frames_ = xsflib::rip::Audible(model_->Output()) ? 0 : std::min(quiet_frames_ + 1, ring_limit_);
+        quiet_frames_ = xsflib::rip::Audible(Output()) ? 0 : std::min(quiet_frames_ + 1, ring_limit_);
     }
 
     bool Silent() const override
     {
-        const std::span<const int16_t> output = model_->Output();
+        const std::span<const int16_t> output = Output();
         const int level = ring_limit_ > 0 ? xsflib::rip::kSilenceLevel : 0;
         return console_model::QuietWithin(output, level);
     }
@@ -207,14 +216,34 @@ public:
         return buses_[static_cast<std::size_t>(bus)].peaks;
     }
 
+    // The output at the start's volume (start_handle::AtVolume).
     std::span<const int16_t> Output() const override
     {
-        return model_->Output();
+        const std::span<const int16_t> output = model_->Output();
+        if (volume_ == 1.0f)
+        {
+            return output;
+        }
+
+        scaled_.resize(output.size());
+        for (std::size_t i = 0; i < output.size(); ++i)
+        {
+            scaled_[i] = start_handle::AtVolume(output[i], volume_);
+        }
+
+        return scaled_;
     }
 
     void CopyOutput(std::span<float> out) const override
     {
         song::CopyOutput(*model_, out);
+        if (volume_ != 1.0f)
+        {
+            for (float& sample : out)
+            {
+                sample *= volume_;
+            }
+        }
     }
 
     // A snapshot shares the pages of FCRAM and of the DSP's memory that haven't changed since the last snapshot.
@@ -310,6 +339,8 @@ private:
     std::array<Bus, kBuses> buses_;
     uint32_t ring_limit_ = 0;   // with an effect, the quiet frames after which the effects have stopped ringing
     uint32_t quiet_frames_ = 0; // the frames since the output was last louder than ±8, up to ring_limit_
+    float volume_ = 1.0f;       // the start's volume
+    mutable std::vector<int16_t> scaled_; // the last frame's output at volume_
 };
 
 } // namespace

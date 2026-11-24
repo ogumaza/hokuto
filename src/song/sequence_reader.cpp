@@ -79,23 +79,25 @@ SequenceReader::Result ReadResult(uint32_t sound, std::shared_ptr<const Source> 
 SequenceReader::~SequenceReader() = default;
 
 void SequenceReader::Request(std::shared_ptr<const ntdlib::sar::SoundArchive> archive, uint32_t sound,
-                             StartValues values, Changes changes, Convert convert)
+                             StartValues values, Changes changes, Convert convert, format::SoundStart start)
 {
     // The read keeps the archive for as long as it takes.
-    Request([archive] { return archive; }, sound, std::move(values), std::move(changes), std::move(convert));
+    Request([archive] { return archive; }, sound, std::move(values), std::move(changes), std::move(convert),
+            std::move(start));
 }
 
-void SequenceReader::Request(Build build, uint32_t sound, StartValues values, Changes changes, Convert convert)
+void SequenceReader::Request(Build build, uint32_t sound, StartValues values, Changes changes, Convert convert,
+                             format::SoundStart start)
 {
-    const auto read = [make = std::move(build), sound, start = std::move(values), changed = std::move(changes),
-                       other = std::move(convert)]
+    const auto read = [make = std::move(build), sound, start_values = std::move(values), changed = std::move(changes),
+                       other = std::move(convert), started = std::move(start)]
     {
         const auto read_played = [&](const ntdlib::sar::SoundArchive& played)
         {
-            return ReadSequence(played, sound, start, changed);
+            return ReadSequence(played, sound, start_values, changed, started);
         };
 
-        return ReadResult(sound, &Result::archive, make, read_played, other, start, changed);
+        return ReadResult(sound, &Result::archive, make, read_played, other, start_values, changed);
     };
     Start(read);
 }
@@ -252,11 +254,10 @@ void SequenceReader::Advance()
 Sequence ReadEngineSequence(const Sequence& sequence, const SequenceReader::EngineSound& converted,
                             const StartValues& values, const Changes& changes)
 {
-    Sequence played =
-        converted.played.Ds() ? ReadSequence(*converted.played.Ds(), converted.sound, values, changes)
-        : converted.played.Wii()
-            ? ReadSequence(*converted.played.Wii(), converted.sound, values, changes, converted.wii_build)
-            : ReadSequence(*converted.played.Sar(), converted.sound, values, changes);
+    Sequence played = converted.played.Ds() ? ReadSequence(*converted.played.Ds(), converted.sound, values, changes)
+                      : converted.played.Wii()
+                          ? ReadSequence(*converted.played.Wii(), converted.sound, values, changes, converted.wii_build)
+                          : ReadSequence(*converted.played.Sar(), converted.sound, values, changes, sequence.start);
     if (sequence.driver != nullptr)
     {
         if (const std::optional<Loop> first = FirstLoopOfConversion(sequence, played))

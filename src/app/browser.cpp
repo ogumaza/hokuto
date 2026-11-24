@@ -11,7 +11,6 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
-#include <cstdio>
 #include <set>
 #include <string>
 #include <string_view>
@@ -185,19 +184,16 @@ GroupRows MatchingRows(const BrowserGroup& group, int index, std::string_view fi
     return {std::move(rows), std::move(found_open), matches};
 }
 
-// Draws the row of `group`, `width` wide, with `matches` items. A click on the row opens and closes the group. Returns
-// whether the group is open.
-bool DrawGroupHeader(ImDrawList* draw, const BrowserGroup& group, std::size_t matches, float width)
+// A row that heads a group or an archive, `width` wide: a chevron that points down while `expanded` is set, `icon` in
+// `colour`, `name`, and `count` in a pill on the right. The name ends before the pill, with an ellipsis where it
+// doesn't fit, such as at 150 %. The row's tooltip then gives it whole, unless `name_tooltip` is false. Returns
+// whether the row was clicked.
+bool DrawHeaderRow(ImDrawList* draw, bool expanded, Icon icon, ImU32 colour, const std::string& name,
+                   const std::string& count, float width, bool name_tooltip = true)
 {
-    bool& expanded = *ImGui::GetStateStorage()->GetBoolRef(ImGui::GetID("expanded"), true);
-
-    // The group's row: a chevron, the icon, the name, and the number of items on the right.
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const ImVec2 size(width, Px(30.0f));
-    if (ImGui::InvisibleButton("##group", size))
-    {
-        expanded = !expanded;
-    }
+    const bool clicked = ImGui::InvisibleButton("##header", size);
     const float margin = Px(8.0f);
     if (ImGui::IsItemHovered())
     {
@@ -207,29 +203,53 @@ bool DrawGroupHeader(ImDrawList* draw, const BrowserGroup& group, std::size_t ma
     const float middle = pos.y + size.y * 0.5f;
     DrawIcon(draw, expanded ? Icon::kChevronDown : Icon::kChevronRight, ImVec2(pos.x + Px(21.0f), middle), Px(12.0f),
              theme::kTextDim);
-    DrawIcon(draw, group.icon, ImVec2(pos.x + Px(40.0f), middle), Px(15.0f), group.colour);
+    DrawIcon(draw, icon, ImVec2(pos.x + Px(40.0f), middle), Px(15.0f), colour);
     ImFont* font = theme::GetFonts().text;
-    std::array<char, 16> count{};
-    std::snprintf(count.data(), count.size(), "%zu", matches);
-    const ImVec2 count_size = TextSize(font, theme::kSmallSize, count.data());
+    const ImVec2 count_size = TextSize(font, theme::kSmallSize, count);
     const float pill_right = pos.x + size.x - margin - Px(8.0f);
     const float pill_left = pill_right - count_size.x - Px(14.0f);
-
-    // The name ends before the count, with an ellipsis where it doesn't fit, such as at 150 %. The row's
-    // tooltip then gives it whole.
     const float name_left = pos.x + Px(56.0f);
-    const std::string name = FitText(font, theme::kTextSize, group.name, pill_left - Px(6.0f) - name_left);
-    const ImVec2 name_size = TextSize(font, theme::kTextSize, name);
-    DrawText(draw, font, theme::kTextSize, ImVec2(name_left, middle - name_size.y * 0.5f), theme::kText, name);
-    if (name != group.name)
+    const std::string shown = FitText(font, theme::kTextSize, name, pill_left - Px(6.0f) - name_left);
+    const ImVec2 name_size = TextSize(font, theme::kTextSize, shown);
+    DrawText(draw, font, theme::kTextSize, ImVec2(name_left, middle - name_size.y * 0.5f), theme::kText, shown);
+    if (shown != name && name_tooltip)
     {
-        RectTooltip(pos, ImVec2(pos.x + size.x, pos.y + size.y), group.name);
+        RectTooltip(pos, ImVec2(pos.x + size.x, pos.y + size.y), name);
     }
 
     draw->AddRectFilled(ImVec2(pill_left, middle - Px(9.0f)), ImVec2(pill_right, middle + Px(9.0f)), theme::kControl,
                         Px(9.0f));
     DrawText(draw, font, theme::kSmallSize, ImVec2(pill_left + Px(7.0f), middle - count_size.y * 0.5f),
-             theme::kTextMuted, count.data());
+             theme::kTextMuted, count);
+
+    return clicked;
+}
+
+// Draws the row of `archive`, `width` wide: the name of its driver, and the count of its sequence sounds. The row's
+// tooltip gives both. A click on the row opens and closes the archive's groups. Returns whether they're open.
+bool DrawArchiveRow(ImDrawList* draw, const BrowserArchive& archive, float width)
+{
+    bool& expanded = *ImGui::GetStateStorage()->GetBoolRef(ImGui::GetID("expanded"), true);
+    if (DrawHeaderRow(draw, expanded, Icon::kSound, theme::kSky, archive.name, std::to_string(archive.sounds), width,
+                      false))
+    {
+        expanded = !expanded;
+    }
+    ItemTooltip(archive.name + (archive.sounds == 1 ? ": 1 sequence sound"
+                                                    : ": " + std::to_string(archive.sounds) + " sequence sounds"));
+
+    return expanded;
+}
+
+// Draws the row of `group`, `width` wide, with `matches` items. A click on the row opens and closes the group. Returns
+// whether the group is open.
+bool DrawGroupHeader(ImDrawList* draw, const BrowserGroup& group, std::size_t matches, float width)
+{
+    bool& expanded = *ImGui::GetStateStorage()->GetBoolRef(ImGui::GetID("expanded"), true);
+    if (DrawHeaderRow(draw, expanded, group.icon, group.colour, group.name, std::to_string(matches), width))
+    {
+        expanded = !expanded;
+    }
 
     return expanded;
 }
@@ -254,6 +274,7 @@ void DrawItemMenu(const BrowserGroup& group, const BrowserItem& item, const Brow
     if (ImGui::IsWindowAppearing())
     {
         state.selected = place;
+        state.chosen = true;
     }
     if (!editor.empty() && ImGui::MenuItem(editor.c_str(), nullptr, false, edits))
     {
@@ -303,9 +324,9 @@ void DrawItemMenu(const BrowserGroup& group, const BrowserItem& item, const Brow
 }
 
 // One row of `group`, number `index`, at `place`: an item or one of its children, `width` wide. The search opened the
-// items in `found_open`.
+// items in `found_open`. Only an archive in `front` shows its selected row as selected.
 void DrawGroupRow(ImDrawList* draw, const BrowserGroup& group, int index, const BrowserPlace& place,
-                  const std::set<int>& found_open, BrowserState& state, float width)
+                  const std::set<int>& found_open, BrowserState& state, float width, bool front)
 {
     const BrowserItem& item = group.items[static_cast<std::size_t>(place.item)];
     const std::pair<int, int> key(index, place.item);
@@ -320,8 +341,8 @@ void DrawGroupRow(ImDrawList* draw, const BrowserGroup& group, int index, const 
     ImGui::PushID(place.item);
     ImGui::PushID(place.child);
     const bool grey = !item.missing.empty();
-    const bool clicked = DrawItem(draw, name, group.colour, state.selected == place, state.playing == place, child,
-                                  disclosure, width, grey);
+    const bool clicked = DrawItem(draw, name, group.colour, front && state.selected == place, state.playing == place,
+                                  child, disclosure, width, grey);
     if (grey)
     {
         ItemTooltip(item.missing);
@@ -329,6 +350,7 @@ void DrawGroupRow(ImDrawList* draw, const BrowserGroup& group, int index, const 
     if (clicked)
     {
         state.selected = place;
+        state.chosen = true;
         state.clicked = (child || item.plays) && !grey;
         if (disclosure == Disclosure::kOpen && !found_open.contains(place.item))
         {
@@ -365,8 +387,9 @@ void DrawGroupRow(ImDrawList* draw, const BrowserGroup& group, int index, const 
 }
 
 // One group of the browser's tree: a row that opens and closes it, then its items. While `reveal` is set, the tree
-// scrolls the selected row into view.
-void DrawGroup(ImDrawList* draw, const BrowserGroup& group, int index, BrowserState& state, float width, bool reveal)
+// scrolls the selected row into view. Only an archive in `front` shows its selected row as selected.
+void DrawGroup(ImDrawList* draw, const BrowserGroup& group, int index, BrowserState& state, float width, bool reveal,
+               bool front)
 {
     const std::string_view filter(state.filter.data());
     const auto [rows, found_open, matches] = MatchingRows(group, index, filter, state);
@@ -407,7 +430,7 @@ void DrawGroup(ImDrawList* draw, const BrowserGroup& group, int index, BrowserSt
     {
         for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; row++)
         {
-            DrawGroupRow(draw, group, index, rows[static_cast<std::size_t>(row)], found_open, state, width);
+            DrawGroupRow(draw, group, index, rows[static_cast<std::size_t>(row)], found_open, state, width, front);
         }
     }
 }
@@ -505,8 +528,8 @@ bool DrawBrowserSound(ImVec2 pos, float width, bool open, SoundSection& sound)
 
 } // namespace
 
-void DrawBrowser(const std::vector<BrowserGroup>& groups, std::string_view file, BrowserState& state,
-                 SoundSection& sound, bool* open)
+void DrawBrowser(const std::vector<BrowserGroup>& groups, const std::vector<BrowserArchive>& archives,
+                 std::size_t front, std::string_view file, BrowserState& state, SoundSection& sound, bool* open)
 {
     if (!*open)
     {
@@ -546,15 +569,54 @@ void DrawBrowser(const std::vector<BrowserGroup>& groups, std::string_view file,
         ImGui::BeginChild("##tree", ImVec2(0.0f, std::max(tree, 1.0f)));
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const float width = ImGui::GetContentRegionAvail().x;
-        for (std::size_t i = 0; i < groups.size(); i++)
+        const auto draw_groups =
+            [&](const std::vector<BrowserGroup>& shown, BrowserState& shown_state, bool reveal, bool in_front)
         {
-            if (groups[i].hidden)
+            shown_state.chosen = false;
+            for (std::size_t i = 0; i < shown.size(); i++)
             {
-                continue;
-            }
+                if (shown[i].hidden)
+                {
+                    continue;
+                }
 
-            ImGui::PushID(static_cast<int>(i));
-            DrawGroup(draw, groups[i], static_cast<int>(i), state, width, revealing);
+                ImGui::PushID(static_cast<int>(i));
+                DrawGroup(draw, shown[i], static_cast<int>(i), shown_state, width, reveal, in_front);
+                ImGui::PopID();
+            }
+        };
+
+        // A file with more than one archive shows a row for each archive, and each archive's groups under its row. A
+        // click on a row of an archive that isn't in front, or a request from the row's menu, brings the archive to the
+        // front (`state.archive`). That holds for the row that the archive kept selected too. Those groups take the
+        // search text of the archive in front, and show no row as selected: the selected sound is the front's.
+        if (archives.size() < 2)
+        {
+            draw_groups(groups, state, revealing, true);
+        }
+        for (std::size_t a = 0; a < archives.size() && archives.size() >= 2; a++)
+        {
+            ImGui::PushID("archive");
+            ImGui::PushID(static_cast<int>(a));
+            const BrowserArchive& archive = archives[a];
+            if (DrawArchiveRow(draw, archive, width))
+            {
+                if (a == front)
+                {
+                    draw_groups(groups, state, revealing, true);
+                }
+                else if (archive.groups != nullptr && archive.state != nullptr)
+                {
+                    BrowserState& other = *archive.state;
+                    other.filter = state.filter;
+                    draw_groups(*archive.groups, other, false, false);
+                    if (other.chosen || other.edit_place || other.export_place || other.replace_place)
+                    {
+                        state.archive = a;
+                    }
+                }
+            }
+            ImGui::PopID();
             ImGui::PopID();
         }
         ImGui::EndChild();

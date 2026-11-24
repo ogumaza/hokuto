@@ -168,12 +168,13 @@ void DrawTrackHeaderText(ImDrawList* draw, const Canvas& canvas, const TrackView
         }
     }
     const float width = name_right - left;
+    const ImU32 name_colour = track.start_muted ? theme::kTextDim : theme::kText; // grey while the game mutes it
     draw->PushClipRect(ImVec2(row.Min.x, row.Min.y), ImVec2(name_right, row.Max.y), true);
     if (canvas.row_height >= Px(kThreeLineHeight))
     {
         const std::vector<std::string> lines = InstrumentLines(track);
         const float name_top = std::floor(middle - Px(lines.size() > 1 ? 23.0f : 18.0f));
-        DrawText(draw, text, theme::kTextSize, ImVec2(left, name_top), theme::kText,
+        DrawText(draw, text, theme::kTextSize, ImVec2(left, name_top), name_colour,
                  FitText(text, theme::kTextSize, track.name, width));
         for (std::size_t line = 0; line < lines.size(); line++)
         {
@@ -185,7 +186,7 @@ void DrawTrackHeaderText(ImDrawList* draw, const Canvas& canvas, const TrackView
     else if (canvas.row_height >= Px(kTwoLineHeight))
     {
         const float name_top = std::floor(middle - Px(18.0f));
-        DrawText(draw, text, theme::kTextSize, ImVec2(left, name_top), theme::kText,
+        DrawText(draw, text, theme::kTextSize, ImVec2(left, name_top), name_colour,
                  FitText(text, theme::kTextSize, track.name, width));
         DrawText(draw, text, theme::kSmallSize, ImVec2(left, name_top + Px(19.0f)), theme::kTextMuted,
                  FitText(text, theme::kSmallSize, InstrumentText(track), width));
@@ -193,7 +194,7 @@ void DrawTrackHeaderText(ImDrawList* draw, const Canvas& canvas, const TrackView
     else
     {
         const ImVec2 name_size = TextSize(text, theme::kTextSize, track.name);
-        DrawText(draw, text, theme::kTextSize, ImVec2(left, middle - name_size.y * 0.5f), theme::kText,
+        DrawText(draw, text, theme::kTextSize, ImVec2(left, middle - name_size.y * 0.5f), name_colour,
                  FitText(text, theme::kTextSize, track.name, width));
     }
     draw->PopClipRect();
@@ -392,7 +393,9 @@ void DrawPartNotes(ImDrawList* draw, const Canvas& canvas, const ImRect& rect, c
 void DrawPart(ImDrawList* draw, const Canvas& canvas, const ImRect& rect, const PartView& part, const TrackView& track,
               bool silent, bool selected)
 {
-    const ImU32 colour = silent ? theme::Mix(track.colour, theme::kPanel, 0.7f) : track.colour;
+    // A track that the game mutes at the sound's start shows grey.
+    const ImU32 base = track.start_muted ? theme::kTextDim : track.colour;
+    const ImU32 colour = silent ? theme::Mix(base, theme::kPanel, 0.7f) : base;
     const float rounding = Px(4.0f);
     const float strip = Px(15.0f);
     draw->AddRectFilled(rect.Min, rect.Max, theme::Mix(colour, theme::kWindow, 0.62f), rounding);

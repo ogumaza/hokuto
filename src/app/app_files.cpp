@@ -26,6 +26,7 @@
 
 #include "app/app.h"
 #include "app/app_internal.h"
+#include "app/engine_names.h"
 #include "app/file_dialogs.h"
 #include "app/file_saves.h"
 #include "app/recent_projects.h"
@@ -33,6 +34,7 @@
 #include "app/theme.h"
 #include "app/widgets.h"
 #include "edit/ds_files.h"
+#include "edit/dse_files.h"
 #include "edit/midi_imports.h"
 #include "edit/timelines.h"
 #include "format/archive.h"
@@ -115,6 +117,15 @@ constexpr std::array kImports = {Dialog::kImportSequence,      Dialog::kImportBa
 // The frames that DrawPreparing draws before an Import or Replace window's preparation starts. Dear ImGui hides a
 // window that fits its contents in its first frame. The next frame then reaches the display before the work starts.
 constexpr int kPreparingFrames = 3;
+
+// Puts `play` into `work` as what plays the file in front.
+void TakePlay(OpenWork& work, ArchivePlay play)
+{
+    work.document = std::move(play.version);
+    work.played = std::move(play.played);
+    work.sequences = std::move(play.sequences);
+    work.start_fields = std::move(play.start_fields);
+}
 
 } // namespace
 
@@ -224,57 +235,99 @@ OpenWork App::Opened(const std::string& path, bool import)
     return {.error = format::NotOpenedText(file, bytes, import)};
 }
 
+std::shared_ptr<const format::File> App::ForEditing(format::File read)
+{
+    // MP2K's songs, NITRO-Composer's sequences, DSE's songs and the songs of the GBA's other drivers have no timelines.
+    const bool gba = read.native && read.native->engine == format::Engine::kGba;
+    const bool ds = read.native && read.native->engine == format::Engine::kDs;
+    const bool dse = read.native && read.native->engine == format::Engine::kDse;
+    const bool driver = read.native && read.native->driver;
+
+    return std::make_shared<const format::File>(gba || ds || dse || driver ? std::move(read)
+                                                                           : edit::OpenTimelines(std::move(read)));
+}
+
+ArchivePlay App::PlayOf(const std::string& name, std::shared_ptr<const format::File> document)
+{
+    // The export throws for a file without a native archive. A file of the Wii builds its archive for the Wii's model,
+    // and has no group files. A file of the GBA builds its ROM, with filler runs for the songs that don't fit after its
+    // data (format::PlayedBytes). A file of the DS builds its archive, and plays by the driver of the cartridge that it
+    // keeps.
+    ArchivePlay play;
+    play.version = std::move(document);
+    const format::File& file = *play.version;
+    const std::vector<uint8_t> built = format::PlayedBytes(file);
+    const std::optional<format::Engine> engine =
+        file.native ? std::optional<format::Engine>(file.native->engine) : std::nullopt;
+    if (engine == format::Engine::kGba)
+    {
+        play.played = song::LoadGbaRom(built);
+        play.sequences = edit::GbaSongSequences(file, *play.played.Gba());
+    }
+    else if (engine == format::Engine::kDs)
+    {
+        play.played = song::LoadDsArchive(built, DsBuildOfFile(file), edit::DsGameOfFile(file));
+        play.sequences = format::DsSoundSequences(file, built);
+    }
+    else if (engine == format::Engine::kDse)
+    {
+        play.played = edit::DseSetOfFile(file, built);
+        play.sequences = format::DseSoundSequences(file, built, song::DseSoundRefs(*play.played.Dse()));
+    }
+    else if (file.native && file.native->driver)
+    {
+        play.played = song::LoadDriverRom(*engine, built);
+        play.sequences = edit::DriverSoundSequences(file, *play.played.Driver());
+    }
+    else if (engine == format::Engine::kWii)
+    {
+        play.played = song::LoadWiiArchive(built, name, ntdlib::rvl::snd::kRsarOptions);
+        play.sequences = format::SequencesOfFiles(file, built, *play.played.Wii());
+        play.start_fields = StartFieldsOf(file, built);
+    }
+    else
+    {
+        play.played = song::LoadArchive(built, name, format::ExportGroupFiles(file));
+        play.sequences = format::SequencesOfFiles(file, built, *play.played.Sar());
+        play.start_fields = StartFieldsOf(file, built);
+    }
+
+    return play;
+}
+
 OpenWork App::OpenedFile(const std::string& name, std::span<const uint8_t> bytes)
 {
     // The file with its timelines laid out for editing, and the archive that it builds for playback, with the file's
-    // group files. The export throws for a file without a native archive. A file of the Wii builds its archive for the
-    // Wii's model, and has no group files. A file of the GBA builds its ROM, with filler runs for the songs that don't
-    // fit after its data (format::PlayedBytes). A file of the DS builds its archive, and plays by the driver of the
-    // cartridge that it keeps. MP2K's songs and NITRO-Composer's sequences have no timelines.
+    // group files (PlayOf). A file with more than one archive opens each archive the same way, and each archive plays
+    // from its join alone.
     OpenWork work;
     work.text_form = format::IsText(bytes);
     try
     {
-        format::File read = format::ReadEitherForm(bytes);
-        const bool gba = read.native && read.native->engine == format::Engine::kGba;
-        const bool ds = read.native && read.native->engine == format::Engine::kDs;
-        const bool dse = read.native && read.native->engine == format::Engine::kDse;
-        const bool driver = read.native && read.native->driver;
-        work.document = std::make_shared<const format::File>(
-            gba || ds || dse || driver ? std::move(read) : edit::OpenTimelines(std::move(read)));
-        const std::vector<uint8_t> built = format::PlayedBytes(*work.document);
-        if (gba)
+        format::Project project = format::ReadProject(bytes);
+        if (project.archives.size() == 1)
         {
-            work.played = song::LoadGbaRom(built);
-            work.sequences = edit::GbaSongSequences(*work.document, *work.played.Gba());
+            // A file of version 1 keeps no starts. Its archive's SHA-1 finds them.
+            std::shared_ptr<const format::File> document =
+                ForEditing(format::WithOlderStarts(std::move(project.archives.front()), bytes));
+            if (const std::optional<std::string> note = format::OlderDseLevelsNote(*document, bytes))
+            {
+                work.notes.push_back(*note);
+            }
+            TakePlay(work, PlayOf(name, std::move(document)));
+            return work;
         }
-        else if (ds)
+
+        for (format::File& archive : project.archives)
         {
-            work.played = song::LoadDsArchive(built, DsBuildOfFile(*work.document), edit::DsGameOfFile(*work.document));
-            work.sequences = format::DsSoundSequences(*work.document, built);
+            archive = *ForEditing(std::move(archive));
         }
-        else if (dse)
+        work.project = std::make_shared<const format::Project>(std::move(project));
+        for (const format::File& archive : work.project->archives)
         {
-            work.played = song::LoadDseSet(built, DseBuildOfFile(*work.document));
-            work.sequences = format::DseSoundSequences(*work.document, built, song::DseSoundRefs(*work.played.Dse()));
+            work.archives.push_back(PlayOf(name, std::shared_ptr<const format::File>(work.project, &archive)));
         }
-        else if (driver)
-        {
-            work.played = song::LoadDriverRom(work.document->native->engine, built);
-            work.sequences = edit::DriverSoundSequences(*work.document, *work.played.Driver());
-        }
-        else if (work.document->native && work.document->native->engine == format::Engine::kWii)
-        {
-            work.played = song::LoadWiiArchive(built, name, ntdlib::rvl::snd::kRsarOptions);
-            work.sequences = format::SequencesOfFiles(*work.document, built, *work.played.Wii());
-            work.start_fields = StartFieldsOf(*work.document, built);
-        }
-        else
-        {
-            work.played = song::LoadArchive(built, name, format::ExportGroupFiles(*work.document));
-            work.sequences = format::SequencesOfFiles(*work.document, built, *work.played.Sar());
-            work.start_fields = StartFieldsOf(*work.document, built);
-        }
+        TakePlay(work, work.archives[work.project->front]);
     }
     catch (const xsflib::FormatError& error)
     {
@@ -381,25 +434,41 @@ OpenWork App::ImportedWiiArchive(const std::filesystem::path& file, std::vector<
 
 OpenWork App::ImportedGbaRom(const std::filesystem::path& file, std::vector<uint8_t> bytes)
 {
-    // The new file, and the ROM for playback. The file's export reproduces the ROM, byte for byte.
+    // The new file, and the ROM for playback. The file's export reproduces the ROM, byte for byte. A ROM with another
+    // of the GBA's drivers is cut by its driver. A ROM with MusicPlayer2000 beside another driver gives an archive for
+    // each driver (format::ImportGbaArchives), and each archive plays from its join alone.
     const std::string name = xsflib::Utf8(file.filename());
     OpenWork work;
     work.imported = true;
     try
     {
-        // A ROM with another of the GBA's drivers is cut by its driver. The file's export reproduces it, byte for
-        // byte, too.
-        if (const format::Driver* driver = format::DriverOfRom(bytes))
+        format::ImportedArchives imported = format::ImportGbaArchives(bytes);
+        work.notes = std::move(imported.notes);
+        if (imported.project.archives.size() == 1)
         {
-            work.document = std::make_shared<const format::File>(driver->Import(bytes));
-            work.played = song::LoadDriverRom(driver->Facts().engine, std::move(bytes));
-            work.sequences = edit::DriverSoundSequences(*work.document, *work.played.Driver());
+            ArchivePlay play;
+            play.version = std::make_shared<const format::File>(std::move(imported.project.archives.front()));
+            const format::NativeArchive& native = *play.version->native;
+            if (native.driver)
+            {
+                play.played = song::LoadDriverRom(native.engine, std::move(bytes));
+                play.sequences = edit::DriverSoundSequences(*play.version, *play.played.Driver());
+            }
+            else
+            {
+                play.played = song::LoadGbaRom(std::move(bytes));
+                play.sequences = edit::GbaSongSequences(*play.version, *play.played.Gba());
+            }
+            TakePlay(work, std::move(play));
             return work;
         }
 
-        work.document = std::make_shared<const format::File>(format::ImportGbaRom(bytes));
-        work.played = song::LoadGbaRom(std::move(bytes));
-        work.sequences = edit::GbaSongSequences(*work.document, *work.played.Gba());
+        work.project = std::make_shared<const format::Project>(std::move(imported.project));
+        for (const format::File& archive : work.project->archives)
+        {
+            work.archives.push_back(PlayOf(name, std::shared_ptr<const format::File>(work.project, &archive)));
+        }
+        TakePlay(work, work.archives[work.project->front]);
     }
     catch (const std::exception& error)
     {
@@ -425,8 +494,9 @@ OpenWork App::ImportedDs(const std::filesystem::path& file, std::vector<uint8_t>
         {
             work.document = std::make_shared<const format::File>(format::ImportDseImage(bytes));
             const std::vector<uint8_t> set = format::ExportArchive(*work.document);
-            work.played = song::LoadDseSet(set, DseBuildOfFile(*work.document));
+            work.played = edit::DseSetOfFile(*work.document, set);
             work.sequences = format::DseSoundSequences(*work.document, set, song::DseSoundRefs(*work.played.Dse()));
+            work.notes = song::DseOpenNotes(bytes, *work.played.Dse());
             return work;
         }
 
@@ -475,13 +545,23 @@ void App::FinishOpening()
 
     // An imported sound archive gives a file that stays untitled. Its dialog starts beside the archive.
     ShowDocument(std::move(work.document), std::move(work.played), std::move(work.sequences),
-                 std::move(work.start_fields), name);
+                 std::move(work.start_fields), name, std::move(work.project), std::move(work.archives));
     document_path_ = work.imported ? std::string() : path;
     import_path_ = work.imported ? path : std::string();
     text_form_ = work.text_form;
     if (!work.imported)
     {
         AddRecentProject(path);
+    }
+
+    std::string notes;
+    for (const std::string& note : work.notes)
+    {
+        notes += (notes.empty() ? "" : "\n\n") + note;
+    }
+    if (!notes.empty())
+    {
+        ShowMessage(notes, MessageKind::kNote);
     }
 }
 
@@ -689,32 +769,53 @@ void App::NewDocument(format::Engine engine)
 
 void App::ShowDocument(std::shared_ptr<const format::File> document, song::Played played,
                        std::vector<std::optional<uint32_t>> sequences,
-                       std::optional<std::vector<std::optional<uint32_t>>> start_fields, const std::string& name)
+                       std::optional<std::vector<std::optional<uint32_t>>> start_fields, const std::string& name,
+                       std::shared_ptr<const format::Project> project, std::vector<ArchivePlay> archives)
 {
-    // The file replaces the one that was open before. The zones show no sequence until the user chooses one, and the
-    // transport runs over the empty song. A preview from the last archive stops too, and so does the made-up song. An
-    // export or a replacement in the last file ends. The editors of the last file's items close.
+    // The file replaces the one that was open before. A preview from the last archive stops too, and so does the
+    // made-up song. An export or a replacement in the last file ends.
     EndLastFileWork();
-    history_.emplace(std::move(document));
+    if (project)
+    {
+        history_.emplace(std::move(project));
+    }
+    else
+    {
+        history_.emplace(std::move(document));
+    }
     history_rows_.clear();
     action_selections_.clear();
-    copied_track_.reset();
     preview_ = false;
-    played_ = std::move(played);
-    archive_version_ = history_->Current();
-    reading_version_.reset();
-    file_sequences_ = std::move(sequences);
-    start_fields_ = std::move(start_fields);
-    start_values_.clear();
-    told_missing_banks_.clear();
-    told_unrelocatable_.clear();
-    changes_.clear();
+    archive_plays_ = std::move(archives);
+    file_name_ = name;
+    UpdateTitle();
+    ShowPlay(
+        {history_->Current(), std::move(played), std::move(sequences), std::move(start_fields), std::nullopt, {}, {}});
+
+    // In a file with more than one archive, the browser lists each archive's items under its row.
+    const std::size_t front = history_->Front();
+    for (std::size_t a = 0; a < archive_plays_.size(); a++)
+    {
+        if (a != front)
+        {
+            archive_plays_[a].browser = ListedBrowserOf(a);
+            archive_plays_[a].browser_state.top = true;
+        }
+    }
+    ListArchives();
+}
+
+void App::ShowPlay(ArchivePlay play)
+{
+    // The zones show no sequence until the user chooses one, and the transport runs over the empty song. The editors
+    // of the last archive's items close.
+    copied_track_.reset();
+    InstallPlay(std::move(play.version), std::move(play.played), std::move(play.sequences),
+                std::move(play.start_fields));
     sequence_.reset();
     model_.reset();
     song_.reset();
     ForgetEngine();
-    engine_edit_.reset();
-    gba_moved_groups_.clear();
 
     // The meters and the peak holds of the Stereo Out and the FX channels start again with the file. The tracks' go
     // with the song.
@@ -726,13 +827,7 @@ void App::ShowDocument(std::shared_ptr<const format::File> document, song::Playe
     effect_draft_.reset();
     CloseKeyEditor();
     CloseListEditor();
-    CloseBankEditor();
-    bank_to_open_.reset();
-    bank_drops_.clear();
-    bank_drop_.reset();
-    CloseProperties();
-    file_name_ = name;
-    UpdateTitle();
+    CloseItemEditors();
     transport_.SetCycle(false);
     transport_.SetPosition(0.0);
     transport_.TakeEmptySong();
@@ -747,8 +842,164 @@ void App::ShowDocument(std::shared_ptr<const format::File> document, song::Playe
     // The arrangement shows the new file from its start and its first track. A file that keeps a view scrolls to the
     // view's place once its sound shows (RestoreView).
     arrangement_.scroll_to = std::pair(0.0, 0.0f);
+    SelectKeptViewSound(play.view ? play.view : history_->Current()->view);
+}
 
-    SelectKeptViewSound();
+void App::InstallPlay(std::shared_ptr<const format::File> version, song::Played played,
+                      std::vector<std::optional<uint32_t>> sequences,
+                      std::optional<std::vector<std::optional<uint32_t>>> start_fields)
+{
+    played_ = std::move(played);
+    archive_version_ = std::move(version);
+    reading_version_.reset();
+    file_sequences_ = std::move(sequences);
+    start_fields_ = std::move(start_fields);
+    start_values_.clear();
+    told_missing_banks_.clear();
+    told_unrelocatable_.clear();
+    changes_.clear();
+    engine_edit_.reset();
+    gba_moved_groups_.clear();
+}
+
+void App::CloseItemEditors()
+{
+    CloseBankEditor();
+    bank_to_open_.reset();
+    bank_drops_.clear();
+    bank_drop_.reset();
+    CloseProperties();
+}
+
+std::vector<BrowserGroup> App::ListedBrowserOf(std::size_t archive)
+{
+    // The browser lists archive `archive` as it would in front, through ListBrowser with that archive in front for a
+    // moment. Its groups don't drag: a drag names a place of the archive in front.
+    const std::size_t front = history_->Front();
+    ArchivePlay& play = archive_plays_[archive];
+    std::swap(played_, play.played);
+    std::swap(archive_version_, play.version);
+    std::swap(file_sequences_, play.sequences);
+    std::swap(start_fields_, play.start_fields);
+    std::vector<BrowserGroup> front_groups = browser_;
+    history_->SetFront(archive);
+    ListBrowser();
+    history_->SetFront(front);
+    std::swap(played_, play.played);
+    std::swap(archive_version_, play.version);
+    std::swap(file_sequences_, play.sequences);
+    std::swap(start_fields_, play.start_fields);
+    std::swap(browser_, front_groups);
+    for (BrowserGroup& group : front_groups)
+    {
+        for (BrowserItem& item : group.items)
+        {
+            item.children_drag = false;
+        }
+    }
+
+    return front_groups;
+}
+
+void App::ShowFront(std::size_t left)
+{
+    // The work on the archive that left the front ends, and so do its sequence and its editors: they show items of
+    // that archive. The archive keeps what plays it, its view, and its groups and choices in the browser.
+    const std::size_t front = history_->Front();
+    if (archive_plays_.size() < history_->Archives())
+    {
+        archive_plays_.resize(history_->Archives());
+    }
+    ArchivePlay& kept = archive_plays_[left];
+    kept.view = CurrentView();
+    kept.browser_state = browser_state_;
+    EndLastFileWork();
+    CloseSequence();
+    CloseItemEditors();
+    copied_track_.reset();
+    kept.version = archive_version_;
+    kept.played = played_;
+    kept.sequences = file_sequences_;
+    kept.start_fields = start_fields_;
+    kept.browser_state.clicked = false;
+    kept.browser_state.playing.reset();
+    kept.browser_state.export_place.reset();
+    kept.browser_state.replace_place.reset();
+    kept.browser_state.edit_place.reset();
+    kept.browser_state.archive.reset();
+
+    // The archive in front plays what played it last, while that came from its version. Otherwise the program builds
+    // what plays it, as an open does. An archive that can't play leaves the front again.
+    ArchivePlay play = std::move(archive_plays_[front]);
+    archive_plays_[front] = {};
+    if (!play.version || !SameArchive(*play.version, *history_->Current()))
+    {
+        try
+        {
+            ArchivePlay built = PlayOf(file_name_, history_->Current());
+            play.version = std::move(built.version);
+            play.played = std::move(built.played);
+            play.sequences = std::move(built.sequences);
+            play.start_fields = std::move(built.start_fields);
+        }
+        catch (const std::exception& error)
+        {
+            ShowMessage(std::string("Can't play the sounds of ") + DriverName(history_->Current()->engine) + ". " +
+                        format::AsSentence(error.what()));
+            archive_plays_[front] = std::move(play);
+            history_->SetFront(left);
+            play = std::move(archive_plays_[left]);
+            archive_plays_[left] = {};
+        }
+    }
+
+    // The browser lists the archive again, and keeps its choices: a choice that brought the archive to the front reads
+    // its sound, plays its item or opens its window. A view waits for its sound. The groups of the archive that left
+    // stay in the browser under its row.
+    InstallPlay(std::move(play.version), std::move(play.played), std::move(play.sequences),
+                std::move(play.start_fields));
+    browser_state_ = std::move(play.browser_state);
+    browser_state_.archive.reset();
+    ListBrowser();
+    DropUnlistedChoices();
+    shown_group_ = -1;
+    shown_item_ = -1;
+    pending_view_.reset();
+    if (browser_state_.selected.group < 0)
+    {
+        SelectKeptViewSound(play.view ? play.view : history_->Current()->view);
+    }
+    else if (play.view && browser_state_.selected.group == static_cast<int>(kSequencesGroup) &&
+             browser_state_.selected.item >= 0 &&
+             browser_[kSequencesGroup].items[static_cast<std::size_t>(browser_state_.selected.item)].number ==
+                 play.view->sound)
+    {
+        pending_view_ = play.view;
+    }
+    browser_state_.reveal = true;
+    if (history_->Front() != left)
+    {
+        archive_plays_[left].browser = ListedBrowserOf(left);
+    }
+    ListArchives();
+
+    // Every change of the front passes here, an undo or a redo across archives among them. Such a move changes whether
+    // the file differs from its saved version.
+    UpdateTitle();
+}
+
+void App::BringToFront(std::size_t archive)
+{
+    if (!history_ || archive >= history_->Archives() || archive == history_->Front())
+    {
+        return;
+    }
+
+    // An item's edit whose work still runs enters the history first: it belongs to the archive in front.
+    TakeItemEdit(true);
+    const std::size_t left = history_->Front();
+    history_->SetFront(archive);
+    ShowFront(left);
 }
 
 void App::EndLastFileWork()
@@ -771,6 +1022,7 @@ void App::EndLastFileWork()
 void App::ResetBrowser()
 {
     ListBrowser();
+    ListArchives();
     select_sound_.reset();
     browser_state_.filter.fill('\0');
     browser_state_.open.clear();
@@ -782,10 +1034,10 @@ void App::ResetBrowser()
     shown_item_ = -1;
 }
 
-void App::SelectKeptViewSound()
+void App::SelectKeptViewSound(const std::optional<format::EditorView>& view)
 {
-    // The view that a file keeps sets the shown sound, and the view waits for the sound to show.
-    pending_view_ = history_->Current()->view;
+    // The view sets the shown sound, and the view waits for the sound to show.
+    pending_view_ = view;
     const std::vector<BrowserItem>& sounds = browser_[kSequencesGroup].items;
     const auto found =
         pending_view_ ? std::ranges::find(sounds, pending_view_->sound, &BrowserItem::number) : sounds.end();
@@ -829,15 +1081,28 @@ void App::SaveTo(const std::string& path)
     std::vector<uint8_t> binary;
     try
     {
-        format::File saved = edit::FoldTimelines(*Document());
-        saved.view = CurrentView();
+        // Each archive keeps its view: the archive in front the view that shows, and another archive the view that it
+        // showed last.
+        format::Project saved = history_->CurrentProject();
+        for (std::size_t a = 0; a < saved.archives.size(); a++)
+        {
+            saved.archives[a] = edit::FoldTimelines(saved.archives[a]);
+            if (a == saved.front)
+            {
+                saved.archives[a].view = CurrentView();
+            }
+            else if (a < archive_plays_.size() && archive_plays_[a].view)
+            {
+                saved.archives[a].view = archive_plays_[a].view;
+            }
+        }
         if (text_form_)
         {
-            text = format::WriteText(saved);
+            text = format::WriteProjectText(saved);
         }
         else
         {
-            binary = format::Write(saved);
+            binary = format::WriteProject(saved);
         }
     }
     catch (const std::exception& error)

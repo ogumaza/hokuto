@@ -65,12 +65,14 @@ std::vector<std::string> ConvertForEngine(ExportWork& work, const std::shared_pt
     }
     else
     {
+        // A conversion for the 3DS, the Wii U or the Switch plays the rest of the sound's start.
+        const format::SoundStart start = format::StartOf(*version, sound);
         work.played = song::LoadArchive(built, name);
-        work.conversion = song::ConvertToMidi(*work.played.Sar(), 0, values, changes, "Hokuto");
+        work.conversion = song::ConvertToMidi(*work.played.Sar(), 0, values, changes, "Hokuto", start);
         if (!shown)
         {
-            work.played_sequence =
-                std::make_shared<const song::Sequence>(song::ReadSequence(*work.played.Sar(), 0, values, changes));
+            work.played_sequence = std::make_shared<const song::Sequence>(
+                song::ReadSequence(*work.played.Sar(), 0, values, changes, start));
         }
     }
 
@@ -101,7 +103,8 @@ void ConvertNative(ExportWork& work, const std::shared_ptr<const format::File>& 
             const format::File folded = edit::FoldTimelines(*version);
             archive = SarArchiveOf(folded, name);
         }
-        work.conversion = song::ConvertToMidi(*archive, sound, values, changes, "Hokuto");
+        work.conversion =
+            song::ConvertToMidi(*archive, sound, values, changes, "Hokuto", format::StartOf(*version, sound));
     }
 }
 
@@ -148,8 +151,9 @@ std::shared_ptr<const song::Sequence> ReadUnshownSequence(
                 archive = SarArchiveOf(folded, name);
             }
         }
-        return std::make_shared<const song::Sequence>(wii ? song::ReadSequence(*wii, sound, values, changes, build)
-                                                          : song::ReadSequence(*archive, sound, values, changes));
+        return std::make_shared<const song::Sequence>(
+            wii ? song::ReadSequence(*wii, sound, values, changes, build)
+                : song::ReadSequence(*archive, sound, values, changes, format::StartOf(*version, sound)));
     }
 }
 

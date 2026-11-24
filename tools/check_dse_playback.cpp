@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 
 // Checks Hokuto's playback of DSE's songs and sound effects in DS cartridge images against ntdlib's dse::Player, run
-// directly a tick of DSE's driver at a time. The images' sounds come from song::LoadDseSet, played by the build of DSE
-// in each image's ARM9 binary. For each sound (song::DseSounds), it checks:
+// directly a tick of DSE's driver at a time. The images' sounds come from the file that Hokuto's import makes of each
+// image (edit::DseSetOfFile), played by the build of DSE in the image's ARM9 binary. The reference starts each song at
+// the level that ntdlib's dse::GameStarts gives the game's image, as ntdlib's converter does, and Hokuto's player at
+// the level of the file's start. The tool counts the songs that start below full level. For each sound
+// (song::DseSounds), it checks:
 //
 // - From the start, the player's output matches the reference output sample for sample, after the player's first frame.
 //   Each frame of the player contains two frames of the sound driver. A player from tick 0 starts with the frame that
@@ -47,7 +50,9 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/dse/game_starts.h"
 #include "ntdlib/dse/player.h"
+#include "ntdlib/ntr/rom.h"
 #include "ntdlib/ntr/sound.h"
 #include "xsflib/console.h"
 #include "xsflib/files.h"
@@ -56,6 +61,8 @@
 #include "check_part.h"
 #include "check_playback_steps.h"
 #include "check_support.h"
+#include "edit/dse_files.h"
+#include "format/archive.h"
 #include "song/dse.h"
 #include "song/sequence.h"
 #include "song/sequence_model.h"
@@ -114,13 +121,16 @@ struct Totals : StepTotals
     std::size_t arranged_ties = 0; // legatos that the arrangement shows as separate notes
     std::size_t unvoiced = 0;      // notes that start no voice
     std::size_t silent = 0;        // runs whose output ends before its first frame
+    std::size_t lowered = 0;       // runs of songs that the game starts below full level
     std::size_t levels = 0;        // runs whose reference has samples other than 0 within ±8 after the output's end
     int largest_level = 0;         // the largest such sample, in steps
 };
 
-Reference RunReference(const song::DseSet& set, uint32_t sound, bool enhanced, std::size_t samples)
+Reference RunReference(const song::DseSet& set, uint32_t sound, const ntdlib::dse::StartParameters& song_start,
+                       bool enhanced, std::size_t samples)
 {
-    ntdlib::dse::Player player({.build = set.build, .enhanced = enhanced});
+    ntdlib::dse::Player player(
+        {.build = set.build, .tick_microseconds = song::DseSoundTick(set, sound), .enhanced = enhanced});
     Reference reference;
     int64_t ticks = 0;
     std::vector<ntdlib::ntr::SoundOutput> strict;
@@ -145,7 +155,7 @@ Reference RunReference(const song::DseSet& set, uint32_t sound, bool enhanced, s
     player.Driver().SetHooks(std::move(hooks));
     const ntdlib::dse::SequenceFiles files = set.sounds[sound].Files();
     player.LoadBanks(files);
-    if (!player.Start(files))
+    if (!player.Start(files, song_start))
     {
         throw std::runtime_error("DSE refuses it");
     }
@@ -240,9 +250,9 @@ void CheckNotes(const std::string& name, const std::shared_ptr<const song::Seque
     }
 }
 
-// Checks sound `sound`, for `seconds` at most.
-void CheckSound(const std::string& name, const std::shared_ptr<const song::DseSet>& set, uint32_t sound, int seconds,
-                bool enhanced, Totals& totals)
+// Checks sound `sound`, which the game starts with `song_start`, for `seconds` at most.
+void CheckSound(const std::string& name, const std::shared_ptr<const song::DseSet>& set, uint32_t sound,
+                const ntdlib::dse::StartParameters& song_start, int seconds, bool enhanced, Totals& totals)
 {
     totals.sounds++;
     std::shared_ptr<const song::Sequence> sequence;
@@ -258,6 +268,7 @@ void CheckSound(const std::string& name, const std::shared_ptr<const song::DseSe
     }
     totals.runs++;
     totals.looped += sequence->loop ? 1 : 0;
+    totals.lowered += song_start.volume != ntdlib::dse::StartParameters{}.volume ? 1 : 0;
 
     const song::Mixing mixing = enhanced ? song::Mixing::kEnhanced : song::Mixing::kStrict;
     const auto model = std::make_shared<song::SequenceModel>(set, sequence, song::ModelOptions{.mixing = mixing});
@@ -269,7 +280,7 @@ void CheckSound(const std::string& name, const std::shared_ptr<const song::DseSe
     Reference reference;
     try
     {
-        reference = RunReference(*set, sound, enhanced, (start + frames) * frame_samples);
+        reference = RunReference(*set, sound, song_start, enhanced, (start + frames) * frame_samples);
     }
     catch (const std::exception& error)
     {
@@ -336,8 +347,16 @@ void CheckSound(const std::string& name, const std::shared_ptr<const song::DseSe
     CheckNotes(name, sequence, reference, heard, frame_floats, offset, loop, totals);
 }
 
-// The DSE sounds of the image at `path`.
-std::shared_ptr<const song::DseSet> SetAt(const std::string& path)
+// The DSE sounds of an image, and the start of each sound in the game, by the sounds' numbers.
+struct Loaded
+{
+    std::shared_ptr<const song::DseSet> set;
+    std::vector<ntdlib::dse::StartParameters> starts;
+};
+
+// The sounds of the image at `path`, from the file that Hokuto's import makes of it, and their starts from ntdlib
+// directly, as ntdlib's converter takes them.
+Loaded SetAt(const std::string& path)
 {
     std::vector<uint8_t> bytes;
     if (!xsflib::ReadFile(xsflib::PathFromUtf8(path), bytes))
@@ -345,7 +364,31 @@ std::shared_ptr<const song::DseSet> SetAt(const std::string& path)
         throw std::runtime_error("can't be read");
     }
 
-    return song::LoadDseSet(bytes);
+    Loaded loaded{.set = hokuto::edit::DseSetOfFile(hokuto::format::ImportDseImage(bytes))};
+    const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(bytes);
+    std::optional<ntdlib::dse::GameStarts> game;
+    try
+    {
+        game.emplace(rom);
+    }
+    catch (const xsflib::FormatError&)
+    {
+    }
+    catch (const std::out_of_range&)
+    {
+    }
+
+    // ntdlib's converter starts a sound effect, and a song outside the game's rows, at full level.
+    for (const ntdlib::sequence_export::dse::SequenceInput& sound : loaded.set->sounds)
+    {
+        const std::vector<ntdlib::dse::SongState> states =
+            sound.ref.effect ? std::vector<ntdlib::dse::SongState>(1)
+            : game           ? game->StatesOf(sound.ref.path)
+                             : ntdlib::dse::SongStatesOf(rom.Header().game_code, sound.ref.path);
+        loaded.starts.push_back(ntdlib::dse::StartOf(states.front()));
+    }
+
+    return loaded;
 }
 
 // The options of a run: the mixing, the part of the sounds, the images and the seconds of each check.
@@ -418,10 +461,10 @@ std::optional<Options> ParseArguments(const std::vector<std::string>& arguments)
 // Checks each sound of the image at `path` in the part that `options` selects.
 void CheckPath(const std::string& path, const Options& options, Totals& totals)
 {
-    std::shared_ptr<const song::DseSet> set;
+    Loaded loaded;
     try
     {
-        set = SetAt(path);
+        loaded = SetAt(path);
     }
     catch (const std::exception& error)
     {
@@ -429,6 +472,8 @@ void CheckPath(const std::string& path, const Options& options, Totals& totals)
         totals.unread++;
         return;
     }
+
+    const std::shared_ptr<const song::DseSet>& set = loaded.set;
     for (const std::string& warning : set->warnings)
     {
         std::printf("%s: %s\n", path.c_str(), warning.c_str());
@@ -445,7 +490,7 @@ void CheckPath(const std::string& path, const Options& options, Totals& totals)
         if (s % options.every == 0 && s / options.every % options.parts == options.part)
         {
             CheckSound(path + ": " + song::DseSoundFolder(*set, sounds[s]) + song::DseSoundName(*set, sounds[s]), set,
-                       sounds[s], options.seconds, options.enhanced, totals);
+                       sounds[s], loaded.starts[sounds[s]], options.seconds, options.enhanced, totals);
         }
     }
 }
@@ -468,13 +513,13 @@ int main(int argc, char** argv)
     }
 
     std::printf(
-        "%zu images, %zu sounds, %zu runs, %zu with a loop, %zu can't be read, %zu differ, %zu play nothing. "
-        "%zu seeks. %zu of %zu switches exact. %zu of %zu notes missing from the arrangement, %zu after the first "
-        "pass. %zu legatos, %zu of them separate notes in the arrangement. %zu notes start no voice. After the "
-        "output's end, the reference holds samples other than 0 within ±8 in %zu runs, %d steps at most.\n",
-        totals.images, totals.sounds, totals.runs, totals.looped, totals.unread, totals.failed, totals.silent,
-        totals.seeks, totals.exact, totals.switches, totals.missed_notes, totals.notes, totals.missed_later,
-        totals.ties, totals.arranged_ties, totals.unvoiced, totals.levels, totals.largest_level);
+        "%zu images, %zu sounds, %zu runs, %zu with a loop, %zu below full level, %zu can't be read, %zu differ, %zu "
+        "play nothing. %zu seeks. %zu of %zu switches exact. %zu of %zu notes missing from the arrangement, %zu after "
+        "the first pass. %zu legatos, %zu of them separate notes in the arrangement. %zu notes start no voice. After "
+        "the output's end, the reference holds samples other than 0 within ±8 in %zu runs, %d steps at most.\n",
+        totals.images, totals.sounds, totals.runs, totals.looped, totals.lowered, totals.unread, totals.failed,
+        totals.silent, totals.seeks, totals.exact, totals.switches, totals.missed_notes, totals.notes,
+        totals.missed_later, totals.ties, totals.arranged_ties, totals.unvoiced, totals.levels, totals.largest_level);
 
     return totals.failed + totals.unread > 0 ? 1 : 0;
 }

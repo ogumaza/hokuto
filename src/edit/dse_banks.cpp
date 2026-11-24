@@ -34,6 +34,8 @@ namespace
 {
 
 using dse_files_parts::BankAt;
+using dse_files_parts::BankFileBytes;
+using dse_files_parts::HeldBankBytes;
 using dse_files_parts::kImaAdpcm;
 using dse_files_parts::kPcm16;
 using dse_files_parts::kPcm8;
@@ -80,21 +82,24 @@ constexpr std::array<SplitByte, 14> kSplitBytes = {{
     {kDseHighKey, "High key"},
 }};
 
-// Writes `to` for each bank file of the set that contains the bytes of `bank`, where they differ from `from`, into
-// `changes`. Throws std::invalid_argument for a bank whose size changes: the bytes of the set store its size.
-void AddChanges(const song::DseSet& set, uint32_t bank, const std::vector<uint8_t>& from,
-                const std::vector<uint8_t>& to, std::vector<ArchiveBytes>& changes)
+// Writes `model` into each bank file of the set that contains the bytes of `bank`, where its bytes change, into
+// `changes`. Each file keeps its version (BankFileBytes). Throws std::invalid_argument for a bank whose size changes:
+// the bytes of the set store its size.
+void AddChanges(const song::DseSet& set, uint32_t bank, const dse::WaveBank& model, std::vector<ArchiveBytes>& changes)
 {
-    if (from.size() != to.size())
-    {
-        throw std::invalid_argument("This edit would change the size of the bank. Hokuto doesn't support that yet.");
-    }
-
     for (const song::DseBank& each : set.banks)
     {
         if (each.bank != set.banks[bank].bank)
         {
             continue;
+        }
+
+        const std::vector<uint8_t> from = HeldBankBytes(each);
+        const std::vector<uint8_t> to = BankFileBytes(each, model);
+        if (from.size() != to.size())
+        {
+            throw std::invalid_argument(
+                "This edit would change the size of the bank. Hokuto doesn't support that yet.");
         }
 
         for (std::size_t at = 0; at < from.size();)
@@ -300,7 +305,7 @@ format::File WithDseSplit(const format::File& file, const song::DseSet& set, con
 
     program.splits[place.split] = next;
     std::vector<ArchiveBytes> changes;
-    AddChanges(set, place.bank, found.bank->Write(), model.Write(), changes);
+    AddChanges(set, place.bank, model, changes);
 
     return WithArchiveBytes(file, starts, changes, "The bank");
 }
@@ -410,7 +415,7 @@ std::vector<ArchiveBytes> RewriteWaveTables(const song::DseSet& set, uint32_t ba
             held.SetLoopLength(held_end - word);
         }
 
-        AddChanges(set, static_cast<uint32_t>(each), other.bank->Write(), model.Write(), changes);
+        AddChanges(set, static_cast<uint32_t>(each), model, changes);
     }
 
     return changes;

@@ -98,10 +98,11 @@ public:
     // the read, `convert` converts the sound for another console, if it's set, and the read of the converted sound
     // takes the same values and changes. A read that an earlier request started is abandoned if it's still going.
     // At most one read runs at a time. A request that comes while a read runs waits for that read to end, in the place
-    // of the request that waited before it.
+    // of the request that waited before it. The read of the sound plays the rest of the game's start `start`.
     void Request(std::shared_ptr<const ntdlib::sar::SoundArchive> archive, uint32_t sound, StartValues values = {},
-                 Changes changes = {}, Convert convert = {});
-    void Request(Build build, uint32_t sound, StartValues values = {}, Changes changes = {}, Convert convert = {});
+                 Changes changes = {}, Convert convert = {}, format::SoundStart start = {});
+    void Request(Build build, uint32_t sound, StartValues values = {}, Changes changes = {}, Convert convert = {},
+                 format::SoundStart start = {});
 
     // The same for sequence sound `sound` of the Wii's `archive`, and of the Wii's archive that `build` makes, by the
     // rules of `snd_build` of NW4R SND, the game's build, or else of the build that the archive's version gives. The
@@ -157,8 +158,9 @@ private:
 // The sequence of `converted`, the conversion of `sequence` for another console, read with the variables' starting
 // values `values` and their changes `changes`. The conversion of a song of the GBA's other drivers ends at the end of
 // its loop's first pass. The song ends there too: the performer can find the conversion's loop a pass or more late. The
-// sequence contains the map of the arrangement's ticks to its ticks (Sequence::arrangement_ticks). Throws what
-// ReadSequence throws.
+// sequence contains the map of the arrangement's ticks to its ticks (Sequence::arrangement_ticks). A conversion for the
+// 3DS, the Wii U or the Switch plays the rest of the start of `sequence` (Sequence::start). The Wii and the DS play
+// none of it. Throws what ReadSequence throws.
 Sequence ReadEngineSequence(const Sequence& sequence, const SequenceReader::EngineSound& converted,
                             const StartValues& values, const Changes& changes);
 

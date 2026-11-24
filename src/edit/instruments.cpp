@@ -507,8 +507,9 @@ Command DseBankSelect(uint16_t id)
 
 std::vector<uint16_t> DseBankIds(const format::File& file, uint32_t sequence)
 {
+    // The ids alone count here: neither the build nor the tick changes them.
     const std::vector<uint8_t> set = format::ExportArchive(file);
-    const std::shared_ptr<const song::DseSet> sounds = song::LoadDseSet(set, ntdlib::dse::Build::kLater);
+    const std::shared_ptr<const song::DseSet> sounds = song::LoadDseSet(set, ntdlib::dse::Build::kLater, {});
     const std::vector<std::optional<uint32_t>> places =
         format::DseSoundSequences(file, set, song::DseSoundRefs(*sounds));
     std::vector<uint16_t> ids;

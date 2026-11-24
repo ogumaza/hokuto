@@ -43,8 +43,8 @@ struct DryRender
 // - The DS's model renders at 32,728 Hz in strict mixing, and about 47,989 Hz in enhanced mixing. The DS has no aux
 //   buses. The sound plays with the profile of its game, but without the effects that the code of a game sets up
 //   through the capture units: a reverb or the SDK's output effect (DryDsProfile). Playback plays them. The synth
-//   renders a MIDI file without such effects, and a sound sent to another console has neither. DSE's sounds render at
-//   the same rates.
+//   renders a MIDI file without such effects, and a sound sent to another console has neither. The profile's locks of
+//   channels play in strict mixing only, and the MIDI file follows them. DSE's sounds render at the same rates.
 // - On one of the GBA's other drivers (song/driver.h), the render leaves out an echo that the driver mixes
 //   (DriverRules::MixesEcho). A MIDI file can't store it, and a song sent to another console sends it to bus A.
 DryRender RenderDry(const Played& played, std::shared_ptr<const Sequence> sequence, Mixing mixing, double seconds,

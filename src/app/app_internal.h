@@ -92,10 +92,6 @@ bool HoldsSoundOf(const Archive& archive, std::initializer_list<Type> types)
 std::optional<std::vector<std::optional<uint32_t>>> StartFieldsOf(const format::File& document,
                                                                   std::span<const uint8_t> bytes);
 
-// The build of the driver that plays the DSE files of `document`: the build in the ARM9 binary of the cartridge image
-// that the file keeps, or else the later build (song::DseBuildOf).
-ntdlib::dse::Build DseBuildOfFile(const format::File& document);
-
 // The build of the driver that plays the DS's archive of `document`: the build in the ARM7 binary of the cartridge
 // image that the file keeps, or else the default build (song::DsBuildOf).
 ntdlib::ntr::snd::Build DsBuildOfFile(const format::File& document);

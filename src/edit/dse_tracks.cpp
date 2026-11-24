@@ -30,6 +30,7 @@
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/driver.h"
 #include "ntdlib/dse/formats.h"
+#include "ntdlib/dse/layout.h"
 #include "ntdlib/dse/player.h"
 #include "ntdlib/sar/layout.h"
 
@@ -91,28 +92,34 @@ std::size_t DseSettingsRun(std::span<const ntdlib::sar::Piece> pieces, uint32_t 
     throw std::invalid_argument("Can't find the track settings of this sound in its file.");
 }
 
-// Whether DSE sequence `sequence` of `file` is a song: the run of its settings starts with the song file. The run of a
-// sound effect starts inside a bank of sound effects.
-bool IsDseSong(const format::File& file, uint32_t sequence)
+// Whether `run`, the run that holds a DSE sequence's settings, belongs to a song: it starts with the song file. The run
+// of a sound effect starts inside a bank of sound effects.
+bool StartsAsSong(std::span<const uint8_t> run)
 {
-    const std::vector<ntdlib::sar::Piece>& pieces = *file.native->pieces;
-    const auto& run = std::get<std::vector<uint8_t>>(pieces[DseSettingsRun(pieces, sequence)]);
     return run.size() >= 4 && std::equal(run.begin(), run.begin() + 4, "smdl");
 }
 
-// `file` once the settings of DSE sequence `sequence` give `tracks` tracks, and at least `channels` channels.
+// Whether DSE sequence `sequence` of `file` is a song.
+bool IsDseSong(const format::File& file, uint32_t sequence)
+{
+    const std::vector<ntdlib::sar::Piece>& pieces = *file.native->pieces;
+    return StartsAsSong(std::get<std::vector<uint8_t>>(pieces[DseSettingsRun(pieces, sequence)]));
+}
+
+// `file` once the settings of DSE sequence `sequence` give `tracks` tracks, and at least `channels` channels. A song's
+// run starts with its file, whose version gives the places of the counts (ntdlib::dse::SongSettingsPlaces). A sound
+// effect's run ends with its settings.
 void SetDseCounts(format::File& file, uint32_t sequence, std::size_t tracks, int channels)
 {
     const auto set = [&](format::NativeArchive& native)
     {
         std::vector<ntdlib::sar::Piece> pieces = *native.pieces;
         auto& run = std::get<std::vector<uint8_t>>(pieces[DseSettingsRun(pieces, sequence)]);
-        const auto settings = run.end() - static_cast<std::ptrdiff_t>(ntdlib::dse::SequenceInfo::kSize);
-        ntdlib::dse::SequenceInfo info;
-        std::copy(settings, run.end(), info.bytes.begin());
-        info.SetTrackCount(static_cast<uint8_t>(tracks));
-        info.SetChannelCount(std::max(info.ChannelCount(), static_cast<uint8_t>(channels)));
-        std::ranges::copy(info.bytes, settings);
+        const ntdlib::dse::SettingsPlaces places =
+            StartsAsSong(run) ? ntdlib::dse::SongSettingsPlaces(run)
+                              : ntdlib::dse::SequenceInfoPlaces(run.size() - ntdlib::dse::SequenceInfo::kSize);
+        run[places.tracks] = static_cast<uint8_t>(tracks);
+        run[places.channels] = std::max(run[places.channels], static_cast<uint8_t>(channels));
         native.pieces = std::move(pieces);
     };
     file.native.Edit(set);

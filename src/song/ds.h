@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ntdlib/ntr/archive_player.h"
+#include "ntdlib/ntr/game_profiles.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sequence_export/convert.h"
@@ -85,19 +86,36 @@ ntdlib::ntr::snd::Build DsBuildOf(std::span<const uint8_t> image);
 // file that is missing from the image.
 std::optional<DsGame> DsGameOf(std::span<const uint8_t> image, uint32_t size, uint32_t file, uint32_t offset);
 
-// What a game's code sets as it starts a sequence of its archive, and the driver's commands that it sends right after
-// the start (ntdlib::ntr::ArchivePlayer::Send).
+// What a game's code sets as it starts a sequence of its archive, the driver's commands that it sends right after the
+// start (ntdlib::ntr::ArchivePlayer::Send), and what it sends while the sequence plays: the channels that it locks,
+// and the lists of commands that follow a tick. A host sends the commands of each lock before the driver's frame of the
+// lock (ntdlib::ntr::ChannelLockCommands), and each list in its frame of the game's code
+// (ntdlib::ntr::TickListProgress).
 struct DsProfile
 {
     ntdlib::ntr::GameSettings settings;
     ntdlib::ntr::snd::CommandList commands;
+    std::vector<ntdlib::ntr::ChannelLock> channel_locks; // in the order of their frames
+    std::vector<ntdlib::ntr::TickCommands> tick_commands;
 };
 
 // The profile of sound `sound` of `archive`, by the archive's game and the sequence's label
 // (ntdlib::ntr::GameProfileOf). A sound without a sequence gets the default profile. So does a sound of an archive
-// without a game, or of a game without a profile. The profile's arrangements, the other states of the game, stay out:
-// the sound plays as the game starts it.
-DsProfile DsProfileOf(const DsArchive& archive, uint32_t sound);
+// without a game, or of a game without a profile. The sound plays as the game usually starts it, and the profile's
+// arrangements, the other states of the game, stay out. The exception is a state that the starting values `values`
+// (variables 0 to 31) choose (DsStateOf). Its commands then follow the profile's, and its tick commands play.
+DsProfile DsProfileOf(const DsArchive& archive, uint32_t sound, const std::map<int, int16_t>& values = {});
+
+// The state of `profile` that the starting values `values` (variables 0 to 31) choose: the first whose variables all
+// start at its values, through `values` or else the profile, where the profile starts at least one of them at another
+// value. A variable that the profile doesn't set starts at -1. Nothing where no state matches. With variable 0 at -1,
+// Spirit Tracks' SEQ_39 and SEQ_40 choose their intro (_INTRO).
+const ntdlib::ntr::ProfileArrangement* DsStateOf(const ntdlib::ntr::GameProfile& profile,
+                                                 const std::map<int, int16_t>& values);
+
+// The values that a profile's `settings` give the variables as the sequence starts: the player's 0 to 15, and the
+// global variables 16 to 31.
+std::map<int, int16_t> DsProfileValues(const ntdlib::ntr::GameSettings& settings);
 
 // What `archive`'s game sets for every sequence of the archive, such as the output effect that it starts at boot or a
 // reverb that plays the whole time. The default settings for an archive without a game. The Bank Editor's notes play
@@ -106,12 +124,14 @@ ntdlib::ntr::GameSettings DsGameSettingsOf(const DsArchive& archive);
 
 // The same profile without the capture units' effects: the reverb and the output effect. A MIDI file has neither. Its
 // CC91 contains only the volume of the reverb, for a synth's reverb. A dry render uses this profile
-// (song/dry_render.h).
+// (song/dry_render.h). The locks of channels and the tick commands stay. A dry render in enhanced mixing plays no lock:
+// enhanced mixing leaves the locks out.
 DsProfile DryDsProfile(DsProfile profile);
 
 // The options of ntdlib's performer for sound `sound` of `archive`: the archive's build of the driver, and what the
-// sound's profile sets as the sequence starts (DsProfileOf). The variables of `values`, 0 to 31, replace those of the
-// profile. The arrangement and the export to MIDI play the sound with these options.
+// sound's profile sets as the sequence starts and while it plays (DsProfileOf, with `values`). The variables of
+// `values`, 0 to 31, replace those of the profile. The arrangement and the export to MIDI play the sound with these
+// options.
 ntdlib::sequence_export::ntr::PerformOptions DsPerformOptions(const DsArchive& archive, uint32_t sound,
                                                               const std::map<int, int16_t>& values);
 

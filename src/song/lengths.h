@@ -3,7 +3,7 @@
 // The lengths of a sequence sound for players: how long a player plays the sound before its fade, and how long the fade
 // lasts. ntdlib's length analysis (ntdlib/nwsnd/length_model.h) plays the sound on ntdlib's model of its console, frame
 // by frame, until the sound has played its loop twice, ends, or stays silent for 180 s, for 600 s at most. A sound that
-// loops then fades over 10 s. A sound that ends gets 0.5 s after its last sound, and no fade.
+// loops then fades over 7 s. A sound that ends ends at its last sound, with no fade.
 
 #pragma once
 
@@ -14,6 +14,7 @@
 #include "ntdlib/sar/formats.h"
 #include "ntdlib/sound_build.h"
 
+#include "format/starts.h"
 #include "song/driver.h"
 #include "song/sequence.h"
 #include "song/sequence_model.h"
@@ -39,10 +40,13 @@ struct Length
 };
 
 // Measures sequence sound `sound` of `archive`, with `effects` on the aux buses at `volumes`. The 3DS plays without
-// effects. The sound's variables start at -1. Returns nothing for a sound that isn't a sequence sound or doesn't start,
-// and when the model can't play it, such as with a damaged bank. Running out of memory throws std::bad_alloc.
+// effects. The sound starts as playback starts it with `start`. The variables that the start doesn't set start at -1.
+// The start's changes come at their times, and the measure hears the output at the start's volume. Returns nothing for
+// a sound that isn't a sequence sound or doesn't start, and when the model can't play it, such as with a damaged bank.
+// Running out of memory throws std::bad_alloc.
 std::optional<Length> MeasureLength(const ntdlib::sar::SoundArchive& archive, uint32_t sound,
-                                    const AuxEffects& effects = {}, const AuxVolumes& volumes = kFullVolumes);
+                                    const AuxEffects& effects = {}, const AuxVolumes& volumes = kFullVolumes,
+                                    const format::SoundStart& start = {});
 
 // The same for sequence sound `sound` of the Wii's `archive`, on the model of `build` of NW4R SND. The archive has to
 // be read by ntdlib::rvl::snd::kRsarOptions. The sound's global variables start at 0. The game starts them there too.

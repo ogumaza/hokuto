@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // Tests the history of a file's versions (src/edit/history.h): undo and redo, a jump to any action, an action after an
-// undo, the actions that Forget drops after an undo, and whether the file has changed since it was saved.
+// undo, the actions that Forget drops after an undo, and whether the file has changed since it was saved. In a file of
+// two archives, an edit changes the archive in front, and an undo or a redo brings the archive that it changed to the
+// front.
 
 #include <chrono>
 #include <memory>
@@ -12,6 +14,7 @@
 
 #include "edit/history.h"
 #include "format/file.h"
+#include "format/project.h"
 
 using hokuto::edit::Action;
 using hokuto::edit::History;
@@ -139,6 +142,34 @@ void TestModified()
     XSFLIB_CHECK(dropped);
 }
 
+// In a file of two archives, each action changes the archive in front. Undo and redo bring that archive back to the
+// front, and the other archive keeps its version.
+void TestArchives()
+{
+    hokuto::format::Project project;
+    project.archives.resize(2);
+    project.archives[1].tags["title"] = "B";
+    project.archives[0].tags["title"] = "B";
+    File second = project.archives[1];
+    second.sound_tags[0]["title"] = "Song";
+    const auto edited = std::make_shared<const File>(second);
+    History history(std::make_shared<const hokuto::format::Project>(project));
+    history.SetFront(1);
+
+    history.Do(Make("Tag", edited));
+    history.SetFront(0);
+    const bool other_kept = history.Current()->sound_tags.empty() && history.CurrentProject().archives[1] == second;
+    history.Undo();
+    const bool undone = history.Front() == 1 && history.Current()->sound_tags.empty();
+    history.SetFront(0);
+    history.Redo();
+
+    XSFLIB_CHECK(other_kept);
+    XSFLIB_CHECK(undone);
+    XSFLIB_CHECK(history.Front() == 1 && history.Current() == edited && history.Modified());
+    XSFLIB_CHECK(history.Archives() == 2 && history.CurrentProject().front == 1);
+}
+
 } // namespace
 
 int main()
@@ -151,5 +182,6 @@ int main()
                                         TestForget();
                                         TestGoTo();
                                         TestModified();
+                                        TestArchives();
                                     });
 }

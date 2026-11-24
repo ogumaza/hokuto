@@ -144,12 +144,13 @@ export_::Settings SettingsOf(sar::Flavor flavor)
     }
 }
 
-// Builds a bank's regions and waves from a SoundFont's voices.
+// Builds a bank's regions and waves from a SoundFont's voices. Every region plays `gain` centibels louder than its
+// voice (BankOfSoundFont).
 class Builder
 {
 public:
-    Builder(const synth::SoundFontData& font, sar::Flavor flavor)
-        : font_(font), flavor_(flavor), envelopes_(SettingsOf(flavor))
+    Builder(const synth::SoundFontData& font, sar::Flavor flavor, double gain)
+        : font_(font), flavor_(flavor), gain_(gain), envelopes_(SettingsOf(flavor))
     {
     }
 
@@ -193,7 +194,7 @@ public:
         region.original_key = static_cast<uint8_t>(original);
         region.pitch = static_cast<float>(std::exp2(cents / 1200.0));
 
-        const double attenuation = SoundFontAttenuation(voice);
+        const double attenuation = SoundFontAttenuation(voice) - gain_;
         region.volume = static_cast<uint8_t>(std::clamp(std::lround(127.0 * std::pow(10.0, -attenuation / 200.0)), 0L,
                                                         long{std::numeric_limits<uint8_t>::max()}));
         region.pan = right != nullptr
@@ -287,6 +288,7 @@ private:
 
     const synth::SoundFontData& font_;
     sar::Flavor flavor_;
+    double gain_;
     Envelopes envelopes_;
     std::map<std::pair<SoundFontWave, std::optional<SoundFontWave>>, uint32_t> indexes_;
     std::vector<std::vector<uint8_t>> waves_;
@@ -412,14 +414,14 @@ void AddPreset(const synth::SoundFontData& font, const synth::PresetRecord& pres
 
 } // namespace
 
-SoundFontBank BankOfSoundFont(std::span<const uint8_t> sf2, sar::Flavor flavor, int midi_bank)
+SoundFontBank BankOfSoundFont(std::span<const uint8_t> sf2, sar::Flavor flavor, int midi_bank, double gain)
 {
     const synth::SoundFontData font = ReadSoundFontToImport(sf2);
 
     sar::BankFile bank;
     bank.flavor = flavor;
     bank.version = song::ExportVersions(song::ItemKind::kBank, flavor).file;
-    Builder builder(font, flavor);
+    Builder builder(font, flavor, gain);
     std::size_t layered = 0;
     bool any = false;
     for (const synth::PresetRecord& preset : font.presets)

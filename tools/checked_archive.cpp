@@ -57,10 +57,10 @@ CheckedArchive DsChecked(std::vector<uint8_t> sdat, const ntdlib::ntr::snd::Buil
     return archive;
 }
 
-CheckedArchive DseChecked(std::span<const uint8_t> set, ntdlib::dse::Build build)
+CheckedArchive DseChecked(const format::File& file, std::span<const uint8_t> set)
 {
     CheckedArchive archive;
-    archive.dse = song::LoadDseSet(set, build);
+    archive.dse = edit::DseSetOfFile(file, set);
     for (uint32_t sound = 0; sound < archive.dse->sounds.size(); sound++)
     {
         archive.names.push_back(song::DseSoundName(*archive.dse, sound));
@@ -136,7 +136,7 @@ CheckedArchive OpenChecked(const std::filesystem::path& path, std::span<const ui
     if (IsDseImage(bytes))
     {
         const format::File file = format::ImportDseImage(bytes);
-        return DseChecked(format::ExportArchive(file), song::DseBuildOf(*file.native->cartridge->image));
+        return DseChecked(file, format::ExportArchive(file));
     }
     if (format::IsDsImage(bytes) || format::IsDsArchive(bytes))
     {
@@ -214,8 +214,7 @@ CheckedArchive BuildChecked(const format::File& file, const std::string& name)
     }
     if (file.native && file.native->engine == format::Engine::kDse)
     {
-        return DseChecked(bytes, file.native->cartridge ? song::DseBuildOf(*file.native->cartridge->image)
-                                                        : ntdlib::dse::Build::kLater);
+        return DseChecked(file, bytes);
     }
     if (file.native && file.native->engine == format::Engine::kWii)
     {

@@ -185,7 +185,7 @@ std::string Difference(const std::vector<PlayedNote>& expected, const std::vecto
 
 // The tracks of `read`, a read of a sound of `sequence`, that take the settings of a track that runs an item of
 // `changed`, or of track `edited`, without being such a track: those that such a track starts, and those that they
-// start. Nothing where a started track starts with settings of its own (edit::DriverEdits::StartedTracksTakeSettings).
+// start. Nothing where a started track starts with settings of its own (edit::EngineEdits::StartedTracksTakeSettings).
 std::set<int> TakingTracks(const ntdlib::commands::Sequence& sequence, const song::Console& console,
                            const song::Sequence& read, const std::set<uint32_t>& changed, std::optional<int> edited);
 

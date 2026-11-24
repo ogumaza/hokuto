@@ -325,6 +325,9 @@ public:
     static uint64_t HoldFrames();
     static uint64_t LongestFrames();
 
+    // The quiet frames after which the reverb's echo has stopped ringing: a second.
+    static uint64_t RingFrames();
+
     int SampleRate() const override;
     std::size_t Render(float* out, std::size_t frames) override;
 
@@ -338,7 +341,9 @@ private:
     bool enhanced_ = false;
     bool released_ = false;
     bool ended_ = false;
-    uint64_t frames_ = 0; // the driver's frames since the start
+    bool reverb_ = false;       // whether the game's settings start the capture reverb
+    uint64_t frames_ = 0;       // the driver's frames since the start
+    uint64_t quiet_frames_ = 0; // the frames since the output was last louder than ±8
     std::vector<ntdlib::ntr::SoundOutput> output_;
     std::vector<int16_t> samples_;
     std::vector<float> frame_;
@@ -347,7 +352,8 @@ private:
 
 // A note of a program of a DSE bank, on ntdlib's models of the driver and the DS's sound unit (ntdlib::dse::Player). A
 // song of one track contains the bank's select, the program, a volume of 127 and the note, and then waits. The preview
-// ends once the note's voices have ended, or after 10 s. The last frame then fades out.
+// ends once the note's voices have ended, or after 10 s. The last frame then fades out. The driver runs the bank's tick
+// (DseBank::tick_microseconds).
 class DseNotePreview final : public audio::Renderer
 {
 public:

@@ -15,6 +15,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "xsflib/ascii.h"
@@ -588,10 +589,12 @@ bool PrimaryButton(const char* label)
 
 bool CheckBox(const char* label, bool* on)
 {
+    // Dear ImGui shows no text after ##. A box without text takes no gap.
     ImFont* font = theme::GetFonts().text;
-    const ImVec2 text_size = TextSize(font, theme::kTextSize, label);
+    const std::string_view shown(label, static_cast<std::size_t>(ImGui::FindRenderedTextEnd(label) - label));
+    const ImVec2 text_size = TextSize(font, theme::kTextSize, shown);
     const float box = Px(18.0f);
-    const float gap = Px(8.0f);
+    const float gap = shown.empty() ? 0.0f : Px(8.0f);
     const float height = ImGui::GetFrameHeight();
     const ImVec2 pos = ImGui::GetCursorScreenPos();
     const bool clicked = ImGui::InvisibleButton(label, ImVec2(box + gap + text_size.x, height));
@@ -624,7 +627,7 @@ bool CheckBox(const char* label, bool* on)
         draw->AddRect(min, max, theme::WithAlpha(theme::kBorderStrong, alpha), Px(4.0f), Px(1.0f));
     }
     DrawText(draw, font, theme::kTextSize, ImVec2(max.x + gap, std::floor(pos.y + (height - text_size.y) * 0.5f)),
-             theme::WithAlpha(theme::kText, alpha), label);
+             theme::WithAlpha(theme::kText, alpha), shown);
 
     return clicked;
 }

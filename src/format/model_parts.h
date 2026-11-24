@@ -21,6 +21,7 @@
 #include "ntdlib/sar/layout.h"
 
 #include "format/binary.h"
+#include "format/engines.h"
 #include "format/file.h"
 #include "format/model.h"
 
@@ -45,8 +46,10 @@ inline constexpr uint8_t kSequenceFile = 1 << 0; // the file holds one of the fi
 inline constexpr uint8_t kHeldFile = 1 << 1;     // the chunk holds the bytes of a file beside the archive
 inline constexpr uint8_t kFileFlags = (1 << 2) - 1;
 
-// The kind of the Wii's archives in the ITMS chunk, the chunk's flags on the Wii, and the flags of a file there.
+// The kind of the Wii's archives in the ITMS chunk, the chunk's flags on the Wii, and the flags of a file there. The
+// kind is the code of the Wii's engine in kEngineFacts.
 inline constexpr uint8_t kWiiArchive = 4;
+static_assert(kWiiArchive == FactsOf(Engine::kWii).code);
 inline constexpr uint8_t kWiiBuild = 1 << 0;     // the file keeps the game's build of NW4R SND
 inline constexpr uint8_t kAlignedTrees = 1 << 1; // the trees of the archive's SYMB block start on a multiple of 4 bytes
 inline constexpr uint8_t kUnterminatedPaths = 1 << 2; // a path whose length is a multiple of 4 takes no zero after it

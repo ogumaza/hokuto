@@ -267,6 +267,7 @@ void App::ShowSequence(song::SequenceReader::Result read)
     model_ = MakeModel();
     model_engine_ = PlayedEngine();
     song_ = MakeSongView(*sequence_, PartLabels());
+    HideUnplayedStartMutes();
     song_->slots = ShownSlots();
     ShowDriverPrograms();
 
@@ -394,6 +395,7 @@ void App::FollowSequence(song::SequenceReader::Result read)
     transport_.SetLocators(locators.start, locators.end);
     sequence_ = std::move(read.sequence);
     song_ = MakeSongView(*sequence_, PartLabels());
+    HideUnplayedStartMutes();
     song_->slots = ShownSlots();
     ShowDriverPrograms();
     KeepTrackStates(kept);
@@ -444,6 +446,18 @@ std::vector<SlotView> App::ShownSlots()
            : played_.Dse()    ? DseSlotsOf(sequence_->sound)
            : played_.Driver() ? DriverSlots()
                               : std::vector<SlotView>();
+}
+
+void App::HideUnplayedStartMutes()
+{
+    // A conversion for the Wii or the DS plays every track (song::ReadEngineSequence).
+    if (song_ && PlayedSequence().start != sequence_->start)
+    {
+        for (TrackView& track : song_->tracks)
+        {
+            track.start_muted = false;
+        }
+    }
 }
 
 void App::KeepTrackStates(const std::map<int, TrackView>& kept)

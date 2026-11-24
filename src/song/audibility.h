@@ -51,6 +51,11 @@ inline constexpr double kWindowSeconds = 0.05;
 inline constexpr double kSpanFindingDb = 1.0;
 inline constexpr double kRunFindingDb = 6.0;
 
+// The windows that the measure counts: those whose louder level lies within kCountRangeDb of the loudest window of
+// either render, and above kCountFloorDbfs.
+inline constexpr double kCountRangeDb = 50.0;
+inline constexpr double kCountFloorDbfs = -70.0;
+
 // Compares `render` with `reference`, both in interleaved stereo at `rate`. A conversion's timing can put the render's
 // notes a few milliseconds away from the reference's. The measure therefore lines the render up with the reference
 // first, by the lag within 100 ms either way at which their levels in windows of 1 ms agree best. Each render counts as
@@ -59,6 +64,10 @@ inline constexpr double kRunFindingDb = 6.0;
 // Such a render lies below -70 dBFS in every window, and more than 50 dB below the reference's loudest window. Throws
 // std::invalid_argument for a rate below 1,000 Hz.
 LevelComparison CompareLevels(std::span<const float> reference, std::span<const float> render, int rate);
+
+// The level in dB of each whole window of `samples`, interleaved stereo at `rate`, after the high-pass: the levels that
+// the measure compares. A silent window lies at -200 dB. Throws std::invalid_argument for a rate below 1,000 Hz.
+std::vector<double> WindowLevels(std::span<const float> samples, int rate);
 
 // The places of `comparison` that lie beyond `db` either way, the loudest difference first. A run counts beyond any
 // threshold up to 6 dB.

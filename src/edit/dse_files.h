@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 #include <vector>
@@ -36,6 +37,15 @@
 
 namespace hokuto::edit
 {
+
+// The DSE sounds of `file`, a file of DSE's files, from `set`, the set that the file builds (format::ExportArchive).
+// The build of the driver and the game code come from the cartridge image that the file keeps: without one, the sounds
+// play on the later build with the driver's default tick. Each song starts in the state that the file's start of it
+// gives (song::LoadDseSet). Throws what song::LoadDseSet throws.
+std::shared_ptr<const song::DseSet> DseSetOfFile(const format::File& file, std::span<const uint8_t> set);
+
+// The same, from the set that `file` builds.
+std::shared_ptr<const song::DseSet> DseSetOfFile(const format::File& file);
 
 // The tracks that come into a sound: their commands (ntdlib::dse::DecodeTracks), the ticks of a quarter note, the count
 // of tracks and the channels that a song file states, and what the file left out on the way. A song file can state more

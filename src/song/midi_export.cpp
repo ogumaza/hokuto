@@ -28,6 +28,7 @@
 
 #include "song/archive.h"
 #include "song/items.h"
+#include "song/starts.h"
 
 namespace hokuto::song
 {
@@ -170,12 +171,14 @@ export_::Conversion Convert(const Archive& archive, uint32_t sound, bool sequenc
 } // namespace
 
 export_::Conversion ConvertToMidi(const ntdlib::sar::SoundArchive& archive, uint32_t sound, const StartValues& values,
-                                  const Changes& changes, const std::string& program)
+                                  const Changes& changes, const std::string& program, const format::SoundStart& start)
 {
     const bool sequence =
         sound < archive.Sounds().size() && archive.Sounds()[sound].type == ntdlib::sar::SoundType::kSequence;
-    return Convert(archive, sound, sequence, PerformOptionsOf(values, changes, archive.ReadOptions().flavor),
-                   SettingsOf(archive), program);
+    export_::PerformOptions options = PerformOptionsOf(values, changes, archive.ReadOptions().flavor);
+    export_::Settings settings = SettingsOf(archive);
+    ApplyStart(options, settings, start);
+    return Convert(archive, sound, sequence, options, settings, program);
 }
 
 export_::Conversion ConvertToMidi(const ntdlib::rsar::SoundArchive& archive, uint32_t sound, const StartValues& values,
@@ -217,7 +220,9 @@ export_::Conversion AgbConversion(const std::string& name, bool ok, bool silent,
 
     if (silent)
     {
-        throw EmptyConversion(name + " has no notes. The MIDI file would be empty.");
+        throw EmptyConversion(name +
+                              " makes no sound. It has no notes, or all its notes play at a level of 0. The MIDI "
+                              "file would be empty.");
     }
 
     export_::Conversion conversion;
@@ -251,7 +256,7 @@ export_::Conversion ConvertToMidi(const DsArchive& archive, uint32_t sound, cons
     return FrameConversion(std::move(converted));
 }
 
-export_::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::string& program)
+export_::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::string& program, DseFilesFor target)
 {
     if (sound >= set.sounds.size())
     {
@@ -260,6 +265,10 @@ export_::Conversion ConvertToMidi(const DseSet& set, uint32_t sound, const std::
 
     export_::dse::PerformOptions options;
     options.build = set.build;
+    options.tick_microseconds = DseSoundTick(set, sound);
+    options.song_start = DseSoundStart(set, sound);
+    options.linear_pans = target == DseFilesFor::kDsBank;
+    options.volume_lfos_as_mean_power = target != DseFilesFor::kPlayers;
     const std::string name = DseSoundName(set, sound);
     export_::dse::Conversion converted;
     try

@@ -14,11 +14,13 @@
 // SoundFont of two presets in bank 0 and one in bank 1 becomes a bank of two instruments. Each region has to contain
 // the wave of the sample of its zone, its root key, its tuning, 0.4 of its attenuation as a gain, its pan and its
 // exclusive class. Its envelope has to be the one nearest the zone envelope, from ntdlib's ConvertEnvelope. The bank
-// leaves out a filter and the volume envelope's delay with warnings.
+// leaves out a filter and the volume envelope's delay with warnings. With `stops_sounds`, control change 120 stops the
+// track's channels, after the tick that a shorter note lasts at least.
 
 #include "edit/midi_songs.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -537,6 +539,46 @@ void TestNonRegistered()
                  song.warnings.end());
 }
 
+// A MIDI file at 480 ticks a quarter note that stops its channel with control change 120 three times: after a note of
+// 2 MIDI ticks, after a note of a quarter note at the note-off, and while a note sounds. With `stops_sounds`, each stop
+// becomes a mute that stops the track's channels, then one that ends the mute. The song's notes last a tick at least.
+// The note of 2 MIDI ticks therefore lasts a tick of the song, and its mute comes at that tick's end. A MIDI note
+// sounds up to its note-off, and a mute at the note's start would leave it out. The other mutes stay at their ticks.
+// Without the option, the song leaves the controller out.
+void TestStopsSounds()
+{
+    midi::FileBuilder file(480);
+    midi::TrackBuilder& track = file.AddTrack();
+    track.NoteOn(0, 0, 60, 100);
+    track.NoteOff(2, 0, 60);
+    track.Control(2, 0, 120, 0);
+    track.NoteOn(480, 0, 62, 100);
+    track.NoteOff(960, 0, 62);
+    track.Control(960, 0, 120, 0);
+    track.NoteOn(1440, 0, 64, 100);
+    track.Control(1700, 0, 120, 0);
+    track.NoteOff(1920, 0, 64);
+    track.SetEnd(1920);
+
+    const MidiSong song = SongOfMidi(file.Encode(), "stops", {.stops_sounds = true});
+    const MidiSong left_out = SongOfMidi(file.Encode(), "left");
+
+    const std::vector<Timed> commands = TrackAt(song.timeline, "SMF_stops_Track_0");
+    XSFLIB_CHECK(OfKind(commands, Kind::kNote) ==
+                 (std::vector<Timed>{{0, Kind::kNote, 0, 60, kOne, 100 * kOne},
+                                     {48, Kind::kNote, 0, 62, 48 * kOne, 100 * kOne},
+                                     {144, Kind::kNote, 0, 64, 48 * kOne, 100 * kOne}}));
+    XSFLIB_CHECK(OfKind(commands, Kind::kMute) == (std::vector<Timed>{{1, Kind::kMute, 0, 0, 3 * kOne, 0},
+                                                                      {1, Kind::kMute, 0, 0, 0, 0},
+                                                                      {96, Kind::kMute, 0, 0, 3 * kOne, 0},
+                                                                      {96, Kind::kMute, 0, 0, 0, 0},
+                                                                      {170, Kind::kMute, 0, 0, 3 * kOne, 0},
+                                                                      {170, Kind::kMute, 0, 0, 0, 0}}));
+    XSFLIB_CHECK(OfKind(TrackAt(left_out.timeline, "SMF_left_Track_0"), Kind::kMute).empty());
+    XSFLIB_CHECK(std::ranges::find(left_out.warnings, "3 events left out: control change 120.") !=
+                 left_out.warnings.end());
+}
+
 // A MIDI file that can't be read is refused with seqlib's reason as a sentence. A file without notes, a loop end that
 // doesn't come after the loop start, events for more than 16 tracks and SMPTE time are refused, each with its message.
 void TestRefusals()
@@ -683,6 +725,42 @@ void TestUnpitchedBank()
     XSFLIB_CHECK(region != nullptr && region->original_key == 60 && std::abs(region->pitch - 1.0f) < 1e-6f);
 }
 
+// A bank of a SoundFont with a gain. Keys up to 59 play a zone with 100 of initialAttenuation, and keys from 60 a zone
+// without attenuation. The players apply 0.4 of a zone's initialAttenuation: the low zone plays at -40 cB. A region's
+// volume v plays at v / 127, so a level of c cB gives 127 times 10^(c / 200). Without a gain, the regions have volumes
+// of 80 and 127. A gain of 30 cB gives 113 and 179. A gain of 100 cB gives 253, and the high region stops at 255.
+void TestBankGain()
+{
+    using G = sf2::Generator;
+    sf2::SoundFont font;
+    font.samples.push_back(Saw("saw", 60, 22050, 512));
+    font.instruments.push_back(
+        {"two levels",
+         {SampleZone({G::Range(sf2::kKeyRange, 0, 59), G::Value(sf2::kInitialAttenuation, 100)}, 0),
+          SampleZone({G::Range(sf2::kKeyRange, 60, 127)}, 0)}});
+    font.presets.push_back({"two levels", 0, 0, {InstrumentZone(0)}});
+    const std::vector<uint8_t> bytes = sf2::Write(font);
+
+    // The volumes of the low and the high region at `gain`, or -1 for a region that the bank lacks.
+    const auto volumes = [&bytes](double gain)
+    {
+        const sar::BankFile read =
+            sar::BankFile::Read(hokuto::edit::BankOfSoundFont(bytes, sar::Flavor::kCafe, 0, gain).bank);
+        const sar::VelocityRegion* low = RegionAt(read, 0, 40);
+        const sar::VelocityRegion* high = RegionAt(read, 0, 80);
+
+        return std::array{low != nullptr ? int{low->volume} : -1, high != nullptr ? int{high->volume} : -1};
+    };
+
+    const std::array none = volumes(0.0);
+    const std::array cut_back = volumes(30.0);
+    const std::array stopped = volumes(100.0);
+
+    XSFLIB_CHECK((none == std::array{80, 127}));
+    XSFLIB_CHECK((cut_back == std::array{113, 179}));
+    XSFLIB_CHECK((stopped == std::array{253, 255}));
+}
+
 // A SoundFont becomes a bank file of `flavor`: its instruments, their key regions and envelopes, the waves at their
 // rates, and the presets of the other MIDI banks.
 void TestBank(sar::Flavor flavor)
@@ -782,9 +860,11 @@ int main()
                                         TestEndsAtLoop();
                                         TestLayers();
                                         TestNonRegistered();
+                                        TestStopsSounds();
                                         TestRefusals();
                                         TestBank(sar::Flavor::kCafe);
                                         TestBank(sar::Flavor::kNx);
                                         TestUnpitchedBank();
+                                        TestBankGain();
                                     });
 }

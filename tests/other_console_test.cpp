@@ -211,6 +211,36 @@ void TestSong(sar::Flavor from, sar::Flavor to)
     XSFLIB_CHECK(ComesBack(back.file));
 }
 
+// The song keeps its start and its states, without their banks. The 3DS keeps the muted tracks. The Wii U and the
+// Switch turn them down to a volume of 0 with the silenced ones. A named state that sets nothing stays.
+void TestStarts(sar::Flavor from, sar::Flavor to)
+{
+    File source = TestFile(from);
+    source.starts = {{.sound = kSong,
+                      .muted = 0x0002,
+                      .silenced = 0x0001,
+                      .tempo_ratio = 1.5f,
+                      .banks = format::StartBanks{1, 2, 3, 4},
+                      .variables = {{.variable = 33, .value = 2}}},
+                     {.sound = kSong, .name = "_LAP", .pitch = 2.0f},
+                     {.sound = kSong, .name = "_ALL"},
+                     {.sound = kOther, .muted = 0x0004}};
+    format::SoundStart expected = source.starts[0];
+    expected.sound = 0;
+    expected.banks.reset();
+    if (to != sar::Flavor::kCtr)
+    {
+        expected.muted = 0;
+        expected.silenced = 0x0003;
+    }
+
+    const File file = hokuto::edit::ForOtherConsole(source, kSong, to).file;
+
+    XSFLIB_CHECK(
+        (file.starts == std::vector<format::SoundStart>{
+                            expected, {.sound = 0, .name = "_LAP", .pitch = 2.0f}, {.sound = 0, .name = "_ALL"}}));
+}
+
 // A bank whose wave archive the archive lacks stays behind, and its slot stays empty.
 void TestBankLeftBehind(sar::Flavor from, sar::Flavor to)
 {
@@ -689,14 +719,6 @@ void TestHeld(sar::Flavor from)
     XSFLIB_CHECK(voice_warnings(hokuto::edit::ForOtherConsole(many, 0, other)).empty());
 }
 
-// The volume of the region of program `program` of bank `bank` of `archive`.
-uint8_t VolumeOf(const sar::SoundArchive& archive, uint32_t bank, uint32_t program)
-{
-    const sar::BankFile read =
-        sar::BankFile::Read(song::ItemFile(archive, {.kind = song::ItemKind::kBank, .index = bank}));
-    return read.instruments.at(program)->key_regions.at(0).regions.at(0).values.volume;
-}
-
 // The warnings of `song` that start with `start`.
 std::vector<std::string> WarningsFrom(const hokuto::edit::OtherConsoleSong& song, const std::string& start)
 {
@@ -1153,6 +1175,7 @@ int main()
                                                 if (to != from)
                                                 {
                                                     TestSong(from, to);
+                                                    TestStarts(from, to);
                                                     TestBankLeftBehind(from, to);
                                                     TestSettingsUnread(from, to);
                                                     TestFixedCommands(from, to);

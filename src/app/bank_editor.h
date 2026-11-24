@@ -163,6 +163,10 @@ struct BankEditorState
     std::optional<std::pair<ProgramButton, std::optional<uint32_t>>> waiting_press;
 };
 
+// Forgets the selected row, the held voice and the drawn pattern of the GBA program that `state` selects, for another
+// program.
+void ForgetGbaProgram(BankEditorState& state);
+
 // Whether `point` lies on the Bank Editor's window.
 bool OverBankEditor(const BankEditorState& state, ImVec2 point);
 

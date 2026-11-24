@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
 // The parts of the binary form that its files share: the flags and constants of the chunks, and the writers and
-// readers of the chunks that Write and Read call. Only file.cpp, file_sequences.cpp, file_chunks.cpp and
-// file_checks.cpp include it.
+// readers of the chunks that Write and Read call. Only file.cpp, file_sequences.cpp, file_chunks.cpp, file_checks.cpp
+// and file_archives.cpp include it.
 
 #pragma once
 
@@ -19,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -44,6 +45,28 @@ using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::Sequence;
 using ntdlib::commands::Source;
+
+// The chunks of the engine, of the aux buses' effects and volumes, and of the tags.
+constexpr std::string_view kEngineChunk = "ENGN";
+constexpr std::string_view kMixerChunk = "MIXR";
+constexpr std::string_view kTagsChunk = "TAGS";
+
+// The code of the engine of a file with more than one archive, in its ENGN chunk (format/project.h). No engine has it.
+constexpr uint8_t kArchivesEngine = 0;
+
+// The header: the signature, the version, the flags and the number of chunks, then an entry for each chunk: its ID, its
+// CRC-32, and where it lies. Each chunk starts on a multiple of 8 bytes.
+constexpr std::size_t kHeaderSize = 24;
+constexpr std::size_t kEntrySize = 24;
+constexpr std::size_t kChunkAlignment = 8;
+
+// The bytes of a file of `chunks` in the binary form: the header, the table of chunks, then the chunks (file.cpp).
+std::vector<uint8_t> LaidOut(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& chunks);
+
+// The chunks of `bytes`, a file in the binary form, in their order, each checked against its CRC-32 (file.cpp). Throws
+// xsflib::FormatError with a message for the user for bytes that aren't such a file, a damaged file, and a file of a
+// later major version.
+std::vector<std::pair<std::string, std::span<const uint8_t>>> ChunksOf(std::span<const uint8_t> bytes);
 
 // The byte of the view that stands for no track.
 constexpr uint8_t kNoTrack = 0xFF;
@@ -157,5 +180,9 @@ std::vector<uint8_t> TimelinesChunk(const File& file);
 void ReadTimelines(std::span<const uint8_t> chunk, File& file);
 std::vector<uint8_t> EngineChunk(const File& file);
 void ReadEngine(std::span<const uint8_t> chunk, File& file);
+
+// The chunk of the starts (file_starts.cpp).
+std::vector<uint8_t> StartsChunk(const File& file);
+void ReadStarts(std::span<const uint8_t> chunk, File& file);
 
 } // namespace hokuto::format::file_parts

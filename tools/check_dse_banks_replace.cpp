@@ -56,7 +56,7 @@ void BankRounds(const Game& game, Totals& totals)
         {
             const File replaced = edit::ReplaceDseBank(game.file, set, bank, incoming);
             const std::vector<uint8_t> exported = hokuto::format::ExportArchive(replaced);
-            const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build);
+            const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build, game.game_code);
             std::vector<uint64_t> offsets;
             for (const hokuto::song::DseBank& each : set.banks)
             {
@@ -155,7 +155,7 @@ bool ReplaceWave(const Game& game, uint32_t bank, uint32_t wave, const hokuto::s
             return false;
         }
         totals.sampled_waves++;
-        const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build);
+        const std::shared_ptr<const DseSet> read = hokuto::song::LoadDseSet(exported, game.build, game.game_code);
         const ntdlib::wave::Pcm before = hokuto::song::DseWavePcm(set, bank, wave);
         const ntdlib::wave::Pcm after = hokuto::song::DseWavePcm(*read, bank, wave);
         const std::span<const int16_t> wanted =
@@ -252,7 +252,7 @@ void HalveRate(const Game& game, uint32_t bank, uint32_t wave, const hokuto::son
         const File replaced =
             edit::ReplaceDseWave(game.file, set, bank, wave, {.wave = incoming.bytes, .rate = incoming.rate});
         const std::shared_ptr<const DseSet> read =
-            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(replaced), game.build);
+            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(replaced), game.build, game.game_code);
         totals.half_rates++;
         const bool right =
             read->banks.size() == set.banks.size() && TuningsMove(set, *read, bank, wave, incoming.rate, totals);

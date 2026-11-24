@@ -169,7 +169,9 @@ double NoteLevel(const tools::CheckedArchive& archive, uint32_t bank, uint32_t p
     return LevelOf(preview);
 }
 
-// The SoundFont of the SFZ files of `conversion`, in folders as an export writes them. Fills in the regions.
+// The SoundFont of the SFZ files of `conversion`, in folders as an export writes them. Fills in the regions. Each file
+// takes the program that File > Import reads from its name (edit::SfzProgramOf). Throws std::runtime_error for a name
+// that ends in no program.
 edit::SfzSoundFont SoundFontOfConversion(const export_::BankConversion& conversion)
 {
     const std::filesystem::path folder = "bank";
@@ -180,8 +182,12 @@ edit::SfzSoundFont SoundFontOfConversion(const export_::BankConversion& conversi
     {
         const std::filesystem::path path = folder / xsflib::PathFromUtf8(file.name);
         texts[path] = &file.text;
-        const std::string stem = xsflib::Utf8(path.stem());
-        instruments.push_back({path, static_cast<uint32_t>(std::stoul(stem.substr(stem.rfind('_') + 1)))});
+        const std::optional<edit::SfzProgramName> named = edit::SfzProgramOf(xsflib::Utf8(path.stem()));
+        if (!named)
+        {
+            throw std::runtime_error("The name of " + file.name + " ends in no program.");
+        }
+        instruments.push_back({path, named->program});
     }
     for (const export_::SfzSample& sample : conversion.sfz.samples)
     {

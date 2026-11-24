@@ -197,7 +197,7 @@ void CheckHalvedVolume(const Game& game, const Note& note, std::span<const float
         const File edited =
             edit::WithDseSplit(game.file, set, {note.bank, note.program, note.split}, quieter, game.starts);
         const std::shared_ptr<const DseSet> read =
-            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(edited), game.build);
+            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(edited), game.build, game.game_code);
         const std::vector<float> after = RenderNote(*read, note.bank, note.program, note.key);
         const std::size_t end = std::min({to, before.size() / 2, after.size() / 2});
         const double fell = LevelDb(after, from, end) - LevelDb(before, from, end);
@@ -262,7 +262,7 @@ void CheckNote(const Game& game, const Note& note, Totals& totals)
     steady[edit::kDseDecay2] = kHighest;
     const File held_file = edit::WithDseSplit(game.file, set, place, steady, game.starts);
     const std::shared_ptr<const DseSet> held_set =
-        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(held_file), game.build);
+        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(held_file), game.build, game.game_code);
     const Note low_note{note.bank, note.program, note.split, key};
     const std::vector<float> low = RenderNote(*held_set, note.bank, note.program, key);
     if (root + 12 <= kHighest && root >= 0)
@@ -271,7 +271,7 @@ void CheckNote(const Game& game, const Note& note, Totals& totals)
         edit::SetDseRootKey(lower, root + 12);
         const File edited = edit::WithDseSplit(held_file, *held_set, place, lower, game.starts);
         const std::shared_ptr<const DseSet> read =
-            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(edited), game.build);
+            hokuto::song::LoadDseSet(hokuto::format::ExportArchive(edited), game.build, game.game_code);
         const std::vector<float> after = RenderNote(*read, note.bank, note.program, key);
         CheckOctaveDown(game, low_note, low, after, rate, "a root key an octave higher", totals.root_pitches, totals);
     }
@@ -308,7 +308,7 @@ void CheckNote(const Game& game, const Note& note, Totals& totals)
     slower.rate = half;
     const File edited = edit::WithDseWave(held_file, *held_set, source, wave, slower, game.starts);
     const std::shared_ptr<const DseSet> read =
-        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(edited), game.build);
+        hokuto::song::LoadDseSet(hokuto::format::ExportArchive(edited), game.build, game.game_code);
     const std::vector<float> after = RenderNote(*read, note.bank, note.program, key);
     CheckOctaveDown(game, low_note, low, after, rate, "half a wave's rate", totals.rate_pitches, totals);
 }

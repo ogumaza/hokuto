@@ -44,6 +44,7 @@ using zone_parts::kVariableRowHeight;
 
 // nn::atk numbers the global variables from 16. Every sequence that plays shares them.
 constexpr int kFirstGlobalVariable = 16;
+constexpr int kFirstTrackVariable = 32;
 
 // The range of the slider of a variable without choices: from -1, the value that a variable starts with, to 127. On the
 // Wii, a global variable starts at 0. A typed value can be any value that a variable holds: 16 bits, with a sign.
@@ -137,23 +138,25 @@ void DrawVariable(ImDrawList* draw, VariableView& variable, ImVec2 top_left, flo
     const float right = top_left.x + width - margin;
     const float name_top = top_left.y + Px(10.0f);
 
-    // The name, and the kind of a global variable on the name's baseline.
+    // The name, and the kind of a global variable or of a track variable of every track on the name's baseline.
     const std::string name = "Variable " + std::to_string(variable.number);
     DrawText(draw, text, theme::kTextSize, ImVec2(left, name_top), theme::kText, name);
     if (variable.number >= kFirstGlobalVariable)
     {
+        const bool every_track = variable.number >= kFirstTrackVariable;
+        const char* const tag = every_track ? "All Tracks" : "Global";
         const float baseline = name_top + Ascent(text, theme::kTextSize);
         const ImVec2 at(left + TextSize(text, theme::kTextSize, name).x + Px(8.0f),
                         baseline - Ascent(text, theme::kSmallSize));
-        const ImVec2 size = TextSize(text, theme::kSmallSize, "Global");
-        DrawText(draw, text, theme::kSmallSize, at, theme::kTextMuted, "Global");
+        const ImVec2 size = TextSize(text, theme::kSmallSize, tag);
+        DrawText(draw, text, theme::kSmallSize, at, theme::kTextMuted, tag);
         ImGui::SetCursorScreenPos(at);
-        ImGui::InvisibleButton("##global", size);
+        ImGui::InvisibleButton("##kind", size);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
         {
-            WrappedTooltip(
-                "In the game, all playing sequences share global variables. Here, the value you choose applies "
-                "only to this sound.");
+            WrappedTooltip(every_track ? "Track variable that the game sets on every track of the sound."
+                                       : "In the game, all playing sequences share global variables. Here, the value "
+                                         "you choose applies only to this sound.");
         }
     }
 
@@ -309,8 +312,39 @@ void DrawScene(ImDrawList* draw, SongView& song, VariablesState& state, std::siz
     DrawSceneBox(draw, scene, box_min, box_max, name_x, hovered, held);
 }
 
-// The song's scenes from `top_left`, above its variables: a header with the button that stores a new scene, then a row
-// for each scene. Returns the height that they take.
+// The row of the sound's start, from `min` to `max`. A click recalls the start's values, and the row's context menu
+// updates the start with the values that the variables start with.
+void DrawStartScene(ImDrawList* draw, SongView& song, ImVec2 min, ImVec2 max)
+{
+    const ImVec2 box_min(min.x, min.y + Px(1.0f));
+    const ImVec2 box_max(max.x, max.y - Px(1.0f));
+    ImGui::PushID("start");
+    ImGui::SetCursorScreenPos(min);
+    if (ImGui::InvisibleButton("##scene", ImVec2(max.x - min.x, max.y - min.y)))
+    {
+        song.scene_request = SceneRequest{SceneAction::kRecallStart, 0, {}};
+    }
+    const bool hovered = ImGui::IsItemHovered();
+    const bool held = ImGui::IsItemActive();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+    {
+        WrappedTooltip("Values that the game sets when it starts the sound.");
+    }
+    if (ImGui::BeginPopupContextItem("##menu"))
+    {
+        if (ImGui::MenuItem("Update Start"))
+        {
+            song.scene_request = SceneRequest{SceneAction::kUpdateStart, 0, {}};
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+
+    DrawSceneBox(draw, *song.start_scene, box_min, box_max, box_min.x + Px(10.0f), hovered, held);
+}
+
+// The song's scenes from `top_left`, above its variables: a header with the button that stores a new scene, then the
+// row of the sound's start where it has one, and a row for each scene. Returns the height that they take.
 float DrawScenes(ImDrawList* draw, SongView& song, VariablesState& state, ImVec2 top_left, float width)
 {
     if (state.renaming && *state.renaming >= song.scenes.size())
@@ -332,9 +366,21 @@ float DrawScenes(ImDrawList* draw, SongView& song, VariablesState& state, ImVec2
         song.scene_request = SceneRequest{SceneAction::kStore, 0, {}};
     }
 
-    // A row for each scene, or a note that there are none.
+    // The start's row, then a row for each scene, or a note that there are none.
     const float row_height = Px(kSceneRowHeight);
-    const float rows_top = top_left.y + header - Px(4.0f);
+    float rows_top = top_left.y + header - Px(4.0f);
+    float start_height = 0.0f;
+    if (song.start_scene)
+    {
+        DrawStartScene(draw, song, ImVec2(top_left.x + margin - Px(4.0f), rows_top),
+                       ImVec2(top_left.x + width - margin + Px(4.0f), rows_top + row_height));
+        rows_top += row_height;
+        start_height = row_height;
+        if (song.scenes.empty())
+        {
+            return header + start_height + Px(4.0f);
+        }
+    }
     if (song.scenes.empty())
     {
         ImFont* text = theme::GetFonts().text;
@@ -350,7 +396,7 @@ float DrawScenes(ImDrawList* draw, SongView& song, VariablesState& state, ImVec2
                   ImVec2(top_left.x + width - margin + Px(4.0f), y + row_height));
     }
 
-    return header + row_height * static_cast<float>(song.scenes.size()) + Px(4.0f);
+    return header + start_height + row_height * static_cast<float>(song.scenes.size()) + Px(4.0f);
 }
 
 // The variable numbered `number` among the variables that the song reads, or nullptr.

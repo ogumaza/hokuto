@@ -21,6 +21,7 @@
 #include "ntdlib/sdat/formats.h"
 #include "ntdlib/sequence_export/dse/instruments.h"
 #include "xsflib/binary.h"
+#include "xsflib/rip/length.h"
 
 #include "song/preview.h"
 #include "song/preview_parts.h"
@@ -38,6 +39,14 @@ static_assert(kDsFrameMs.numerator == 2 * kDsDriverFrameMs.numerator &&
               kDsFrameMs.denominator == kDsDriverFrameMs.denominator);
 static_assert(ntdlib::ntr::snd::kFrameClocks * 1000 * kDsDriverFrameMs.denominator ==
               kDsDriverFrameMs.numerator * uint64_t{ntdlib::ntr::kSystemClockHz});
+
+// Whether `frame`, at the scale of 16-bit samples (kSampleScale), holds a sample louder than xsflib's level of silence
+// (xsflib::rip::Audible).
+bool Audible(std::span<const float> frame)
+{
+    const float level = static_cast<float>(xsflib::rip::kSilenceLevel) * kSampleScale;
+    return std::ranges::any_of(frame, [level](float sample) { return std::abs(sample) > level; });
+}
 
 } // namespace
 
@@ -65,7 +74,9 @@ DsNotePreview::DsNotePreview(const DsArchive& archive, uint32_t bank, int progra
         options.build = archive_->build;
         options.enhanced = enhanced_;
         player_ = std::make_unique<ntdlib::ntr::ArchivePlayer>(archive_->archive, options);
-        player_->Start(ntdlib::ntr::SequenceRef{0}, DsGameSettingsOf(*archive_));
+        const ntdlib::ntr::GameSettings settings = DsGameSettingsOf(*archive_);
+        reverb_ = settings.reverb.has_value();
+        player_->Start(ntdlib::ntr::SequenceRef{0}, settings);
     }
     catch (const xsflib::FormatError& error)
     {
@@ -153,6 +164,12 @@ uint64_t DsNotePreview::LongestFrames()
     return FramesIn(NotePreview::kLongestMs, kDsDriverFrameMs);
 }
 
+uint64_t DsNotePreview::RingFrames()
+{
+    constexpr uint64_t kRingMs = 1000;
+    return FramesIn(kRingMs, kDsDriverFrameMs);
+}
+
 int DsNotePreview::SampleRate() const
 {
     return enhanced_ ? static_cast<int>(std::lround(ntdlib::ntr::kEnhancedRate))
@@ -167,9 +184,11 @@ std::size_t DsNotePreview::Render(float* out, std::size_t frames)
 bool DsNotePreview::NextFrame()
 {
     // After the hold, or once the note is let go, the variable ends the track at its next tick, and the driver releases
-    // the note. The preview ends once nothing sounds. Damaged data in the archive makes the model fail, and ends it
-    // too.
-    if (ended_ || !player_->Busy())
+    // the note. The preview ends once nothing sounds. The driver's player doesn't count the reverb's echo
+    // (ArchivePlayer::Busy), and the preview waits until the output has been quiet for a second. Damaged data in the
+    // archive makes the model fail, and ends it too.
+    const bool echo = reverb_ && player_->Unit().CapturesRun() && quiet_frames_ < RingFrames();
+    if (ended_ || (!player_->Busy() && !echo))
     {
         ended_ = true;
         return false;
@@ -206,6 +225,8 @@ bool DsNotePreview::NextFrame()
         return false;
     }
 
+    quiet_frames_ = Audible(frame_) ? 0 : quiet_frames_ + 1;
+
     // The last frame of a preview that runs to the limit fades out.
     ++frames_;
     ended_ = frames_ >= LongestFrames();
@@ -237,7 +258,8 @@ DseNotePreview::DseNotePreview(const DseBank& bank, int program, int key, int ve
     }
 
     song_ = NoteSong(*bank_.bank, program, key, velocity);
-    player_ = std::make_unique<ntdlib::dse::Player>(ntdlib::dse::PlayerOptions{.build = build, .enhanced = enhanced_});
+    player_ = std::make_unique<ntdlib::dse::Player>(ntdlib::dse::PlayerOptions{
+        .build = build, .tick_microseconds = bank_.tick_microseconds, .enhanced = enhanced_});
     const ntdlib::dse::SequenceFiles files{
         .song = &song_, .banks = {bank_.bank.get()}, .main_bank = bank_.main_bank.get()};
     player_->LoadBanks(files);

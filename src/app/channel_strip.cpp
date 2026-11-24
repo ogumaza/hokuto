@@ -366,6 +366,12 @@ bool DrawStrip(const Strip& strip, ImVec2 size)
     // arrangement marks a linked part the same way.
     DrawStripName(draw, strip, pos, end, centre, name_height, text);
 
+    // The strip of a track that the game mutes at the sound's start shows dimmed. Its controls still work.
+    if (strip.track != nullptr && strip.track->start_muted)
+    {
+        draw->AddRectFilled(pos, end, theme::WithAlpha(theme::kWindow, 0.5f), Px(8.0f));
+    }
+
     // The strip takes its place in the layout.
     ImGui::SetCursorScreenPos(pos);
     ImGui::Dummy(size);

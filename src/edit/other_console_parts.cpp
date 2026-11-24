@@ -276,9 +276,9 @@ void Settle(Song& song, uint32_t added, const std::optional<sar::SoundModel>& so
 }
 
 // The parts of `file` that go with sound `sound` into `song`'s file as sound `added`: the file's tags, the sound's
-// tags, scenes and tracks' colours, the aux buses' volumes and the effects that the other console runs, the sound's
-// mode of mixing, and the mode of its sequence, `sequence`, when it has one. The new file holds that sequence as
-// `new_sequence`, when it holds it among its sequences.
+// tags, scenes, tracks' colours and starts, the aux buses' volumes and the effects that the other console
+// runs, the sound's mode of mixing, and the mode of its sequence, `sequence`, when it has one. The new file holds that
+// sequence as `new_sequence`, when it holds it among its sequences.
 void CopyParts(Song& song, const format::File& file, uint32_t sound, uint32_t added, std::optional<uint32_t> sequence,
                std::optional<uint32_t> new_sequence)
 {
@@ -308,6 +308,33 @@ void CopyParts(Song& song, const format::File& file, uint32_t sound, uint32_t ad
         if (place.sound == sound)
         {
             target.track_colours[{added, place.track}] = colour;
+        }
+    }
+
+    // The sound's start and its states. The 3DS mutes and silences the tracks that a start quiets. The Wii U and the
+    // Switch turn them down to a volume of 0, as Mute at Start stores them there. The banks name items of the archive
+    // that the sound leaves, and stay behind. The Wii and the DS keep no start. A level of DSE stays behind too. The
+    // conversion plays the song at the level of its start, and no other console keeps a level. An unnamed start that
+    // sets nothing goes. A named state goes only where it set nothing but the level.
+    for (const format::SoundStart& start : file.starts)
+    {
+        if (start.sound != sound || to_wii || to_ds)
+        {
+            continue;
+        }
+
+        format::SoundStart& copied = target.starts.emplace_back(start);
+        copied.sound = added;
+        if (target.native->engine != format::Engine::k3ds)
+        {
+            copied.silenced = format::QuietedTracks(start);
+            copied.muted = 0;
+        }
+        copied.banks.reset();
+        copied.dse_level.reset();
+        if (format::IsEmpty(copied) && (copied.name.empty() || start.dse_level))
+        {
+            target.starts.pop_back();
         }
     }
 

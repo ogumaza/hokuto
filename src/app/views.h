@@ -8,6 +8,7 @@
 
 #include <imgui.h>
 
+#include <cstddef>
 #include <string_view>
 #include <vector>
 
@@ -73,8 +74,10 @@ void DockWithMixer(const char* window);
 // `busy`, the controls take no moves, and the arrangement's info line takes no typing.
 void DrawInspector(SongView* song, MasterBus& master, ArrangementState& state, SoundSection& sound, bool busy,
                    bool* open);
-void DrawBrowser(const std::vector<BrowserGroup>& groups, std::string_view file, BrowserState& state,
-                 SoundSection& sound, bool* open);
+// In a file with more than one archive, the browser shows a row for each of `archives`, and the groups under the row of
+// archive `front`.
+void DrawBrowser(const std::vector<BrowserGroup>& groups, const std::vector<BrowserArchive>& archives,
+                 std::size_t front, std::string_view file, BrowserState& state, SoundSection& sound, bool* open);
 // `shown` is the version and the sound that the arrangement's `song` comes from. Its info line types values for them.
 void DrawArrangement(SongView* song, Transport& transport, ArrangementState& state, const ShownItem& shown, bool busy);
 void DrawMixer(SongView* song, MasterBus& master, ArrangementState& state, FxChannels* fx, bool busy, bool* open);

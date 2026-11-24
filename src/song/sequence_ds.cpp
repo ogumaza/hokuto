@@ -245,6 +245,7 @@ Sequence ReadSequence(const DsArchive& archive, uint32_t sound, const StartValue
         Sequence sequence = SequenceHead(performance, name, sound);
         sequence.start_values = std::move(kept);
         sequence.changes = std::move(kept_changes);
+        sequence.profile_values = DsProfileValues(DsProfileOf(archive, sound).settings);
         sequence.holds = performance.holds;
         sequence.ds = true;
         AddDsTracks(sequence, archive, performance);
@@ -459,7 +460,10 @@ Sequence ReadSequence(const DseSet& set, uint32_t sound)
     export_::dse::Performance performance;
     try
     {
-        performance = export_::dse::Perform(input.Files(), {.loops = 1, .build = set.build});
+        performance = export_::dse::Perform(input.Files(), {.loops = 1,
+                                                            .build = set.build,
+                                                            .tick_microseconds = DseSoundTick(set, sound),
+                                                            .song_start = DseSoundStart(set, sound)});
     }
     catch (const std::runtime_error& error)
     {

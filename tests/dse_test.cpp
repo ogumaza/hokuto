@@ -36,6 +36,7 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/player.h"
 #include "ntdlib/ntr/snd/driver.h"
 #include "ntdlib/ntr/sound.h"
@@ -630,6 +631,52 @@ void TestBanks()
           "a bank's conversion without programs");
 }
 
+// A bank of a set of the oldest build converts by that build's rules. The oldest build plays an envelope multiplier of
+// 16 or more as 1. With a multiplier of 60 in every split, Hokuto's SoundFont and SFZ files have to be those of
+// ntdlib's conversion with the oldest build, run directly, and differ from the later build's.
+void TestBanksOfOldestBuild()
+{
+    const std::shared_ptr<const DseSet> set = TestSet();
+    ntdlib::dse::WaveBank steep = *set->banks[1].bank;
+    for (std::optional<ntdlib::dse::Program>& program : steep.instruments->programs)
+    {
+        if (!program)
+        {
+            continue;
+        }
+
+        for (std::array<uint8_t, 0x30>& split : program->splits)
+        {
+            split[ntdlib::dse::SplitView::kEnvelopeMultiplier] = 60;
+        }
+    }
+    const auto oldest = std::make_shared<DseSet>();
+    oldest->build = ntdlib::dse::Build::kOldest;
+    oldest->banks = set->banks;
+    oldest->banks[1].bank = std::make_shared<const ntdlib::dse::WaveBank>(steep);
+    const std::vector<uint32_t> programs = {0, 1};
+    const std::string name = hokuto::song::DseBankName(steep);
+
+    const ntdlib::sequence_export::BankConversion converted = hokuto::song::ConvertDseBank(*oldest, 1, programs);
+
+    const ntdlib::sequence_export::BankConversion direct = ntdlib::sequence_export::dse::ConvertBank(
+        steep, oldest->banks[0].bank.get(), programs, oldest->banks[1].tick_microseconds, name, "Hokuto",
+        ntdlib::dse::Build::kOldest);
+    const ntdlib::sequence_export::BankConversion later = ntdlib::sequence_export::dse::ConvertBank(
+        steep, oldest->banks[0].bank.get(), programs, oldest->banks[1].tick_microseconds, name, "Hokuto");
+    SEQLIB_REQUIRE(converted.sound_fonts.size() == 1 && direct.sound_fonts.size() == 1 &&
+                   later.sound_fonts.size() == 1 && !converted.sfz.files.empty() &&
+                   converted.sfz.files.size() == direct.sfz.files.size());
+    Check(converted.sound_fonts[0].sf2 == direct.sound_fonts[0].sf2, "the oldest build's SoundFont");
+    bool same_sfz = true;
+    for (std::size_t i = 0; i < converted.sfz.files.size(); i++)
+    {
+        same_sfz = same_sfz && converted.sfz.files[i].text == direct.sfz.files[i].text;
+    }
+    Check(same_sfz, "the oldest build's SFZ files");
+    Check(direct.sound_fonts[0].sf2 != later.sound_fonts[0].sf2, "the build changes the SoundFont");
+}
+
 // A note's preview plays what dse::Player plays, run directly on a song with the note's events written out by hand, up
 // to the release and after it, in both mixing modes. The song waits after the note. A host then lets the note go.
 void TestNotePreview()
@@ -720,6 +767,7 @@ int main()
                                         TestUnstarted();
                                         TestCutNote();
                                         TestBanks();
+                                        TestBanksOfOldestBuild();
                                         TestNotePreview();
                                     });
 }

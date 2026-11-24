@@ -3,6 +3,9 @@
 // The checks of a file's values, the choices that a file's items make, the edits that set a sound's tag, mixing and
 // engine, and the CRC-32 of a file.
 
+#include <algorithm>
+#include <iterator>
+
 #include "xsflib/binary.h"
 
 #include "format/engines.h"
@@ -396,9 +399,18 @@ File WithoutStaleLengths(const File& before, File after)
 
         return true;
     };
+
+    // A player plays only the starts without a name.
+    const auto played_starts = [](const File& file)
+    {
+        std::vector<SoundStart> played;
+        std::copy_if(file.starts.begin(), file.starts.end(), std::back_inserter(played),
+                     [](const SoundStart& start) { return start.name.empty(); });
+        return played;
+    };
     if (after.engine != before.engine || after.aux_effects != before.aux_effects ||
         after.aux_volumes != before.aux_volumes || after.sequences.size() != before.sequences.size() || !shared() ||
-        !after.native.SharesWith(before.native))
+        !after.native.SharesWith(before.native) || played_starts(after) != played_starts(before))
     {
         after.lengths.clear();
     }

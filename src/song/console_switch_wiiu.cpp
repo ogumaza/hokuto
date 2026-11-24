@@ -20,6 +20,7 @@
 #include "xsflib/rip/length.h"
 
 #include "song/console_model.h"
+#include "song/start_handle.h"
 
 namespace hokuto::song
 {
@@ -262,15 +263,20 @@ public:
     {
     }
 
-    bool StartSequence(uint32_t sound) override
+    bool StartSequence(uint32_t sound, const format::SoundStart&) override
     {
         player_ = model_->engine->StartSequence(sound);
         return player_ != nullptr;
     }
 
+    void ApplyStart(const format::SoundStart& start) override
+    {
+        start_handle::ApplyNw(*model_->engine, *player_, start);
+    }
+
     void SetVariable(int number, int16_t value) override
     {
-        player_->SetVariable(*model_->engine, number, value);
+        start_handle::SetNwVariable(*model_->engine, *player_, number, value);
     }
 
     std::array<int16_t, kGameVariables> Variables() const override

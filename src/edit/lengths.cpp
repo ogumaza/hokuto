@@ -126,7 +126,7 @@ std::optional<format::File> WithLengths(const format::File& file, const ntdlib::
     const song::AuxVolumes volumes = file.aux_volumes;
     const auto measure = [&](uint32_t sound)
     {
-        return song::MeasureLength(archive, sound, effects, volumes);
+        return song::MeasureLength(archive, sound, effects, volumes, format::StartOf(file, sound));
     };
     return WithMeasuredLengths(file, sounds, measure, threads, progress);
 }

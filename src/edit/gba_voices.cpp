@@ -387,7 +387,8 @@ PlacedGbaBytes WithGbaNewBytes(const format::File& file, std::span<const uint8_t
 
     const std::vector<uint64_t> starts = format::NativePieceStarts(file);
     const uint64_t run_start = starts[pieces.size() - 1];
-    const uint64_t start = mp2k::FreeSpaceStart(*last, run_start);
+    const uint64_t start = std::max(mp2k::FreeSpaceStart(*last, run_start),
+                                    ntdlib::AlignUp<uint64_t>(file.native->gba_free_floor, 4));
     if (start + placed.size() <= mp2k::kLargestRom)
     {
         return {WithLastRunBytes(file, static_cast<std::size_t>(start - run_start), placed, 0xFF),

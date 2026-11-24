@@ -34,13 +34,16 @@ namespace hokuto::cli::hok_parts
 {
 
 // A sound archive, a ROM or a set of sounds, with its streams by their file IDs. An archive of the Wii comes with the
-// game's build of NW4R SND when the game's main.dol names it. What a .hok file builds comes with the file.
+// game's build of NW4R SND when the game's main.dol names it. What a .hok file builds comes with the file. How the game
+// starts each sequence sound comes from the .hok file, or else from the lists of known games (format::GameStarts).
 struct ArchiveInput
 {
     hokuto::song::Played played;
     std::map<uint32_t, std::vector<uint8_t>> streams;
     std::optional<ntdlib::SndBuild> build;
     std::shared_ptr<const hokuto::format::File> hok;
+    std::vector<hokuto::format::SoundStart> starts;
+    std::string driver; // the driver of the archive taken from an input of more than one archive, or empty
 };
 
 // The count and the output of a written file (hok.cpp).
@@ -65,9 +68,11 @@ std::size_t WriteDriverSoundFonts(const ArchiveInput& input, const std::filesyst
 std::size_t WriteDriverItems(const ArchiveInput& input, const std::filesystem::path& folder);
 
 // The sounds of `all` that `chosen` names, by name or by number, in the order of `all`. With none chosen, it returns
-// them all. Throws std::runtime_error for a name that `input` doesn't contain (hok_mixdown.cpp).
+// them all. Throws std::runtime_error for a name that `input` doesn't contain. `driver` names the driver of the archive
+// that the command took from an input of more than one archive, or is empty (hok_mixdown.cpp).
 std::vector<hokuto::song::BatchSound> ChosenSounds(const std::vector<hokuto::song::BatchSound>& all,
-                                                   const std::vector<std::string>& chosen, const std::string& input);
+                                                   const std::vector<std::string>& chosen, const std::string& input,
+                                                   const std::string& driver);
 
 // The folder at `path`, made if it's missing. Throws std::runtime_error when it can't be made (hok_mixdown.cpp).
 std::filesystem::path MadeFolder(const std::string& path);

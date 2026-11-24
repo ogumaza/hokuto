@@ -21,6 +21,8 @@
 #include "ntdlib/sequence_export/performance.h"
 #include "ntdlib/sound_build.h"
 
+#include "format/starts.h"
+
 namespace hokuto::song
 {
 
@@ -153,6 +155,10 @@ struct Loop
 // a global variable starts at 0 (SeqPlayer::SetGlobalVariable).
 inline constexpr int kGameVariables = 32;
 inline constexpr int kFirstGlobal = 16;
+
+// The variables that a sound's start, a scene or a change can set: the game's variables, and the track variables 0 to
+// 15 of every track as 32 to 47.
+inline constexpr int kSetVariables = format::kStartVariables;
 
 // The values that a sound's variables take before it starts, by their numbers. A game sets them through the sound's
 // handle. The variables that aren't given start at -1.
@@ -336,6 +342,14 @@ struct Sequence
     StartValues start_values;
     Changes changes;
 
+    // On the DS, the values that the game's profile gives the variables as the sound starts (DsProfileValues), before
+    // start_values.
+    StartValues profile_values;
+
+    // How the game starts the sound, besides the variables of start_values and changes. A model of the sequence applies
+    // it before its first tick. The notes of the tracks that it quiets stay in the tracks.
+    format::SoundStart start;
+
     // Every variable that the sound's commands read, in the order of their numbers. A change while the sound plays can
     // change what it plays through any of them. The choices take every comparison into account.
     std::vector<Variable> read_variables;
@@ -454,11 +468,12 @@ bool SameTiming(const Sequence& a, const Sequence& b);
 std::array<uint32_t, 32> TracksOfConversion(const Sequence& shown, const Sequence& played);
 
 // Runs sequence sound `sound` of `archive` through ntdlib's performer, with the settings of the archive's console
-// (SettingsOf), the variables' starting values `values`, and the game's `changes`. Values and changes for variables
-// past the game's are left out. Throws std::runtime_error with a message for the user if it isn't a sequence sound or
-// its data is damaged.
+// (SettingsOf), the variables' starting values `values`, the game's `changes` and the rest of the game's start `start`
+// (ApplyStart in song/starts.h). Values and changes for variables past those that a game sets are left out. The
+// performer plays the quieted tracks at a volume of 0, and their notes stay. Throws std::runtime_error with a message
+// for the user if it isn't a sequence sound or its data is damaged.
 Sequence ReadSequence(const ntdlib::sar::SoundArchive& archive, uint32_t sound, const StartValues& values = {},
-                      const Changes& changes = {});
+                      const Changes& changes = {}, const format::SoundStart& start = {});
 
 // The same for sequence sound `sound` of the Wii's `archive`, with the settings of `build` of NW4R SND, the game's
 // build, or else of the build that the archive's version gives (SettingsOf). The labels, the counts of calls and the
@@ -552,14 +567,15 @@ Sequence ReadSequence(const KrawallRom& rom, uint32_t sound);
 Sequence ReadSequence(const DsArchive& archive, uint32_t sound, const StartValues& values = {},
                       const Changes& changes = {});
 
-// Runs sound `sound` of the DSE sounds `set` through ntdlib's performer, with one pass of its loop and the build of the
-// image's driver (song/dse.h). A song's settings give its ticks to a quarter note. The number of each track is its slot
-// in the sequence. Each note leads to its event, at its offset from the start of the file of the song or of the bank of
-// sound effects. The note belongs to the track whose events played it. A track's volume and pan are those of its
-// channel, from 0 to 127 and from -64 to 63: tracks that share a channel show the same settings. DSE has no sends. A
-// note's bank slot is the place among the sound's wave banks of the bank that its channel selects, and its program is a
-// program of that bank. DSE has no labels, no calls and no variables. Throws std::runtime_error with a message for the
-// user if the sound can't be read, or if it has more tracks than a model mutes and meters (SequenceModel::kTracks).
+// Runs sound `sound` of the DSE sounds `set` through ntdlib's performer, with one pass of its loop, the build of the
+// image's driver and the song's state (song/dse.h). A song's settings give its ticks to a quarter note. The number of
+// each track is its slot in the sequence. Each note leads to its event, at its offset from the start of the file of the
+// song or of the bank of sound effects. The note belongs to the track whose events played it. A track's volume and pan
+// are those of its channel, from 0 to 127 and from -64 to 63: tracks that share a channel show the same settings. DSE
+// has no sends. A note's bank slot is the place among the sound's wave banks of the bank that its channel selects, and
+// its program is a program of that bank. DSE has no labels, no calls and no variables. Throws std::runtime_error with a
+// message for the user if the sound can't be read, or if it has more tracks than a model mutes and meters
+// (SequenceModel::kTracks).
 Sequence ReadSequence(const DseSet& set, uint32_t sound);
 
 // The notes of a GBA song, a DS sound or a sound of DSE that collide on the console's channels: those that a later
@@ -605,8 +621,8 @@ struct SoundVariables
 };
 SoundVariables VariablesOf(const ntdlib::commands::Sequence& sequence, uint32_t start, int global_start = -1);
 
-// The value that variable `number` of `sequence` starts with when the game sets none: -1, or 0 for a global variable on
-// the Wii.
+// The value that variable `number` of `sequence` starts with when the user chooses none: the value of the game's
+// profile on the DS (Sequence::profile_values), or else -1, or 0 for a global variable on the Wii.
 int StartingValue(const Sequence& sequence, int number);
 
 } // namespace hokuto::song

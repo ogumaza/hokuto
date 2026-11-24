@@ -109,9 +109,12 @@ public:
 // The driver of `engine`, or nothing for an engine of another console.
 const Driver* DriverOf(Engine engine);
 
-// The driver that `rom`, a GBA ROM, contains, or nothing. Each driver's test runs in the order of the engines. No test
-// image contains two drivers.
+// The driver that `rom`, a GBA ROM, contains, or nothing. Each driver's test runs in the order of the engines, and the
+// first driver found counts. A ROM can contain MusicPlayer2000 beside one of the drivers (format/project.h).
 const Driver* DriverOfRom(std::span<const uint8_t> rom);
+
+// Every driver that `rom`, a GBA ROM, contains, in the order of the engines.
+std::vector<const Driver*> DriversOfRom(std::span<const uint8_t> rom);
 
 // The driver of `file`'s native archive, or nothing for a file of another kind.
 const Driver* DriverOfFile(const File& file);

@@ -52,6 +52,7 @@ using text_parts::TrackColourText;
 using text_parts::WriteNative;
 using text_parts::WriteScene;
 using text_parts::WriteSequence;
+using text_parts::WriteStart;
 using text_parts::WriteTimelines;
 using text_parts::WriteView;
 
@@ -119,6 +120,20 @@ void WriteSettings(TextOut& out, const File& file)
     for (const auto& [sound, length] : file.lengths)
     {
         out.Line(0, LengthText(sound, length, tables));
+    }
+
+    // Only the 3DS's sound library gives a sequence other banks as it starts, and only DSE starts a song at a level.
+    for (SoundStart start : file.starts)
+    {
+        if (file.engine != Engine::k3ds)
+        {
+            start.banks.reset();
+        }
+        if (file.engine != Engine::kDse)
+        {
+            start.dse_level.reset();
+        }
+        WriteStart(out, start, tables);
     }
 
     for (std::size_t bus = 0; bus < kAuxBuses; ++bus)

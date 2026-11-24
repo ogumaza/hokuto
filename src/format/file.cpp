@@ -12,6 +12,7 @@
 #include <iterator>
 #include <map>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,13 @@ using file_parts::EditorChunk;
 using file_parts::EngineChunk;
 using file_parts::In;
 using file_parts::InstrumentMapsChunk;
+using file_parts::kChunkAlignment;
+using file_parts::kEngineChunk;
+using file_parts::kEntrySize;
+using file_parts::kHeaderSize;
+using file_parts::kMixerChunk;
+using file_parts::kTagsChunk;
+using file_parts::LaidOut;
 using file_parts::LengthsChunk;
 using file_parts::MixerChunk;
 using file_parts::NativeChunk;
@@ -62,6 +70,7 @@ using file_parts::ReadNative;
 using file_parts::ReadScenes;
 using file_parts::ReadSequences;
 using file_parts::ReadSizes;
+using file_parts::ReadStarts;
 using file_parts::ReadTables;
 using file_parts::ReadTags;
 using file_parts::ReadTimelines;
@@ -70,14 +79,11 @@ using file_parts::ScenesChunk;
 using file_parts::Sequence;
 using file_parts::SequencesChunk;
 using file_parts::SizesChunk;
+using file_parts::StartsChunk;
 using file_parts::TablesChunk;
 using file_parts::TagsChunk;
 using file_parts::TimelinesChunk;
 using file_parts::TrackColoursChunk;
-
-constexpr std::string_view kEngineChunk = "ENGN";
-
-constexpr std::string_view kMixerChunk = "MIXR";
 
 constexpr std::string_view kSequencesChunk = "SEQS";
 
@@ -97,9 +103,9 @@ constexpr std::string_view kBankMapsChunk = "BMAP";
 
 constexpr std::string_view kEditorChunk = "EDTR";
 
-constexpr std::string_view kTagsChunk = "TAGS";
-
 constexpr std::string_view kLengthsChunk = "LNTH";
+
+constexpr std::string_view kStartsChunk = "STRT";
 
 constexpr std::string_view kSizesChunk = "SIZE";
 
@@ -108,6 +114,12 @@ constexpr std::string_view kTimelinesChunk = "TMLN";
 // The flag of a stream that the game lacks, in the STRM chunk.
 constexpr uint32_t kHokutoStream = 1;
 
+// The flag of the CART chunk whose record of the places of a set's DSE files follows, and the flag of a place that
+// the image keeps compressed.
+constexpr uint32_t kDsePlaces = 1;
+
+constexpr uint32_t kCompressedPlace = 1;
+
 // The flags of a wave in the WAVE chunk: a wave that loops, and one whose samples follow. A wave holds one or two
 // channels.
 constexpr uint8_t kLoopingWave = 1;
@@ -115,14 +127,6 @@ constexpr uint8_t kLoopingWave = 1;
 constexpr uint8_t kWaveSamples = 2;
 
 constexpr std::size_t kMostWaveChannels = 2;
-
-// The header: the signature, the version, the flags and the number of chunks, then an entry for each chunk: its ID, its
-// CRC-32, and where it lies. Each chunk starts on a multiple of 8 bytes.
-constexpr std::size_t kHeaderSize = 24;
-
-constexpr std::size_t kEntrySize = 24;
-
-constexpr std::size_t kChunkAlignment = 8;
 
 } // namespace
 
@@ -133,7 +137,7 @@ bool IsHokutoChunk(std::string_view id)
            id == kStreamsChunk || id == kScenesChunk || id == kTrackColoursChunk || id == kEditorChunk ||
            id == kTagsChunk || id == kLengthsChunk || id == kTimelinesChunk || id == kSoundsChunk ||
            id == kItemsChunk || id == kBanksChunk || id == kWavesChunk || id == kCartridgeChunk ||
-           id == kInstrumentMapsChunk || id == kBankMapsChunk;
+           id == kInstrumentMapsChunk || id == kBankMapsChunk || id == kStartsChunk || id == kArchiveChunk;
 }
 
 std::vector<uint8_t> StreamsChunk(const NativeArchive& native)
@@ -151,6 +155,45 @@ std::vector<uint8_t> StreamsChunk(const NativeArchive& native)
     return out.Take();
 }
 
+namespace
+{
+
+// The record of the places of a set's DSE files in the CART chunk: their number, then each place's path in the set, the
+// path of its image's file, its offset, its size and its flags. A set has at least one file, and names each once.
+std::vector<DsePlace> ReadDsePlaces(In& in)
+{
+    const uint32_t count = in.U32();
+    std::vector<DsePlace> places;
+    std::set<std::string, std::less<>> paths;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        DsePlace& place = places.emplace_back();
+        place.path = in.Name();
+        place.image_file = in.Name();
+        place.offset = in.U32();
+        place.size = in.U32();
+        const uint32_t flags = in.U32();
+        if ((flags & ~kCompressedPlace) != 0)
+        {
+            Newer("a DSE file's place with a flag");
+        }
+
+        place.compressed = (flags & kCompressedPlace) != 0;
+        if (place.path.empty() || place.image_file.empty() || !paths.insert(place.path).second)
+        {
+            Damaged("its cartridge image gives a DSE file's place without a path, or twice");
+        }
+    }
+    if (places.empty())
+    {
+        Damaged("its cartridge image gives the places of no DSE files");
+    }
+
+    return places;
+}
+
+} // namespace
+
 std::vector<uint8_t> CartridgeChunk(const Cartridge& cartridge)
 {
     if (cartridge.image->size() > cartridge.size)
@@ -162,7 +205,19 @@ std::vector<uint8_t> CartridgeChunk(const Cartridge& cartridge)
     out.U32(cartridge.file);
     out.U32(cartridge.offset);
     out.U32(cartridge.size);
-    out.U32(0);
+    out.U32(cartridge.places.empty() ? 0 : kDsePlaces);
+    if (!cartridge.places.empty())
+    {
+        out.Count(cartridge.places.size(), "DSE files' places");
+        for (const DsePlace& place : cartridge.places)
+        {
+            out.Name(place.path, "a DSE file's path");
+            out.Name(place.image_file, "the path of an image's file");
+            out.U32(place.offset);
+            out.U32(place.size);
+            out.U32(place.compressed ? kCompressedPlace : 0);
+        }
+    }
     out.Bytes(*cartridge.image);
 
     return out.Take();
@@ -175,9 +230,15 @@ Cartridge ReadCartridge(std::span<const uint8_t> chunk)
     cartridge.file = in.U32();
     cartridge.offset = in.U32();
     cartridge.size = in.U32();
-    if (in.U32() != 0)
+    const uint32_t flags = in.U32();
+    if ((flags & ~kDsePlaces) != 0)
     {
         Newer("a cartridge image with a flag");
+    }
+
+    if ((flags & kDsePlaces) != 0)
+    {
+        cartridge.places = ReadDsePlaces(in);
     }
 
     const std::span<const uint8_t> image = in.Take(in.Left());
@@ -628,74 +689,22 @@ void AddArchiveChunks(const File& file, std::vector<std::pair<std::string, std::
         {
             throw std::invalid_argument("a cartridge image belongs to a sound archive or a set of files of the DS");
         }
+        if (native->engine != Engine::kDse && !native->cartridge->places.empty())
+        {
+            throw std::invalid_argument("only a set of DSE files records the places of DSE files");
+        }
 
         chunks.emplace_back(kCartridgeChunk, CartridgeChunk(*native->cartridge));
     }
 }
 
-// The bytes of a file of `chunks`: the header, the table of chunks, then the chunks.
-std::vector<uint8_t> LaidOut(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& chunks)
-{
-    // Where each chunk starts: after the header and the table of chunks, on a multiple of 8 bytes.
-    std::vector<std::size_t> offsets;
-    std::size_t end = kHeaderSize + chunks.size() * kEntrySize;
-    for (const auto& [id, bytes] : chunks)
-    {
-        end = (end + kChunkAlignment - 1) / kChunkAlignment * kChunkAlignment;
-        offsets.push_back(end);
-        end += bytes.size();
-    }
-
-    Out out;
-    out.Bytes(kSignature);
-    out.U16(kMajorVersion);
-    out.U16(kMinorVersion);
-    out.U32(0);
-    out.Count(chunks.size(), "chunks");
-    out.U32(0);
-    for (std::size_t i = 0; i < chunks.size(); ++i)
-    {
-        const auto& [id, bytes] = chunks[i];
-        out.Bytes(std::span(reinterpret_cast<const uint8_t*>(id.data()), 4));
-        out.U32(Crc32(bytes));
-        out.U64(offsets[i]);
-        out.U64(bytes.size());
-    }
-
-    for (std::size_t i = 0; i < chunks.size(); ++i)
-    {
-        out.Zeros(offsets[i] - out.Size());
-        out.Bytes(chunks[i].second);
-    }
-
-    return out.Take();
-}
-
-// The chunks of the file that Hokuto reads, by their IDs, from the `count` entries of the table of chunks in `header`.
-// The other chunks go into `file`.
-std::map<std::string, std::span<const uint8_t>> KnownChunks(std::span<const uint8_t> bytes, In& header, uint32_t count,
-                                                            File& file)
+// The chunks of `chunks` that Hokuto reads, by their IDs. The other chunks go into `file`.
+std::map<std::string, std::span<const uint8_t>> KnownChunks(
+    const std::vector<std::pair<std::string, std::span<const uint8_t>>>& chunks, File& file)
 {
     std::map<std::string, std::span<const uint8_t>> known;
-    for (uint32_t i = 0; i < count; ++i)
+    for (const auto& [id, chunk] : chunks)
     {
-        const std::span<const uint8_t> entry = header.Take(kEntrySize);
-        const std::string id(reinterpret_cast<const char*>(entry.data()), 4);
-        const uint32_t crc = xsflib::LoadLe32(&entry[4]);
-        const uint64_t offset = xsflib::LoadLe64(&entry[8]);
-        const uint64_t size = xsflib::LoadLe64(&entry[16]);
-        if (offset > bytes.size() || size > bytes.size() - offset)
-        {
-            Damaged("chunk " + id + " is past the end of the file");
-        }
-
-        const std::span<const uint8_t> chunk =
-            bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(size));
-        if (Crc32(chunk) != crc)
-        {
-            Damaged("chunk " + id + " doesn't match its CRC-32");
-        }
-
         if (IsHokutoChunk(id))
         {
             if (!known.emplace(id, chunk).second)
@@ -785,6 +794,10 @@ std::optional<NativeArchive> ReadNativeChunks(const std::map<std::string, std::s
         }
 
         native->cartridge = ReadCartridge(cartridge->second);
+        if (native->engine != Engine::kDse && !native->cartridge->places.empty())
+        {
+            Damaged("its cartridge image gives the places of DSE files, but the file isn't a set of DSE files");
+        }
     }
 
     return native;
@@ -857,7 +870,7 @@ struct ProjectChunk
 
 // The chunks of the project's settings that need nothing else of the file, in the order that Write writes them and
 // Read reads them.
-constexpr std::array<ProjectChunk, 7> kProjectChunks = {{
+constexpr std::array<ProjectChunk, 8> kProjectChunks = {{
     {kScenesChunk, [](const File& file) { return !file.scenes.empty(); }, ScenesChunk, ReadScenes},
     {kTrackColoursChunk, [](const File& file) { return !file.track_colours.empty(); }, TrackColoursChunk,
      ReadTrackColours},
@@ -868,9 +881,93 @@ constexpr std::array<ProjectChunk, 7> kProjectChunks = {{
      [](const File& file) { return EditorChunk(*file.view); }, ReadEditor},
     {kTagsChunk, HasTags, TagsChunk, ReadTags},
     {kLengthsChunk, [](const File& file) { return !file.lengths.empty(); }, LengthsChunk, ReadLengths},
+    {kStartsChunk, [](const File& file) { return !file.starts.empty(); }, StartsChunk, ReadStarts},
 }};
 
 } // namespace
+
+std::vector<uint8_t> file_parts::LaidOut(const std::vector<std::pair<std::string, std::vector<uint8_t>>>& chunks)
+{
+    // Where each chunk starts: after the header and the table of chunks, on a multiple of 8 bytes.
+    std::vector<std::size_t> offsets;
+    std::size_t end = kHeaderSize + chunks.size() * kEntrySize;
+    for (const auto& [id, bytes] : chunks)
+    {
+        end = (end + kChunkAlignment - 1) / kChunkAlignment * kChunkAlignment;
+        offsets.push_back(end);
+        end += bytes.size();
+    }
+
+    Out out;
+    out.Bytes(kSignature);
+    out.U16(kMajorVersion);
+    out.U16(kMinorVersion);
+    out.U32(0);
+    out.Count(chunks.size(), "chunks");
+    out.U32(0);
+    for (std::size_t i = 0; i < chunks.size(); ++i)
+    {
+        const auto& [id, bytes] = chunks[i];
+        out.Bytes(std::span(reinterpret_cast<const uint8_t*>(id.data()), 4));
+        out.U32(Crc32(bytes));
+        out.U64(offsets[i]);
+        out.U64(bytes.size());
+    }
+
+    for (std::size_t i = 0; i < chunks.size(); ++i)
+    {
+        out.Zeros(offsets[i] - out.Size());
+        out.Bytes(chunks[i].second);
+    }
+
+    return out.Take();
+}
+
+std::vector<std::pair<std::string, std::span<const uint8_t>>> file_parts::ChunksOf(std::span<const uint8_t> bytes)
+{
+    if (!IsBinary(bytes))
+    {
+        throw xsflib::FormatError("It isn't a Hokuto file.");
+    }
+
+    In header(bytes.subspan(kSignature.size()), "the header");
+    const uint16_t major = header.U16();
+    header.U16();
+    header.U32();
+    const uint32_t count = header.U32();
+    header.U32();
+    if (major < kFirstMajorVersion || major > kMajorVersion)
+    {
+        throw xsflib::FormatError("A later version of Hokuto saved the file, in version " + std::to_string(major) +
+                                  " of the format. This version reads versions " + std::to_string(kFirstMajorVersion) +
+                                  " and " + std::to_string(kMajorVersion) + ".");
+    }
+
+    std::vector<std::pair<std::string, std::span<const uint8_t>>> chunks;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const std::span<const uint8_t> entry = header.Take(kEntrySize);
+        const std::string id(reinterpret_cast<const char*>(entry.data()), 4);
+        const uint32_t crc = xsflib::LoadLe32(&entry[4]);
+        const uint64_t offset = xsflib::LoadLe64(&entry[8]);
+        const uint64_t size = xsflib::LoadLe64(&entry[16]);
+        if (offset > bytes.size() || size > bytes.size() - offset)
+        {
+            Damaged("chunk " + id + " is past the end of the file");
+        }
+
+        const std::span<const uint8_t> chunk =
+            bytes.subspan(static_cast<std::size_t>(offset), static_cast<std::size_t>(size));
+        if (Crc32(chunk) != crc)
+        {
+            Damaged("chunk " + id + " doesn't match its CRC-32");
+        }
+
+        chunks.emplace_back(id, chunk);
+    }
+
+    return chunks;
+}
 
 std::vector<uint8_t> Write(const File& file)
 {
@@ -940,33 +1037,26 @@ std::vector<uint8_t> Write(const File& file)
 
 File Read(std::span<const uint8_t> bytes)
 {
-    if (!IsBinary(bytes))
-    {
-        throw xsflib::FormatError("It isn't a Hokuto file.");
-    }
-
-    In header(bytes.subspan(kSignature.size()), "the header");
-    const uint16_t major = header.U16();
-    header.U16();
-    header.U32();
-    const uint32_t count = header.U32();
-    header.U32();
-    if (major != kMajorVersion)
-    {
-        throw xsflib::FormatError("A later version of Hokuto saved the file, in version " + std::to_string(major) +
-                                  " of the format. This version reads only version " + std::to_string(kMajorVersion) +
-                                  ".");
-    }
-
     // The chunks, checked against their CRC-32s.
     File file;
-    const std::map<std::string, std::span<const uint8_t>> known = KnownChunks(bytes, header, count, file);
+    const std::map<std::string, std::span<const uint8_t>> known = KnownChunks(file_parts::ChunksOf(bytes), file);
 
     // The engine, its mixer, the scenes and the tracks' colours, then the sequences, the native archive that names
-    // them, its tables and its group files.
+    // them, its tables and its group files. A file of more than one archive has engine 0 (format/project.h).
     if (!known.contains(std::string(kEngineChunk)))
     {
         Damaged("it has no engine");
+    }
+
+    if (const std::span<const uint8_t> engine = known.at(std::string(kEngineChunk));
+        !engine.empty() && engine[0] == file_parts::kArchivesEngine)
+    {
+        throw xsflib::FormatError("It contains more than one archive. Open it as a project.");
+    }
+
+    if (known.contains(std::string(kArchiveChunk)))
+    {
+        Damaged("it contains an archive's chunk, but not the engine of a file with more than one archive");
     }
 
     ReadEngine(known.at(std::string(kEngineChunk)), file);

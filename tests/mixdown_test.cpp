@@ -120,13 +120,13 @@ void TestRanges()
     const MixdownRange seamless = SeamlessRange(looped);
     const MixdownRange seamless_end = SeamlessRange(ending, 2.0);
 
-    SEQLIB_CHECK(two == (MixdownRange{.start = 0, .fade_at = 288, .fade_seconds = 10.0}));
+    SEQLIB_CHECK(two == (MixdownRange{.start = 0, .fade_at = 288, .fade_seconds = 7.0}));
     SEQLIB_CHECK(three == (MixdownRange{.start = 0, .fade_at = 384, .fade_seconds = 4.0}));
     SEQLIB_CHECK(none == (MixdownRange{.start = 0, .fade_at = 192, .fade_seconds = 0.0}));
-    SEQLIB_CHECK(to_end == (MixdownRange{.fade_seconds = 10.0, .tail_seconds = 10.0}));
+    SEQLIB_CHECK(to_end == (MixdownRange{.fade_seconds = 7.0, .tail_seconds = 10.0}));
     SEQLIB_CHECK(locators == (MixdownRange{.start = 48, .fade_at = 144, .fade_seconds = 1.5}));
     SEQLIB_CHECK(seamless == (MixdownRange{.fade_at = 288, .fade_seconds = 0.0, .seamless = true}));
-    SEQLIB_CHECK(seamless_end == (MixdownRange{.fade_seconds = 10.0, .tail_seconds = 2.0}));
+    SEQLIB_CHECK(seamless_end == (MixdownRange{.fade_seconds = 7.0, .tail_seconds = 2.0}));
 }
 
 // Two passes and a fade contain what playback writes with Cycle on the loop, and fade from the sample where the tick

@@ -27,6 +27,8 @@
 #include "app/widgets.h"
 #include "edit/ds_tables.h"
 #include "edit/gba_tables.h"
+#include "edit/replace.h"
+#include "format/engines.h"
 
 namespace hokuto::app
 {
@@ -36,6 +38,7 @@ namespace
 using edit::SoundChange;
 using edit::SoundValue;
 using sound_section_parts::Control;
+using sound_section_parts::DrawStart;
 using sound_section_parts::DrawWaveSound;
 using sound_section_parts::Heading;
 using sound_section_parts::kHeadingHeight;
@@ -49,8 +52,7 @@ using sound_section_parts::LabelWidth;
 using sound_section_parts::Rows;
 using theme::Px;
 
-// A sound has four bank slots and sixteen tracks. The tracks' switches come in two rows.
-constexpr int kBankSlots = 4;
+// A sound has sixteen tracks. The tracks' switches come in two rows.
 constexpr int kTracks = 16;
 constexpr int kTracksInRow = 8;
 
@@ -168,6 +170,7 @@ float LabelWidth()
         std::ranges::for_each(kLabels, measure);
         std::ranges::for_each(kTagLabels, measure);
         std::ranges::for_each(WaveRowLabels(), measure);
+        std::ranges::for_each(StartRowLabels(), measure);
         scale = Px(1.0f);
         width = std::max(Px(kLabelWidth), std::ceil(widest + Px(12.0f)));
     }
@@ -477,7 +480,7 @@ std::optional<SoundChange> DrawBanks(Rows& rows, SoundSection& section)
 {
     const SoundView& view = *section.view;
     std::optional<SoundChange> change;
-    const int slots = std::min(view.held.bank_slots, kBankSlots);
+    const int slots = std::min(view.held.bank_slots, edit::kBankSlots);
     Heading(rows, "Bank slots");
     for (int slot = 0; slot < slots; slot++)
     {
@@ -550,6 +553,15 @@ std::optional<SoundView> MakeSoundView(const format::File& file, uint32_t sound)
     if (const auto tags = file.sound_tags.find(sound); tags != file.sound_tags.end())
     {
         view.tags = tags->second;
+    }
+
+    // Wii archives also come from NintendoWare, and their sounds have no start.
+    const format::Engine engine = format::EngineOf(file, sound);
+    if (view.values.kind == ntdlib::sar::SoundType::kSequence && engine == file.engine &&
+        format::FactsOf(engine).family == format::Family::kNintendoWare)
+    {
+        view.start = format::StartOf(file, sound);
+        view.start_banks = engine == format::Engine::k3ds;
     }
 
     return view;
@@ -636,6 +648,7 @@ void ShowSound(SoundSection& section, std::shared_ptr<const format::File> versio
     section.version = std::move(version);
     section.sound = sound;
     section.held.reset();
+    section.start_held.reset();
 }
 
 float DrawSoundValues(ImDrawList* draw, ImVec2 pos, float width, SoundSection& section)
@@ -659,6 +672,11 @@ float DrawSoundValues(ImDrawList* draw, ImVec2 pos, float width, SoundSection& s
         const std::optional<SoundChange> banks = DrawBanks(rows, section);
         change = change ? change : notes ? notes : banks;
     }
+    std::optional<StartChange> start_change;
+    if (section.view->start)
+    {
+        start_change = DrawStart(rows, section);
+    }
     std::optional<WaveSoundChange> wave_change;
     if (section.wave_sound)
     {
@@ -680,6 +698,10 @@ float DrawSoundValues(ImDrawList* draw, ImVec2 pos, float width, SoundSection& s
     if (wave_change)
     {
         section.wave_changed = std::move(wave_change);
+    }
+    if (start_change)
+    {
+        section.start_changed = std::move(start_change);
     }
 
     return rows.y;

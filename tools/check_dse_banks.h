@@ -71,12 +71,21 @@ constexpr std::size_t kProgramLfos = 0x0B;
 constexpr std::size_t kLfoSize = 0x10;
 constexpr std::size_t kSplitSize = 0x30;
 
-// The format of a wave's parameters.
+// The format of a wave's parameters, in a file of version 0x415 and in ntdlib's reader of every version.
 constexpr std::size_t kWaveFormat = 0x13;
 constexpr std::size_t kWaveLoops = 0x15;
 constexpr std::size_t kWaveRate = 0x20;
 constexpr std::size_t kWaveLoopStart = 0x28;
 constexpr std::size_t kWaveLoopLength = 0x2C;
+
+// Version 0x402, the oldest that DSE's driver reads: the version in a file's header, the count of programs and a
+// program's count of splits in single bytes, and the 16 entries of 8 bytes between a program's header and its LFOs.
+// The LFOs have no empty entry after them. The count of waves takes the byte at kWaveCount.
+constexpr std::size_t kVersion = 0x0C;
+constexpr uint16_t kOldestVersion = 0x402;
+constexpr std::size_t kOldestProgramCount = 0x47;
+constexpr std::size_t kOldestProgramSplits = 0x01;
+constexpr std::size_t kOldestEntriesOf8Bytes = 0x80;
 constexpr uint8_t kPcm8 = 0;
 constexpr uint8_t kPcm16 = 1;
 constexpr uint8_t kImaAdpcm = 2;
@@ -174,6 +183,7 @@ struct Game
     std::vector<uint8_t> bytes;
     std::vector<uint64_t> starts;
     ntdlib::dse::Build build = ntdlib::dse::Build::kLater;
+    std::string game_code; // the image's, for the driver's tick (song::LoadDseSet)
     std::shared_ptr<const DseSet> set;
 };
 
@@ -185,10 +195,27 @@ struct SplitAt
     std::size_t offset = 0;
 };
 
+// The places of a wave's parameters in a bank file. A file of version 0x402 keeps the format at 0x10, the loop's switch
+// at 0x11, the rate in 16 bits at 0x12, and the loop's start and length at 0x18 and 0x1C.
+struct WavePlaces
+{
+    std::size_t format = kWaveFormat;
+    std::size_t loops = kWaveLoops;
+    std::size_t rate = kWaveRate;
+    std::size_t rate_bytes = 4;
+    std::size_t loop_start = kWaveLoopStart;
+    std::size_t loop_length = kWaveLoopLength;
+};
+
+inline constexpr WavePlaces kOldestWavePlaces{
+    .format = 0x10, .loops = 0x11, .rate = 0x12, .rate_bytes = 2, .loop_start = 0x18, .loop_length = 0x1C};
+
 // Where a bank file stores the parameters of its waves, by their slots, and its splits. The walk reads the file's bytes
-// alone, not ntdlib's reader.
+// alone, not ntdlib's reader. `oldest` is true for a file of version 0x402.
 struct Walk
 {
+    bool oldest = false;
+    WavePlaces wave_places;
     std::map<uint32_t, std::size_t> waves;
     std::vector<SplitAt> splits;
 };
@@ -200,6 +227,19 @@ uint32_t Get32(std::span<const uint8_t> bytes, std::size_t at);
 void Put32(std::span<uint8_t> bytes, std::size_t at, uint32_t value);
 
 Walk WalkBank(std::span<const uint8_t> file);
+
+// The split at `offset` of `file`, laid out as ntdlib's reader lays out a split of version 0x415. A split of version
+// 0x402 keeps its first 16 bytes and its envelope at the same places. It keeps its wave in one byte at 0x11, and its
+// tuning, root key, coarse tuning, volume, pan and key group from 0x12 on. Its other bytes read as 0.
+DseSplit SplitIn(std::span<const uint8_t> file, const Walk& walk, std::size_t offset);
+
+// Writes `split`, laid out as SplitIn gives it, at `offset` of `file` by the rules of the file's version. Throws
+// std::runtime_error for a wave that a split of version 0x402 can't hold.
+void PutSplit(std::span<uint8_t> file, const Walk& walk, std::size_t offset, const DseSplit& split);
+
+// The rate of the wave parameters `info`, and a new rate there.
+uint32_t RateIn(std::span<const uint8_t> info, const WavePlaces& places);
+void PutRate(std::span<uint8_t> info, const WavePlaces& places, uint32_t rate);
 
 // The index in the set's banks of each bank that the set contains once, the first file of its bytes.
 std::vector<uint32_t> DistinctBanks(const DseSet& set);

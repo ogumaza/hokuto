@@ -90,7 +90,10 @@ struct BrowserPlace
 // A double-click on a row with an editor, or the menu item that opens it, sets `edit_place` the same way. The program
 // then opens the row's editor. The program sets `reveal` to scroll the selected row into view in the next frame, such
 // as after it selects the sound of a file's view. The browser then clears it. The program sets `top` when a new file
-// shows. The tree then scrolls to its top in the next frame, and the browser clears it.
+// shows. The tree then scrolls to its top in the next frame, and the browser clears it. A click on a row, or the
+// opening of a row's menu, sets `chosen` in the frame that the browser draws it. In an archive that isn't in front,
+// `chosen` or a request from a row's menu sets `archive` in the state of the archive in front. The program then brings
+// that archive to the front with its state, and clears `archive`.
 struct BrowserState
 {
     std::array<char, 128> filter{};
@@ -99,14 +102,27 @@ struct BrowserState
     bool reveal = false;
     bool top = false;
     bool clicked = false;
+    bool chosen = false;
     std::optional<BrowserPlace> playing;
     std::optional<BrowserPlace> export_place;
     std::optional<BrowserPlace> replace_place;
     std::optional<BrowserPlace> edit_place;
+    std::optional<std::size_t> archive;
     // Whether the Sound section under the tree is open. The program's settings keep it. The browser takes it
     // as the section's state in its first frame, and gives the section's state back in each frame after.
     bool sound_open = false;
     bool sound_restored = false;
+};
+
+// An archive of a file with more than one archive (format::Project): the name of its driver, the count of its sequence
+// sounds, and the groups and the browser's state of an archive that isn't in front. The program keeps the groups and
+// the state.
+struct BrowserArchive
+{
+    std::string name;
+    std::size_t sounds = 0;
+    const std::vector<BrowserGroup>* groups = nullptr;
+    BrowserState* state = nullptr;
 };
 
 } // namespace hokuto::app

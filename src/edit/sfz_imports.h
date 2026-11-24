@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -38,6 +39,17 @@ struct SfzInstrument
     std::filesystem::path path;
     uint32_t program = 0;
 };
+
+// The name of an SFZ file without its program, and the program: BANK_GM and 5 for BANK_GM_005.
+struct SfzProgramName
+{
+    std::string name;
+    uint32_t program = 0;
+};
+
+// The name and the program of an SFZ file's `stem`, as Export… writes them, such as BANK_GM_005. Nothing for a stem
+// without a program after its last underscore, with other characters after the program, or with a program from 16,384.
+std::optional<SfzProgramName> SfzProgramOf(const std::string& stem);
 
 // The SFZ files that come in with `chosen`. Export… names an instrument's file after its bank and its program, such as
 // BANK_GM_005.sfz. Each file of the folder with the same name and another program comes in too, in the order of the

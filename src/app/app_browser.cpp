@@ -11,11 +11,13 @@
 #include <initializer_list>
 #include <map>
 #include <numeric>
+#include <string>
 #include <utility>
 
 #include "app/app.h"
 #include "app/app_browser_parts.h"
 #include "app/app_internal.h"
+#include "app/engine_names.h"
 #include "edit/replace.h"
 #include "format/archive.h"
 #include "format/drivers.h"
@@ -24,6 +26,7 @@
 #include "song/aac.h"
 #include "song/archive.h"
 #include "song/driver.h"
+#include "song/gba.h"
 #include "song/items.h"
 #include "song/streams.h"
 
@@ -420,19 +423,21 @@ void App::ReadShownSar(const std::shared_ptr<const format::File>& version, uint3
 {
     song::StartValues values = StartValuesOf(sound);
     song::Changes changes = ChangesOf(sound);
+    format::SoundStart start = format::StartOf(*version, sound);
 
     // A sound on another console's engine plays its conversion for that console. The reader makes the conversion too.
     if (SameArchive(*version, *archive_version_))
     {
         reading_version_.reset();
         if (sequence_ && sequence_->sound == sound && sequence_->start_values == values &&
-            sequence_->changes == changes && EngineServes(*version, sound))
+            sequence_->changes == changes && sequence_->start == start && EngineServes(*version, sound))
         {
             reader_.Abandon();
         }
         else
         {
-            reader_.Request(played_.Sar(), sound, std::move(values), std::move(changes), ConvertFor(version, sound));
+            reader_.Request(played_.Sar(), sound, std::move(values), std::move(changes), ConvertFor(version, sound),
+                            std::move(start));
         }
         return;
     }
@@ -444,7 +449,7 @@ void App::ReadShownSar(const std::shared_ptr<const format::File>& version, uint3
     {
         return SarArchiveOf(*version, name);
     };
-    reader_.Request(build, sound, std::move(values), std::move(changes), ConvertFor(version, sound));
+    reader_.Request(build, sound, std::move(values), std::move(changes), ConvertFor(version, sound), std::move(start));
 }
 
 void App::BuildArchive(const std::shared_ptr<const format::File>& version)
@@ -466,6 +471,38 @@ void App::BuildArchive(const std::shared_ptr<const format::File>& version)
     }
 }
 
+void App::ListArchives()
+{
+    // A file with more than one archive lists a row for each archive, with the name of its driver.
+    browser_archives_.clear();
+    if (!history_ || history_->Archives() < 2)
+    {
+        return;
+    }
+
+    for (const format::File& archive : history_->CurrentProject().archives)
+    {
+        browser_archives_.push_back({DriverName(archive.engine)});
+    }
+}
+
+void App::UpdateBrowserArchives()
+{
+    // Each row counts the sequence sounds that the browser lists for its archive. An archive that isn't in front shows
+    // the groups and the choices that it keeps.
+    const std::size_t front = history_ ? history_->Front() : 0;
+    for (std::size_t a = 0; a < browser_archives_.size(); a++)
+    {
+        BrowserArchive& row = browser_archives_[a];
+        const bool kept = a != front && a < archive_plays_.size() && !archive_plays_[a].browser.empty();
+        const std::vector<BrowserGroup>* groups = a == front ? &browser_ : kept ? &archive_plays_[a].browser : nullptr;
+        row.groups = a == front ? nullptr : groups;
+        row.state = kept ? &archive_plays_[a].browser_state : nullptr;
+        row.sounds =
+            groups != nullptr && groups->size() > kSequencesGroup ? (*groups)[kSequencesGroup].items.size() : 0;
+    }
+}
+
 void App::ListBrowser()
 {
     for (std::size_t group = 0; group < browser_.size(); group++)
@@ -473,9 +510,11 @@ void App::ListBrowser()
         browser_[group].items.clear();
     }
 
-    // The DS, DSE and the GBA's drivers keep no wave sound files.
+    // The DS, DSE and the GBA's drivers keep no wave sound files. DSE and the GBA's drivers keep their songs under
+    // Sequences, and no other sound (H-490).
     browser_[kWaveSoundFilesGroup].hidden =
         played_.Ds() != nullptr || played_.Dse() != nullptr || played_.Gba() != nullptr || played_.Driver() != nullptr;
+    browser_[kSoundsGroup].hidden = played_.Dse() != nullptr || played_.Gba() != nullptr || played_.Driver() != nullptr;
 
     // Replace… replaces a whole bank. The Bank Editor edits one of its programs.
     browser_[kBanksGroup].children_replace_note =
@@ -743,6 +782,7 @@ void App::FollowItems()
     // The browser lists the items again. Its choices of items that went go too. Items go and come only at the ends of
     // the lists, and the others keep their places.
     ListBrowser();
+    ListArchives();
     DropUnlistedChoices();
 
     // The browser selects the sound that an import added, and scrolls to it. The zones then show it.

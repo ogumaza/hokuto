@@ -271,11 +271,6 @@ constexpr std::array<AtkLimit, 8> kAtkLimits = {{
     {EffectKind::kSwitchReverb, "decay_time", {100'000.0f, 20'000'000.0f, 1.0f}},
 }};
 
-// The kinds of native archive keep the codes and the names of their engines in kEngineFacts. The constants of codes.h
-// name three of them.
-static_assert(FactsOf(Engine::kWii).code == kWiiArchiveCode && FactsOf(Engine::kWii).name == kWiiArchiveName &&
-              FactsOf(Engine::kDs).name == kDsArchiveName);
-
 // Each kind of sound's number and name. 0 is a sound of another kind: ntdlib's SoundType::kUnknown.
 constexpr std::array<std::pair<SoundType, std::pair<uint8_t, std::string_view>>, 4> kSoundTypes = {{
     {SoundType::kUnknown, {0, "unknown"}},

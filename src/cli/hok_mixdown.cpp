@@ -241,7 +241,8 @@ std::size_t WriteSound(const edit::BatchSource& source, const song::BatchSound& 
 // The sounds of `all` that `chosen` names, by name or by number, in the order of `all`. With none chosen, it returns
 // them all.
 std::vector<song::BatchSound> ChosenSounds(const std::vector<song::BatchSound>& all,
-                                           const std::vector<std::string>& chosen, const std::string& input)
+                                           const std::vector<std::string>& chosen, const std::string& input,
+                                           const std::string& driver)
 {
     if (chosen.empty())
     {
@@ -259,7 +260,9 @@ std::vector<song::BatchSound> ChosenSounds(const std::vector<song::BatchSound>& 
         const auto found = std::ranges::find_if(all, named);
         if (found == all.end())
         {
-            throw std::runtime_error(input + " contains no sequence sound " + wanted + ".");
+            const std::string where =
+                driver.empty() ? "." : " in the archive of " + driver + ". --driver chooses another archive.";
+            throw std::runtime_error(input + " contains no sequence sound " + wanted + where);
         }
 
         taken[static_cast<std::size_t>(found - all.begin())] = true;
@@ -295,7 +298,7 @@ int RunMixdown(std::span<const std::string> arguments, const std::function<Archi
     const MixdownOptions options = ParseMixdown(arguments);
     const ArchiveInput input = read(options.input);
     const std::vector<song::BatchSound> sounds =
-        ChosenSounds(song::BatchSounds(input.played), options.sounds, options.input);
+        ChosenSounds(song::BatchSounds(input.played), options.sounds, options.input, input.driver);
     if (sounds.empty())
     {
         throw std::runtime_error(options.input + " contains no sequence sound.");
@@ -303,7 +306,7 @@ int RunMixdown(std::span<const std::string> arguments, const std::function<Archi
 
     const std::filesystem::path folder = MadeFolder(options.folder);
     const edit::BatchSource source = {
-        .played = input.played, .build = input.build, .file = input.hok, .name = options.input};
+        .played = input.played, .build = input.build, .file = input.hok, .starts = input.starts, .name = options.input};
     const std::vector<edit::BatchSequence> sequences = edit::ReadBatchSequences(source, sounds, options.threads);
     const std::vector<std::vector<song::MixdownFile>> files =
         edit::MixdownFileNames(sounds, sequences, {}, "", true, options.stems, {});

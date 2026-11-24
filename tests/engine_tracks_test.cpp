@@ -5,6 +5,13 @@
 // and its ROM accepts the edits by MusicPlayer2000's rules. A small DS archive contains a sequence that allocates two
 // tracks and a sequence of track 0 alone (DsArchive). The archive accepts the edits by NITRO-Composer's rules.
 
+#include <cstdint>
+#include <optional>
+#include <vector>
+
+#include "ntdlib/dse/formats.h"
+#include "ntdlib/dse/layout.h"
+
 #include "cart_bytes.h"
 #include "tracks_fixtures.h"
 
@@ -428,16 +435,39 @@ std::vector<std::optional<SoundPlace>> DsePlacesOf(const File& file)
 {
     const std::vector<uint8_t> set = hokuto::format::ExportArchive(file);
     const std::shared_ptr<const hokuto::song::DseSet> sounds =
-        hokuto::song::LoadDseSet(set, ntdlib::dse::Build::kLater);
+        hokuto::song::LoadDseSet(set, ntdlib::dse::Build::kLater, {});
     return hokuto::edit::DsSoundPlaces(
         hokuto::format::DseSoundSequences(file, set, hokuto::song::DseSoundRefs(*sounds)));
+}
+
+// The 48 bytes of settings of the sound effect in the bank of sound effects of the DSE file `file`. Their places are
+// SequenceInfo's: the count of tracks at 6 and the count of channels at 7. Nothing where the file has no such effect.
+std::vector<uint8_t> DseEffectSettings(const File& file)
+{
+    const std::vector<uint8_t> set = hokuto::format::ExportArchive(file);
+    for (const ntdlib::dse::NamedFile& named : ntdlib::dse::ReadSet(set))
+    {
+        if (named.path == "SOUND/SE/se.sed")
+        {
+            const std::optional<uint32_t> tracks = ntdlib::dse::TracksOffset(named.bytes, 0);
+            if (!tracks.has_value() || *tracks < ntdlib::dse::SequenceInfo::kSize)
+            {
+                return {};
+            }
+
+            const auto start = named.bytes.begin() + *tracks - ntdlib::dse::SequenceInfo::kSize;
+            return {start, start + ntdlib::dse::SequenceInfo::kSize};
+        }
+    }
+
+    return {};
 }
 
 // Sound `sound` of the DSE file `file` as ntdlib's performer plays it from the set that the file builds.
 Sequence DsePlayed(const File& file, uint32_t sound)
 {
     return hokuto::song::ReadSequence(
-        *hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater), sound);
+        *hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater, {}), sound);
 }
 
 // The channel of each track of `sequence`.
@@ -493,6 +523,11 @@ void TestDseAdd()
     const TrackEdit effect_added = AddTrack(file, places, kDseEffect, effect, Program{0, 0});
     const Sequence effect_after = DsePlayed(effect_added.file, kDseEffect);
     XSFLIB_CHECK(effect_added.track == 1 && Numbers(effect_after) == (std::vector<int>{0, 1}));
+    const std::vector<uint8_t> settings_before = DseEffectSettings(file);
+    const std::vector<uint8_t> settings_after = DseEffectSettings(effect_added.file);
+    SEQLIB_REQUIRE(settings_before.size() == 48 && settings_after.size() == 48);
+    XSFLIB_CHECK(settings_before[6] == 1 && settings_before[7] == 1);
+    XSFLIB_CHECK(settings_after[6] == 2 && settings_after[7] == 2);
     XSFLIB_CHECK(Notes(effect_after, 0) == Notes(effect, 0));
     const hokuto::edit::NewNote effect_note{
         .stretch = effect_after.tracks.at(1).stretches.at(0), .tick = 0, .key = 60, .length = 12};

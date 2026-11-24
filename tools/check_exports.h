@@ -46,6 +46,7 @@
 #include "xsflib/files.h"
 
 #include "edit/ds_files.h"
+#include "edit/dse_files.h"
 #include "format/archive.h"
 #include "format/drivers.h"
 #include "format/file.h"

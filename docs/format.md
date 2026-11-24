@@ -1,6 +1,6 @@
 # The .hok format
 
-Version 1.2. This document specifies Hokuto's files: what they hold, their binary form and their text form. The code
+Version 2.0. This document specifies Hokuto's files: what they hold, their binary form and their text form. The code
 in `src/format/` is the reference implementation.
 
 A `.hok` file holds a sound archive in Hokuto's form. Its sequences are commands of one instruction set, with values in
@@ -41,9 +41,12 @@ that holds no sequence keeps its place. A sequence archive whose file can't be r
 
 A file can also hold the sound files of a DS game on Procyon Studio's driver (Digital Sound Elements, DSE). Such a game
 keeps no sound archive. Its songs (smdl), wave banks (swdl) and banks of sound effects (sedl) are files of the
-cartridge's file system. The file holds the engine and those files as one set: the tracks of each song and each sound
-effect as a sequence, and the rest of the files as bytes. The file keeps the cartridge image (`.nds`) too. Its export
-writes each changed file into the image.
+cartridge's file system, or files inside the game's packs. A pack is a file of the image that holds DSE files behind
+small headers, compressed or not. The file holds the engine and those files as one set: the tracks of each song and
+each sound effect as a sequence, and the rest of the files as bytes. The file keeps the cartridge image (`.nds`) too.
+Its export writes each changed file of the file system into the image, and refuses a changed file inside a pack. The
+sounds are numbered in the order of the files: first each song that has a wave bank, then each sound effect, by its
+bank of sound effects and its slot. A sound's index in the chunks below is that number.
 
 A file can also hold a GBA ROM with Konami's sound driver. As with MP2K, the file holds the engine, the tracks of each
 song as a sequence and the rest of the ROM as bytes. Each song has up to 16 tracks, each with a channel of its own, and
@@ -131,6 +134,13 @@ NintendoWare's tools lay one out. The archive plays the same as the game's. Its 
 - **Lengths.** How long a player plays each sound before its fade, and how long the fade lasts. A sound that loops plays
   its loop a number of times first. Hokuto measures the lengths on the model of the file's engine. The rips of the PSF
   family measure theirs the same way. The tags `length` and `fade` go before them. A sound archive holds none.
+- **The starts.** What a game sets through a sequence sound's handle as it starts the sound: the tracks that it mutes
+  or silences, the tracks' volumes, the tempo ratio, the pitch, the volume, the sends to the aux buses, the banks on
+  the 3DS, the state of the random generator, and variables, some of them changed later. A game can play one sequence
+  in several arrangements this way. A game on DSE starts a song at a level instead. A sound has one start without a
+  name, which a player and every export apply. Named starts are the sound's other states, which a game sets in other
+  places. An import of a 3DS or Wii U archive, or of DSE's files, finds the starts in ntdlib's lists of known games. A
+  sound archive holds none.
 - **Sequences.** A sequence is a list of items in the order of the console's bytes: commands, and runs of bytes that no
   command reaches. Labels name the items where sounds start. Jumps, calls and track starts name their targets by item.
 - **The native archive.** The archive that the file came from, cut into pieces. A piece is a run of the archive's
@@ -883,6 +893,32 @@ On the DS:
   scale of 16-bit samples divided by 32,768, without a limit. A channel that stops, and a one-shot wave at its end,
   ring out through the interpolator.
 
+## Files with more than one archive
+
+A GBA ROM can contain two sound drivers, such as MusicPlayer2000 for one part of a game and Nintendo R&D2's driver for
+another. A file of such a ROM contains an archive for each driver. An archive is the part of the image that one driver
+plays: an engine, its sequences, its native archive and what the file keeps for each of its sounds. Each archive keeps
+everything that a file of one archive keeps but the values of the project: the mixing mode, the effects and the volumes
+of the buses, and the file's tags. The file keeps those once, and every archive takes them.
+
+- The archives come from one GBA ROM. No other console has a form with more than one archive yet. The archives come in
+  the order of their engines' numbers. Two archives of one engine follow the order of their places in the image.
+- On the GBA, each archive cuts the whole ROM. The runs of an archive therefore contain the songs of the other archives
+  as bytes. Where two archives both have a run, the two runs contain the same bytes. The sequence pieces and the fields
+  of two archives never overlap.
+- The ROM has one free space, at its end, past the bytes that any of the drivers reads. The archive of a driver other
+  than MusicPlayer2000 stores its start in NATV. MusicPlayer2000's songs that move go no earlier than the latest start
+  that the other archives store.
+- No archive takes the filler runs: bit 0 of NATV's flags is 0 in each.
+- An export joins the archives in their order. After the join of an archive, the bytes that it changed go into the runs
+  of the archives after it, and its growth goes at the end of their last runs. A byte that a join changes at or past
+  the free space of a later archive moves that free space past it, to the next multiple of 256 bytes. The join of the
+  last archive gives the ROM. A file without edits gives the ROM back byte for byte.
+- The file records which archive the program showed in front.
+
+A file with one archive takes the form of the rest of this document. A writer never writes such a file in the form of
+more than one archive.
+
 ## The binary form
 
 Numbers are little-endian. A file starts with a header and a table of its chunks. The chunks follow.
@@ -892,8 +928,8 @@ Numbers are little-endian. A file starts with a header and a table of its chunks
 | Offset | Size | Contents |
 |---|---|---|
 | 0 | 8 | the signature: 89 48 4F 4B 0D 0A 1A 0A |
-| 8 | 2 | the major version: 1 |
-| 10 | 2 | the minor version: 1 |
+| 8 | 2 | the major version: 2 |
+| 10 | 2 | the minor version: 0 |
 | 12 | 4 | flags: 0 |
 | 16 | 4 | the number of chunks |
 | 20 | 4 | 0 |
@@ -911,17 +947,17 @@ The table of chunks follows the header, with 24 bytes for each chunk:
 | 16 | 8 | the chunk's size in bytes |
 
 Each chunk starts on a multiple of 8 bytes. Zero bytes fill the gaps. Hokuto writes its chunks in the order ENGN, MIXR,
-SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK, WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH and TMLN,
-then the other chunks in the order of the file that they came from. The CRC-32 is zlib's and PNG's: the reflected
-polynomial 0xEDB88320, starting from 0xFFFFFFFF, with the result inverted. The CRC-32 of the ASCII text `123456789` is
-0xCBF43926.
+SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK, WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH, STRT
+and TMLN, then the other chunks in the order of the file that they came from. The CRC-32 is zlib's and PNG's: the
+reflected polynomial 0xEDB88320, starting from 0xFFFFFFFF, with the result inverted. The CRC-32 of the ASCII text
+`123456789` is 0xCBF43926.
 
 A reader refuses a file:
 
-- whose major version isn't 1
+- whose major version isn't 1 or 2
 - with a chunk that lies past the end of the file, or whose bytes don't match its CRC-32
 - with two chunks of the same ID among ENGN, MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK,
-  WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH and TMLN
+  WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH, STRT and TMLN
 - with a TABL, SIZE, GRPF or STRM chunk and no NATV chunk
 - with a BULD chunk and no NATV chunk of the Wii's kind
 - with a CART chunk and no NATV chunk of the DS's kinds
@@ -930,8 +966,9 @@ A reader refuses a file:
 - with a BANK or WAVE chunk and no archive: neither a NATV chunk nor SNDS and ITMS
 - without an ENGN chunk
 
-MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK, WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH
-and TMLN are optional. Hokuto keeps a chunk with any other ID and writes it back unchanged.
+MIXR, SEQS, SNDS, ITMS, NATV, BULD, TABL, SIZE, GRPF, STRM, CART, BANK, WAVE, SCEN, TCOL, IMAP, BMAP, EDTR, TAGS, LNTH,
+STRT and TMLN are optional. Hokuto keeps a chunk with any other ID and writes it back unchanged. A file with more than
+one archive takes the form of "ARCH: an archive", below. A reader of a file with one archive refuses an ARCH chunk.
 
 ### ENGN: the engine
 
@@ -954,6 +991,35 @@ doesn't define, with a message that a later version of Hokuto made the file. The
 isn't in the archive does nothing. No sound of another console plays on the GBA's engine, DSE's, Konami's, Nintendo
 R&D2's, Brownie Brown's, Ubisoft Milan's, Rare's, Quintet's or Krawall's: a reader refuses engines 5, 7, 8, 9, 10, 11,
 12, 13 and 14 in the second list.
+
+### ARCH: an archive
+
+A file with more than one archive (see "Files with more than one archive") holds an ENGN chunk of engine 0, then MIXR
+and TAGS where it has effects, volumes of the buses or tags, then an ARCH chunk for each archive, in the order of the
+archives, then the chunks that Hokuto doesn't read. Its ENGN chunk holds 4 bytes:
+
+| Size | Contents |
+|---|---|
+| 1 | 0: more than one archive |
+| 1 | the mixing mode: 0 for strict, 1 for enhanced |
+| 2 | the archive in front, from 0 in the order of the ARCH chunks |
+
+TAGS holds the file's tags alone. An ARCH chunk contains its archive as a whole file in the binary form, with any chunk
+of a file with one archive but MIXR: ENGN with the archive's engine, SEQS, NATV, SIZE, the chunks of the archive's
+sounds and the others. Its TAGS chunk holds the tags of its sounds alone. A reader refuses a file of engine 0:
+
+- with fewer than two ARCH chunks, or without the archive in front
+- with any chunk of Hokuto's other than ENGN, MIXR, TAGS and ARCH beside the archives, or with tags of sounds there
+- with an archive of engine 0, an archive with MIXR or with the file's tags, or an archive in the model form
+- with an archive of an engine of another console than the GBA, or archives that come out of the order of their
+  engines' numbers
+- with an archive whose mixing mode isn't the file's, or with bit 0 of NATV's flags set in an archive
+- with archives whose SIZE chunks differ, two archives that differ in a byte where both have a run, or two archives
+  whose sequence pieces or fields share a byte
+- with a header of a version before 2.0
+
+No version before 2.0 defines engine 0. A reader of an earlier version refuses the file with the message that a later
+version made it.
 
 ### MIXR: the mixer
 
@@ -989,9 +1055,9 @@ The kinds:
 | 14 | the 3DS's reverb of nn::snd | 11 |
 | 15 | the 3DS's delay of nn::snd | 4 |
 | 16 | the 3DS's reverb of nn::snd of 2011 | 10 |
-| 17 | the Switch's delay of nn::atk (version 1.3) | 8 |
-| 18 | the Switch's light limiter of nn::atk (version 1.3) | 8 |
-| 19 | the Switch's reverb of nn::atk (version 1.3) | 12 |
+| 17 | the Switch's delay of nn::atk (version 2.0) | 8 |
+| 18 | the Switch's light limiter of nn::atk (version 2.0) | 8 |
+| 19 | the Switch's reverb of nn::atk (version 2.0) | 12 |
 
 The I3DL2 reverb has 12 parameters. They're the fields of nn::audio's `I3dl2ReverbParameterSet`, in its order and its
 units:
@@ -1102,7 +1168,8 @@ filter keeps the highs in place of the lows. The damping filter of nn::snd's rev
 libraries take any time and size that fits the game's memory. The limits above keep each effect's buffers within a few
 megabytes.
 
-Version 1.3 adds kinds 17 to 19: the delay, the light limiter and the reverb of nn::atk, the Switch's sound library.
+Version 2.0 adds kinds 17 to 19: the delay, the light limiter and the reverb of nn::atk, the Switch's sound library.
+Files of version 1.2 that Hokuto 2.1.0 and 2.1.1 wrote can already contain them (see "Versions").
 The classes `EffectDelay`, `EffectLightLimiter` and `EffectReverb` set them up, and the console's audio renderer runs
 them on an aux bus. The reverb is another algorithm than the I3DL2 reverb. nn::atk has no parameter structure for these
 classes. Their parameters are the values that each class's setters take, in the order in which the class passes them
@@ -1683,9 +1750,10 @@ hold each file's size in its header and in the directory, its offset in the dire
 effects' seq chunk, and each slot of that chunk's table. A slot holds a 16-bit offset from the table's start, and a
 field in a slot holds 2 bytes. Every other field holds 4. An export refuses a slot past 16 bits. A file of DSE holds no
 GRPF, STRM, TABL or BULD chunk, and it can't take the model form. Its SIZE chunk gives the set's size. Its CART chunk
-holds the cartridge image, with the file ID and the offset at 0. A sequence piece's choices take the same 8 bytes each:
-the item's number (4 bytes), `arguments` plus 1 or 0 without them (1), `value_bytes` (1), flags (1) and 0 (1). Bit 0 of
-the flags is `repeated`. Those three are the only choices that a set holds, with an item's `opcode`: see "Commands".
+holds the cartridge image, with the file ID and the offset at 0, and the record of the places of the set's files. A
+sequence piece's choices take the same 8 bytes each: the item's number (4 bytes), `arguments` plus 1 or 0 without them
+(1), `value_bytes` (1), flags (1) and 0 (1). Bit 0 of the flags is `repeated`. Those three are the only choices that a
+set holds, with an item's `opcode`: see "Commands".
 
 Like a GBA ROM of MP2K, a GBA ROM with Konami's driver (kind 8) keeps its pieces in their places. A sequence piece holds
 a song's bytes, from the song's base to its last byte, and holds its room in place of the file's version. Entries of the
@@ -1969,7 +2037,8 @@ file in ADTS.
 | 4 | the ID of the file in the image's file system that holds the archive, or 0 for a set of DSE's files |
 | 4 | the archive's offset in that file, or 0 for a set of DSE's files |
 | 4 | the image's size in bytes |
-| 4 | 0 |
+| 4 | the flags |
+| varies | with flag 1, the record of the places of the set's DSE files |
 | varies | the image's bytes, up to its last byte that isn't 0xFF |
 
 A DS cartridge image fills its chip with 0xFF bytes after its data. The chunk leaves those bytes out, and 0xFF bytes
@@ -1980,10 +2049,45 @@ of 0x200 bytes, and the file table, the header and its CRC-16 follow. The export
 than the game's when the file holds other bytes than the archive: nothing tells Hokuto what points into those bytes.
 A DSi image holds hashes of its bytes, and only the DSi's keys give the new hashes. The export leaves the hashes of the
 bytes that change as they were, and reports them. A reader refuses a CART chunk whose image's bytes run past its size,
-or end with 0xFF, and a flag other than 0.
+or end with 0xFF, and a flag other than 1. Flag 1 belongs to a set of DSE's files. A flag that this specification
+doesn't define gets a message that a later version of Hokuto made the file.
 
-A set of DSE's files names each file by its path. An export finds each path in the image's file system, and writes each
-file whose bytes differ from the image's. The files after it move as above.
+A set of DSE's files names each file by its path. A file of the image's file system takes its path there, or `file ` and
+its number for a file without a path. A file inside a pack takes the pack's path, a `/` and the file's name in the pack.
+The name is the one at 0x20 of the file's header, made safe for a file name, or the file's offset in the pack in
+hexadecimal where the header gives none. A name that the pack repeats takes `_2`, `_3` and so on before its extension. A
+pack compressed with the SDK's LZ77 is read decompressed. A DSE file that the image keeps compressed as one file takes
+the path of the image's file. A GFSA archive puts the path of each of its files between the pack's path and the name.
+ntdlib's `dse::Decompressed` and `dse::FindFiles` give the paths. An export finds each file's place in the record of
+places, and writes each file of the file system whose bytes differ from the image's. The files after it move as above.
+The export refuses a file inside a pack, or a compressed one, whose bytes differ from the image's: nothing in Hokuto
+writes a pack's index or compresses a file. Such a file whose bytes are the same stays as it is.
+
+The record of places gives the place of each file of the set in the image, in the order of the set's files:
+
+| Size | Contents |
+|---|---|
+| 4 | the number of places |
+| varies | the places |
+
+A place takes this form:
+
+| Size | Contents |
+|---|---|
+| varies | the file's path in the set: its length in bytes (4 bytes), then the path in UTF-8 |
+| varies | the path of the image's file that holds the file, in the same form: its path in the image's file system, or `file ` and its number |
+| 4 | the offset of the file's bytes in the image's file |
+| 4 | the file's size in bytes |
+| 4 | the flags |
+
+Flag 1 of a place marks a file that the image keeps compressed. Its offset then counts in the bytes of the image's file
+once decompressed. Where the image's file is a GFSA archive, the archive's file that holds the DSE file comes in the
+path in the set after the image's file's path, and the offset counts in that file's decompressed bytes. A file of the
+image's file system whose place is the whole file can be written back. A file of version 2.0 that a build of Hokuto
+before the record wrote has no flag 1. Its export searches the image for the paths, as the import does. A reader refuses
+a record without places, a place without a path or without the path of its image's file, a path twice, and a flag of a
+place other than 1. The export refuses a place that names no file of the image, or that runs past the bytes of its
+file.
 
 ### BANK: the banks
 
@@ -2098,23 +2202,28 @@ A scene takes this form:
 | 4 | its sound: the sound's index in the archive's sound table |
 | varies | its name: its length in bytes (4 bytes), then the name in UTF-8 |
 | 4 | the number of its starting values |
-| 4 for each | a starting value: the variable's number (1 byte), 0 (1 byte) and the value (2 bytes, signed) |
+| 4 for each | a starting value: the variable (2 bytes) and the value (2 bytes, signed) |
 | 4 | the number of its changes |
-| 8 for each | a change: its time (4 bytes), the variable's number (1 byte), 0 (1 byte) and the value (2 bytes, signed) |
+| 8 for each | a change: its time (4 bytes), the variable (2 bytes) and the value (2 bytes, signed) |
 
-The variables are those that a game sets through a sound's handle: the sound's player variables 0 to 15 and the global
-variables 16 to 31. Every sound that plays shares the global variables. Each variable starts at -1 until the game or a
-command sets it. On the Wii, the global variables start at 0. A scene sets the variables that it starts before the
-sound's first frame. Hokuto writes the starting values in the order of the variables' numbers.
+The variables are those that a game sets through a sound's handle: the sound's player variables 0 to 15, the global
+variables 16 to 31, and the track variables 0 to 15 of every track, as 32 to 47. Every sound that plays shares the
+global variables. Each variable starts at -1 until the game or a command sets it. On the Wii, the global variables
+start at 0. A scene sets the variables that it starts before the sound's first frame. Hokuto writes the starting values
+in the order of the variables' numbers.
+
+A variable takes two bytes. For variables 0 to 31, they are the variable's number and 0. For a track variable of every
+track, they are the track variable's number, 0 to 15, and 0xFF. Such a variable sets the track variable on each track
+that the sound has open. Version 1 has only 0 in the second byte.
 
 A change's time counts milliseconds from the sound's start. The engine makes the change at the start of its first frame
 that starts at that time or later. A frame lasts 5 ms on the Switch, and 3 ms on the Wii U and the Wii. On the 3DS, a
 frame holds 160 samples at 268,111,856 / 8,192 Hz, and lasts about 4.889 ms. The changes come in the order of their
 times. Two changes at the same time take effect in their order.
 
-A reader refuses a scene that starts a variable twice, a variable's number above 31, and changes out of the order of
-their times. It refuses a byte after a variable's number that isn't 0, with a message that a later version of Hokuto
-made the file. A scene of a sound that the archive lacks does nothing.
+A reader refuses a scene that starts a variable twice, a variable's number above 31 before 0 or above 15 before 0xFF,
+and changes out of the order of their times. It refuses another byte after a variable's number, with a message that a
+later version of Hokuto made the file. A scene of a sound that the archive lacks does nothing.
 
 ### TCOL: the tracks' colours
 
@@ -2250,22 +2359,106 @@ A player plays a sound for its length, then fades it out over its fade. A sound 
 times that the loops give before the fade. Its ticks are those of the loop that the program's arrangement shows, in the
 sound's sequence. A sound whose notes hold until the game stops it loops without ticks: the arrangement shows no loop. A
 sound that plays on past the measure's limit fades there, with 0 loops. A sound that ends has 0 loops and no fade. Its
-length runs to the end of its last sound and a short silence.
+length runs to the end of its last sound.
 
 Hokuto measures the lengths of the sequence sounds on the model of the file's engine in strict mixing, with the file's
 effects at the buses' volumes. On the 3DS, the model plays without effects. Each sound's variables take the engine's
-starting values, without the scenes. A sound plays until it has played its loop twice, ends, or stays silent for 180 s,
-for 600 s at most. When a sound reaches the limit inside counted loops, it plays again. Each open track's outermost loop
-then loops for ever where it's a counted loop. The passes of those loops count as the sound's loops. A sound that loops
-then fades over 10 s. A sound that ends gets 0.5 s of silence after its last sound. The rips of the PSF family measure
-their sequences the same way. The tags `length` and `fade` go before the chunk. After an edit that can change what a
-sound plays, a writer drops the chunk: a change of the engine, the mixer, a sequence or the archive. A change of a
-mixing mode keeps the chunk.
+starting values, without the scenes, and then the values of the sound's start in STRT. The rest of the start applies
+too: its changes after time 0 come at their times, and a frame counts as sound where it's audible at the start's volume.
+A sound plays until it has played its loop twice, ends, or stays silent for 180 s, for 600 s at most. When a sound
+reaches the limit inside counted loops, it plays again. Each open track's outermost loop then loops for ever where it's
+a counted loop. The passes of those loops count as the sound's loops. A sound that loops then fades over 7 s. A sound
+that ends ends at its last sound. The rips of the PSF family measure their sequences the same way.
+The tags `length` and `fade` go before the chunk. After an edit that can change what a sound plays, a writer drops the
+chunk: a change of the engine, the mixer, a sequence, the archive or a sound's start without a name. A change of a
+mixing mode or of a named start keeps the chunk.
 
 Hokuto writes the sounds in the order of their indexes. A reader takes them in any order, and skips the two zeros. It
 refuses a sound twice, a flag that this specification doesn't define, the loop's ticks with 0 loops, and a loop that
 doesn't end after its start. Such a flag gets a message that a later version of Hokuto made the file. The lengths of a
 sound that the archive lacks do nothing.
+
+### STRT: the starts
+
+| Size | Contents |
+|---|---|
+| 4 | the number of starts |
+| varies | the starts |
+
+A start takes this form:
+
+| Size | Contents |
+|---|---|
+| 4 | its sound: the sound's index in the archive's sound table |
+| varies | its name: its length in bytes (4 bytes), then the name in UTF-8. A sound's start has an empty name. |
+| 4 | its flags: which of the fields below follow |
+| varies | the fields that the flags give, in the order of the flags |
+| 4 | the number of its variables |
+| 8 for each | a variable: its time (4 bytes), its number (1 byte), its track (1 byte) and its value (2 bytes, signed) |
+
+The flags and their fields:
+
+| Flag | Field | Size |
+|---|---|---|
+| 0x001 | the muted tracks: bit N for track N | 4 |
+| 0x002 | the silenced tracks: bit N for track N | 4 |
+| 0x004 | the tracks' volumes: a mask of tracks, bit N for track N, then each track's volume in the order of the tracks (4 bytes, a float) | 4 + 4 for each track |
+| 0x008 | the tempo ratio (a float) | 4 |
+| 0x010 | the pitch, a ratio of frequencies (a float) | 4 |
+| 0x020 | the volume, a factor of amplitude (a float) | 4 |
+| 0x040 | the sends on aux buses A, B and C, each from 0 to 1 (floats) | 12 |
+| 0x080 | the banks: four item IDs of banks, for the four bank slots, with 0xFFFFFFFF for an empty slot | 16 |
+| 0x100 | the random generator's state at the sound's first tick | 4 |
+| 0x200 | the low-pass, from -1 to 0 (a float) | 4 |
+| 0x400 | the level of a song on DSE, from 0 to 256 | 4 |
+
+A field that a start leaves out keeps what the archive or the engine gives. A volume, a ratio and a send is a finite
+number of 0 or more. Only a file whose engine is the 3DS's keeps the banks. The low-pass is the one that a game sets
+through the sound's handle (`SetLpfFreq`). The player adds it to each track's low-pass: the argument of command 0xD8,
+less 64, over 64.
+
+The level is the one at which a game starts a song on DSE, where 256 is full level. DSE's driver starts the song with
+a volume of the level × 127 / 256, rounded down, at once. Only a file whose engine is DSE keeps the level. A sound on
+DSE takes only the level of its start, and a sound effect takes none.
+
+A start's variable has the number and the track:
+
+- a player's or a global variable, 0 to 31, with track 0
+- a track variable of every track, 0 to 15, with track 0xFF: variables 32 to 47 of the scenes
+- a track variable of track N, 0 to 15, with track 1 + N. N runs from 0 to 31.
+
+A variable at time 0 takes its value before the sound's first tick: first the variables of every track, then those of
+single tracks. A variable at a later time is a change, as in SCEN. The variables come in the order of their times. A
+start sets each variable once at time 0. A variable of a single track has time 0.
+
+A game sets these values through the sound's handle before the sound's first tick. A muted track runs its commands,
+and none of its notes starts, as the 3DS's `SetTrackMute` does. A silenced track's notes start and take their voices at
+a volume of 0, as the 3DS's `SetTrackSilence` does, and `SetTrackVolume` with a volume of 0 on the Wii U and the Switch.
+Hokuto plays a muted track of the Wii U or the Switch as a silenced one. A player applies the start as the sound
+starts. An export to MIDI or to a SoundFont writes the notes of the quieted tracks at a volume of 0. A sound that plays
+on the Wii's or the DS's engine ignores the chunk.
+
+A sound has at most one start for each name. The start without a name is the sound's start. A player and every export
+apply it, and a sound without one starts as its archive starts it. A start with a name is another state of the sound,
+which a game sets elsewhere. A player and an export ignore it. An import of a 3DS or Wii U archive finds the starts in
+ntdlib's lists of known games, `ctr::snd::StartingSequenceTracks`, `cafe::snd::StartOfSequence` and
+`SequenceArrangements`, by the SHA-1 of the archive and the sound's name. A file of version 1 has no STRT chunk. When
+Hokuto opens such a file, it builds the file's archive and looks the archive's SHA-1 up in the same lists. An edited
+archive has another SHA-1, and finds none.
+
+An import of DSE's files finds each song's levels in ntdlib's list of known games, `dse::GameStarts`, by the
+cartridge image and the song's path. Some games keep the levels in their code, and the list reads them from the image.
+Where the image's code differs from what the list expects, the import takes the list's rows for the game alone, and
+Hokuto shows a note. The song's start takes the level of most of the game's starts of the song, and is left out at full
+level. Each other level at which the game starts the song is a start named `_LEVEL` and the level. A file of version 1
+of this format keeps no levels. When Hokuto opens such a file of DSE's files with its cartridge image, it finds the
+levels the same way. An edit keeps the paths, and the levels still apply.
+
+Hokuto writes the starts in the order of their sounds, a sound's start before its other states. A reader takes them in
+any order. It refuses two starts of a sound with the same name, a variable that the rules above don't allow, and a
+number out of range. It refuses a flag that this specification doesn't define and a variable of a single track after
+time 0, with a message that a later version of Hokuto made the file. The starts of a sound that the archive is missing
+do nothing.
 
 ### TMLN: the timelines
 
@@ -2346,14 +2539,14 @@ An argument is a value, `random(low,high)` with no spaces, or `var(n)` for varia
 ### The header
 
 ```
-hok 1.2
+hok 2.0
 engine switch
 mixing strict
 sound_mixing 12 enhanced # BGM_CIRCUIT
 sound_engine 12 wii_u # BGM_CIRCUIT
 ```
 
-The first line gives the format's version. A reader refuses a major version other than 1. `engine` names the engine:
+The first line gives the format's version. A reader refuses a major version other than 1 or 2. `engine` names the engine:
 `switch`, `wii_u`, `3ds`, `wii`, `gba`, `ds`, `dse`, `konami`, `rd2`, `brownie`, `ubimilan`, `rare`, `quintet` or
 `krawall`. `mixing` names the mixing mode: `strict` or `enhanced`. Without a mixing line, the mode is strict. Each of
 the two comes once, before the first sequence. A line `sound_mixing` gives a sound the other mode: the number of its
@@ -2388,6 +2581,40 @@ The ticks where its loop starts and ends follow when LNTH gives them. `silent` e
 a sound. Hokuto writes the sound's name from the tables in a comment, and the sounds in the order of LNTH. A sound gives
 its lengths once. The lengths come before the first sequence.
 
+The starts follow, each a line and then a line for each field and each variable:
+
+```
+start 12 "" # BGM_CIRCUIT
+    muted 0xFF00
+    track_volume 2 0.5
+    tempo_ratio 1.25
+    variable 3 1
+    variable 34 2
+    track 5 variable 40 1
+    at 90 variable 3 2
+start 12 _LAP # BGM_CIRCUIT
+    tempo_ratio 1.5
+```
+
+A start's line is `start`, the number of its sound and its name. The sound's start has the empty name `""`. Hokuto
+writes the sound's name from the tables in a comment. The lines after it give the start's fields:
+
+- `muted` and `silenced`, each with a mask of tracks in hexadecimal
+- `track_volume`, a track's number from 0 to 31 and its volume, a line for each track
+- `tempo_ratio`, `pitch` and `volume`, each with a number
+- `sends` and the sends on buses A, B and C
+- `banks` and four banks' item IDs in hexadecimal, with `none` for an empty slot, only in a file of the 3DS
+- `seed` and the random generator's state in hexadecimal
+- `low_pass` and a number from -1 to 0
+- `dse_level` and a whole number from 0 to 256, only in a file of DSE
+
+`variable`, a variable's number and a value give a variable at time 0. The number is 0 to 47, with the track variables
+of every track as 32 to 47, as in the scenes. `track` and a track's number before them give a track variable of that
+track alone, 32 to 47 for its track variables 0 to 15. `at` and a time before them give a change at that time. A start
+gives each field once, and its variables follow the rules of STRT. Hokuto writes the fields in the order of their
+flags, then the variables in the order of STRT, and the starts in the order of STRT. The starts come before the first
+sequence.
+
 The effects follow, a line for each, with each bus's effects in the order that they process it:
 
 ```
@@ -2399,7 +2626,7 @@ The kind `i3dl2_reverb` is the I3DL2 reverb, with the names of MIXR's table. The
 `chorus` and `delay` are the Wii U's effects, with the names of MIXR's tables and text. The kinds that start with `wii_`
 are the Wii's, with the names of MIXR's table of the Wii's kinds. The kinds `3ds_reverb`, `3ds_delay`, `3ds_nn_reverb`,
 `3ds_nn_delay` and `3ds_nn_reverb_2011` are the 3DS's effects 12 to 16, with the names of MIXR's tables and text. The
-kinds `switch_delay`, `switch_light_limiter` and `switch_reverb` are nn::atk's effects 17 to 19 of version 1.3, with the
+kinds `switch_delay`, `switch_light_limiter` and `switch_reverb` are nn::atk's effects 17 to 19 of version 2.0, with the
 names of MIXR's tables. The parameters come in any order, each at most once. A parameter that the line leaves out
 is 0. A reader refuses the line when 0 lies outside that parameter's limits. A filter's size is such a parameter.
 Hokuto writes every parameter, in the table's order. The effects come before the first sequence.
@@ -2431,8 +2658,9 @@ scene 12 "Last lap" # BGM_CIRCUIT
 
 A scene's line is `scene`, the number of its sound and its name. Hokuto writes the sound's name from the tables in a
 comment. The lines after it give the scene's values. `variable`, a variable's number and a value give the value that
-the variable starts with. `at` and a time before them give a change at that time. A time is in seconds, with three
-decimal places at most: `90` or `90.005`. A value is a whole number from -32768 to 32767. A scene starts each variable
+the variable starts with. The number is 0 to 47: 32 to 47 are the track variables 0 to 15 of every track. `at` and a
+time before them give a change at that time. A time is in seconds, with three decimal places at most: `90` or
+`90.005`. A value is a whole number from -32768 to 32767. A scene starts each variable
 once at most, and its changes come in the order of their times. Hokuto writes the starting values in the order of the
 variables' numbers, then the changes. The scenes come before the first sequence.
 
@@ -2673,19 +2901,47 @@ The models of the edited banks and waves take the form of their chunks: `chunk B
 the chunk's n bytes in base64 on the next lines. They come after the archive: after the native archive's group files
 and streams, or after the model. A reader refuses either chunk before the archive, and either chunk twice.
 
+### More than one archive
+
+```
+hok 2.0
+engine archives
+mixing strict
+front 0
+tag game "A game"
+
+archive
+engine gba
+mixing strict
+...
+
+archive
+engine rd2
+mixing strict
+...
+```
+
+A file with more than one archive names the engine `archives`. The lines of the project come first: the version, the
+engine, the mixing mode, `front` with the archive in front from 0, the file's tags, the effects, the volumes of the
+buses and the chunks that Hokuto doesn't read. A line `archive` then starts each archive, and the lines of the archive
+follow in the order of a file of one archive, without the version line. They name the archive's engine and the file's
+mixing mode. They hold no effects, no volumes of the buses and no tags of the file. A reader refuses what "ARCH: an
+archive" refuses, a version before 2.0, a file of engine `archives` without its `front` line, and other lines before
+the first archive.
+
 ### Other chunks
 
 `chunk ID n` holds a chunk that Hokuto doesn't read: its ID, then its n bytes in base64 on the next lines. An ID that
 isn't a bare name takes quotes.
 
-The parts of a file come in this order: the header with its engine and mixing lines, tags, lengths, effects, buses'
-volumes, scenes, tracks' colours, instrument maps, view and timelines, the sequences, the native archive with its group
-files, streams and cartridge image or the model, the banks and the waves, and the other chunks.
+The parts of a file come in this order: the header with its engine and mixing lines, tags, lengths, starts,
+effects, buses' volumes, scenes, tracks' colours, instrument maps, view and timelines, the sequences, the native archive
+with its group files, streams and cartridge image or the model, the banks and the waves, and the other chunks.
 
 ### An example
 
 ```
-hok 1.2
+hok 2.0
 engine switch
 mixing strict
 
@@ -2742,8 +2998,19 @@ of a DS archive is also a sequence piece, with a field at each record's start. A
 file, but its join of the archive refuses those fields: Hokuto 2.0.0 can't play or export a DS file of version 1.2 that
 holds a sequence archive.
 
-Hokuto 1.0.0 writes version 1.0. Hokuto 2.0.0 writes version 1.1, and reads both. The versions after 2.0.0 write
-version 1.2, and read all three.
+A file of version 1.2 that Hokuto 2.1.0 or later wrote can contain the effect kinds 17 to 19 of MIXR. Hokuto 2.0.x
+refuses them.
+
+Version 2.0 adds the starts of the sounds: the STRT chunk and the text form's `start` lines. A scene in SCEN and a
+start can set the track variables of every track, with 0xFF after the variable's number. A set of DSE's files can name
+files inside the game's packs, and its CART chunk records the place of each file in the image (see "CART: the
+cartridge image"). A file can contain more than one archive: engine 0 and the ARCH chunks, or the engine `archives` in
+the text form (see "Files with more than one archive"). A reader of version 1 would take such a file and
+fail at its export without a message about the version. A reader of version 1 refuses
+a file of version 2.0. A reader of version 2.0 reads every file of version 1.
+
+Hokuto 1.0.0 writes version 1.0. Hokuto 2.0.0 writes version 1.1, and reads both. The versions after 2.0.0 up to 2.1.1
+write version 1.2, and read all three. The versions after 2.1.1 write version 2.0, and read every version 1 too.
 
 ## The hok tool
 

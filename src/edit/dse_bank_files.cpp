@@ -39,6 +39,7 @@ namespace
 
 namespace dse = ntdlib::dse;
 using dse_files_parts::BankAt;
+using dse_files_parts::BankFileBytes;
 using dse_files_parts::kImaAdpcm;
 using dse_files_parts::kTuningOfDoubledRate;
 using dse_files_parts::NumberList;
@@ -181,25 +182,23 @@ format::File ReplaceDseBank(const format::File& file, const song::DseSet& set, u
         next.header[kBankKind] = kWavesInMainBank;
     }
 
-    const std::vector<uint8_t> bytes = next.Write();
-
-    // Every file of the set that contains the bank gets it. The later files move, and the fields follow.
-    format::File result = file;
-    std::vector<uint64_t> offsets;
+    // Every file of the set that contains the bank gets it, in the file's version. The later files move, and the fields
+    // follow.
+    std::map<uint64_t, std::vector<uint8_t>, std::greater<>> written;
     for (const song::DseBank& each : set.banks)
     {
         if (each.bank == found.bank)
         {
-            offsets.push_back(each.file_offset);
+            written.emplace(each.file_offset, BankFileBytes(each, next));
         }
     }
 
-    std::ranges::sort(offsets, std::greater<>());
+    // The files after the edited ones keep their starts: the edits go from the last file to the first.
+    format::File result = file;
     const std::vector<uint64_t> starts = format::NativePieceStarts(file);
-    for (const uint64_t offset : offsets)
+    for (auto& [offset, bytes] : written)
     {
-        // The files after the edited ones keep their starts: the edits go from the last file to the first.
-        result = WithFileRun(result, starts, offset, bytes);
+        result = WithFileRun(result, starts, offset, std::move(bytes));
     }
 
     return result;
@@ -453,7 +452,7 @@ format::File ReplaceDseWave(const format::File& file, const song::DseSet& set, u
 
         if (same)
         {
-            written.emplace(each.file_offset, next.Write());
+            written.emplace(each.file_offset, BankFileBytes(each, next));
             continue;
         }
 
@@ -464,7 +463,7 @@ format::File ReplaceDseWave(const format::File& file, const song::DseSet& set, u
 
         dse::WaveBank model = *each.bank;
         WithWave(model, false, wave, made, incoming.rate, old_position, position);
-        written.emplace(each.file_offset, model.Write());
+        written.emplace(each.file_offset, BankFileBytes(each, model));
     }
 
     format::File result = file;

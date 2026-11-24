@@ -264,6 +264,14 @@ inline std::shared_ptr<const sar::SoundArchive> ArchiveOf(const File& file)
     return song::LoadArchive(format::ExportArchive(file), "test", format::ExportGroupFiles(file));
 }
 
+// The volume of the region of program `program` of bank `bank` of `archive`.
+inline uint8_t VolumeOf(const sar::SoundArchive& archive, uint32_t bank, uint32_t program)
+{
+    const sar::BankFile read =
+        sar::BankFile::Read(song::ItemFile(archive, {.kind = song::ItemKind::kBank, .index = bank}));
+    return read.instruments.at(program)->key_regions.at(0).regions.at(0).values.volume;
+}
+
 // The notes that ntdlib's performer plays of sound `sound` of `archive`, track by track. The archive is a later
 // console's (sar::SoundArchive), the Wii's (ntdlib::rsar::SoundArchive) or the DS's (song::DsArchive).
 template <typename Archive>

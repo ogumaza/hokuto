@@ -21,6 +21,7 @@
 #include "ntdlib/dse/commands.h"
 #include "ntdlib/dse/formats.h"
 #include "ntdlib/dse/layout.h"
+#include "ntdlib/dse/oldest.h"
 #include "ntdlib/dse/player.h"
 #include "xsflib/binary.h"
 
@@ -430,6 +431,22 @@ Sequence AsDse(const Sequence& song, std::map<std::string, std::size_t>& left_ou
 
 } // namespace
 
+std::shared_ptr<const song::DseSet> DseSetOfFile(const format::File& file, std::span<const uint8_t> set)
+{
+    if (!file.native || !file.native->cartridge)
+    {
+        return song::LoadDseSet(set, dse::Build::kLater, {}, file.starts);
+    }
+
+    const std::span<const uint8_t> image = *file.native->cartridge->image;
+    return song::LoadDseSet(set, song::DseBuildOf(image), song::DseGameCodeOf(image), file.starts);
+}
+
+std::shared_ptr<const song::DseSet> DseSetOfFile(const format::File& file)
+{
+    return DseSetOfFile(file, format::ExportArchive(file));
+}
+
 namespace dse_files_parts
 {
 
@@ -474,6 +491,29 @@ const song::DseBank& BankAt(const song::DseSet& set, uint32_t bank)
     }
 
     return set.banks[bank];
+}
+
+std::vector<uint8_t> HeldBankBytes(const song::DseBank& file)
+{
+    return file.oldest ? *file.oldest : file.bank->Write();
+}
+
+std::vector<uint8_t> BankFileBytes(const song::DseBank& file, const dse::WaveBank& model)
+{
+    if (!file.oldest)
+    {
+        return model.Write();
+    }
+
+    try
+    {
+        return dse::OldestBank(model, *file.oldest);
+    }
+    catch (const std::invalid_argument& error)
+    {
+        throw std::invalid_argument("Can't change " + song::DseBankName(*file.bank) + ". " +
+                                    format::AsSentence(error.what()));
+    }
 }
 
 } // namespace dse_files_parts
@@ -611,14 +651,20 @@ format::File ReplaceDseSound(const format::File& file, const song::DseSet& set, 
     }
 
     // The settings take the new ticks of a quarter note and the counts of tracks and channels. The counts of a song
-    // file can exceed the tracks that it contains, and they stay.
-    const uint64_t info = held->second.offset + set.tracks_offsets[sound] - dse::SequenceInfo::kSize;
-    dse::SequenceInfo settings;
-    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(info), settings.bytes.size(), settings.bytes.begin());
-    settings.SetTicksPerQuarter(song.ticks_per_quarter);
-    settings.SetTrackCount(static_cast<uint8_t>(std::max<std::size_t>(song.track_count, count.tracks)));
-    settings.SetChannelCount(static_cast<uint8_t>(std::max<std::size_t>(song.channels, count.channels)));
-    format::File result = WithArchiveBytes(file, format::NativePieceStarts(file), info, settings.bytes, name);
+    // file can exceed the tracks that it contains, and they stay. A song's settings lie where its version puts them.
+    const uint8_t track_count = static_cast<uint8_t>(std::max<std::size_t>(song.track_count, count.tracks));
+    const uint8_t channel_count = static_cast<uint8_t>(std::max<std::size_t>(song.channels, count.channels));
+    const dse::SettingsPlaces places =
+        input.effects ? dse::SequenceInfoPlaces(set.tracks_offsets[sound] - dse::SequenceInfo::kSize)
+                      : dse::SongSettingsPlaces(held->second.bytes);
+    const uint64_t info = held->second.offset + places.start;
+    std::vector<uint8_t> settings(bytes.begin() + static_cast<std::ptrdiff_t>(info),
+                                  bytes.begin() + static_cast<std::ptrdiff_t>(info + places.size));
+    xsflib::StoreLe16(&settings[places.ticks - places.start], song.ticks_per_quarter);
+    settings[places.tracks - places.start] = track_count;
+    settings[places.channels - places.start] = channel_count;
+
+    format::File result = WithArchiveBytes(file, format::NativePieceStarts(file), info, settings, name);
     result.sequences[*sequence] = std::move(tracks);
 
     return result;

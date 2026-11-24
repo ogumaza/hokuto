@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <string_view>
 #include <utility>
 
@@ -99,6 +100,14 @@ uint32_t RareFrameTicks(const song::Sequence& sequence)
     }
 
     return static_cast<uint32_t>(std::max(1.0, std::ceil(sequence.timebase * fastest / 3600.0)));
+}
+
+std::string HexOf(uint32_t value)
+{
+    char text[16];
+    std::snprintf(text, sizeof(text), "0x%08X", value);
+
+    return text;
 }
 
 std::vector<float> RenderedDs(const std::shared_ptr<const song::DsArchive>& archive, uint32_t sound, double seconds)

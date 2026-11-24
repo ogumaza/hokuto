@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -65,7 +66,7 @@ std::vector<uint8_t> Image()
 
 std::shared_ptr<const hokuto::song::DseSet> SetOf(const File& file)
 {
-    return hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater);
+    return hokuto::song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater, {});
 }
 
 // The file of `path` in the set that `file` builds.
@@ -95,6 +96,21 @@ uint32_t BankNamed(const hokuto::song::DseSet& set, uint16_t id)
     }
 
     return 0;
+}
+
+// The 48 bytes of settings of the first sound effect of the bank of sound effects `effects`. Their places are
+// SequenceInfo's: the ticks of a quarter note at 2, the count of tracks at 6 and the count of channels at 7. Nothing
+// where the bank has no first sound effect.
+std::vector<uint8_t> EffectSettings(const std::vector<uint8_t>& effects)
+{
+    const std::optional<uint32_t> tracks = ntdlib::dse::TracksOffset(effects, 0);
+    if (!tracks.has_value() || *tracks < ntdlib::dse::SequenceInfo::kSize)
+    {
+        return {};
+    }
+
+    const auto start = effects.begin() + *tracks - ntdlib::dse::SequenceInfo::kSize;
+    return {start, start + ntdlib::dse::SequenceInfo::kSize};
 }
 
 std::string RefusalOf(const std::function<void()>& edit)
@@ -183,11 +199,21 @@ void TestSong()
     XSFLIB_CHECK(remapped.tracks[1].program == 3);
 }
 
-// A sound effect has at most 4 tracks.
+// A sound effect has at most 4 tracks. A song file of 2 tracks at 96 ticks a quarter note takes an effect's place, and
+// the effect's settings take its ticks and its counts of tracks and channels.
 void TestEffectTracks()
 {
     const File file = hokuto::format::ImportDseImage(Image());
     const std::shared_ptr<const hokuto::song::DseSet> set = SetOf(file);
+    std::vector<uint8_t> two = files::SongFile({{0, 0, 0, 0, 0x92, 0x10, 0x98}, {1, 1, 0, 0, 0x92, 0x10, 0x98}});
+    two[0x52] = 96;
+    const std::vector<uint8_t> before = EffectSettings(FileAt(file, "SOUND/SE/se.sed"));
+    const std::vector<uint8_t> after = EffectSettings(FileAt(
+        hokuto::edit::ReplaceDseSound(file, *set, kEffect, hokuto::edit::ReadIncomingDseSong(two)), "SOUND/SE/se.sed"));
+    SEQLIB_REQUIRE(before.size() == 48 && after.size() == 48);
+    XSFLIB_CHECK(before[2] == 48 && before[6] == 1 && before[7] == 1);
+    XSFLIB_CHECK(after[2] == 96 && after[3] == 0 && after[6] == 2 && after[7] == two[0x50 + 7]);
+
     std::vector<Bytes> tracks;
     for (uint8_t track = 0; track < 5; track++)
     {

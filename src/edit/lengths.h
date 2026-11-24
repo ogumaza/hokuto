@@ -27,9 +27,9 @@ using LengthProgress = std::function<bool(std::size_t measured, std::size_t soun
 std::size_t MostLengthThreads();
 
 // `file` with the lengths of its sequence sounds, in place of the lengths that it held. `archive` is the archive that
-// the file builds. Each sound plays with the file's effects, at its buses' volumes. A sound of the 3DS plays without
-// them (song::MeasureLength). `threads` sounds are measured at once, and MostLengthThreads at most. A sound that the
-// model can't play gets no lengths. Returns nothing once `progress` stops the measure.
+// the file builds. Each sound plays with the file's effects, at its buses' volumes, and with its start. A sound of the
+// 3DS plays without the effects (song::MeasureLength). `threads` sounds are measured at once, and MostLengthThreads at
+// most. A sound that the model can't play gets no lengths. Returns nothing once `progress` stops the measure.
 std::optional<format::File> WithLengths(const format::File& file, const ntdlib::sar::SoundArchive& archive,
                                         std::size_t threads, const LengthProgress& progress = {});
 

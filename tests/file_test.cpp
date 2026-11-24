@@ -46,18 +46,18 @@ void TestUnusualRoundTrip()
     XSFLIB_CHECK(format::WriteText(format::ReadText(text)) == text);
 }
 
-// The binary form holds version 1.0, the group files in GRPF and the effects in MIXR.
+// The binary form holds version 2.0, the group files in GRPF and the effects in MIXR.
 void TestUnusualChunks()
 {
     const UnusualFixture fixture = MakeUnusualFixture();
     const std::vector<uint8_t>& binary = fixture.binary;
     const std::string& text = fixture.text;
 
-    // Version 1.2, and the group files in the GRPF chunk before the other chunks: their count, then each one's group,
+    // Version 2.0, and the group files in the GRPF chunk before the other chunks: their count, then each one's group,
     // the game's size and SHA-1, its pieces and its fields. The pieces and the fields take the forms of those in NATV.
     // NATV holds the sequence's encodings.
-    XSFLIB_CHECK(binary[8] == 1 && binary[9] == 0 && binary[10] == 2 && binary[11] == 0);
-    XSFLIB_CHECK(text.starts_with("hok 1.2\n") &&
+    XSFLIB_CHECK(binary[8] == 2 && binary[9] == 0 && binary[10] == 0 && binary[11] == 0);
+    XSFLIB_CHECK(text.starts_with("hok 2.0\n") &&
                  text.find(std::string("\nchunk GRPF 160\n") + kGroupFilesText + "\nchunk XTRA") != std::string::npos);
     XSFLIB_CHECK(std::ranges::equal(ChunkBytes(binary, 5), kGroupFilesChunk));
 
@@ -716,7 +716,7 @@ void TestDamageBinary()
     XSFLIB_CHECK(refuses(flipped));
     XSFLIB_CHECK(refuses(std::vector<uint8_t>(binary.begin(), binary.end() - 1)));
     std::vector<uint8_t> later = binary;
-    later[8] = 2;
+    later[8] = 3;
     XSFLIB_CHECK(refuses(later));
     XSFLIB_CHECK(refuses({1, 2, 3}));
     XSFLIB_CHECK(Throws<xsflib::FormatError>([] { format::ReadEitherForm(std::vector<uint8_t>{1, 2}); }));
@@ -795,7 +795,7 @@ void TestDamageText()
     // Texts with mistakes give the line.
     XSFLIB_CHECK(TextError("hok 1.0\nengine switch\nsequence 0\n    louder 5\n").starts_with("Line 4: no command"));
     XSFLIB_CHECK(TextError("hok 1.0\nengine switch\nsequence 0\n    jump nowhere\n").starts_with("Line 4: no label"));
-    XSFLIB_CHECK(TextError("hok 2.0\nengine switch\n").starts_with("Line 1: a later version"));
+    XSFLIB_CHECK(TextError("hok 3.0\nengine switch\n").starts_with("Line 1: a later version"));
     XSFLIB_CHECK(TextError("hok 1.0\nsequence 0\n").find("names no engine") != std::string::npos);
     XSFLIB_CHECK(TextError("hok 1.0\nengine switch\nnative switch\n    bytes 4\n        AAAA\n").starts_with("Line 4"));
     XSFLIB_CHECK(TextError("hok 1.0\nengine switch\nsequence 1\n").starts_with("Line 3"));

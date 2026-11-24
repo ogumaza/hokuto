@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -112,6 +113,16 @@ struct TrackView
     ImU32 rainbow_colour = 0;
     bool mute = false;
     bool solo = false;
+
+    // Whether the game quiets the track as the sound starts (format::SoundStart): Mute at Start. The track shows grey,
+    // and plays nothing, whatever its M and S.
+    bool start_muted = false;
+
+    // The volume and the track variables that the sound's start gives this track alone, the variables by their numbers
+    // from 32 to 47.
+    std::optional<float> start_volume;
+    std::map<uint8_t, int16_t> start_variables;
+
     float volume = 0.0f; // dB
     float pan = 0.0f;    // -1 for left to 1 for right
     std::array<float, kSendCount> sends = {-std::numeric_limits<float>::infinity(),
@@ -152,7 +163,7 @@ struct VariableView
     std::vector<int> choices;
     bool written = false; // the song's commands set it
     int start = -1;
-    int initial = -1;         // the value that the console starts it with when the game sets none
+    int initial = -1;         // the starting value when the user chooses none (song::StartingValue)
     std::optional<int> value; // the value at the position, while the song plays
     std::optional<int> chosen;
 };
@@ -167,7 +178,7 @@ struct SceneView
 
 // What the user does with a scene. Store makes a new scene of the values that the variables start with. Recall starts
 // the variables with a scene's values. Update gives a scene the values that the variables start with. Rename gives it
-// another name, and Delete removes it.
+// another name, and Delete removes it. Recall Start and Update Start do the same with the sound's start.
 enum class SceneAction
 {
     kStore,
@@ -175,6 +186,8 @@ enum class SceneAction
     kUpdate,
     kRename,
     kDelete,
+    kRecallStart,
+    kUpdateStart,
 };
 
 // An action on the song's scenes that waits until the program takes it: the action, the scene's place among the song's
@@ -364,6 +377,10 @@ struct SongView
     std::vector<SceneView> scenes;
     std::optional<SceneRequest> scene_request;
 
+    // The row of the sound's start above the scenes, named Start, where the file's console has a game's starts. It's
+    // lit while the variables start with the start's values and changes.
+    std::optional<SceneView> start_scene;
+
     // The changes of the variables while the song plays, in the order of their times, and every variable that the
     // song's commands read. A change can set any of those. Only their numbers and choices count.
     std::vector<ChangeView> changes;
@@ -379,13 +396,14 @@ struct SongView
     std::vector<TempoPointView> tempo_points;
 };
 
-// Whether track `index` of `song` is heard: it isn't muted, and either it's soloed or no track is.
+// Whether track `index` of `song` is heard: neither the user nor the game mutes it, and either it's soloed or no track
+// is.
 inline bool IsHeard(const SongView& song, std::size_t index)
 {
     const TrackView& track = song.tracks[index];
     const bool any_solo =
         std::any_of(song.tracks.begin(), song.tracks.end(), [](const TrackView& other) { return other.solo; });
-    return !track.mute && (track.solo || !any_solo);
+    return !track.mute && !track.start_muted && (track.solo || !any_solo);
 }
 
 } // namespace hokuto::app

@@ -9,7 +9,7 @@ if (CMAKE_HOST_APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET AND NOT DEFINED ENV{MAC
 endif()
 # The program shows this version. The file properties of the Windows program and the Info.plist of the macOS app show
 # it too.
-project(hokuto VERSION 2.1.1 LANGUAGES C CXX)
+project(hokuto VERSION 2.2.0 LANGUAGES C CXX)
 # On macOS, the menu bar and the title bar come from AppKit, through Objective-C++.
 if (APPLE)
     enable_language(OBJCXX)
@@ -272,6 +272,13 @@ target_include_directories(hokuto_driver_rules PUBLIC src)
 target_link_libraries(hokuto_driver_rules PUBLIC agblib::brownie ntdlib::commands agblib::quintet agblib::ubimilan)
 hokuto_set_options(hokuto_driver_rules)
 
+# The DSE files of a DS cartridge image, loose in its file system and inside the game's packs, as ntdlib's converter
+# finds them, and the levels at which the game starts its songs. The format layer and the song layer share both.
+add_library(hokuto_dse_files STATIC src/format/dse_files.cpp)
+target_include_directories(hokuto_dse_files PUBLIC src)
+target_link_libraries(hokuto_dse_files PUBLIC ntdlib::dse ntdlib::ntr PRIVATE ntdlib::sequence_export_dse)
+hokuto_set_options(hokuto_dse_files)
+
 # The songs: a sound archive of any of the four consoles opened from a file, its sequences as the zones show them, and
 # the player that plays a sequence on ntdlib's model of the console, with snapshots for seeking. ntdlib's performer
 # reads the sequences, away from the program's thread. The browser's previews play a wave, a note of an instrument or a
@@ -300,9 +307,10 @@ add_library(hokuto_song STATIC src/song/aac.cpp src/song/archive.cpp src/song/au
             src/song/sequence_timing.cpp src/song/sequence_ubimilan.cpp src/song/sequence_variables.cpp
             src/song/console_ctr.cpp src/song/console_ds.cpp src/song/console_gba.cpp src/song/console_switch_wiiu.cpp
             src/song/console_wii.cpp src/song/sequence_model.cpp src/song/sequence_preview.cpp
-            src/song/sequence_reader.cpp src/song/streams.cpp src/song/track_flow.cpp)
+            src/song/sequence_reader.cpp src/song/starts.cpp src/song/streams.cpp src/song/track_flow.cpp)
 target_include_directories(hokuto_song PUBLIC src)
-target_link_libraries(hokuto_song PUBLIC hokuto_audio hokuto_driver_rules ntdlib::cafe ntdlib::ctr ntdlib::ctr_fx
+target_link_libraries(hokuto_song PUBLIC hokuto_audio hokuto_driver_rules hokuto_dse_files ntdlib::cafe ntdlib::ctr
+                      ntdlib::ctr_fx
                       ntdlib::dse_layout agblib::brownie_player agblib::konami_player agblib::krawall_player
                       agblib::mp2k_player
                       agblib::quintet_player agblib::rare_player agblib::rd2_player ntdlib::ntr_profiles
@@ -357,16 +365,20 @@ hokuto_set_options(hokuto_measure)
 # through its mp2k layout on the GBA. seqlib names the group files that an export writes.
 add_library(hokuto_format STATIC src/format/archive.cpp src/format/archive_ds.cpp src/format/archive_gba.cpp
             src/format/archive_tables.cpp src/format/brownie.cpp src/format/codes.cpp src/format/command_values.cpp
-            src/format/drivers.cpp src/format/file.cpp src/format/file_checks.cpp src/format/file_chunks.cpp
-            src/format/file_sequences.cpp src/format/kinds.cpp src/format/konami.cpp src/format/krawall.cpp
-            src/format/model.cpp src/format/model_chunks.cpp src/format/model_wii.cpp src/format/quintet.cpp
-            src/format/rare.cpp src/format/rd2.cpp src/format/text.cpp src/format/text_commands.cpp
-            src/format/text_read.cpp src/format/text_sections.cpp src/format/text_values.cpp src/format/ubimilan.cpp)
+            src/format/drivers.cpp src/format/file.cpp src/format/file_archives.cpp src/format/file_checks.cpp
+            src/format/file_chunks.cpp src/format/file_sequences.cpp src/format/file_starts.cpp src/format/kinds.cpp
+            src/format/konami.cpp src/format/krawall.cpp src/format/model.cpp src/format/model_chunks.cpp
+            src/format/model_wii.cpp src/format/project.cpp src/format/quintet.cpp src/format/rare.cpp
+            src/format/rd2.cpp src/format/text.cpp src/format/text_archives.cpp src/format/text_commands.cpp
+            src/format/text_read.cpp src/format/text_sections.cpp
+            src/format/text_starts.cpp src/format/text_values.cpp src/format/ubimilan.cpp)
 target_include_directories(hokuto_format PUBLIC src)
-target_link_libraries(hokuto_format PUBLIC hokuto_driver_rules agblib::brownie ntdlib::commands agblib::konami
+target_link_libraries(hokuto_format PUBLIC hokuto_driver_rules hokuto_dse_files agblib::brownie ntdlib::commands
+                      agblib::konami
                       agblib::krawall agblib::mp2k agblib::quintet agblib::rare agblib::rd2 agblib::ubimilan ntdlib::ntr
                       ntdlib::rsar_layout ntdlib::sar ntdlib::sar_layout ntdlib::sdat_cut ntdlib::dse_layout
-                      xsflib::common PRIVATE ntdlib::ntr_snd seqlib::seqlib)
+                      xsflib::common ntdlib::cafe_sequence_starts ntdlib::ctr_starting_tracks PRIVATE ntdlib::ntr_snd
+                      seqlib::seqlib)
 hokuto_set_options(hokuto_format)
 
 # hok, the command-line tool: sound archives into .hok files and back, the text form and the model form. It also writes
@@ -578,7 +590,9 @@ add_executable(hokuto WIN32 MACOSX_BUNDLE
     src/app/scene_values.cpp
     src/app/sequence_view.cpp
     src/app/sound_section.cpp
+    src/app/sound_start_section.cpp
     src/app/theme.cpp
+    src/app/track_start_rows.cpp
     src/app/undo_history.cpp
     src/app/variables_zone.cpp
     src/app/views.cpp
@@ -636,8 +650,7 @@ if (APPLE)
     )
     # The linker signs the executable ad hoc. Signing the bundle ad hoc seals its Info.plist and icon too. An ad hoc
     # signature names nobody.
-    add_custom_command(TARGET hokuto POST_BUILD COMMAND codesign --force --sign - $<TARGET_BUNDLE_DIR:hokuto>
-                       VERBATIM)
+    xsflib_sign_bundle(hokuto)
 elseif (WIN32)
     set(icon ${hokuto_icons}/hokuto.ico)
     file(CONFIGURE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/hokuto_icon.rc
@@ -727,6 +740,12 @@ if (HOKUTO_TOOLS)
     add_executable(hokuto_check_konami_mix tools/check_konami_mix.cpp)
     target_link_libraries(hokuto_check_konami_mix PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_konami_mix)
+    # hokuto_check_project imports GBA ROMs as projects, and checks the export, the forms and the edits of a ROM with
+    # more than one driver (format/project.h).
+    add_executable(hokuto_check_project tools/check_project.cpp)
+    target_link_libraries(hokuto_check_project PRIVATE hokuto_check_support xsflib::console)
+    hokuto_set_options(hokuto_check_project)
+
     add_executable(hokuto_check_konami_starts tools/check_konami_starts.cpp)
     target_link_libraries(hokuto_check_konami_starts PRIVATE hokuto_check_support hokuto_edit)
     hokuto_set_options(hokuto_check_konami_starts)
@@ -787,7 +806,8 @@ if (HOKUTO_TOOLS)
     hokuto_set_options(hokuto_check_mix)
     add_executable(hokuto_check_exports tools/check_exports.cpp tools/check_exports_drivers.cpp tools/check_exports_ds.cpp
                    tools/check_exports_gba.cpp)
-    target_link_libraries(hokuto_check_exports PRIVATE hokuto_edit hokuto_format hokuto_song)
+    target_link_libraries(hokuto_check_exports PRIVATE hokuto_edit hokuto_format hokuto_song
+                                                ntdlib::sequence_export_ntr_profiles)
     hokuto_set_options(hokuto_check_exports)
     add_executable(hokuto_check_items tools/check_items.cpp tools/check_items_other_console.cpp
                    tools/check_items_streams.cpp tools/check_items_wav.cpp tools/check_items_wii.cpp)
@@ -913,12 +933,22 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto ctr hokuto_edit)
     xsflib_add_project_test(hokuto declicker hokuto_audio)
     xsflib_add_project_test(hokuto mixdown hokuto_edit)
-    xsflib_add_project_test(hokuto ds hokuto_song)
+    xsflib_add_project_test(hokuto ds hokuto_song ntdlib::sequence_export_ntr_profiles)
     xsflib_add_project_test(hokuto dse hokuto_song)
+    # The DSE files inside a game's packs, and the notes when an image opens.
+    xsflib_add_project_test(hokuto dse_packs hokuto_edit)
+    # The ticks of DSE's driver.
+    xsflib_add_project_test(hokuto dse_ticks hokuto_edit)
+    # The levels at which games start their songs on DSE.
+    xsflib_add_project_test(hokuto dse_starts hokuto_edit)
+    # DSE's files of version 0x402.
+    xsflib_add_project_test(hokuto dse_oldest hokuto_edit)
     xsflib_add_project_test(hokuto konami hokuto_edit)
     xsflib_add_project_test(hokuto konami_edits hokuto_edit)
     xsflib_add_project_test(hokuto konami_samples hokuto_edit)
     xsflib_add_project_test(hokuto rd2 hokuto_edit)
+    xsflib_add_project_test(hokuto project hokuto_format)
+    xsflib_add_project_test(hokuto project_edits hokuto_edit)
     xsflib_add_project_test(hokuto brownie hokuto_edit)
     xsflib_add_project_test(hokuto ubimilan hokuto_edit)
     xsflib_add_project_test(hokuto rare hokuto_edit)
@@ -939,10 +969,12 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto codes hokuto_format)
     xsflib_add_project_test(hokuto file hokuto_format)
     xsflib_add_project_test(hokuto file_chunks hokuto_format)
+    xsflib_add_project_test(hokuto file_starts hokuto_format)
     xsflib_add_project_test(hokuto format_archive hokuto_format)
     xsflib_add_project_test(hokuto format_mix hokuto_format)
     xsflib_add_project_test(hokuto format_roms hokuto_format)
     xsflib_add_project_test(hokuto input_kinds hokuto_format)
+    xsflib_add_project_test(hokuto hok_archives hokuto_format)
     xsflib_add_project_test(hokuto frame_resampler hokuto_song)
     xsflib_add_project_test(hokuto played hokuto_format hokuto_song)
     xsflib_add_project_test(hokuto frame_ring hokuto_audio)
@@ -1020,6 +1052,12 @@ if (BUILD_TESTING)
     target_sources(hokuto_mixdown_window_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/mixdown_jobs.cpp
                    src/app/mixdown_window.cpp src/app/theme.cpp src/app/widgets.cpp)
     target_include_directories(hokuto_mixdown_window_test PRIVATE src)
+    # The browser of a file with two archives, drawn without a display. Its sources belong to the program.
+    xsflib_add_project_test(hokuto browser hokuto_item_views hokuto_key_edits hokuto_imgui)
+    target_sources(hokuto_browser_test PRIVATE src/app/browser.cpp src/app/faders.cpp src/app/icons.cpp
+                   src/app/info_line.cpp src/app/sound_section.cpp src/app/sound_start_section.cpp src/app/theme.cpp
+                   src/app/wave_sound_section.cpp src/app/widgets.cpp src/app/zone_parts.cpp)
+    target_include_directories(hokuto_browser_test PRIVATE src)
     # The Undo History, drawn without a display. Its sources belong to the program.
     xsflib_add_project_test(hokuto undo_history hokuto_imgui hokuto_song)
     target_sources(hokuto_undo_history_test PRIVATE src/app/faders.cpp src/app/icons.cpp src/app/theme.cpp
@@ -1067,6 +1105,8 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto sequence_model hokuto_song)
     xsflib_add_project_test(hokuto sequence_reader hokuto_song)
     xsflib_add_project_test(hokuto song_archive hokuto_song)
+    # The starts of the sounds.
+    xsflib_add_project_test(hokuto starts hokuto_edit)
     xsflib_add_project_test(hokuto streams hokuto_edit)
     xsflib_add_project_test(hokuto ctr_streams hokuto_edit)
     xsflib_add_project_test(hokuto wii_streams hokuto_edit)
@@ -1078,4 +1118,8 @@ if (BUILD_TESTING)
     xsflib_add_project_test(hokuto transport hokuto_transport)
     xsflib_add_project_test(hokuto variables hokuto_edit)
     xsflib_add_project_test(hokuto wii_programs hokuto_edit)
+
+    # Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.
+    include(externals/xsflib/cmake/XsflibApps.cmake)
+    xsflib_include_local_tests()
 endif()

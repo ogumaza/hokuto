@@ -81,7 +81,7 @@ std::vector<BatchSound> BatchSounds(const Played& played)
 }
 
 Sequence ReadBatchSequence(const Played& played, uint32_t sound, const std::optional<ntdlib::SndBuild>& wii_build,
-                           const StartValues& values, const Changes& changes)
+                           const StartValues& values, const Changes& changes, const format::SoundStart& start)
 {
     if (played.Wii())
     {
@@ -104,13 +104,13 @@ Sequence ReadBatchSequence(const Played& played, uint32_t sound, const std::opti
         return played.Driver()->ReadSequence(sound);
     }
 
-    return ReadSequence(*played.Sar(), sound, values, changes);
+    return ReadSequence(*played.Sar(), sound, values, changes, start);
 }
 
 ntdlib::sequence_export::Conversion ConvertBatchSound(const Played& played, uint32_t sound,
                                                       const std::optional<ntdlib::SndBuild>& wii_build,
                                                       const std::string& program, const StartValues& values,
-                                                      const Changes& changes)
+                                                      const Changes& changes, const format::SoundStart& start)
 {
     if (played.Wii())
     {
@@ -133,7 +133,7 @@ ntdlib::sequence_export::Conversion ConvertBatchSound(const Played& played, uint
         return played.Driver()->ConvertToMidi(sound, program);
     }
 
-    return ConvertToMidi(*played.Sar(), sound, values, changes, program);
+    return ConvertToMidi(*played.Sar(), sound, values, changes, program, start);
 }
 
 std::string SchemeName(const NamingScheme& scheme, const NameParts& parts)

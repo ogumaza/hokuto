@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "ntdlib/commands/units.h"
+#include "ntdlib/nwsnd/mute_modes.h"
 #include "ntdlib/sequence_export/filter.h"
 #include "ntdlib/sequence_export/settings.h"
 #include "seqlib/midi/controllers.h"
@@ -36,6 +37,8 @@ using midi_songs_parts::Setting;
 using ntdlib::commands::Command;
 using ntdlib::commands::Kind;
 using ntdlib::commands::kOne;
+using ntdlib::nwsnd::kMuteOff;
+using ntdlib::nwsnd::kMuteStop;
 
 // MIDI's drum channel, 10.
 constexpr uint8_t kDrumChannel = seqlib::midi::kDrumChannel;
@@ -53,6 +56,7 @@ constexpr uint8_t kParameterFine = seqlib::midi::cc::kRpnLsb;
 constexpr uint8_t kParameter = seqlib::midi::cc::kRpnMsb;
 constexpr uint8_t kBankSelect = seqlib::midi::cc::kBankSelect;        // with `selects_banks`
 constexpr uint8_t kBankSelectFine = seqlib::midi::cc::kBankSelectLsb; // with `selects_banks`, at 0
+constexpr uint8_t kSoundOff = seqlib::midi::cc::kAllSoundOff;         // with `stops_sounds`
 
 // The controllers that select a non-registered parameter. Data entry after them sets no registered parameter, as after
 // the null parameter, 127 and 127.
@@ -247,6 +251,11 @@ Command Setting(Kind kind, int64_t value, uint8_t index)
     return command;
 }
 
+bool StopsSounds(const Command& command)
+{
+    return command.kind == Kind::kMute && command.value.value == kMuteStop * kOne;
+}
+
 std::vector<Placed> TimeKeepingTempos(const std::vector<std::pair<uint64_t, uint32_t>>& tempos,
                                       const std::vector<uint64_t>& lines, uint64_t start,
                                       std::optional<uint64_t> loop_start, std::optional<uint64_t> loop_end,
@@ -358,7 +367,7 @@ bool Holds(uint8_t status, uint8_t data, uint8_t value, const MidiOptions& optio
                data == kDataEntry || data == kDataEntryFine ||
                (options.imports && ImportedSetting(data, value).has_value()) ||
                ((options.selects_banks || options.imports) && data == kBankSelectFine && value == 0) ||
-               (options.selects_banks && data == kBankSelect);
+               (options.selects_banks && data == kBankSelect) || (options.stops_sounds && data == kSoundOff);
     default:
         return false;
     }
@@ -457,6 +466,17 @@ void PlaceControlChange(MidiTrack& track, uint64_t tick, uint8_t status, uint8_t
     case kDataEntry:
     case kDataEntryFine:
         PlaceDataEntry(track, tick, data, value, options, left_out);
+        break;
+
+    case kSoundOff:
+        if (!options.stops_sounds)
+        {
+            ++left_out[LeftOut(status, data)];
+            break;
+        }
+
+        track.Add(tick, Setting(Kind::kMute, kMuteStop * kOne));
+        track.Add(tick, Setting(Kind::kMute, kMuteOff));
         break;
 
     default:

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <optional>
 #include <span>
@@ -25,6 +26,7 @@
 #include "xsflib/bytes.h"
 
 #include "format/archive.h"
+#include "format/dse_files.h"
 #include "format/file.h"
 
 namespace hokuto::format
@@ -137,12 +139,6 @@ File ImportDsImage(std::span<const uint8_t> image, const std::optional<DsArchive
 namespace
 {
 
-// A file's name in a set of DSE files: its path, or its number for a file without a path.
-std::string DseFileName(const ntdlib::ntr::RomFile& file)
-{
-    return file.path.empty() ? "file " + std::to_string(file.id) : file.path;
-}
-
 bool IsDseFile(std::span<const uint8_t> bytes)
 {
     return bytes.size() >= 4 &&
@@ -154,9 +150,20 @@ bool IsDseFile(std::span<const uint8_t> bytes)
 
 bool HoldsDseFiles(std::span<const uint8_t> image)
 {
+    // A file that starts with a DSE header gives at least one DSE file (ntdlib::dse::FindFiles). Only an image without
+    // one requires the search of its packs.
     const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(image);
-    return std::ranges::any_of(rom.Files(),
-                               [&rom](const ntdlib::ntr::RomFile& file) { return IsDseFile(rom.FileData(file.id)); });
+    const auto is_dse = [&rom](const ntdlib::ntr::RomFile& file)
+    {
+        return IsDseFile(rom.FileData(file.id));
+    };
+    if (std::ranges::any_of(rom.Files(), is_dse))
+    {
+        return true;
+    }
+
+    std::vector<std::vector<uint8_t>> storage;
+    return !DseFilesOf(rom, storage).empty();
 }
 
 namespace
@@ -183,21 +190,29 @@ File FileOfDseFiles(std::span<const ntdlib::dse::NamedFile> files)
 File ImportDseImage(std::span<const uint8_t> image)
 {
     const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(image);
+    std::vector<std::vector<uint8_t>> storage;
     std::vector<ntdlib::dse::NamedFile> files;
-    for (const ntdlib::ntr::RomFile& file : rom.Files())
+    std::vector<DsePlace> places;
+    for (DseImageFile& found : DseFilesOf(rom, storage))
     {
-        if (const std::span<const uint8_t> data = rom.FileData(file.id); IsDseFile(data))
-        {
-            files.push_back({DseFileName(file), data});
-        }
+        places.push_back(DsePlaceOf(found));
+        files.push_back(std::move(found.named));
     }
     if (files.empty())
     {
         throw xsflib::FormatError("the image contains no DSE files");
     }
 
+    // The cartridge records where each file of the set sits in the image. The game's code gives the levels at which it
+    // starts its songs.
     File file = FileOfDseFiles(files);
-    file.native.Edit([&image](NativeArchive& native) { native.cartridge = CartridgeOf(image); });
+    file.starts = DseGameStarts(rom, files);
+    const auto add_cartridge = [&image, &places](NativeArchive& native)
+    {
+        native.cartridge = CartridgeOf(image);
+        native.cartridge->places = std::move(places);
+    };
+    file.native.Edit(add_cartridge);
 
     return file;
 }
@@ -247,20 +262,119 @@ std::vector<uint8_t> CartridgeImage(const Cartridge& cartridge)
 namespace
 {
 
-// The cartridge image of a file of a set of DSE files: each file of the set whose bytes changed is written into the
-// image.
-DsImageExport ExportDseImage(const File& file, const std::optional<ntdlib::ntr::DsiKeys>& keys)
+// The advice for a changed bank of sound effects that the export can't write.
+constexpr char kKeepEdits[] =
+    "Hokuto can't export a bank of sound effects as a file. Save the project to keep the edits.";
+
+// The number of files that the message of a refused export names. It mentions the others by their count.
+constexpr std::size_t kNamedFiles = 10;
+
+// A changed DSE file that the export can't write: its path in the set, the path of the image's file that holds it, and
+// whether it's a bank of sound effects (sedl). The image keeps the file compressed as one file when the two paths are
+// the same. Otherwise the file is inside a pack.
+struct PackedFile
 {
-    std::vector<uint8_t> image = CartridgeImage(*file.native->cartridge);
-    const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(image);
-    std::map<std::string, const ntdlib::ntr::RomFile*> by_name;
-    for (const ntdlib::ntr::RomFile& rom_file : rom.Files())
+    std::string path;
+    std::string pack;
+    bool effects = false;
+};
+
+bool Compressed(const PackedFile& file)
+{
+    return file.path == file.pack;
+}
+
+// The name of `file` in the message of a refused export: its name in the pack and the pack's path in brackets, or its
+// path. `mixed` says that the list has files of both kinds: a compressed file then adds "(compressed)".
+std::string RefusedName(const PackedFile& file, bool mixed)
+{
+    if (Compressed(file))
     {
-        by_name.emplace(DseFileName(rom_file), &rom_file);
+        return mixed ? file.path + " (compressed)" : file.path;
     }
 
+    return file.path.substr(file.pack.size() + 1) + " (" + file.pack + ")";
+}
+
+// The message for the changed files of a set that the export can't write, `in_packs`. The browser exports a song or a
+// wave bank as its file, and the user can put that file into the image with another tool. It exports no bank of sound
+// effects as a file: such an edit stays in the project.
+std::string PackedFilesMessage(const std::vector<PackedFile>& in_packs)
+{
+    const auto effects = std::ranges::count_if(in_packs, &PackedFile::effects);
+    const auto others = static_cast<std::ptrdiff_t>(in_packs.size()) - effects;
+    if (in_packs.size() == 1)
+    {
+        const PackedFile& file = in_packs[0];
+        const std::string where =
+            Compressed(file) ? "The image keeps it compressed. " : "It's inside the pack " + file.pack + ". ";
+        const std::string name = Compressed(file) ? file.path : file.path.substr(file.pack.size() + 1);
+        return "Can't write " + name + " into the image. " + where +
+               (effects == 1 ? kKeepEdits : "Export it from the browser instead.");
+    }
+
+    // The first files of the list, by name, and the count of the others.
+    const auto compressed = std::ranges::count_if(in_packs, Compressed);
+    const bool all_compressed = compressed == static_cast<std::ptrdiff_t>(in_packs.size());
+    const bool mixed = compressed > 0 && !all_compressed;
+    std::string list;
+    for (std::size_t i = 0; i < in_packs.size() && i < kNamedFiles; ++i)
+    {
+        list += (i == 0 ? "" : ", ") + RefusedName(in_packs[i], mixed);
+    }
+    if (in_packs.size() > kNamedFiles)
+    {
+        list += ", and " + std::to_string(in_packs.size() - kNamedFiles) + " more";
+    }
+
+    std::string advice;
+    if (others > 0)
+    {
+        advice += effects > 0 ? " Export the songs and wave banks from the browser instead."
+                              : " Export them from the browser instead.";
+    }
+    if (effects > 0)
+    {
+        advice += ' ';
+        advice += kKeepEdits;
+    }
+
+    std::string where = "They're inside packs";
+    if (all_compressed)
+    {
+        where = "The image keeps them compressed";
+    }
+    else if (mixed)
+    {
+        where = "They're inside packs or compressed";
+    }
+
+    return "Can't write " + std::to_string(in_packs.size()) + " files into the image. " + where + ": " + list + "." +
+           advice;
+}
+
+// The cartridge image of a file of a set of DSE files: each file of the set whose bytes changed is written into the
+// image. A file inside a pack, or one that the image keeps compressed, can't be written (DseFilesOf): the export
+// refuses a changed one, and names it. The cartridge's record gives each file's place. A file without the record
+// searches the image.
+DsImageExport ExportDseImage(const File& file, const std::optional<ntdlib::ntr::DsiKeys>& keys)
+{
+    const Cartridge& cartridge = *file.native->cartridge;
+    std::vector<uint8_t> image = CartridgeImage(cartridge);
+    const ntdlib::ntr::Rom rom = ntdlib::ntr::Rom::Parse(image);
+    std::vector<std::vector<uint8_t>> storage;
+    std::map<std::string, DseImageFile, std::less<>> by_name;
+    for (DseImageFile& found :
+         cartridge.places.empty() ? DseFilesOf(rom, storage) : DseFilesAt(rom, cartridge.places, storage))
+    {
+        std::string name = found.named.path;
+        by_name.emplace(std::move(name), std::move(found));
+    }
+
+    // Each changed file of the file system goes into the image.
     const std::vector<uint8_t> set = ExportArchive(file);
     std::map<uint32_t, std::vector<uint8_t>> changed;
+    std::vector<PackedFile> in_packs;
     for (const ntdlib::dse::NamedFile& named : ntdlib::dse::ReadSet(set))
     {
         const auto found = by_name.find(named.path);
@@ -269,10 +383,25 @@ DsImageExport ExportDseImage(const File& file, const std::optional<ntdlib::ntr::
             throw std::invalid_argument("The cartridge image contains no file " + named.path + ".");
         }
 
-        if (!std::ranges::equal(named.bytes, rom.FileData(found->second->id)))
+        const DseImageFile& place = found->second;
+        if (std::ranges::equal(named.bytes, place.named.bytes))
         {
-            changed.emplace(found->second->id, std::vector<uint8_t>(named.bytes.begin(), named.bytes.end()));
+            continue;
         }
+
+        if (place.loose)
+        {
+            changed.emplace(place.image_file, std::vector<uint8_t>(named.bytes.begin(), named.bytes.end()));
+        }
+        else
+        {
+            const bool effects = named.bytes.size() >= 4 && std::memcmp(named.bytes.data(), "sedl", 4) == 0;
+            in_packs.push_back({named.path, place.image_path, effects});
+        }
+    }
+    if (!in_packs.empty())
+    {
+        throw std::invalid_argument(PackedFilesMessage(in_packs));
     }
     if (changed.empty())
     {
@@ -410,7 +539,7 @@ std::vector<std::optional<uint32_t>> DseSoundSequences(const File& file, std::sp
     {
         const auto found = files.find(sounds[i].path);
         const std::optional<uint32_t> offset =
-            found == files.end() ? std::nullopt : ntdlib::dse::TracksOffset(found->second, sounds[i].effect);
+            found == files.end() ? std::nullopt : ntdlib::dse::TracksInFile(found->second, sounds[i].effect);
         if (offset)
         {
             const auto sequence = sequence_at.find(uint64_t(found->second.data() - set.data()) + *offset);

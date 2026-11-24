@@ -248,6 +248,114 @@ void ReportMissing(const std::multimap<NotePlace, Expected>& expected, const std
     }
 }
 
+// Takes the places of `expected` that two or more notes share out of it, counts their notes and returns the places. A
+// move can put a note on the tick of another note of the same key on its track. The two then play as one.
+std::set<NotePlace> TakeTogether(std::multimap<NotePlace, Expected>& expected, Totals& totals)
+{
+    std::set<NotePlace> together;
+    for (auto at = expected.begin(); at != expected.end(); at = expected.upper_bound(at->first))
+    {
+        if (expected.count(at->first) > 1)
+        {
+            together.insert(at->first);
+            totals.together += expected.count(at->first);
+        }
+    }
+    std::erase_if(expected, [&together](const auto& entry) { return together.contains(entry.first); });
+
+    return together;
+}
+
+// Whether `note`, a note of `track` at `key` that the edited song plays where no note is expected, counts apart, and
+// counts it. `before` is the song before the edits, and `parted` the places of the notes that a move or a removal
+// parts from another note.
+bool ExtraApart(const Sequence& before, const hokuto::song::Track& track, const Note& note, const NotePlace& key,
+                const std::set<NotePlace>& parted, const ChannelSpans& spans, const ChannelOf& channel_of,
+                Totals& totals)
+{
+    if (parted.contains(key))
+    {
+        totals.together++;
+        return true;
+    }
+
+    // A note that didn't sound before the edits comes from a command whose note sounded elsewhere. Its edit can have
+    // moved it a tick, or made it a tick longer.
+    if (spans.Contested(channel_of(note),
+                        {SIZE_MAX, note.start == 0 ? 0 : note.start - 1, note.start + note.length + 1}))
+    {
+        totals.contested++;
+        return true;
+    }
+    if (Brief(before, note.start, note.length) || Brief(before, note.start, note.length - 1))
+    {
+        totals.brief++;
+        return true;
+    }
+    if (Quiet(channel_of, track, note, note.velocity))
+    {
+        totals.quiet++;
+        return true;
+    }
+
+    return false;
+}
+
+// Compares `note`, a note of track `number` that the edited song plays, with `want`, the note expected at its place.
+// `end` is the earlier loop's end where the loop moved, and `unstarted_before` whether the driver never started a note
+// at the place before the edits. Reports a difference through `report`.
+void ComparePlayed(int number, const Note& note, const Expected& want, const std::optional<uint32_t>& end,
+                   bool unstarted_before, const std::function<void(const std::string&)>& report, Totals& totals)
+{
+    // A moved loop cuts the notes at the earlier loop's end.
+    const auto clipped = [&end](uint32_t start, uint32_t length)
+    {
+        return end ? std::min(length, *end - std::min(start, *end)) : length;
+    };
+
+    // A note can end sooner than its command says: its track or the song ends, another note cuts it, or its channel
+    // falls silent. The length of a note that ended so before the edits isn't compared. A moved note can end where it
+    // ended before, and a longer one at its old length or later, where its sample ends. A quieter note's channel can
+    // fall silent sooner.
+    const uint32_t played = clipped(note.start, note.length);
+    const uint32_t wanted = clipped(want.note.start, want.note.length);
+    const uint32_t ended = end ? std::min(want.end, *end) : want.end;
+    const bool sooner = played < wanted;
+    const bool apart =
+        !want.own_length || (sooner && ((want.change == Change::kMove && note.start + played == ended) ||
+                                        (want.change == Change::kLonger && note.start + played >= ended) ||
+                                        want.change == Change::kVelocity));
+    const bool length = !apart && played != wanted;
+    const bool velocity = note.velocity != want.note.velocity;
+    if (apart && played != wanted)
+    {
+        totals.lengths++;
+    }
+    if (!length && !velocity)
+    {
+        return;
+    }
+
+    // A note that the driver never started before plays as one with the note on its tick, louder.
+    if (unstarted_before && !(note.velocity < want.note.velocity))
+    {
+        totals.together++;
+        return;
+    }
+
+    // A note whose channel other notes may take can end sooner. A note that the channels now let through can also play
+    // on its tick with the same key, and the two then play as one.
+    if (want.contested && !(played > wanted) && !(note.velocity < want.note.velocity))
+    {
+        totals.contested++;
+        return;
+    }
+    report("track " + std::to_string(number) + "'s note at tick " + std::to_string(note.start) + ", key " +
+           std::to_string(note.key) + ", plays length " + std::to_string(played) + " and velocity " +
+           std::to_string(note.velocity) + " in place of " + std::to_string(wanted) + " and " +
+           std::to_string(want.note.velocity));
+}
+
 } // namespace
 
 bool Compare(const std::string& name, const Sequence& before, const Sequence& after,
@@ -270,20 +378,8 @@ bool Compare(const std::string& name, const Sequence& before, const Sequence& af
     const std::optional<uint32_t> end = LoopEnd(name, before, after, totals);
 
     // The notes by track, start and key.
-    using Place = NotePlace;
     auto [expected, parted, unstarted_before] = ExpectedNotesOf(before, plans, spans, channel_of, end, totals);
-
-    // A move can put a note on the tick of another note of the same key on its track. The two then play as one.
-    std::set<Place> together;
-    for (auto at = expected.begin(); at != expected.end(); at = expected.upper_bound(at->first))
-    {
-        if (expected.count(at->first) > 1)
-        {
-            together.insert(at->first);
-            totals.together += expected.count(at->first);
-        }
-    }
-    std::erase_if(expected, [&together](const auto& entry) { return together.contains(entry.first); });
+    const std::set<NotePlace> together = TakeTogether(expected, totals);
 
     std::size_t wrong = 0;
     const auto report = [&](const std::string& what)
@@ -293,101 +389,32 @@ bool Compare(const std::string& name, const Sequence& before, const Sequence& af
             std::printf("%s: %s\n", name.c_str(), what.c_str());
         }
     };
-    // The notes that the driver never starts after the edits: every channel of their kind was taken.
-    const std::set<Place> unstarted_after = UnstartedPlaces(after);
-
-    // A moved loop cuts the notes at the earlier loop's end.
-    const auto clipped = [&end](uint32_t start, uint32_t length)
-    {
-        return end ? std::min(length, *end - std::min(start, *end)) : length;
-    };
     for (const hokuto::song::Track& track : after.tracks)
     {
         for (const Note& note : track.notes)
         {
-            const Place key{track.number, note.start, note.key};
+            const NotePlace key{track.number, note.start, note.key};
             if ((end && note.start >= *end) || together.contains(key))
             {
                 continue;
             }
+
             const auto found = expected.find(key);
-            if (found == expected.end())
+            if (found != expected.end())
             {
-                if (parted.contains(key))
-                {
-                    totals.together++;
-                    continue;
-                }
-                // A note that didn't sound before the edits comes from a command whose note sounded elsewhere. Its edit
-                // can have moved it a tick, or made it a tick longer.
-                if (spans.Contested(channel_of(note),
-                                    {SIZE_MAX, note.start == 0 ? 0 : note.start - 1, note.start + note.length + 1}))
-                {
-                    totals.contested++;
-                    continue;
-                }
-                if (Brief(before, note.start, note.length) || Brief(before, note.start, note.length - 1))
-                {
-                    totals.brief++;
-                    continue;
-                }
-                if (Quiet(channel_of, track, note, note.velocity))
-                {
-                    totals.quiet++;
-                    continue;
-                }
+                ComparePlayed(track.number, note, found->second, end, unstarted_before.contains(key), report, totals);
+                expected.erase(found);
+            }
+            else if (!ExtraApart(before, track, note, key, parted, spans, channel_of, totals))
+            {
                 report("track " + std::to_string(track.number) + " plays a note at tick " + std::to_string(note.start) +
                        ", key " + std::to_string(note.key) + ", that it shouldn't");
-                continue;
             }
-
-            // A note can end sooner than its command says: its track or the song ends, another note cuts it, or its
-            // channel falls silent. The length of a note that ended so before the edits isn't compared. A moved note
-            // can end where it ended before, and a longer one at its old length or later, where its sample ends. A
-            // quieter note's channel can fall silent sooner.
-            const Expected& want = found->second;
-            const uint32_t played = clipped(note.start, note.length);
-            const uint32_t wanted = clipped(want.note.start, want.note.length);
-            const uint32_t ended = end ? std::min(want.end, *end) : want.end;
-            const bool sooner = played < wanted;
-            const bool apart =
-                !want.own_length || (sooner && ((want.change == Change::kMove && note.start + played == ended) ||
-                                                (want.change == Change::kLonger && note.start + played >= ended) ||
-                                                want.change == Change::kVelocity));
-            const bool length = !apart && played != wanted;
-            const bool velocity = note.velocity != want.note.velocity;
-            if (apart && played != wanted)
-            {
-                totals.lengths++;
-            }
-
-            // A note that the driver never started before plays as one with the note on its tick, louder.
-            if ((length || velocity) && unstarted_before.contains(key) && !(note.velocity < want.note.velocity))
-            {
-                totals.together++;
-                expected.erase(found);
-                continue;
-            }
-
-            // A note whose channel other notes may take can end sooner. A note that the channels now let through can
-            // also play on its tick with the same key, and the two then play as one.
-            if ((length || velocity) && want.contested && !(played > wanted) && !(note.velocity < want.note.velocity))
-            {
-                totals.contested++;
-                expected.erase(found);
-                continue;
-            }
-            if (length || velocity)
-            {
-                report("track " + std::to_string(track.number) + "'s note at tick " + std::to_string(note.start) +
-                       ", key " + std::to_string(note.key) + ", plays length " + std::to_string(played) +
-                       " and velocity " + std::to_string(note.velocity) + " in place of " + std::to_string(wanted) +
-                       " and " + std::to_string(want.note.velocity));
-            }
-            expected.erase(found);
         }
     }
-    ReportMissing(expected, unstarted_after, report, totals);
+
+    // The notes that the driver never starts after the edits: every channel of their kind was taken.
+    ReportMissing(expected, UnstartedPlaces(after), report, totals);
 
     return wrong > 0;
 }

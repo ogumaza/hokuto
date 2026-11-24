@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -196,7 +197,7 @@ std::optional<DsGame> DsGameOf(std::span<const uint8_t> image, uint32_t size, ui
     }
 }
 
-DsProfile DsProfileOf(const DsArchive& archive, uint32_t sound)
+DsProfile DsProfileOf(const DsArchive& archive, uint32_t sound, const std::map<int, int16_t>& values)
 {
     if (!archive.game || sound >= archive.sounds.size() || !archive.sounds[sound])
     {
@@ -205,7 +206,67 @@ DsProfile DsProfileOf(const DsArchive& archive, uint32_t sound)
 
     ntdlib::ntr::GameProfile profile = ntdlib::ntr::GameProfileOf(archive.game->code, archive.game->path,
                                                                   archive.game->index, DsSoundName(archive, sound));
-    return {std::move(profile.settings), std::move(profile.commands)};
+
+    // DsStateOf reads the profile's settings. The state is chosen before the settings move into `played`.
+    const ntdlib::ntr::ProfileArrangement* state = DsStateOf(profile, values);
+    DsProfile played = {std::move(profile.settings), std::move(profile.commands), std::move(profile.channel_locks), {}};
+    if (state)
+    {
+        played.commands.insert(played.commands.end(), state->commands.begin(), state->commands.end());
+        played.tick_commands = state->tick_commands;
+    }
+
+    return played;
+}
+
+std::map<int, int16_t> DsProfileValues(const ntdlib::ntr::GameSettings& settings)
+{
+    // The player's variables are 0 to 15, and the global variables 16 to 31.
+    std::map<int, int16_t> values;
+    const ntdlib::ntr::Variables& variables = settings.variables;
+    for (std::size_t i = 0; i < variables.local.size(); i++)
+    {
+        if (variables.local[i])
+        {
+            values[static_cast<int>(i)] = *variables.local[i];
+        }
+        if (variables.global[i])
+        {
+            values[static_cast<int>(variables.local.size() + i)] = *variables.global[i];
+        }
+    }
+
+    return values;
+}
+
+const ntdlib::ntr::ProfileArrangement* DsStateOf(const ntdlib::ntr::GameProfile& profile,
+                                                 const std::map<int, int16_t>& values)
+{
+    // The driver starts every variable at -1.
+    const std::map<int, int16_t> starts = DsProfileValues(profile.settings);
+    const auto value_in = [](const std::map<int, int16_t>& map, int number)
+    {
+        const auto found = map.find(number);
+        return found != map.end() ? std::optional<int16_t>(found->second) : std::nullopt;
+    };
+
+    for (const ntdlib::ntr::ProfileArrangement& state : profile.arrangements)
+    {
+        bool matches = !state.variables.empty();
+        bool differs = false;
+        for (const auto& [number, value] : state.variables)
+        {
+            const int16_t start = value_in(starts, number).value_or(-1);
+            matches = matches && value_in(values, number).value_or(start) == value;
+            differs = differs || start != value;
+        }
+        if (matches && differs)
+        {
+            return &state;
+        }
+    }
+
+    return nullptr;
 }
 
 ntdlib::ntr::GameSettings DsGameSettingsOf(const DsArchive& archive)
@@ -231,28 +292,21 @@ DsProfile DryDsProfile(DsProfile profile)
 ntdlib::sequence_export::ntr::PerformOptions DsPerformOptions(const DsArchive& archive, uint32_t sound,
                                                               const std::map<int, int16_t>& values)
 {
-    DsProfile profile = DsProfileOf(archive, sound);
+    DsProfile profile = DsProfileOf(archive, sound, values);
     ntdlib::sequence_export::ntr::PerformOptions options;
     options.build = archive.build;
     options.player_channels = std::move(profile.settings.channels);
     options.track_channels = std::move(profile.settings.track_channels);
     options.reverb = profile.settings.reverb;
     options.commands = std::move(profile.commands);
+    options.channel_locks = std::move(profile.channel_locks);
+    options.tick_commands = std::move(profile.tick_commands);
 
-    // The performer numbers the player's variables 0 to 15, and the global variables 16 to 31.
-    const ntdlib::ntr::Variables& variables = profile.settings.variables;
-    for (std::size_t i = 0; i < variables.local.size(); i++)
+    // The profile's values, then the starting values.
+    for (const auto& [number, value] : DsProfileValues(profile.settings))
     {
-        if (variables.local[i])
-        {
-            options.variables[static_cast<uint8_t>(i)] = *variables.local[i];
-        }
-        if (variables.global[i])
-        {
-            options.variables[static_cast<uint8_t>(variables.local.size() + i)] = *variables.global[i];
-        }
+        options.variables[static_cast<uint8_t>(number)] = value;
     }
-
     for (const auto& [number, value] : values)
     {
         if (number >= 0 && number < kGameVariables)

@@ -39,19 +39,22 @@ std::vector<BatchSound> BatchSounds(const Played& played);
 
 // The sequence of sound `sound` of `played`, read as the program reads it, with the variables' starting values
 // `values` and their changes `changes`. The GBA's drivers and DSE read no variables, and the DS reads no changes. A
-// sound of the Wii plays by `wii_build` of NW4R SND, or by the build that its archive names. Throws what ReadSequence
-// throws.
+// sound of the Wii plays by `wii_build` of NW4R SND, or by the build that its archive names. A sound of the 3DS, the
+// Wii U or the Switch plays the rest of the game's start `start`. Throws what ReadSequence throws.
 Sequence ReadBatchSequence(const Played& played, uint32_t sound,
                            const std::optional<ntdlib::SndBuild>& wii_build = std::nullopt,
-                           const StartValues& values = {}, const Changes& changes = {});
+                           const StartValues& values = {}, const Changes& changes = {},
+                           const format::SoundStart& start = {});
 
 // Sound `sound` of `played` converted to MIDI with its instruments on the sound's console. The program's export
 // converts it the same way (ConvertToMidi). `program` names the program in the SoundFont and the SFZ files. Throws what
-// ConvertToMidi throws, EmptyConversion included. `values` and `changes` set the variables as for ReadBatchSequence.
+// ConvertToMidi throws, EmptyConversion included. `values`, `changes` and `start` start the sound as for
+// ReadBatchSequence.
 ntdlib::sequence_export::Conversion ConvertBatchSound(const Played& played, uint32_t sound,
                                                       const std::optional<ntdlib::SndBuild>& wii_build,
                                                       const std::string& program, const StartValues& values = {},
-                                                      const Changes& changes = {});
+                                                      const Changes& changes = {},
+                                                      const format::SoundStart& start = {});
 
 // The parts of a file's name in a naming scheme, in the Export Audio Mixdown window's terms.
 enum class NameToken

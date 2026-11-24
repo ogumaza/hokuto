@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,6 +17,13 @@
 
 namespace hokuto::format
 {
+
+// The name of the engine of a file with more than one archive, in its engine line (format/project.h).
+inline constexpr std::string_view kArchivesEngineName = "archives";
+
+// The line that starts each archive of a file with more than one archive, and the line of the archive in front.
+inline constexpr std::string_view kArchiveLine = "archive";
+inline constexpr std::string_view kFrontWord = "front";
 
 // The text form of `file`. Throws std::invalid_argument for a file that the form can't hold: one with two labels of the
 // same name in a sequence.
@@ -30,5 +38,9 @@ bool IsText(std::span<const uint8_t> bytes);
 
 // Reads a file in either form. Throws xsflib::FormatError for bytes in neither.
 File ReadEitherForm(std::span<const uint8_t> bytes);
+
+// The major version of the file in `bytes`, in either form: the header's in the binary form, and the first line's in
+// the text form. Nothing for bytes in neither form, or a first line without a version.
+std::optional<uint16_t> MajorVersionOf(std::span<const uint8_t> bytes);
 
 } // namespace hokuto::format

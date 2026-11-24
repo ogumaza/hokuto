@@ -368,7 +368,7 @@ void TestDse()
     const File file = hokuto::format::ImportDseImage(DseImageOf(true));
     const std::vector<uint8_t> set_bytes = hokuto::format::ExportArchive(file);
     const std::shared_ptr<const hokuto::song::DseSet> set =
-        hokuto::song::LoadDseSet(set_bytes, ntdlib::dse::Build::kLater);
+        hokuto::song::LoadDseSet(set_bytes, ntdlib::dse::Build::kLater, {});
     const hokuto::song::Sequence read = hokuto::song::ReadSequence(*set, 0);
 
     // Without its wait, the loop has no way out. An edit that leaves the wait isn't refused.
@@ -404,7 +404,7 @@ void TestDse()
     const std::vector<uint8_t> hanging_bytes =
         hokuto::format::ExportArchive(hokuto::format::ImportDseImage(DseImageOf(false)));
     const std::shared_ptr<const hokuto::song::DseSet> hanging_set =
-        hokuto::song::LoadDseSet(hanging_bytes, ntdlib::dse::Build::kLater);
+        hokuto::song::LoadDseSet(hanging_bytes, ntdlib::dse::Build::kLater, {});
     const std::string error = ErrorOf([&] { hokuto::song::ReadSequence(*hanging_set, 0); });
     XSFLIB_CHECK(error.find("Can't read") != std::string::npos);
     XSFLIB_CHECK(error.find("hangs") != std::string::npos);

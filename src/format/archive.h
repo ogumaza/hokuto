@@ -33,6 +33,27 @@
 namespace hokuto::format
 {
 
+// How a known game starts each sequence sound of `archive`, and the other states that it gives the sound, from ntdlib's
+// lists of known games: the 3DS's StartingSequenceTracks and SequenceArrangements, and the Wii U's StartOfSequence and
+// SequenceArrangements. The lists find a sound by the SHA-1 of the game's archive, whose bytes are `bytes`, and the
+// sound's name. A state takes the name that the lists give it. The starts come in the order of the sounds, each sound's
+// start before its states. They leave out a start that sets nothing, and every sound of an unknown archive or of the
+// Switch. The game's effect on the aux buses and the 3DS's states by bank aren't kept.
+std::vector<SoundStart> GameStarts(std::span<const uint8_t> bytes, const ntdlib::sar::SoundArchive& archive);
+
+// `file`, read from `bytes`, with the starts of a file of version 1 (GameStarts). Such a file keeps none. A 3DS or Wii
+// U file in the native form that no edit has changed builds the game's archive byte for byte, and its SHA-1 finds the
+// game's starts. A file of DSE's files that keeps its cartridge finds them by the image and the files' paths
+// (DseGameStarts), after an edit too. A sound that gets a start loses its lengths, which were measured without it. The
+// file of a later version, a file that keeps an STRT chunk, and one whose archive can't be built come back as they are.
+File WithOlderStarts(File file, std::span<const uint8_t> bytes);
+
+// The note for the user on `file`, read from `bytes`, where WithOlderStarts gives it the levels of DSE's songs and
+// ntdlib's reader can't read them from the game's code (DseLevelsNote). Such a file is of version 1, holds DSE's files
+// and keeps its cartridge. Nothing for every other file, for a set without sounds, and where the archive or the image
+// can't be read.
+std::optional<std::string> OlderDseLevelsNote(const File& file, std::span<const uint8_t> bytes);
+
 // A file made from sound archive `archive` of flavor `flavor`, with `group_files`, the group files that the game keeps
 // beside it, and `streams`, the game's stream files beside it by their file IDs. A Switch archive (kNx) gets
 // Engine::kSwitch, a Wii U archive (kCafe) Engine::kWiiU, and a 3DS archive (kCtr) Engine::k3ds. Each group file keeps
@@ -40,9 +61,10 @@ namespace hokuto::format
 // or else the one that `groups` names for it: the group's label among the groups kept outside the archive
 // (ntdlib::sar::SoundArchive::GroupFileGroups). The 3DS's file table holds no lists of groups, and only the label gives
 // a group file's group there. The file keeps the archive's sizes as the game's sizes, unless ntdlib can't list a
-// group's files (see SizesOf). The sequence files of `known` take the commands that it gives them where those give the
-// files' bytes back (ntdlib::sar::Cut): a file in the model form lays its archive out from its sequences, and gives
-// them. Throws xsflib::FormatError if the archive's tables can't be read.
+// group's files (see SizesOf). It keeps how a known game starts each sequence sound (GameStarts). The sequence files of
+// `known` take the commands that it gives them where those give the files' bytes back (ntdlib::sar::Cut): a file in the
+// model form lays its archive out from its sequences, and gives them. Throws xsflib::FormatError if the archive's
+// tables can't be read.
 File ImportArchive(std::span<const uint8_t> archive, ntdlib::sar::Flavor flavor,
                    std::vector<std::vector<uint8_t>> group_files = {},
                    std::map<uint32_t, std::vector<uint8_t>> streams = {}, std::span<const std::string> groups = {},
@@ -120,13 +142,15 @@ std::vector<DsArchivePlace> DsArchivesIn(std::span<const uint8_t> image);
 File ImportDsImage(std::span<const uint8_t> image, const std::optional<DsArchivePlace>& place = std::nullopt);
 
 // Whether `image`, a DS cartridge image, contains DSE's files: songs, wave banks or banks of sound effects (smdl, swdl
-// or sedl) in its file system. Throws xsflib::FormatError for an image that ntdlib can't read (ntdlib::ntr::Rom).
+// or sedl) in its file system or inside the game's packs (DseFilesOf). Throws xsflib::FormatError for an image that
+// ntdlib can't read (ntdlib::ntr::Rom).
 bool HoldsDseFiles(std::span<const uint8_t> image);
 
-// A file made from the DSE files of `image`, a DS cartridge image, with Engine::kDse. ntdlib's cut (ntdlib::dse::Cut)
-// lays them out as a set: each song and each sound effect becomes a sequence, and the other bytes stay as they are. The
-// file keeps the set's size as the game's size, and the image as its cartridge. Throws xsflib::FormatError for an
-// image that ntdlib can't read, and for an image without such files.
+// A file made from the DSE files of `image`, a DS cartridge image, loose or inside the game's packs (DseFilesOf), with
+// Engine::kDse. ntdlib's cut (ntdlib::dse::Cut) lays them out as a set: each song and each sound effect becomes a
+// sequence, and the other bytes stay as they are. The file keeps the set's size as the game's size, the image as its
+// cartridge, and the levels at which the game starts its songs as their starts (DseGameStarts). Throws
+// xsflib::FormatError for an image that ntdlib can't read, and for an image without such files.
 File ImportDseImage(std::span<const uint8_t> image);
 
 // A file made from `set`, the set that a file of DSE's files builds (ExportArchive), without a cartridge. Throws
@@ -159,14 +183,15 @@ struct DsImageExport
 };
 
 // The cartridge image of `file`, a file of a DS cartridge image. A set of DSE files writes each of its files that
-// changed under its path in the image. Otherwise the archive that ExportArchive builds replaces the archive of the
-// game. When the archive or the set keeps the bytes of the game, the image comes back byte for byte. Otherwise ntdlib
-// writes the image again with the new bytes of the archive's file (ntdlib::ntr::WithFiles). The items after the file
-// move by multiples of 0x200 bytes, and the FAT, the header and its CRC follow. With `keys`, the digest of a DSi image
-// gets new hashes. Without them, its hashes of the bytes that changed are stale. An archive that shares its file with
-// other bytes keeps its size: nothing tells Hokuto what points into those bytes. Throws std::invalid_argument for a
-// file without a cartridge and for such an archive of another size, and the exceptions of ExportArchive and
-// ntdlib::ntr::WithFiles.
+// changed under its path in the image. It refuses a changed file inside a pack (DseFilesOf), with a message that names
+// the file and the pack. An unchanged file inside a pack stays as it is. Otherwise the archive that ExportArchive
+// builds replaces the archive of the game. When the archive or the set keeps the bytes of the game, the image comes
+// back byte for byte. Otherwise ntdlib writes the image again with the new bytes of the archive's file
+// (ntdlib::ntr::WithFiles). The items after the file move by multiples of 0x200 bytes, and the FAT, the header and its
+// CRC follow. With `keys`, the digest of a DSi image gets new hashes. Without them, its hashes of the bytes that
+// changed are stale. An archive that shares its file with other bytes keeps its size: nothing tells Hokuto what points
+// into those bytes. Throws std::invalid_argument for a file without a cartridge, for such an archive of another size
+// and for a changed DSE file inside a pack, and the exceptions of ExportArchive and ntdlib::ntr::WithFiles.
 DsImageExport ExportDsImage(const File& file, const std::optional<ntdlib::ntr::DsiKeys>& keys = std::nullopt);
 
 // Whether the file of the cartridge image of `file`, a file of a DS archive, contains other data beside the game's
@@ -203,8 +228,8 @@ std::map<Start, uint32_t> SequenceStarts(std::span<const ntdlib::sar::Piece> pie
 // The sequence of `file`, a file of a DS sound archive, that each sequence of the INFO block's table plays, by its
 // index there: the sequence that its file became (ntdlib::sdat::Cut). The sounds of the archive's sequence archives
 // come after those of the table (song::DsSounds), and have none here, although the cut makes each sequence archive a
-// sequence. Nothing either for an entry that has no sequence, or whose file stays among the bytes. `sdat` is the archive
-// that `file` builds (ExportArchive). Returns nothing for a file of another console. Throws the exceptions of
+// sequence. Nothing either for an entry that has no sequence, or whose file stays among the bytes. `sdat` is the
+// archive that `file` builds (ExportArchive). Returns nothing for a file of another console. Throws the exceptions of
 // ntdlib::ntr::snd::EncodeSequence.
 std::vector<std::optional<uint32_t>> DsSoundSequences(const File& file, std::span<const uint8_t> sdat);
 

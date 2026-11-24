@@ -36,9 +36,10 @@ namespace hokuto::edit
 // file's. The file's title names the whole file. Without a title of the sound, the MIDI file keeps the sound's name.
 song::MidiTags MidiTagsOf(const format::File& file, uint32_t sound);
 
-// What a batch exports from: what plays the sounds, the Wii's build, the Hokuto file when there's one, and the
-// variables' starting values and changes of each sound, by its number. The file sets the effects on the aux buses,
-// each sound's mixing mode and engine, and the MIDI files' tags. `name` names the file in messages.
+// What a batch exports from: what plays the sounds, the Wii's build, the Hokuto file when there's one, the variables'
+// starting values and changes of each sound, by its number, and how the game starts each sound (format::File::starts).
+// A sound without starting values or changes takes those of its start. The file sets the effects on the aux buses, each
+// sound's mixing mode and engine, and the MIDI files' tags. `name` names the file in messages.
 struct BatchSource
 {
     song::Played played;
@@ -46,6 +47,7 @@ struct BatchSource
     std::shared_ptr<const format::File> file;
     std::map<uint32_t, song::StartValues> start_values;
     std::map<uint32_t, song::Changes> changes;
+    std::vector<format::SoundStart> starts;
     std::string name;
 };
 

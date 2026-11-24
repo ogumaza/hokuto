@@ -11,11 +11,12 @@
 // sample's end after the release loops for ever there. The original key of the region is the root key of the voice, and
 // its pitch is the tuning of the voice in cents. A voice whose scale tuning isn't 100 cents a key gets a region for
 // each key, with the pitch of that key. The volume is set from the attenuation of the voice: 0.4 of the zones'
-// initialAttenuation, and the constant modulators' amounts. The SoundFont players apply 0.4 of initialAttenuation too.
-// The pan is set from the pan of the voice, and a key group from its exclusive class. The envelope uses the values of
-// NintendoWare's envelope whose SoundFont envelope comes nearest (ntdlib::sequence_export::ConvertEnvelope): nearest in
-// time for the attack, the hold, the decay and the release, and in level for the sustain. The warnings name what the
-// bank leaves out, such as the filters, the LFOs, the modulation envelope and the volume envelope's delay.
+// initialAttenuation, and the constant modulators' amounts, less the gain that BankOfSoundFont takes. The SoundFont
+// players apply 0.4 of initialAttenuation too. The pan is set from the pan of the voice, and a key group from its
+// exclusive class. The envelope uses the values of NintendoWare's envelope whose SoundFont envelope comes nearest
+// (ntdlib::sequence_export::ConvertEnvelope): nearest in time for the attack, the hold, the decay and the release, and
+// in level for the sustain. The warnings name what the bank leaves out, such as the filters, the LFOs, the modulation
+// envelope and the volume envelope's delay.
 
 #pragma once
 
@@ -58,8 +59,12 @@ inline constexpr int kEveryMidiBank = -1;
 
 // The presets of MIDI bank `midi_bank` of the SoundFont 2 file `sf2` as a bank of the console of `flavor`: the 3DS, the
 // Wii U or the Switch. With kEveryMidiBank, the presets of MIDI banks 0 to 127 go in, preset p of bank b at program 128
-// b + p. The SoundFont of a converter stores a program past 127 of the source bank so. Throws std::invalid_argument
-// with a message for the user for a file that Hokuto can't read as a SoundFont, and for a bank without presets.
-SoundFontBank BankOfSoundFont(std::span<const uint8_t> sf2, ntdlib::sar::Flavor flavor, int midi_bank = 0);
+// b + p. The SoundFont of a converter stores a program past 127 of the source bank so. Every region plays `gain`
+// centibels louder than its voice. A converter's SoundFont whose zones all have one cut, such as the cut of a pan
+// (ntdlib::sequence_export::PanCut), then comes back at the source's level. A region's volume ends at 255, about twice
+// the level of 127. Throws std::invalid_argument with a message for the user for a file that Hokuto can't read as a
+// SoundFont, and for a bank without presets.
+SoundFontBank BankOfSoundFont(std::span<const uint8_t> sf2, ntdlib::sar::Flavor flavor, int midi_bank = 0,
+                              double gain = 0.0);
 
 } // namespace hokuto::edit

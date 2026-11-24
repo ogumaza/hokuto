@@ -25,9 +25,11 @@
 #include "ntdlib/sar/layout.h"
 #include "ntdlib/sound_build.h"
 
+#include "format/dse_places.h"
 #include "format/engine.h"
 #include "format/engines.h"
 #include "format/shared.h"
+#include "format/starts.h"
 
 namespace hokuto::format
 {
@@ -169,8 +171,10 @@ struct NativeStream
 
 // A DS cartridge image that contains a sound archive of the DS (SDAT): a file in the file system of the image contains
 // the archive at an offset. An export writes the archive there and returns the image (ntdlib::ntr::WithFiles). A set of
-// DSE files consists of many files of the image, under their paths, and uses no file or offset. The image keeps its
-// bytes up to the last byte that isn't 0xFF. 0xFF bytes follow up to the image's size.
+// DSE files consists of many files of the image, under their paths, and uses no file or offset. It records where each
+// of its files sits in the image (`places`), in the order of the set's files. A file of version 2.0 that a build before
+// the record wrote has none, and the export searches the image then. The image keeps its bytes up to the last byte that
+// isn't 0xFF. 0xFF bytes follow up to the image's size.
 struct Cartridge
 {
     friend bool operator==(const Cartridge&, const Cartridge&) = default;
@@ -179,6 +183,7 @@ struct Cartridge
     uint32_t size = 0;   // the image's size
     uint32_t file = 0;   // the file that contains the archive, by its ID in the file system
     uint32_t offset = 0; // the archive's offset in the file
+    std::vector<DsePlace> places;
 };
 
 // A group file that the game keeps beside the archive, cut into ntdlib's pieces as the archive is
@@ -265,6 +270,12 @@ struct NativeArchive
     // (agblib::mp2k::Layout::note_arguments).
     int gba_note_arguments = 3;
 
+    // In a GBA ROM with MusicPlayer2000 beside another driver, the earliest place of the free space where the songs of
+    // MusicPlayer2000 that move go, from the ROM's start (agblib::mp2k::JoinOptions::free_floor). The bytes that the
+    // other drivers read lie before it. The file doesn't store it: the reader sets it from the other archives
+    // (format/project.h). 0 in a ROM with one driver.
+    uint64_t gba_free_floor = 0;
+
     // On the Wii, the game's build of NW4R SND, from the game's main.dol. Without it, the archive's version gives the
     // build (BuildOfWiiArchive).
     std::optional<ntdlib::SndBuild> wii_build = std::nullopt;
@@ -323,8 +334,9 @@ struct WaveModel
 };
 
 // The variables that a game sets through a sound's handle, by their numbers in the commands: nn::atk's player variables
-// 0 to 15 and its global variables 16 to 31. Each starts at -1 until the game or a command sets it.
-inline constexpr int kSceneVariables = 32;
+// 0 to 15, its global variables 16 to 31, and the track variables 0 to 15 of every track as 32 to 47. Each starts at -1
+// until the game or a command sets it.
+inline constexpr int kSceneVariables = 48;
 
 // A change of a variable at a set time while a sound plays, such as the one that a game makes when a race's last lap
 // starts. The time counts milliseconds from the sound's start. The engine makes the change at the start of its first
@@ -583,6 +595,13 @@ struct File
     Tags tags;                               // the file's tags
     std::map<uint32_t, Tags> sound_tags;     // each sound's tags, by the sound's index in the archive's sound table
     std::map<uint32_t, SoundLength> lengths; // the sounds' lengths, by their indexes in the archive's sound table
+
+    // How the game starts each sequence sound, and the sound's other states, in the order of the sounds' indexes. A
+    // sound's start without a name comes before its states. An import takes them from the lists of known games
+    // (GameStarts in format/archive.h). A sound without a start starts as its archive starts it. Playback and every
+    // export apply the start without a name.
+    std::vector<SoundStart> starts;
+
     std::vector<Shared<ntdlib::commands::Sequence>> sequences;
     Shared<NativeArchive> native;            // none for a file without a native archive
     ArchiveForm form = ArchiveForm::kNative; // how the file keeps `native` on disk
@@ -609,17 +628,25 @@ std::vector<Shared<ntdlib::commands::Sequence>> ShareSequences(std::vector<ntdli
 // Copies of the values of `file`'s sequences, for ntdlib's functions that take the sequences in one array.
 std::vector<ntdlib::commands::Sequence> CopySequences(const File& file);
 
-// The version that Write gives a file. Read takes every file of the major version. A minor version adds chunks that
-// older readers can skip, and numbers that they refuse, such as a new engine. Version 1.0 went out with Hokuto 1.0.0.
-// Version 1.1 adds the GBA. Version 1.2 adds two settings of the Switch's archive player to the model form.
-inline constexpr uint16_t kMajorVersion = 1;
-inline constexpr uint16_t kMinorVersion = 2;
+// The version that Write gives a file. Read takes every file of major versions 1 and 2. A minor version adds chunks
+// that older readers can skip, and numbers that they refuse, such as a new engine. Version 1.0 went out with
+// Hokuto 1.0.0. Version 1.1 adds the GBA. Version 1.2 adds two settings of the Switch's archive player to the model
+// form. Version 2.0 adds three effects of nn::atk, the starts of the sounds, and the scenes' variables of every track.
+inline constexpr uint16_t kMajorVersion = 2;
+inline constexpr uint16_t kMinorVersion = 0;
+
+// The first major version that Read takes.
+inline constexpr uint16_t kFirstMajorVersion = 1;
 
 // The first bytes of a file in the binary form.
 inline constexpr std::array<uint8_t, 8> kSignature = {0x89, 'H', 'O', 'K', 0x0D, 0x0A, 0x1A, 0x0A};
 
 // Whether Hokuto reads the chunk `id`. A file holds each such chunk once at most.
 bool IsHokutoChunk(std::string_view id);
+
+// The chunk that contains an archive of a file with more than one archive (format/project.h): the archive as a file in
+// the binary form, without the chunk of the aux buses' effects and volumes, and without the file's tags.
+inline constexpr std::string_view kArchiveChunk = "ARCH";
 
 // The chunk that holds the native archive's group files, in both forms.
 inline constexpr std::string_view kGroupFilesChunk = "GRPF";
@@ -736,7 +763,7 @@ std::optional<std::string> EffectProblem(const Effect& effect);
 // What's wrong with `volume`, an aux bus's volume, or nothing. A volume is a finite number from 0 to kMaxAuxVolume.
 std::optional<std::string> AuxVolumeProblem(float volume);
 
-// What's wrong with `scene`, or nothing. A scene sets variables 0 to 31 only, and its changes come in the order of
+// What's wrong with `scene`, or nothing. A scene sets variables 0 to 47 only, and its changes come in the order of
 // their times.
 std::optional<std::string> SceneProblem(const Scene& scene);
 
@@ -750,6 +777,24 @@ File WithTag(File file, std::optional<uint32_t> sound, const std::string& key, c
 
 // The mixing mode of sound `sound` of `file`: the sound's mode in sound_mixing, or else the file's.
 Mixing MixingOf(const File& file, uint32_t sound);
+
+// What's wrong with `start`, or nothing. A start quiets, gives a volume to and sets a variable of tracks 0 to 31 only.
+// A volume, a ratio and a send is a finite number of 0 or more, and a send is 1 at most. It sets variables 0 to 47, and
+// a track only for a track variable. Its variables come in the order of their times, and set each variable of a track,
+// or of every track, once at time 0. A variable of a single track changes only at time 0.
+std::optional<std::string> StartProblem(const SoundStart& start);
+
+// Whether `start` changes a track variable of a single track after the sound's start, which only a later version of
+// the format reads.
+bool HasTimedTrackVariable(const SoundStart& start);
+
+// The start of sound `sound` of `file` without a name, or the start that sets nothing.
+SoundStart StartOf(const File& file, uint32_t sound);
+
+// `file` with `start` as the start of its sound with its name, in place of the start that the file had. A start without
+// a name that sets nothing leaves the file. A new start goes after the starts of the sounds before it: a start without
+// a name before the sound's other states, and a state after them.
+File WithStart(File file, SoundStart start);
 
 // `file` with sound `sound` in mixing mode `mixing`. sound_mixing holds the sound only when its mode differs from the
 // file's.
@@ -776,7 +821,7 @@ File WithEngine(File file, uint32_t sound, Engine engine);
 std::optional<std::string> LengthProblem(const SoundLength& length);
 
 // `after`, the file after an edit of `before`, without its lengths when the edit can change what a sound plays: when it
-// changes the engine, the mixer, a sequence or the native archive. Hokuto then measures the lengths again
+// changes the engine, the mixer, a sequence, the native archive or the starts. Hokuto then measures the lengths again
 // (song/lengths.h). The lengths come from strict mixing, and a change of a mixing mode keeps them.
 File WithoutStaleLengths(const File& before, File after);
 

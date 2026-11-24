@@ -46,7 +46,7 @@ public:
 
     // The effects go on the buses in the first AX frame after the sound starts, in the order that they process each
     // bus. A game appends its effects as the sound starts the same way.
-    bool StartSequence(uint32_t sound) override
+    bool StartSequence(uint32_t sound, const format::SoundStart&) override
     {
         model_->engine->SetEffects(setups_, {}, sound);
         player_ = model_->engine->StartSequence(sound);

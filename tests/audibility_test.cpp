@@ -5,7 +5,8 @@
 // there. A missing loud note gives a run of 1 s at the note's level. A silent render counts against every window of the
 // reference, and a quiet render that only plays quieter gives no finding. An offset that starts partway passes the
 // high-pass and gives no finding. A render that comes 30 ms late, or 20 ms early, lines up again. So do two short
-// renders whose notes lie apart by other times.
+// renders whose notes lie apart by other times. The levels of the windows follow from the window's size, the high-pass
+// and the signal's amplitude.
 
 #include "song/audibility.h"
 
@@ -23,6 +24,7 @@
 using hokuto::song::CompareLevels;
 using hokuto::song::LevelComparison;
 using hokuto::song::LevelPlace;
+using hokuto::song::WindowLevels;
 using hokuto::song::WorstPlaces;
 using hokuto::testing::Near;
 
@@ -345,6 +347,37 @@ void TestRefusal()
     XSFLIB_CHECK(refused);
 }
 
+// WindowLevels gives the level of each whole window of 50 ms, after the high-pass at 20 Hz. At 32,730 Hz a window
+// rounds to 1,637 frames, so 6,544 frames hold 3 whole windows, and the part window at the end gives none. A sine of
+// 1 kHz at amplitude 0.5 lies in each window after the first, 50 whole periods at 48 kHz, at 10 log10(0.5^2 / 2): about
+// -9.03 dB. A steady offset of 0.5 lies at about -6.02 dB, and the high-pass takes it away: after 1 s, each window lies
+// more than 100 dB below that. Silence lies at -200 dB. A rate below 1,000 Hz is refused.
+void TestWindowLevels()
+{
+    const std::vector<float> frames(std::size_t{6544} * 2, 0.0f);
+    std::vector<float> sine = Silence(1.0);
+    AddSine(sine, 1000.0, 0.5, 0.0, 1.0);
+    const std::vector<float> offset(std::size_t{2} * kRate * 2, 0.5f);
+    const double sine_db = 10.0 * std::log10(0.5 * 0.5 / 2.0);
+    const double offset_db = 10.0 * std::log10(0.5 * 0.5);
+
+    const std::vector<double> counted = WindowLevels(frames, 32730);
+    const std::vector<double> sine_levels = WindowLevels(sine, kRate);
+    const std::vector<double> offset_levels = WindowLevels(offset, kRate);
+    const bool refused =
+        !xsflib::testing::ErrorOf<std::invalid_argument>([&] { WindowLevels(Silence(1.0), 999); }).empty();
+
+    SEQLIB_CHECK_EQ(counted.size(), std::size_t{3});
+    XSFLIB_CHECK(std::ranges::all_of(counted, [](double level) { return level == -200.0; }));
+    SEQLIB_CHECK_EQ(sine_levels.size(), std::size_t{20});
+    XSFLIB_CHECK(std::all_of(sine_levels.begin() + 1, sine_levels.end(),
+                             [sine_db](double level) { return Near(level, sine_db, 0.01); }));
+    SEQLIB_CHECK_EQ(offset_levels.size(), std::size_t{40});
+    XSFLIB_CHECK(std::all_of(offset_levels.begin() + 20, offset_levels.end(),
+                             [offset_db](double level) { return level < offset_db - 100.0; }));
+    XSFLIB_CHECK(refused);
+}
+
 } // namespace
 
 int main()
@@ -361,5 +394,6 @@ int main()
                                         TestShortLag();
                                         TestWorstPlaces();
                                         TestRefusal();
+                                        TestWindowLevels();
                                     });
 }

@@ -94,7 +94,8 @@ struct PlacedGbaBytes
 // bytes in the run of 0xFF bytes at the ROM's end, or else on a multiple of 4 bytes after the ROM's end. Zeros follow
 // them up to a multiple of 4 bytes, at least one: bytes that end in 0xFF stay out of the run. Past the 32 MiB that the
 // GBA maps, the bytes go into the ROM's first filler run with room, where the file allows it
-// (NativeArchive::gba_filler). Throws std::invalid_argument with a message for the user for a ROM without room.
+// (NativeArchive::gba_filler). Throws std::invalid_argument with a message for the user for a ROM without room. In a
+// ROM with another driver, the free space starts at its floor at the earliest (NativeArchive::gba_free_floor).
 PlacedGbaBytes WithGbaNewBytes(const format::File& file, std::span<const uint8_t> bytes);
 
 // `voice` as a voice of `psg`, the PSG's channel from 1 to 4, or of a sample for 0. `wave` is the sample's address for

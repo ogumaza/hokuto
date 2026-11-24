@@ -78,7 +78,7 @@ File TestFile()
 
 std::shared_ptr<const song::DseSet> SetOf(const File& file)
 {
-    return song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater);
+    return song::LoadDseSet(hokuto::format::ExportArchive(file), ntdlib::dse::Build::kLater, {});
 }
 
 // The bytes of a split that each edit's name changes.

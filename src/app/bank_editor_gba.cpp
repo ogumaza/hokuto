@@ -316,9 +316,7 @@ const GbaProgram* SelectedGbaProgram(const GbaBankView& view, BankEditorState& s
 {
     const auto forget = [&state]
     {
-        state.gba_row.reset();
-        state.gba_held.reset();
-        state.gba_steps.reset();
+        ForgetGbaProgram(state);
     };
     return SelectedOrFirst(view.programs, state.program, &GbaProgram::program, waiting, forget);
 }
@@ -365,9 +363,7 @@ void GbaPlaceVoice(const GbaBankView& view, bool chosen, const char* name, const
     edit.name = name;
     edit.details = ProgramDetails(view.name, *first);
     state.program = *first;
-    state.gba_row.reset();
-    state.gba_held.reset();
-    state.gba_steps.reset();
+    ForgetGbaProgram(state);
 }
 
 // The list of a GBA voice group's programs at `pos`, `size` large: each program's number and the kind of its voice. A
@@ -395,9 +391,7 @@ void DrawGbaPrograms(const GbaBankView& view, BankEditorState& state, bool busy,
     const auto select = [&state](uint32_t program)
     {
         state.program = program;
-        state.gba_row.reset();
-        state.gba_held.reset();
-        state.gba_steps.reset();
+        ForgetGbaProgram(state);
     };
     DrawProgramList(view.programs, label_of, select, state, list_min, list_size, nullptr);
 
@@ -430,9 +424,7 @@ void DrawGbaPrograms(const GbaBankView& view, BankEditorState& state, bool busy,
         edit.name = "Delete Voice";
         edit.details = ProgramDetails(view.name, selected->program);
         state.program = NeighbourProgram(view.programs, selected, &GbaProgram::program);
-        state.gba_row.reset();
-        state.gba_held.reset();
-        state.gba_steps.reset();
+        ForgetGbaProgram(state);
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
@@ -1048,6 +1040,13 @@ GbaProgramSide DrawGbaProgramSide(const GbaBankView& view, const GbaProgram& pro
 }
 
 } // namespace
+
+void ForgetGbaProgram(BankEditorState& state)
+{
+    state.gba_row.reset();
+    state.gba_held.reset();
+    state.gba_steps.reset();
+}
 
 std::optional<agblib::mp2k::Voice> DroppedGbaVoice(const GbaBankView& view, const BankEditorState& state,
                                                    const BankDrop& drop)

@@ -59,6 +59,7 @@
 
 #include "edit/bytecode.h"
 #include "edit/ds_files.h"
+#include "edit/dse_files.h"
 #include "edit/replace.h"
 #include "format/archive.h"
 #include "format/brownie_items.h"
@@ -258,8 +259,9 @@ CheckedArchive DriverChecked(format::Engine engine, std::vector<uint8_t> bytes);
 CheckedArchive DsChecked(std::vector<uint8_t> sdat, const ntdlib::ntr::snd::Build& build,
                          std::optional<song::DsGame> game);
 
-// A checked archive of the set of DSE's files `set`, played by `build` of the driver.
-CheckedArchive DseChecked(std::span<const uint8_t> set, ntdlib::dse::Build build);
+// A checked archive of `set`, the set of DSE's files that `file` builds, played as the file plays it
+// (edit::DseSetOfFile).
+CheckedArchive DseChecked(const format::File& file, std::span<const uint8_t> set);
 
 // Whether hok import treats `bytes` as a cartridge image with DSE's files and no sound archive.
 bool IsDseImage(std::span<const uint8_t> bytes);

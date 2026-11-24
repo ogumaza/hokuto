@@ -61,4 +61,13 @@ std::vector<const char*> WaveRowLabels();
 // and the sizes follow. Returns the change that the user made.
 std::optional<WaveSoundChange> DrawWaveSound(Rows& rows, SoundSection& section);
 
+// The labels of the Start rows, for LabelWidth.
+std::vector<const char*> StartRowLabels();
+
+// The Start rows of the section's sound (sound_start_section.cpp): Speed, Transpose, Fine Tune, Gain, Send A and Send
+// B, each with a box that sets its value or clears it, then on the 3DS the banks. Transpose and Fine Tune share the
+// start's pitch, and Send A and Send B its sends: a box of either sets or clears both. Returns the change that the user
+// made.
+std::optional<StartChange> DrawStart(Rows& rows, SoundSection& section);
+
 } // namespace hokuto::app::sound_section_parts

@@ -33,8 +33,16 @@ class ConsoleModel
 public:
     virtual ~ConsoleModel() = default;
 
-    // Starts sequence sound `sound`. Returns false if the sound doesn't start. Damaged data in the archive throws.
-    virtual bool StartSequence(uint32_t sound) = 0;
+    // Starts sequence sound `sound` as the game starts it with `start`: the 3DS's model gives the sequence the start's
+    // banks. Returns false if the sound doesn't start. Damaged data in the archive throws.
+    virtual bool StartSequence(uint32_t sound, const format::SoundStart& start) = 0;
+
+    // Gives the sound what the game sets through the sound's handle as it starts the sound, besides the variables of
+    // every track, before the first tick (song/start_handle.h). The models of the 3DS, the Wii U and the Switch apply
+    // it. The other consoles' games set none of it.
+    virtual void ApplyStart(const format::SoundStart&)
+    {
+    }
 
     virtual void SetVariable(int number, int16_t value) = 0;
 
@@ -119,8 +127,11 @@ std::size_t GbaFrameSamples(const GbaRom& rom, Mixing mixing);
 std::size_t DriverFrameSamples(const DriverRom& rom, Mixing mixing);
 
 // The models of NITRO-Composer and of DSE on the DS (console_ds.cpp), and the frames and the sample rate of both.
-std::unique_ptr<ConsoleModel> NewDsModel(const DsArchive& archive, Mixing mixing, bool dry);
-std::unique_ptr<ConsoleModel> NewDseModel(const DseSet& set, Mixing mixing);
+// NITRO-Composer's model plays the state of the profile that the variables' starting values `values` choose
+// (DsProfileOf). DSE's model runs the driver's tick of `tick_microseconds`: the tick of the sound that it plays
+// (DseSoundTick).
+std::unique_ptr<ConsoleModel> NewDsModel(const DsArchive& archive, Mixing mixing, bool dry, StartValues values);
+std::unique_ptr<ConsoleModel> NewDseModel(const DseSet& set, int tick_microseconds, Mixing mixing);
 std::size_t DsFrameSamples(Mixing mixing);
 int DsSampleRate(Mixing mixing);
 

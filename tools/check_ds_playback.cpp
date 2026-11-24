@@ -6,8 +6,12 @@
 // the game of the image (song::DsGameOf). The reference starts each sound with the profile of its game, and sends the
 // profile's commands right after the start. The reference reads the profile from ntdlib's table
 // (ntdlib::ntr::GameProfileOf). The program reads the same table (song::DsProfileOf). The summary counts the runs with
-// the game's output effect, and those whose profile sets more. For each sound with a sequence (song::DsSounds), it
-// checks:
+// the game's output effect, and those whose profile sets more. In strict mixing, the reference sends the commands of
+// each of the profile's locks of channels before the driver's frame of the lock (ntdlib::ntr::ChannelLockCommands).
+// Enhanced mixing leaves the locks out, as the program does. Where the starting values choose a state of the profile,
+// the reference sends the state's commands after the profile's, and its lists of commands after a tick through
+// ntdlib::ntr::TickListProgress, with the count of the ticks that player 0 has run. For each sound with a sequence
+// (song::DsSounds), it checks:
 //
 // - From the start, the player's output matches the output of the reference, sample for sample, after the player's
 //   first frame. Each frame of the player contains two frames of the driver.
@@ -27,17 +31,18 @@
 //   pass apart too.
 // - A sound whose output ends before its first frame has to leave the reference silent. The tool counts such sounds.
 //
-// With --variables, each sequence plays once for each choice of each variable that the Variables zone lists, -1 aside,
-// and with 1 for a variable without choices. The arrangement reads the sequence with that starting value, and the
-// reference reads it from the game settings (ntdlib::ntr::GameSettings). With --changes, each sequence plays once for
-// each choice of each variable that its commands read, with 1 for a variable without choices. The variable takes the
-// value while the sequence plays: halfway through the sequence's length or through the check, 2 ms into the model's
-// frame. The reference receives the change through ArchivePlayer::Send before the first of the frame's two driver
-// frames. The tool counts the runs whose output the change alters. With --enhanced, the player and the reference play
-// in enhanced mixing. With --profiled, the tool checks only the sounds whose game's profile sets more than the output
-// effect, and prints the name of each. With --every n, the tool checks every nth of those sounds of each archive, and
-// with --part k/n, part k of n of those. The tool prints a line for each sound that differs, and a summary. It returns
-// 1 when any sound differs or can't be read. Missing notes get a line too, but don't count as a difference.
+// With --variables, each sequence plays once for each choice of each variable that the Variables zone lists, and with 1
+// for a variable without choices. The choice that equals the variable's starting value in ntdlib's profile, or else -1,
+// stays out. The arrangement reads the sequence with that starting value, and the reference reads it from the game
+// settings (ntdlib::ntr::GameSettings). With --changes, each sequence plays once for each choice of each variable that
+// its commands read, with 1 for a variable without choices. The variable takes the value while the sequence plays:
+// halfway through the sequence's length or through the check, 2 ms into the model's frame. The reference receives the
+// change through ArchivePlayer::Send before the first of the frame's two driver frames. The tool counts the runs whose
+// output the change alters. With --enhanced, the player and the reference play in enhanced mixing. With --profiled, the
+// tool checks only the sounds whose game's profile sets more than the output effect, and prints the name of each. With
+// --every n, the tool checks every nth of those sounds of each archive, and with --part k/n, part k of n of those. The
+// tool prints a line for each sound that differs, and a summary. It returns 1 when any sound differs or can't be read.
+// Missing notes get a line too, but don't count as a difference.
 //
 //     check_ds_playback [--enhanced] [--variables | --changes] [--profiled] [--part k/n] [--every n]
 //                       <image.nds | archive.sdat>... [seconds]
@@ -143,7 +148,7 @@ ntdlib::ntr::GameProfile ProfileOf(const song::DsArchive& archive, uint32_t soun
                                       ntdlib::ntr::Label(archive.archive, *archive.sounds[sound]));
 }
 
-// Whether `profile` sets more than the output effect: variables, channels, a reverb or commands.
+// Whether `profile` sets more than the output effect: variables, channels, a reverb, commands or locks of channels.
 bool SetsMore(const ntdlib::ntr::GameProfile& profile)
 {
     const ntdlib::ntr::GameSettings& settings = profile.settings;
@@ -151,9 +156,51 @@ bool SetsMore(const ntdlib::ntr::GameProfile& profile)
     {
         return value.has_value();
     };
-    return !profile.commands.empty() || !settings.channels.empty() || !settings.track_channels.empty() ||
-           settings.reverb.has_value() || std::ranges::any_of(settings.variables.local, set) ||
-           std::ranges::any_of(settings.variables.global, set);
+    return !profile.commands.empty() || !profile.channel_locks.empty() || !settings.channels.empty() ||
+           !settings.track_channels.empty() || settings.reverb.has_value() ||
+           std::ranges::any_of(settings.variables.local, set) || std::ranges::any_of(settings.variables.global, set);
+}
+
+// The value that `profile` gives variable `number` as the sequence starts: 0 to 15 are the player's variables, and 16
+// to 31 the global ones. -1 where the profile sets none or the number is outside 0 to 31. The driver starts every
+// variable at -1.
+int16_t ProfileStart(const ntdlib::ntr::GameProfile& profile, int number)
+{
+    if (number < 0 || number >= song::kGameVariables)
+    {
+        return -1;
+    }
+
+    const ntdlib::ntr::Variables& variables = profile.settings.variables;
+    const std::optional<int16_t>& set =
+        number < song::kFirstGlobal ? variables.local[number] : variables.global[number - song::kFirstGlobal];
+    return set.value_or(-1);
+}
+
+// The state of `profile` that the starting values `values` choose, as song::DsStateOf chooses it: the first whose
+// variables all start at its values, where the profile starts at least one at another value, or at -1 where it sets
+// none. Nothing where no state matches.
+const ntdlib::ntr::ProfileArrangement* ChosenState(const ntdlib::ntr::GameProfile& profile,
+                                                   const song::StartValues& values)
+{
+    for (const ntdlib::ntr::ProfileArrangement& state : profile.arrangements)
+    {
+        bool matches = !state.variables.empty();
+        bool differs = false;
+        for (const auto& [number, value] : state.variables)
+        {
+            const int16_t start = ProfileStart(profile, number);
+            const auto chosen = values.find(number);
+            matches = matches && (chosen != values.end() ? chosen->second : start) == value;
+            differs = differs || start != value;
+        }
+        if (matches && differs)
+        {
+            return &state;
+        }
+    }
+
+    return nullptr;
 }
 
 Reference RunReference(const song::DsArchive& archive, uint32_t sound, const song::StartValues& values,
@@ -178,7 +225,10 @@ Reference RunReference(const song::DsArchive& archive, uint32_t sound, const son
         }
     };
 
+    // The state comes from the profile's values, before the starting values replace them.
     ntdlib::ntr::GameProfile profile = ProfileOf(archive, sound);
+    const ntdlib::ntr::GameProfile unchanged = profile;
+    const ntdlib::ntr::ProfileArrangement* state = ChosenState(unchanged, values);
     ntdlib::ntr::GameSettings& settings = profile.settings;
     for (const auto& [number, value] : values)
     {
@@ -191,6 +241,13 @@ Reference RunReference(const song::DsArchive& archive, uint32_t sound, const son
             settings.variables.global[static_cast<std::size_t>(number - song::kFirstGlobal)] = value;
         }
     }
+    if (state)
+    {
+        profile.commands.insert(profile.commands.end(), state->commands.begin(), state->commands.end());
+    }
+    const std::vector<ntdlib::ntr::TickCommands> tick_commands =
+        state ? state->tick_commands : std::vector<ntdlib::ntr::TickCommands>{};
+    ntdlib::ntr::TickListProgress tick_progress(tick_commands.size());
     player.Start(*archive.sounds[sound], settings);
     if (!profile.commands.empty())
     {
@@ -218,6 +275,22 @@ Reference RunReference(const song::DsArchive& archive, uint32_t sound, const son
                 player.Send(ntdlib::ntr::VariableCommands(set));
             }
         }
+
+        // The game's locks of channels come before their driver frames in strict mixing, and the state's lists in the
+        // frames of the game's code that start by then.
+        for (const ntdlib::ntr::ChannelLock& lock : profile.channel_locks)
+        {
+            if (!enhanced && lock.frame == reference.ends.size())
+            {
+                player.Send(ntdlib::ntr::ChannelLockCommands(lock));
+            }
+        }
+        const auto send = [&player](const ntdlib::ntr::snd::CommandList& list)
+        {
+            player.Send(list);
+        };
+        tick_progress.SendDue(tick_commands, reference.ends.size() * ntdlib::ntr::snd::kFrameClocks,
+                              static_cast<uint32_t>(ticks), send);
 
         if (enhanced)
         {
@@ -416,6 +489,7 @@ void CheckSound(const std::string& where, const std::shared_ptr<const song::DsAr
     const double middle = std::min(song::MsOfTick(plain, plain.length / 2.0), seconds * 500.0);
     const uint64_t frame = song::FramesIn(static_cast<uint64_t>(middle), song::kDsFrameMs);
     const auto time = static_cast<uint32_t>(frame * song::kDsFrameMs.numerator / song::kDsFrameMs.denominator + 2);
+    const ntdlib::ntr::GameProfile profile = ProfileOf(*archive, sound);
     for (const song::Variable& variable : changes ? plain.read_variables : plain.variables)
     {
         std::vector<int> choices = variable.choices;
@@ -423,9 +497,10 @@ void CheckSound(const std::string& where, const std::shared_ptr<const song::DsAr
         {
             choices.push_back(1);
         }
+        const int start = changes ? -1 : ProfileStart(profile, variable.number);
         for (const int choice : choices)
         {
-            if (choice == -1)
+            if (choice == start)
             {
                 continue;
             }

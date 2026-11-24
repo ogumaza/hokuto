@@ -314,6 +314,13 @@ private:
     // a sound archive of the DS or a DS cartridge image that contains one.
     static OpenWork Opened(const std::string& path, bool import);
     static OpenWork OpenedFile(const std::string& name, std::span<const uint8_t> bytes);
+
+    // `read`, with its timelines laid out for editing where its engine has timelines.
+    static std::shared_ptr<const format::File> ForEditing(format::File read);
+
+    // What plays `document`, an archive of the file called `name`: the archive, the ROM or the set that it builds, the
+    // sequence of each of its files and the field of each sound's start. Throws where the archive can't play.
+    static ArchivePlay PlayOf(const std::string& name, std::shared_ptr<const format::File> document);
     static OpenWork ImportedArchive(const std::filesystem::path& file, std::vector<uint8_t> bytes);
     static OpenWork ImportedWiiArchive(const std::filesystem::path& file, std::vector<uint8_t> bytes);
     static OpenWork ImportedGbaRom(const std::filesystem::path& file, std::vector<uint8_t> bytes);
@@ -342,9 +349,35 @@ private:
     // sounds, sequences, banks and wave archives. The file starts a new history. For the Wii's archive, the browser
     // lists the archive's sounds and sequences. For a GBA ROM, it lists the ROM's songs. For a DS archive, it lists the
     // archive's sequences.
+    // A file with more than one archive starts a history of `project`, with `document` in front, and `archives` gives
+    // what plays each archive.
     void ShowDocument(std::shared_ptr<const format::File> document, song::Played played,
                       std::vector<std::optional<uint32_t>> sequences,
-                      std::optional<std::vector<std::optional<uint32_t>>> start_fields, const std::string& name);
+                      std::optional<std::vector<std::optional<uint32_t>>> start_fields, const std::string& name,
+                      std::shared_ptr<const format::Project> project = nullptr, std::vector<ArchivePlay> archives = {});
+
+    // Shows the archive in front, played by `play`. The zones, the editors and the browser start again on it.
+    void ShowPlay(ArchivePlay play);
+
+    // Makes `played`, built from `version`, the archive, ROM or set that plays, with `sequences` and `start_fields`
+    // (ShowDocument), and forgets what the program kept of the last one.
+    void InstallPlay(std::shared_ptr<const format::File> version, song::Played played,
+                     std::vector<std::optional<uint32_t>> sequences,
+                     std::optional<std::vector<std::optional<uint32_t>>> start_fields);
+
+    // Closes the Bank Editor and the properties, and drops the drops that wait for the Bank Editor.
+    void CloseItemEditors();
+
+    // The browser's groups of archive `archive` of a file with more than one archive, listed from what plays it in
+    // `archive_plays_`.
+    std::vector<BrowserGroup> ListedBrowserOf(std::size_t archive);
+
+    // Shows the archive in front after archive `left` left the front: through the browser, an undo or a redo. Archive
+    // `left` keeps what plays it and its view in `archive_plays_`.
+    void ShowFront(std::size_t left);
+
+    // Brings archive `archive` of the file to the front without an action, and shows it.
+    void BringToFront(std::size_t archive);
 
     // Ends the work on the last file: playback, a preview, an export, a replacement, a read and the worker.
     void EndLastFileWork();
@@ -352,8 +385,9 @@ private:
     // Lists the items of the new file in the browser, with nothing chosen or shown and no search.
     void ResetBrowser();
 
-    // Selects the sound of the view that the file keeps, or drops the view when the browser doesn't list the sound.
-    void SelectKeptViewSound();
+    // Selects the sound of `view`, the view that the file or the archive keeps, or drops the view when the browser
+    // doesn't list the sound.
+    void SelectKeptViewSound(const std::optional<format::EditorView>& view);
 
     // File > Save saves to the file that the document came from, or asks where. SaveTo saves to `path`, a UTF-8 path,
     // in the form that the file was opened in. An imported archive saves in the binary form. The file keeps the view of
@@ -1133,6 +1167,11 @@ private:
     // file of DSE's files its songs, sound effects, banks and waves through ListDseBrowser.
     void ListBrowser();
 
+    // Lists the row of each archive of a file with more than one archive in the browser (browser_archives_), and
+    // gives each row its count, its groups and its state before the browser draws them (UpdateBrowserArchives).
+    void ListArchives();
+    void UpdateBrowserArchives();
+
     // The browser's items of an archive of the 3DS, the Wii U or the Switch (ListBrowser): its sounds, its banks, its
     // wave archives and its wave sound files, and the items whose files are in group files missing from the file.
     void ListSarBrowser();
@@ -1193,6 +1232,9 @@ private:
 
     // The slots of the shown sequence, from the archive, the ROM or the set that the program has open.
     std::vector<SlotView> ShownSlots();
+
+    // Shows no track of the shown song as muted by the game when the sound plays a conversion that doesn't quiet it.
+    void HideUnplayedStartMutes();
 
     // Sets the mute, the solo and the meters of each track of the shown song to those of the track with its number in
     // `kept`.
@@ -1494,7 +1536,8 @@ private:
     // While the sequence plays, shows the value of each variable at the sample that the device plays.
     void UpdateVariables();
 
-    // The values that the variables of sequence sound `sound` start with, and their changes while it plays.
+    // The values that the variables of sequence sound `sound` start with, and their changes while it plays. A sound
+    // that the user hasn't changed takes those of its start in the file (format::StartOf).
     song::StartValues StartValuesOf(uint32_t sound) const;
     song::Changes ChangesOf(uint32_t sound) const;
 
@@ -1517,6 +1560,16 @@ private:
     void ShowTrackColours();
     void ApplyColourPick();
 
+    // Whether the shown sound plays on the 3DS, the Wii U or the Switch, whose games quiet tracks as a sound starts.
+    // Takes the user's switch of a track's mute at the sound's start in the arrangement: an edit of the sound's start
+    // (format::File::starts).
+    bool ShowsStartMutes() const;
+    void ApplyStartMute();
+
+    // Takes the edit of what the sound's start gives the selected track alone, from the inspector's Start rows: the
+    // track's volume and its track variables.
+    void ApplyTrackStart();
+
     // Takes the change that the user made in `section`, the Sound section of the inspector or the browser. A change is
     // an edit of the archive's tables. The program then builds the version's archive, and playback follows without a
     // stop.
@@ -1528,6 +1581,10 @@ private:
 
     // Takes the tag that the user typed in `section`. The edit changes the file's tags alone.
     void ApplyTagChange(SoundSection& section);
+
+    // Takes the start that the user made in the Start rows of `section`. The edit changes the sound's start alone, and
+    // drops the sound's length (format::WithoutStaleLengths).
+    void ApplyStartChange(SoundSection& section);
 
     // Takes the change of a wave sound's values in its wave sound file that the user made in `section`. The section
     // shows the new values at once. ShowWaveSoundIn shows the values of the section's wave sound, from the archive that
@@ -1698,6 +1755,11 @@ private:
     // the DS and DSE, and with the GBA's other drivers.
     std::vector<std::optional<uint32_t>> file_sequences_;
     std::optional<std::vector<std::optional<uint32_t>>> start_fields_;
+
+    // In a file with more than one archive, what plays each archive that isn't in front, and its last view, once it
+    // played. The browser's row of each archive (ListArchives).
+    std::vector<ArchivePlay> archive_plays_;
+    std::vector<BrowserArchive> browser_archives_;
 
     // The number of the track that the track list selects once the reader has read the version of a track's edit.
     std::optional<int> track_to_select_;
